@@ -24,9 +24,13 @@ pub const MAX_REQUEST_BYTES: u64 = 1048576u64
 pub const MAX_HEADERS: u64 = 32u64
 pub const MAX_HEADER_BYTES: u64 = 1024u64
 
-pub fn method_none() -> u64 { 0u64 }
-pub fn method_get() -> u64 { 1u64 }
-pub fn method_post() -> u64 { 2u64 }
+# The methods this server tells apart. Anything else is `Unknown`
+# (and answered with 405).
+pub enum Method {
+    Unknown,
+    Get,
+    Post,
+}
 
 # What a parse decided. `status` is 0 while nothing is wrong -- an
 # incomplete request has `complete == false` and `status == 0`,
@@ -34,7 +38,7 @@ pub fn method_post() -> u64 { 2u64 }
 pub struct Request {
     complete: bool,
     status: u64,
-    method: u64,
+    method: Method,
     keep_alive: bool,
     # Offsets into the buffer that was parsed. The target is left
     # percent-encoded; `percent_decode` is the caller's decision,
@@ -54,7 +58,7 @@ pub struct Request {
 impl Request {
     pub fn empty() -> Self {
         val r = Request {
-            complete: false, status: 0u64, method: method_none(),
+            complete: false, status: 0u64, method: Method::Unknown,
             keep_alive: true,
             path_at: 0u64, path_len: 0u64,
             query_at: 0u64, query_len: 0u64,
@@ -64,8 +68,8 @@ impl Request {
         r
     }
 
-    pub fn is_get(&self) -> bool { self.method == method_get() }
-    pub fn is_post(&self) -> bool { self.method == method_post() }
+    pub fn is_get(&self) -> bool { match self.method { Method::Get => true, _ => false } }
+    pub fn is_post(&self) -> bool { match self.method { Method::Post => true, _ => false } }
     pub fn has_query(&self) -> bool { self.query_len > 0u64 }
 }
 
@@ -242,9 +246,9 @@ pub fn parse_request(b: Span<u8>, len: u64) -> Request {
     }
 
     if eq_at(b, 0u64, sp1, "GET") {
-        r.method = method_get()
+        r.method = Method::Get
     } elif eq_at(b, 0u64, sp1, "POST") {
-        r.method = method_post()
+        r.method = Method::Post
     } else {
         # A method that is understood but not served is 405; one that
         # is not a method at all is still 405, because the difference

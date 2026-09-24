@@ -31,19 +31,24 @@
 # consistently shifted by the host's offset -- visible, and fixable
 # later by a per-source offset setting.
 
-pub fn fmt_plain() -> u32 { 0u32 }
-pub fn fmt_syslog() -> u32 { 1u32 }
-pub fn fmt_datetime() -> u32 { 2u32 }
-pub fn fmt_apache() -> u32 { 3u32 }
-pub fn fmt_epoch() -> u32 { 4u32 }
+# The shape of a line. Each record's flags carry the number (bits
+# 1..3), so the numbers are part of the segment format: add a shape at
+# the end, never renumber one.
+pub enum LineShape {
+    Plain = 0,
+    Syslog = 1,
+    Datetime = 2,
+    Apache = 3,
+    Epoch = 4,
+}
 
-pub fn fmt_name(kind: u32) -> str {
-    match kind {
-        1u32 => "syslog",
-        2u32 => "datetime",
-        3u32 => "apache",
-        4u32 => "epoch",
-        _ => "plain",
+pub fn shape_name(shape: LineShape) -> str {
+    match shape {
+        LineShape::Plain => "plain",
+        LineShape::Syslog => "syslog",
+        LineShape::Datetime => "datetime",
+        LineShape::Apache => "apache",
+        LineShape::Epoch => "epoch",
     }
 }
 
@@ -68,7 +73,7 @@ pub fn span_len(v: u64) -> u64 { v & 0xFFFFFFFFu64 }
 # Where each part of one line lives. Offsets are absolute into the
 # reader's buffer; a zero length means "this shape has no such part".
 pub struct ParsedLine {
-    kind: u32,
+    kind: LineShape,
     has_ts: bool,
     ts: i64,
     host: u64,
@@ -80,7 +85,7 @@ pub struct ParsedLine {
 impl ParsedLine {
     pub fn new() -> Self {
         ParsedLine {
-            kind: 0u32, has_ts: false, ts: 0i64,
+            kind: LineShape::Plain, has_ts: false, ts: 0i64,
             host: 0u64, tag: 0u64, labels: 0u64, body: 0u64,
         }
     }
@@ -245,7 +250,7 @@ fn scan_labels(w: Span<u8>, from: u64, end: u64) -> u64 {
 pub fn parse_line(w: Span<u8>, ln: Line, out: &mut ParsedLine) {
     val start = ln.start
     val end = ln.start + ln.len
-    out.kind = 0u32
+    out.kind = LineShape::Plain
     out.has_ts = false
     out.ts = 0i64
     out.host = 0u64
@@ -295,7 +300,7 @@ pub fn parse_line(w: Span<u8>, ln: Line, out: &mut ParsedLine) {
                 val off = offset_secs(w, p, end, true)
                 out.has_ts = true
                 out.ts = secs - off
-                out.kind = if sep == 'T' { 1u32 } else { 2u32 }
+                if sep == 'T' { out.kind = LineShape::Syslog } else { out.kind = LineShape::Datetime }
                 # step over the UTC offset (or `Z`) to the first space
                 while p < end {
                     val c: u8 = w.get(p)
@@ -326,7 +331,7 @@ pub fn parse_line(w: Span<u8>, ln: Line, out: &mut ParsedLine) {
         if n >= 9u64 && n <= 11u64 && followed {
             out.has_ts = true
             out.ts = num_at(w, start, n) as i64
-            out.kind = 4u32
+            out.kind = LineShape::Epoch
             cursor = if i < end { i + 1u64 } else { i }
         }
     }
@@ -361,7 +366,7 @@ pub fn parse_line(w: Span<u8>, ln: Line, out: &mut ParsedLine) {
                     val off = offset_secs(w, d0 + 21u64, end, false)
                     out.has_ts = true
                     out.ts = secs - off
-                    out.kind = 3u32
+                    out.kind = LineShape::Apache
                     # The request and the rest stay in the body: this
                     # component frames lines, it does not take apart
                     # every field of every format.
@@ -380,7 +385,8 @@ pub fn parse_line(w: Span<u8>, ln: Line, out: &mut ParsedLine) {
     val labelled_first = scan_labels(w, cursor, end)
 
     # --- syslog: host and tag sit between the time and the message --
-    if out.kind == 1u32 && labelled_first == cursor {
+    val syslog = match out.kind { LineShape::Syslog => true, _ => false }
+    if syslog && labelled_first == cursor {
         var p = cursor
         var i = p
         while i < end {

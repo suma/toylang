@@ -537,7 +537,7 @@ fn admin_gc(spec: str, days: u64, body: &mut ByteWriter) -> u64 {
                 var j: u64 = 0u64
                 while j < ids.size() {
                     val segid = ids.get(j)
-                    val why = catalog::why_retention()
+                    val why = RemovalReason::Retention
                     if catalog::append_remove(ps, gen, segid, why, &crc) {
                         val gone = c.remove(segid)
                         val sp: &String = paths.borrow(j)
@@ -1112,23 +1112,20 @@ fn query_route(spec: str, b: Span<u8>, r: &Request, alive: bool,
         limit = parsed
     }
 
-    var fmt = query::format_ndjson()
+    var fmt = OutputFormat::Ndjson
     var fbuf = ByteWriter::with_capacity(32u64)
     if http::query_param(b, r.query_at, r.query_len, "format", &mut fbuf) {
         val f = text_of_writer(&fbuf)
-        val as_json = String::from_str("json")
-        val as_text = String::from_str("text")
-        val as_nd = String::from_str("ndjson")
-        if f.eq(&as_json) {
-            fmt = query::format_json()
-        } elif f.eq(&as_text) {
-            fmt = query::format_text()
-        } elif f.eq(&as_nd) {
-            fmt = query::format_ndjson()
-        } else {
-            http::respond_error(out, 400u64, "bad parameter",
-                                "format: json, ndjson or text", alive)
-            return
+        val name = f.to_str()
+        match name {
+            "json" => { fmt = OutputFormat::Json }
+            "text" => { fmt = OutputFormat::Text }
+            "ndjson" => { fmt = OutputFormat::Ndjson }
+            _ => {
+                http::respond_error(out, 400u64, "bad parameter",
+                                    "format: json, ndjson or text", alive)
+                return
+            }
         }
     }
 
@@ -1162,14 +1159,18 @@ fn query_route(spec: str, b: Span<u8>, r: &Request, alive: bool,
 
     var body = ByteWriter::with_capacity(65536u64)
     var ctype = "application/x-ndjson"
-    if fmt == query::format_json() {
-        ctype = "application/json"
-        val n = query::render_json(&hits, &texts, &q, &qst, &mut body)
-    } elif fmt == query::format_text() {
-        ctype = "text/plain"
-        val n = query::render_text(&hits, &texts, &q, &mut body)
-    } else {
-        val n = query::render_ndjson(&hits, &texts, &q, &mut body)
+    match fmt {
+        OutputFormat::Json => {
+            ctype = "application/json"
+            val n = query::render_json(&hits, &texts, &q, &qst, &mut body)
+        }
+        OutputFormat::Text => {
+            ctype = "text/plain"
+            val n = query::render_text(&hits, &texts, &q, &mut body)
+        }
+        OutputFormat::Ndjson => {
+            val n = query::render_ndjson(&hits, &texts, &q, &mut body)
+        }
     }
 
     # A search that ran out of budget is still an answer: the client

@@ -213,7 +213,7 @@ test "a journal replays the adds and removes that were appended" {
     val r2 = row(2u64, 200i64, 299i64, 20u64)
     assert(catalog::append_add(mount, 1u64, &r1, &crc), "ADD 1 should append")
     assert(catalog::append_add(mount, 1u64, &r2, &crc), "ADD 2 should append")
-    assert(catalog::append_remove(mount, 1u64, 1u64, catalog::why_retention(), &crc),
+    assert(catalog::append_remove(mount, 1u64, 1u64, RemovalReason::Retention, &crc),
            "REMOVE 1 should append")
 
     val back = catalog::load(mount, &crc)

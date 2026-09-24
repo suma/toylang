@@ -160,7 +160,7 @@ fn record_terms(w: Span<u8>, ln: Line, rec: &ParsedLine, terms: &mut Vec<String>
         val t = term_of("tag", w, rec.tag_start(), rec.tag_len())
         push_unique(terms, &t)
     }
-    if rec.kind == 3u32 {
+    if val LineShape::Apache = rec.kind {
         val f = extract::http(w, ln.start, ln.len)
         if f.ok {
             push_field(terms, "status", w, f.status)

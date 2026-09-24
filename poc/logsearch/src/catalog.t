@@ -40,17 +40,39 @@ pub const JREC_HEAD_BYTES: u64 = 16u64
 
 # A row describes either a segment or the archive a run of segments
 # was merged into (DATA_MODEL.md §5). Same format, different grain.
-pub fn kind_segment() -> u64 { 0u64 }
-pub fn kind_archive() -> u64 { 1u64 }
+#
+# The numbers in the three enums below are stored (STORAGE_FORMAT.md),
+# so they are part of the format: add a value, never renumber one. A
+# row keeps its kind as the stored number (`CatRow::kind`), so a row a
+# newer writer produced is carried as it was written.
+pub enum RowKind {
+    Segment = 0,
+    Archive = 1,
+}
 
-pub fn op_add() -> u64 { 1u64 }
-pub fn op_remove() -> u64 { 2u64 }
+# A journal record's operation.
+pub enum JournalOp {
+    Add = 1,
+    Remove = 2,
+}
+
+# The operation a journal record's number names, or `None` for one
+# this build does not know -- replay skips it.
+fn journal_op_of(op: u64) -> Option<JournalOp> {
+    match op {
+        1u64 => Option::Some(JournalOp::Add),
+        2u64 => Option::Some(JournalOp::Remove),
+        _ => Option::None,
+    }
+}
 
 # Why a segment left the catalog. Kept because "it is gone" and "we
 # dropped it on purpose" want different answers from an operator.
-pub fn why_retention() -> u64 { 1u64 }
-pub fn why_missing() -> u64 { 2u64 }
-pub fn why_merged() -> u64 { 3u64 }
+pub enum RemovalReason {
+    Retention = 1,
+    Missing = 2,
+    Merged = 3,
+}
 
 # ---------------------------------------------------------------------
 
@@ -75,7 +97,7 @@ impl CatRow {
         CatRow {
             ok: false, segid: 0u64, ts_min: 0i64, ts_max: 0i64,
             records: 0u64, seg_bytes: 0u64, index_bytes: 0u64,
-            kind: kind_segment(), streams: 0u64, terms: 0u64,
+            kind: RowKind::Segment as u64, streams: 0u64, terms: 0u64,
             daykey: 0u64,
         }
     }
@@ -147,7 +169,7 @@ pub fn seg_path(mount: str, r: &CatRow) -> String {
     val m = (r.daykey / 100u64) % 100u64
     val d = r.daykey % 100u64
     val id = r.segid
-    val ext = if r.kind == kind_archive() { ".arc.seg" } else { ".seg" }
+    val ext = if r.kind == RowKind::Archive as u64 { ".arc.seg" } else { ".seg" }
     val s = "{mount}/seg/{y:04}/{m:02}/{d:02}/{id:012}{ext}"
     val out = String::from_str(s)
     out
@@ -244,7 +266,7 @@ pub fn row_of_head(h: &SegHead, seg_bytes: u64, is_archive: bool) -> CatRow {
     r.seg_bytes = seg_bytes
     r.index_bytes = h.recs_len + h.ftab_len + h.terms_len + h.links_len
         + h.objs_len + h.strs_len
-    r.kind = if is_archive { kind_archive() } else { kind_segment() }
+    r.kind = if is_archive { RowKind::Archive as u64 } else { RowKind::Segment as u64 }
     # How many streams the segment holds is in its stream table (kind
     # 9), not in the 320 bytes this reads, and a row built from the
     # header alone must not invent it. It held the *frame* count,
@@ -599,21 +621,21 @@ pub fn append_add(mount: str, gen: u64, r: &CatRow, crc: &Crc32) -> bool {
     var w = ByteWriter::with_capacity(128u64)
     frame_start(&mut w)
     put_row(&mut w, r, crc)
-    put_jrec(&mut w, op_add(), crc, ROW_BYTES)
+    put_jrec(&mut w, JournalOp::Add as u64, crc, ROW_BYTES)
     val p = log_path(mount, gen)
     append_whole(p.to_str(), &w)
 }
 
 # Append `REMOVE <segid> <why>`.
-pub fn append_remove(mount: str, gen: u64, segid: u64, why: u64,
+pub fn append_remove(mount: str, gen: u64, segid: u64, why: RemovalReason,
                      crc: &Crc32) -> bool {
     if !ensure_dirs(mount) { return false }
     var w = ByteWriter::with_capacity(64u64)
     frame_start(&mut w)
     w.put_u64(segid)
-    w.put_u32(why)
+    w.put_u32(why as u64)
     w.put_u32(0u64)
-    put_jrec(&mut w, op_remove(), crc, 16u64)
+    put_jrec(&mut w, JournalOp::Remove as u64, crc, 16u64)
     val p = log_path(mount, gen)
     append_whole(p.to_str(), &w)
 }
@@ -646,21 +668,28 @@ pub fn replay(b: Span<u8>, len: u64, c: &mut Catalog, crc: &Crc32) -> u64 {
                     if got != want {
                         going = false
                     } else {
-                        if op == op_add() && body == ROW_BYTES {
-                            val r = take_row(&mut rd, b, crc)
-                            if r.ok { c.add(&r) }
-                            applied = applied + 1u64
-                        } elif op == op_remove() && body == 16u64 {
-                            val segid = rd.take_u64(b)
-                            val why = rd.take_u32(b)
-                            val pad = rd.take_u32(b)
-                            val gone = c.remove(segid)
-                            applied = applied + 1u64
-                        } else {
-                            # A record kind this build does not know.
-                            # Skipping it keeps a newer writer from
-                            # making the catalog unreadable.
-                            rd.seek(at + total)
+                        val kind = journal_op_of(op)
+                        match kind {
+                            Option::Some(JournalOp::Add) if body == ROW_BYTES => {
+                                val r = take_row(&mut rd, b, crc)
+                                if r.ok { c.add(&r) }
+                                applied = applied + 1u64
+                            }
+                            Option::Some(JournalOp::Remove) if body == 16u64 => {
+                                val segid = rd.take_u64(b)
+                                val why = rd.take_u32(b)
+                                val pad = rd.take_u32(b)
+                                val gone = c.remove(segid)
+                                applied = applied + 1u64
+                            }
+                            _ => {
+                                # A record kind this build does not
+                                # know (or one whose size is not its
+                                # kind's). Skipping it keeps a newer
+                                # writer from making the catalog
+                                # unreadable.
+                                rd.seek(at + total)
+                            }
                         }
                         if rd.position() != at + total { rd.seek(at + total) }
                     }

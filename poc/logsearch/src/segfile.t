@@ -33,16 +33,37 @@ pub const DIR_SLOTS: u64 = 8u64
 pub const DATA_AT: u64 = 320u64
 pub const SEG_VERSION: u64 = 3u64
 
-pub fn kind_frames() -> u64 { 1u64 }
-pub fn kind_records() -> u64 { 2u64 }
-pub fn kind_ftable() -> u64 { 3u64 }
-pub fn kind_terms() -> u64 { 6u64 }
-pub fn kind_links() -> u64 { 7u64 }
-# ONTOLOGY O1: per-term first_seen / last_seen. A reader that does not
-# know this kind skips it, so segments written before it still load.
-pub fn kind_objects() -> u64 { 8u64 }
-# The stream table (DATA_MODEL.md section 3): one row per label set.
-pub fn kind_streams() -> u64 { 9u64 }
+# What a directory entry points at. The number is what the directory
+# stores, so it is part of the segment format (STORAGE_FORMAT.md): add
+# a section with a new number, never renumber one. 4 and 5 are unused.
+pub enum Section {
+    Frames = 1,
+    Records = 2,
+    FieldTable = 3,
+    Terms = 6,
+    Links = 7,
+    # ONTOLOGY O1: per-term first_seen / last_seen. A reader that does
+    # not know this kind skips it, so segments written before it load.
+    Objects = 8,
+    # The stream table (DATA_MODEL.md section 3): one row per label set.
+    Streams = 9,
+}
+
+# The section a directory entry's number names, or `None` for one this
+# reader does not know -- which it skips, so a newer writer's segment
+# still loads. The one place the numbers are read back.
+pub fn section_of(kind: u64) -> Option<Section> {
+    match kind {
+        1u64 => Option::Some(Section::Frames),
+        2u64 => Option::Some(Section::Records),
+        3u64 => Option::Some(Section::FieldTable),
+        6u64 => Option::Some(Section::Terms),
+        7u64 => Option::Some(Section::Links),
+        8u64 => Option::Some(Section::Objects),
+        9u64 => Option::Some(Section::Streams),
+        _ => Option::None,
+    }
+}
 
 # Everything the header and the directory say, in one value.
 #
@@ -159,17 +180,21 @@ pub fn head_of(f: &File, scratch: &mut ByteWriter) -> SegHead {
                     val off = rd.take_u64(b)
                     val len = rd.take_u64(b)
                     val sum = rd.take_u32(b)
-                    if k == kind_frames() { h.frames_off = off  h.frames_len = len }
-                    if k == kind_records() {
-                        h.recs_off = off
-                        h.recs_len = len
-                        h.recs_crc = sum
+                    val section = section_of(k)
+                    match section {
+                        Option::Some(Section::Frames) => { h.frames_off = off  h.frames_len = len }
+                        Option::Some(Section::Records) => {
+                            h.recs_off = off
+                            h.recs_len = len
+                            h.recs_crc = sum
+                        }
+                        Option::Some(Section::FieldTable) => { h.ftab_off = off  h.ftab_len = len }
+                        Option::Some(Section::Terms) => { h.terms_off = off  h.terms_len = len }
+                        Option::Some(Section::Links) => { h.links_off = off  h.links_len = len }
+                        Option::Some(Section::Objects) => { h.objs_off = off  h.objs_len = len }
+                        Option::Some(Section::Streams) => { h.strs_off = off  h.strs_len = len }
+                        Option::None => { }
                     }
-                    if k == kind_ftable() { h.ftab_off = off  h.ftab_len = len }
-                    if k == kind_terms() { h.terms_off = off  h.terms_len = len }
-                    if k == kind_links() { h.links_off = off  h.links_len = len }
-                    if k == kind_objects() { h.objs_off = off  h.objs_len = len }
-                    if k == kind_streams() { h.strs_off = off  h.strs_len = len }
                     i = i + 1u64
                 }
                 if version == SEG_VERSION { h.ok = true }

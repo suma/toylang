@@ -63,7 +63,7 @@ test "a configuration names the mounts and nothing else does" {
     assert_eq(ms.quota_of(0u64), 107374182400u64)
     assert(!ms.is_readonly(0u64), "mount a is writable")
     assert(ms.is_readonly(2u64), "disk3 was declared readonly")
-    assert_eq(ms.state_of(0u64), mount::state_active())
+    assert_eq(mount::state_name(ms.state_of(0u64)), "active")
 }
 
 # 半端に適用しない。quota が読めない行は**マウントを作らない**。
@@ -123,7 +123,7 @@ test "a mount that is full or readonly is not picked" {
 
     # quota に達したら full になり、選ばれなくなる。
     ms.set_used(1u64, 107374182400u64)
-    assert_eq(ms.state_of(1u64), mount::state_full())
+    assert_eq(mount::state_name(ms.state_of(1u64)), "full")
     val none = ms.pick()
     match none {
         Option::Some(i) => { panic("a full mount must not be picked") }
@@ -136,7 +136,7 @@ test "a degraded mount stops taking writes" {
     val text = cfg("mount /a  quota=1G\nmount /b  quota=1G\n")
     val bad = mount::parse_config(&text, &mut ms)
     assert_eq(bad, 0u64)
-    ms.mark(0u64, mount::state_degraded())
+    ms.mark(0u64, MountState::Degraded)
     val pick = ms.pick()
     match pick {
         Option::Some(i) => { assert_eq(i, 1u64) }

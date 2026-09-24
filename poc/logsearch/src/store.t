@@ -128,7 +128,7 @@ pub fn place_segment(w: &mut ArchiveWriter, ms: &mut MountSet, gens: &Vec<u64>,
                 val now = ms.used_of(mi)
                 ms.set_used(mi, now + done)
             } else {
-                ms.mark(mi, mount::state_degraded())
+                ms.mark(mi, MountState::Degraded)
             }
         }
         Option::None => {
@@ -166,7 +166,7 @@ pub fn open_for_write(spec: str, ms: &mut MountSet, gens: &mut Vec<u64>,
         val meta = mount::ensure_meta(ps, "logsearch")
         if !meta.ok {
             if loud { println("  {ps}: cannot read or write meta/mount.json") }
-            ms.mark(i, mount::state_degraded())
+            ms.mark(i, MountState::Degraded)
         } else {
             var c = catalog::load(ps, crc)
             gen = c.generation()
@@ -175,7 +175,7 @@ pub fn open_for_write(spec: str, ms: &mut MountSet, gens: &mut Vec<u64>,
                     gen = 1u64
                 } else {
                     if loud { println("  {ps}: cannot publish a catalog") }
-                    ms.mark(i, mount::state_degraded())
+                    ms.mark(i, MountState::Degraded)
                 }
             }
             if loud {

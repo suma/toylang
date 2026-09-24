@@ -744,7 +744,7 @@ impl ArchiveWriter {
         }
         self.link(host_id, tag_id)
 
-        if rec.kind == 3u32 {
+        if val LineShape::Apache = rec.kind {
             val f = extract::http(w, ln.start, ln.len)
             if f.ok {
                 val status_id = self.emit(w, "status", extract::field_start(f.status), extract::field_len(f.status), rec.has_ts, rec.ts)
@@ -1422,13 +1422,13 @@ impl ArchiveWriter {
 
         hdr.put_u32(7u64)                  # section count
         hdr.put_u32(0u64)                  # reserved
-        put_dir(&mut hdr, segfile::kind_frames(), frames_off, frames_len, 0u64)
-        put_dir(&mut hdr, segfile::kind_records(), recs_off, recs_len, recs_crc)
-        put_dir(&mut hdr, segfile::kind_ftable(), ftab_off, ftab_len, ftab_crc)
-        put_dir(&mut hdr, segfile::kind_terms(), terms_off, terms_len, terms_crc)
-        put_dir(&mut hdr, segfile::kind_links(), links_off, links_len, links_crc)
-        put_dir(&mut hdr, segfile::kind_objects(), objs_off, objs_len, objs_crc)
-        put_dir(&mut hdr, segfile::kind_streams(), strs_off, strs_len, strs_crc)
+        put_dir(&mut hdr, Section::Frames, frames_off, frames_len, 0u64)
+        put_dir(&mut hdr, Section::Records, recs_off, recs_len, recs_crc)
+        put_dir(&mut hdr, Section::FieldTable, ftab_off, ftab_len, ftab_crc)
+        put_dir(&mut hdr, Section::Terms, terms_off, terms_len, terms_crc)
+        put_dir(&mut hdr, Section::Links, links_off, links_len, links_crc)
+        put_dir(&mut hdr, Section::Objects, objs_off, objs_len, objs_crc)
+        put_dir(&mut hdr, Section::Streams, strs_off, strs_len, strs_crc)
         while hdr.len() < segfile::DATA_AT { hdr.put_u8(0u8) }
 
         val hw2 = hdr.span()
@@ -1459,8 +1459,8 @@ impl ArchiveWriter {
 }
 
 # One directory slot: kind, offset, length, CRC of the stored bytes.
-fn put_dir(head: &mut ByteWriter, kind: u64, off: u64, len: u64, sum: u64) {
-    head.put_u32(kind)
+fn put_dir(head: &mut ByteWriter, section: Section, off: u64, len: u64, sum: u64) {
+    head.put_u32(section as u64)
     head.put_u64(off)
     head.put_u64(len)
     head.put_u32(sum)

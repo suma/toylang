@@ -30,18 +30,23 @@ import std.time
 import catalog
 import logdir
 
-pub fn state_active() -> u64 { 0u64 }
-pub fn state_full() -> u64 { 1u64 }
-pub fn state_degraded() -> u64 { 2u64 }
+# What a mount can take. Held in memory only, so no numbers.
+pub enum MountState {
+    Active,
+    Full,
+    Degraded,
+}
 
 # The format number written into `meta/mount.json`. It is the segment
 # format's, because that is what a reader has to understand.
 pub const META_FORMAT: u64 = 3u64
 
-pub fn state_name(s: u64) -> str {
-    if s == state_full() { return "full" }
-    if s == state_degraded() { return "degraded" }
-    "active"
+pub fn state_name(s: MountState) -> str {
+    match s {
+        MountState::Active => "active",
+        MountState::Full => "full",
+        MountState::Degraded => "degraded",
+    }
 }
 
 # ---------------------------------------------------------------------
@@ -84,7 +89,7 @@ pub struct MountSet {
     paths: Vec<String>,
     quotas: Vec<u64>,
     readonly: Vec<u64>,
-    states: Vec<u64>,
+    states: Vec<MountState>,
     used: Vec<u64>,
 }
 
@@ -93,7 +98,7 @@ impl MountSet {
         var paths: Vec<String> = Vec::new()
         var quotas: Vec<u64> = Vec::new()
         var readonly: Vec<u64> = Vec::new()
-        var states: Vec<u64> = Vec::new()
+        var states: Vec<MountState> = Vec::new()
         var used: Vec<u64> = Vec::new()
         val out = MountSet {
             paths: paths, quotas: quotas, readonly: readonly,
@@ -111,7 +116,7 @@ impl MountSet {
         self.quotas.push(quota)
         val flag = if ro { 1u64 } else { 0u64 }
         self.readonly.push(flag)
-        self.states.push(state_active())
+        self.states.push(MountState::Active)
         self.used.push(0u64)
     }
 
@@ -125,19 +130,19 @@ impl MountSet {
 
     pub fn quota_of(&self, i: u64) -> u64 { self.quotas.get(i) }
     pub fn used_of(&self, i: u64) -> u64 { self.used.get(i) }
-    pub fn state_of(&self, i: u64) -> u64 { self.states.get(i) }
+    pub fn state_of(&self, i: u64) -> MountState { self.states.get(i) }
     pub fn is_readonly(&self, i: u64) -> bool { self.readonly.get(i) == 1u64 }
 
     pub fn set_used(&mut self, i: u64, bytes: u64) {
         self.used.set(i, bytes)
         if bytes >= self.quotas.get(i) {
-            if self.states.get(i) == state_active() {
-                self.states.set(i, state_full())
+            if val MountState::Active = self.states.get(i) {
+                self.states.set(i, MountState::Full)
             }
         }
     }
 
-    pub fn mark(&mut self, i: u64, state: u64) { self.states.set(i, state) }
+    pub fn mark(&mut self, i: u64, state: MountState) { self.states.set(i, state) }
 
     # Usage in thousandths. Thousandths rather than the ratio itself
     # because there are no fractions here, and rather than
@@ -160,7 +165,7 @@ impl MountSet {
         var best_share: u64 = 0u64
         var i: u64 = 0u64
         while i < self.paths.size() {
-            var usable = self.states.get(i) == state_active()
+            var usable = match self.states.get(i) { MountState::Active => true, _ => false }
             if self.readonly.get(i) == 1u64 { usable = false }
             if usable {
                 val share = self.permille(i)

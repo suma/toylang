@@ -153,11 +153,11 @@ fn parse_time(text: str, now: i64) -> i64 {
 
 fn kind_code(text: str) -> u32 {
     match text {
-        "syslog" => 1u32,
-        "datetime" => 2u32,
-        "apache" => 3u32,
-        "epoch" => 4u32,
-        "plain" => 0u32,
+        "syslog" => LineShape::Syslog as u32,
+        "datetime" => LineShape::Datetime as u32,
+        "apache" => LineShape::Apache as u32,
+        "epoch" => LineShape::Epoch as u32,
+        "plain" => LineShape::Plain as u32,
         _ => KIND_ANY,
     }
 }
@@ -1176,9 +1176,11 @@ fn fold(hits: &TermHits, traw: Span<u8>, slots: &mut Vec<u64>,
 # object for a UI that wants the statistics with the records. None of
 # them re-reads a segment -- the walk already produced everything.
 
-pub fn format_text() -> u64 { 0u64 }
-pub fn format_ndjson() -> u64 { 1u64 }
-pub fn format_json() -> u64 { 2u64 }
+pub enum OutputFormat {
+    Text,
+    Ndjson,
+    Json,
+}
 
 # Which record to show `i`-th, honouring `desc`.
 fn pick_at(hits: &Vec<Hit>, q: &Query, i: u64) -> u64 {
@@ -1312,16 +1314,19 @@ impl Ord for Tally {
     }
 }
 
-pub fn field_status() -> u32 { 1u32 }
-pub fn field_method() -> u32 { 2u32 }
-pub fn field_path() -> u32 { 3u32 }
-pub fn field_client() -> u32 { 4u32 }
-pub fn field_vhost() -> u32 { 5u32 }
-pub fn field_ua() -> u32 { 6u32 }
-pub fn field_proto() -> u32 { 7u32 }
-pub fn field_host() -> u32 { 8u32 }
-pub fn field_tag() -> u32 { 9u32 }
-pub fn field_none() -> u32 { 0u32 }
+# A field `fields` can count. `Unknown` is a name that is none of them.
+pub enum Field {
+    Unknown,
+    Status,
+    Method,
+    Path,
+    Client,
+    Vhost,
+    Ua,
+    Proto,
+    Host,
+    Tag,
+}
 
 # Whether `key=value` names a term rather than a piece of text.
 #
@@ -1359,17 +1364,17 @@ pub fn is_index_key(key: &String) -> bool {
     true
 }
 
-pub fn field_code(name: str) -> u32 {
+pub fn field_code(name: str) -> Field {
     match name {
-        "status" => field_status(),
-        "method" => field_method(),
-        "path" => field_path(),
-        "client" | "ip" => field_client(),
-        "vhost" => field_vhost(),
-        "ua" => field_ua(),
-        "proto" => field_proto(),
-        "host" => field_host(),
-        "tag" => field_tag(),
-        _ => field_none(),
+        "status" => Field::Status,
+        "method" => Field::Method,
+        "path" => Field::Path,
+        "client" | "ip" => Field::Client,
+        "vhost" => Field::Vhost,
+        "ua" => Field::Ua,
+        "proto" => Field::Proto,
+        "host" => Field::Host,
+        "tag" => Field::Tag,
+        _ => Field::Unknown,
     }
 }

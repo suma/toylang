@@ -164,11 +164,13 @@ fn cmd_scan(dir: str, limit: u64) -> u64 {
                             }
                             if rec.has_labels() { total_labels = total_labels + 1u64 }
                             if rec.has_host() { total_hosts = total_hosts + 1u64 }
-                            if rec.kind == 0u32 { k_plain = k_plain + 1u64 }
-                            if rec.kind == 1u32 { k_syslog = k_syslog + 1u64  f_syslog = f_syslog + 1u64 }
-                            if rec.kind == 2u32 { k_datetime = k_datetime + 1u64 }
-                            if rec.kind == 3u32 { k_apache = k_apache + 1u64  f_apache = f_apache + 1u64 }
-                            if rec.kind == 4u32 { k_epoch = k_epoch + 1u64 }
+                            match rec.kind {
+                                LineShape::Plain => { k_plain = k_plain + 1u64 }
+                                LineShape::Syslog => { k_syslog = k_syslog + 1u64  f_syslog = f_syslog + 1u64 }
+                                LineShape::Datetime => { k_datetime = k_datetime + 1u64 }
+                                LineShape::Apache => { k_apache = k_apache + 1u64  f_apache = f_apache + 1u64 }
+                                LineShape::Epoch => { k_epoch = k_epoch + 1u64 }
+                            }
                         }
                     }
                     Option::None => { more = false }
@@ -581,7 +583,7 @@ fn cmd_retain(spec: str, days: u64) -> u64 {
                 var j: u64 = 0u64
                 while j < ids.size() {
                     val segid = ids.get(j)
-                    val why = catalog::why_retention()
+                    val why = RemovalReason::Retention
                     if catalog::append_remove(ps, gen, segid, why, &crc) {
                         val gone = c.remove(segid)
                         val sp: &String = paths.borrow(j)
@@ -1055,7 +1057,7 @@ fn same_bytes(w: Span<u8>, a: u64, a_len: u64, b: u64, b_len: u64) -> bool {
 
 fn cmd_fields(dir: str, field: str, limit: u64) -> u64 {
     val code = query::field_code(field)
-    if code == query::field_none() {
+    if val Field::Unknown = code {
         println("unknown field `{field}` -- try status / method / path / ip / vhost / ua / proto / host / tag")
         return 1u64
     }
@@ -1134,26 +1136,32 @@ fn cmd_fields(dir: str, field: str, limit: u64) -> u64 {
 
                                                     var at: u64 = 0u64
                                                     var flen: u64 = 0u64
-                                                    if code == query::field_host() {
-                                                        at = line_at + host_rel
-                                                        flen = host_len
-                                                    } elif code == query::field_tag() {
-                                                        at = line_at + tag_rel
-                                                        flen = tag_len
-                                                    } else {
-                                                        if kind == 3u32 {
-                                                            val f = extract::http(arena, line_at, line_len)
-                                                            if f.ok {
-                                                                var packed: u64 = 0u64
-                                                                if code == query::field_status() { packed = f.status }
-                                                                if code == query::field_method() { packed = f.method }
-                                                                if code == query::field_path() { packed = f.path }
-                                                                if code == query::field_client() { packed = f.client }
-                                                                if code == query::field_vhost() { packed = f.vhost }
-                                                                if code == query::field_ua() { packed = f.ua }
-                                                                if code == query::field_proto() { packed = f.proto }
-                                                                at = extract::field_start(packed)
-                                                                flen = extract::field_len(packed)
+                                                    match code {
+                                                        Field::Host => {
+                                                            at = line_at + host_rel
+                                                            flen = host_len
+                                                        }
+                                                        Field::Tag => {
+                                                            at = line_at + tag_rel
+                                                            flen = tag_len
+                                                        }
+                                                        _ => {
+                                                            if kind == LineShape::Apache as u32 {
+                                                                val f = extract::http(arena, line_at, line_len)
+                                                                if f.ok {
+                                                                    val packed = match code {
+                                                                        Field::Status => f.status,
+                                                                        Field::Method => f.method,
+                                                                        Field::Path => f.path,
+                                                                        Field::Client => f.client,
+                                                                        Field::Vhost => f.vhost,
+                                                                        Field::Ua => f.ua,
+                                                                        Field::Proto => f.proto,
+                                                                        _ => 0u64,
+                                                                    }
+                                                                    at = extract::field_start(packed)
+                                                                    flen = extract::field_len(packed)
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -1166,7 +1174,8 @@ fn cmd_fields(dir: str, field: str, limit: u64) -> u64 {
                                                     # same host both ways is one record.
                                                     var at2: u64 = 0u64
                                                     var flen2: u64 = 0u64
-                                                    if code == query::field_host() && labels_len > 0u64 {
+                                                    val is_host = match code { Field::Host => true, _ => false }
+                                                    if is_host && labels_len > 0u64 {
                                                         val lv = label_value(arena, line_at + labels_rel, labels_len, "host")
                                                         val l_at = record::span_start(lv)
                                                         val l_len = record::span_len(lv)

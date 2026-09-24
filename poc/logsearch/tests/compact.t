@@ -195,7 +195,7 @@ test "merging three segments keeps every record and every answer" {
     val c = catalog::load(mount, &crc)
     assert_eq(c.size(), 1u64)
     val r: CatRow = c.row(0u64)
-    assert_eq(r.kind, catalog::kind_archive())
+    assert_eq(r.kind, RowKind::Archive as u64)
     assert_eq(r.records, records)
 
     # ファイルも 1 本 — 入力は消えている。

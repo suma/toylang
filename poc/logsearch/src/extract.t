@@ -18,7 +18,6 @@ import record
 
 pub fn field_start(v: u64) -> u64 { record::span_start(v) }
 pub fn field_len(v: u64) -> u64 { record::span_len(v) }
-pub fn no_field() -> u64 { 0u64 }
 pub fn has_field(v: u64) -> bool { record::span_len(v) > 0u64 }
 
 # One access-log line, taken apart.

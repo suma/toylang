@@ -80,7 +80,7 @@ pub fn compact_once(mount: str, now: i64, crc: &Crc32) -> CompactReport {
         var i: u64 = 0u64
         while i < c.size() {
             val r: CatRow = c.row(i)
-            if r.kind == catalog::kind_segment() && r.ts_max < cutoff && !taken(&picked, i) {
+            if r.kind == RowKind::Segment as u64 && r.ts_max < cutoff && !taken(&picked, i) {
                 if at < 0i64 || r.ts_min < oldest {
                     at = i as i64
                     oldest = r.ts_min
@@ -168,7 +168,7 @@ pub fn compact_once(mount: str, now: i64, crc: &Crc32) -> CompactReport {
     while q < picked.size() {
         val row: CatRow = c.row(picked.get(q))
         val path = catalog::seg_path(mount, &row)
-        val why = catalog::why_merged()
+        val why = RemovalReason::Merged
         if catalog::append_remove(mount, gen, row.segid, why, crc) {
             # The label dictionary counts records per segment; the
             # records did not change, so what leaves the inputs is

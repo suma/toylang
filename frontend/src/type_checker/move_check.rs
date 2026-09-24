@@ -33,7 +33,8 @@
 //!   42` shows up in `a.x`, which is documented and tested behaviour,
 //!   and only one drop fires for the pair. Calling it a transfer would
 //!   mean relocating that drop rather than suppressing it. The value
-//!   still has one owner; it just answers to two names.
+//!   still has one owner; it just answers to two names -- so handing
+//!   `b` over hands `a`'s value over (see *Aliases* below).
 //! * **A `&T` / `&mut T` parameter.** The call site borrows (the
 //!   frontend inserts the borrow), so the caller keeps the value.
 //! * **`__builtin_ptr_write` and friends.** Raw pointer traffic is
@@ -42,23 +43,40 @@
 //!   value written into memory is freed by the memory's owner (the
 //!   container's drop glue), not by the writing binding.
 //!
+//! ## Aliases (MATCH-MOVE-OUT-DOUBLE-DROP)
+//!
+//! Three shapes name a value some other binding owns, and the backends
+//! drop only the owner: `val b = a`; a payload name in an arm of
+//! `match a { .. }` (the arm aliases the payload, MATCH-PAYLOAD-COPY);
+//! and `val x = match a { Ok(c) => c, Err(e) => panic(..) }`, which this
+//! pass also puts in `transferred` so `x` gets no drop of its own. Each
+//! is recorded with its `root` (`Owned::root`). Handing an alias over
+//! transfers the root -- the root stops dropping and reading it is
+//! `[E0014]` -- where before the root dropped a value that had moved
+//! on: a second `close` for a descriptor.
+//!
+//! An arm handing over its own scrutinee's payload is inside a branch,
+//! so it would normally be refused (below). It is allowed when the
+//! scrutinee's other variants own nothing (`arm_consumes`): then the
+//! scrutinee is simply not dropped on any path.
+//!
 //! ## Known gaps
 //!
-//! Because `val b = a` aliases, `val b = a` followed by a transfer of
-//! `b` leaves `a` naming a value that has moved on, and this pass will
-//! not complain about reading it. Transferring out of a branch or a
-//! loop body is refused rather than tracked, since a conditionally-owned
-//! binding needs a runtime drop flag to know whether to fire. A
-//! *parameter* whose value is written into memory inside the callee
-//! (the `value: T` parameter of `Box::new` / `Vec::push`) is not
-//! tracked either — parameters register no drop, so the value is freed
-//! once, by whoever owns the memory it went into.
+//! Transferring out of a branch or a loop body is otherwise refused
+//! rather than tracked, since a conditionally-owned binding needs a
+//! runtime drop flag to know whether to fire. Handing over one owning
+//! field of a payload that holds several stops the root dropping the
+//! others too (a leak, not a double drop). A *parameter* is not dropped
+//! by the callee -- parameters register no drop -- so a value handed to
+//! one that neither stores nor frees it is never freed; one whose value
+//! is written into memory inside the callee (the `value: T` parameter of
+//! `Box::new` / `Vec::push`) is freed once, by whoever owns that memory.
 
 use std::collections::{HashMap, HashSet};
 
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
-use crate::ast::{Expr, ExprRef, File, Stmt, StmtRef};
+use crate::ast::{EnumVariantDef, Expr, ExprRef, File, MatchArm, Pattern, Stmt, StmtRef};
 use crate::type_checker::error::SourceLocation;
 use crate::type_checker::{contains_drop::DropAnalysis, TypeCheckError};
 use crate::type_decl::TypeDecl;
@@ -106,6 +124,9 @@ pub fn check_moves(
         transferred: HashSet::new(),
         borrows: HashSet::new(),
         element_copies: Vec::new(),
+        enums: collect_enums(program),
+        cond_level: 0,
+        consuming_arms: Vec::new(),
     };
     for function in &program.function {
         if function.is_extern {
@@ -313,6 +334,41 @@ fn is_borrow(ty: &TypeDecl) -> bool {
     matches!(ty, TypeDecl::Ref { .. })
 }
 
+/// Every name a pattern binds, at any depth.
+fn pattern_names(pattern: &Pattern, out: &mut Vec<DefaultSymbol>) {
+    match pattern {
+        Pattern::Name(n) => out.push(*n),
+        Pattern::Binding(n, inner) => {
+            out.push(*n);
+            pattern_names(inner, out);
+        }
+        Pattern::EnumVariant(_, _, subs) | Pattern::Tuple(subs) => {
+            for p in subs {
+                pattern_names(p, out);
+            }
+        }
+        Pattern::Struct(_, fields, _) => {
+            for (_, p) in fields {
+                pattern_names(p, out);
+            }
+        }
+        Pattern::Literal(_) | Pattern::Range(_, _) | Pattern::Wildcard => {}
+    }
+}
+
+/// Every enum declaration's generic parameters and variants.
+fn collect_enums(program: &File) -> HashMap<DefaultSymbol, (Vec<DefaultSymbol>, Vec<EnumVariantDef>)> {
+    let mut out = HashMap::new();
+    for i in 0..program.statement.len() {
+        if let Some(Stmt::EnumDecl { name, generic_params, variants, .. }) =
+            program.statement.get(&StmtRef(i as u32))
+        {
+            out.insert(name, (generic_params, variants));
+        }
+    }
+    out
+}
+
 /// How an expression position uses the value it evaluates.
 #[derive(Clone, Copy, PartialEq)]
 enum Use {
@@ -331,6 +387,13 @@ struct Owned {
     /// The `val` / `var` statement that introduced it. `None` for a
     /// parameter, which no scope drops.
     decl: Option<StmtRef>,
+    /// MATCH-MOVE-OUT-DOUBLE-DROP: the binding whose value this name
+    /// only aliases, when it does. `val b = a`, a payload name in an
+    /// arm of `match a { .. }`, and `val x = match a { Ok(c) => c, .. }`
+    /// all name (part of) `a`'s value, and `a` is what drops it -- so
+    /// handing the alias over is handing `a`'s value over. `None` for a
+    /// binding that owns what it names.
+    root: Option<DefaultSymbol>,
 }
 
 struct MoveCheck<'a> {
@@ -352,6 +415,16 @@ struct MoveCheck<'a> {
     /// ELEMENT-BORROW E5 candidates, keyed by the binding that would
     /// become the second owner. Filtered by `transferred` at the end.
     element_copies: Vec<(StmtRef, TypeCheckError)>,
+    /// Every enum's generic parameters and variants, to ask whether
+    /// the variants a `match` arm did not take own anything.
+    enums: HashMap<DefaultSymbol, (Vec<DefaultSymbol>, Vec<EnumVariantDef>)>,
+    /// How many conditional contexts (branches, arms, loop bodies,
+    /// closures) the walk is inside.
+    cond_level: usize,
+    /// Arms that may hand their scrutinee's payload over: the root
+    /// being matched, and the `cond_level` of the arm itself. See
+    /// `arm_consumes`.
+    consuming_arms: Vec<(DefaultSymbol, usize)>,
 }
 
 impl MoveCheck<'_> {
@@ -369,6 +442,30 @@ impl MoveCheck<'_> {
         self.scopes.clear();
     }
 
+    /// A new owning binding: an alias when its value is (part of) a
+    /// binding already in scope, an owner otherwise.
+    fn declare_owning(&mut self, name: DefaultSymbol, stmt_ref: StmtRef, rhs: ExprRef) {
+        // `val b = a`: one value, two names. The backends already give
+        // the pair one drop (`a`'s); the root makes a transfer of `b`
+        // a transfer of `a`.
+        if let Some(a) = self.owned_place(rhs) {
+            let root = self.root_of(a);
+            self.declare_alias(name, Some(stmt_ref), root);
+            return;
+        }
+        // `val x = match a { Ok(c) => c, .. }`: `x` names `a`'s payload,
+        // which `a` drops. `x` must not drop it too -- that was the
+        // double close -- so it joins `transferred`, which every lane
+        // reads as "no drop of your own".
+        if let Some(a) = self.match_alias_source(rhs) {
+            let root = self.root_of(a);
+            self.declare_alias(name, Some(stmt_ref), root);
+            self.transferred.insert(stmt_ref);
+            return;
+        }
+        self.declare(name, Some(stmt_ref));
+    }
+
     fn depth(&self) -> usize {
         self.scopes.len()
     }
@@ -379,8 +476,143 @@ impl MoveCheck<'_> {
         // including a transferred one.
         self.moved.remove(&name);
         if let Some(scope) = self.scopes.last_mut() {
-            scope.push(Owned { name, depth, decl });
+            scope.push(Owned { name, depth, decl, root: None });
         }
+    }
+
+    /// Declare `name` as an alias of `root`'s value (see `Owned::root`).
+    fn declare_alias(&mut self, name: DefaultSymbol, decl: Option<StmtRef>, root: DefaultSymbol) {
+        let depth = self.depth();
+        self.moved.remove(&name);
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.push(Owned { name, depth, decl, root: Some(root) });
+        }
+    }
+
+    /// The binding that owns what `name` names: itself, or the end of
+    /// its alias chain.
+    fn root_of(&self, name: DefaultSymbol) -> DefaultSymbol {
+        let mut current = name;
+        // A chain is as long as the aliases written, so this ends; the
+        // bound only guards against a malformed one.
+        for _ in 0..64 {
+            match self.lookup(current).and_then(|o| o.root) {
+                Some(next) if next != current => current = next,
+                _ => break,
+            }
+        }
+        current
+    }
+
+    /// `name`, when it is an owning binding in scope and `expr` is
+    /// just that name -- a place whose value a `match` or a `val` can
+    /// alias.
+    fn owned_place(&self, expr: ExprRef) -> Option<DefaultSymbol> {
+        match self.program.expression.get(&expr) {
+            Some(Expr::Identifier(sym)) if self.lookup(sym).is_some() => Some(sym),
+            _ => None,
+        }
+    }
+
+    /// `val x = match a { Ok(c) => c, Err(e) => panic(..) }`: when every
+    /// arm either hands back a name its own pattern bound or never
+    /// finishes (`panic` / `return` / `break` / `continue`), and at
+    /// least one hands a name back, `x` names part of `a`'s value
+    /// rather than a value of its own. Answers `a`.
+    fn match_alias_source(&self, rhs: ExprRef) -> Option<DefaultSymbol> {
+        let Some(Expr::Match(scrutinee, arms)) = self.program.expression.get(&rhs) else {
+            return None;
+        };
+        let place = self.owned_place(scrutinee)?;
+        let mut yields = false;
+        for arm in &arms {
+            if self.arm_yields_own_name(arm) {
+                yields = true;
+            } else if !self.diverges(arm.body) {
+                return None;
+            }
+        }
+        yields.then_some(place)
+    }
+
+    /// The arm's value is a name its own pattern bound.
+    fn arm_yields_own_name(&self, arm: &MatchArm) -> bool {
+        let Some(name) = self.tail_identifier(arm.body) else {
+            return false;
+        };
+        let mut names = Vec::new();
+        pattern_names(&arm.pattern, &mut names);
+        names.contains(&name)
+    }
+
+    /// `e`, or the last expression of a block ending in `e`, when that is
+    /// a bare name.
+    fn tail_identifier(&self, expr: ExprRef) -> Option<DefaultSymbol> {
+        match self.program.expression.get(&expr)? {
+            Expr::Identifier(sym) => Some(sym),
+            Expr::Block(stmts) => match self.program.statement.get(stmts.last()?)? {
+                Stmt::Expression(e) => self.tail_identifier(e),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The expression never produces a value: a `panic`, or a block
+    /// whose last statement leaves (`return` / `break` / `continue`) or
+    /// panics.
+    fn diverges(&self, expr: ExprRef) -> bool {
+        match self.program.expression.get(&expr) {
+            Some(Expr::BuiltinCall(crate::ast::BuiltinFunction::Panic, _)) => true,
+            Some(Expr::Block(stmts)) => match stmts.last().and_then(|s| self.program.statement.get(s)) {
+                Some(Stmt::Return(_) | Stmt::Break(_) | Stmt::Continue(_)) => true,
+                Some(Stmt::Expression(e)) => self.diverges(e),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// Whether an arm of `match scrutinee` may hand its payload over
+    /// without leaving the scrutinee's drop conditional.
+    ///
+    /// Handing a payload over inside one arm means the scrutinee must
+    /// not drop on that path, but still must on the others -- a runtime
+    /// drop flag this language does not have. It needs none when the
+    /// other paths hold nothing to drop: the arm is `E::V(..)` and no
+    /// *other* variant of `E` carries an owning payload, and `E` has no
+    /// `Drop` of its own. `Result<H, u64>` and `Option<H>` are the
+    /// shapes this is for. Then the scrutinee is simply not dropped.
+    fn arm_consumes(&self, scrutinee: ExprRef, pattern: &Pattern) -> bool {
+        let mut pattern = pattern;
+        while let Pattern::Binding(_, inner) = pattern {
+            pattern = inner;
+        }
+        let Pattern::EnumVariant(_, taken, _) = pattern else {
+            return false;
+        };
+        let (enum_name, args) = match self.expr_types.get(&scrutinee) {
+            Some(TypeDecl::Enum(name, args)) | Some(TypeDecl::Struct(name, args)) => (*name, args.clone()),
+            Some(TypeDecl::Identifier(name)) => (*name, Vec::new()),
+            _ => return false,
+        };
+        if self.drop_analysis.drop_implementing_types().contains(&enum_name) {
+            return false;
+        }
+        let Some((params, variants)) = self.enums.get(&enum_name) else {
+            return false;
+        };
+        let substitutions: HashMap<DefaultSymbol, TypeDecl> =
+            params.iter().copied().zip(args.iter().cloned()).collect();
+        variants.iter().filter(|v| v.name != *taken).all(|v| {
+            v.payload_types.iter().all(|ty| {
+                let ty = match ty {
+                    TypeDecl::Identifier(s) if substitutions.contains_key(s) => substitutions[s].clone(),
+                    other => other.substitute_generics(&substitutions),
+                };
+                !self.is_owning(&ty)
+            })
+        })
     }
 
     fn lookup(&self, name: DefaultSymbol) -> Option<&Owned> {
@@ -558,7 +790,7 @@ impl MoveCheck<'_> {
                         self.transferred.insert(stmt_ref);
                         self.borrows.insert(name);
                     } else if self.is_owning(&ty) {
-                        self.declare(name, Some(stmt_ref));
+                        self.declare_owning(name, stmt_ref, rhs);
                     }
                 }
             }
@@ -571,7 +803,7 @@ impl MoveCheck<'_> {
                         self.transferred.insert(stmt_ref);
                         self.borrows.insert(name);
                     } else if self.is_owning(&ty) {
-                        self.declare(name, Some(stmt_ref));
+                        self.declare_owning(name, stmt_ref, rhs);
                     }
                 }
             }
@@ -585,7 +817,9 @@ impl MoveCheck<'_> {
             Stmt::While(_, cond, body) => {
                 self.walk_expr(cond, Use::Read, conditional);
                 self.enter_scope();
+                self.cond_level += 1;
                 self.walk_expr(body, Use::Read, true);
+                self.cond_level -= 1;
                 self.exit_scope();
             }
             Stmt::For(_, var, start, end, body) => {
@@ -593,7 +827,9 @@ impl MoveCheck<'_> {
                 self.walk_expr(end, Use::Read, conditional);
                 self.enter_scope();
                 let _ = var;
+                self.cond_level += 1;
                 self.walk_expr(body, Use::Read, true);
+                self.cond_level -= 1;
                 self.exit_scope();
             }
             Stmt::Break(_) | Stmt::Continue(_) => {}
@@ -626,20 +862,51 @@ impl MoveCheck<'_> {
             // conditional even when the enclosing statement is not.
             Expr::IfElifElse(cond, then_block, elifs, else_block) => {
                 self.walk_expr(cond, Use::Read, conditional);
+                self.cond_level += 1;
                 self.walk_expr(then_block, Use::Read, true);
                 for (c, b) in &elifs {
                     self.walk_expr(*c, Use::Read, true);
                     self.walk_expr(*b, Use::Read, true);
                 }
                 self.walk_expr(else_block, Use::Read, true);
+                self.cond_level -= 1;
             }
             Expr::Match(scrutinee, arms) => {
                 self.walk_expr(scrutinee, Use::Read, conditional);
+                // MATCH-MOVE-OUT-DOUBLE-DROP: over a binding, a payload
+                // name is that binding's value under another name (the
+                // backends alias it), so it is declared as an alias and
+                // handing it over hands the binding's value over.
+                // A scrutinee already moved was reported just above;
+                // its payload names would only repeat that.
+                let place_root = self
+                    .owned_place(scrutinee)
+                    .map(|s| self.root_of(s))
+                    .filter(|root| !self.moved.contains_key(root));
                 for arm in &arms {
+                    self.cond_level += 1;
+                    self.enter_scope();
+                    let mut consuming = false;
+                    if let Some(root) = place_root {
+                        let mut names = Vec::new();
+                        pattern_names(&arm.pattern, &mut names);
+                        for n in names {
+                            self.declare_alias(n, None, root);
+                        }
+                        if self.arm_consumes(scrutinee, &arm.pattern) {
+                            self.consuming_arms.push((root, self.cond_level));
+                            consuming = true;
+                        }
+                    }
                     if let Some(guard) = arm.guard {
                         self.walk_expr(guard, Use::Read, true);
                     }
                     self.walk_expr(arm.body, Use::Read, true);
+                    if consuming {
+                        self.consuming_arms.pop();
+                    }
+                    self.exit_scope();
+                    self.cond_level -= 1;
                 }
             }
 
@@ -799,7 +1066,11 @@ impl MoveCheck<'_> {
             }
             // A closure captures by snapshot, so a name it mentions is
             // read rather than handed over.
-            Expr::Closure { body, .. } => self.walk_expr(body, Use::Read, true),
+            Expr::Closure { body, .. } => {
+                self.cond_level += 1;
+                self.walk_expr(body, Use::Read, true);
+                self.cond_level -= 1;
+            }
 
             Expr::QualifiedIdentifier(_)
             | Expr::Int64(_)
@@ -845,6 +1116,12 @@ impl MoveCheck<'_> {
     }
 
     /// Record or reject a use of `name`.
+    ///
+    /// An alias (`Owned::root`) is checked and transferred through the
+    /// binding that owns its value: reading it after that binding moved
+    /// is a use after move, and handing it over moves that binding --
+    /// which is what keeps the owner from dropping a value it no longer
+    /// has (MATCH-MOVE-OUT-DOUBLE-DROP).
     fn use_binding(
         &mut self,
         name: DefaultSymbol,
@@ -855,10 +1132,31 @@ impl MoveCheck<'_> {
         let Some(owned) = self.lookup(name) else {
             return;
         };
-        let declared_depth = owned.depth;
-        let decl = owned.decl;
+        // A payload name is declared whatever its type (the pattern does
+        // not say), so only a use whose value owns something is an
+        // ownership question. Handing over an `IoError` read out of a
+        // `Result<File, IoError>` moves nothing a drop would free.
+        if owned.root.is_some()
+            && self
+                .expr_types
+                .get(&expr_ref)
+                .is_some_and(|ty| !self.is_owning(ty))
+        {
+            return;
+        }
+        let alias_decl = owned.decl;
+        let owner = self.root_of(name);
+        let (owner_depth, owner_decl) = match self.lookup(owner) {
+            Some(o) => (o.depth, o.decl),
+            None => (owned.depth, owned.decl),
+        };
 
-        if let Some(moved_at) = self.moved.get(&name).copied() {
+        let moved_at = self
+            .moved
+            .get(&name)
+            .or_else(|| self.moved.get(&owner))
+            .copied();
+        if let Some(moved_at) = moved_at {
             let mut error = TypeCheckError::use_after_move(self.name_of(name), moved_at.line);
             if let Some(loc) = self.location(expr_ref) {
                 error = error.with_location(loc);
@@ -872,27 +1170,35 @@ impl MoveCheck<'_> {
 
         // A transfer out of a binding declared outside the branch or
         // loop body would leave the drop conditional, which needs a
-        // runtime flag the backends do not have.
-        if conditional && declared_depth <= self.conditional_boundary() {
-            let mut error = TypeCheckError::conditional_move(self.name_of(name));
-            if let Some(loc) = self.location(expr_ref) {
-                error = error.with_location(loc);
+        // runtime flag the backends do not have -- unless this is an
+        // arm handing over its own scrutinee's payload where the other
+        // paths hold nothing to drop (`arm_consumes`).
+        if conditional && owner_depth <= self.conditional_boundary() {
+            let consumed_here = self
+                .consuming_arms
+                .last()
+                .is_some_and(|(root, level)| *root == owner && *level == self.cond_level);
+            if !consumed_here {
+                let mut error = TypeCheckError::conditional_move(self.name_of(name));
+                if let Some(loc) = self.location(expr_ref) {
+                    error = error.with_location(loc);
+                }
+                self.errors.push(error);
+                return;
             }
-            self.errors.push(error);
-            return;
         }
 
-        if let Some(decl) = decl {
+        for decl in [owner_decl, alias_decl].into_iter().flatten() {
             self.transferred.insert(decl);
         }
-        if let Some(loc) = self.location(expr_ref) {
-            self.moved.insert(name, loc);
-        } else {
+        let at = self
+            .location(expr_ref)
             // A transfer with no recorded span still has to invalidate
             // the binding; the follow-up diagnostic just cannot cite a
             // line for it.
-            self.moved.insert(name, SourceLocation::new(0, 0, 0, 0));
-        }
+            .unwrap_or_else(|| SourceLocation::new(0, 0, 0, 0));
+        self.moved.insert(name, at);
+        self.moved.insert(owner, at);
     }
 
     /// Scope depth at which the innermost conditional context began.

@@ -444,3 +444,101 @@ fn main() -> i64 {
         1i64
     );
 }
+
+// MATCH-MOVE-OUT-DOUBLE-DROP: a name that aliases another binding's
+// value -- `val b = a`, a payload name in an arm of `match a`, `val x =
+// match a { Ok(c) => c, .. }` -- is checked and transferred through the
+// binding that owns the value. Before, handing the alias over left the
+// owner dropping a value it no longer had: harmless for a heap block,
+// a second `close` for a descriptor. The drop counts themselves are
+// pinned on every lane in the compiler's consistency suite; these are
+// the diagnostics.
+
+#[test]
+fn reading_a_binding_after_its_alias_was_moved_is_rejected() {
+    // MOVE-ALIAS-GAP: `b` and `a` are one value, so moving `b` moves `a`.
+    let diagnostic = move_diagnostic(
+        "fn consume(c: Cell<i64>) -> i64 { 0i64 }
+
+fn main() -> i64 {
+    val a: Cell<i64> = Cell::new(7i64)
+    val b = a
+    val n: i64 = consume(b)
+    val again: i64 = a.get()
+    n + again
+}",
+    );
+    assert!(
+        diagnostic.message.contains("`a` was moved"),
+        "moving the alias should move the binding it names: {}",
+        diagnostic.message
+    );
+}
+
+#[test]
+fn reading_the_scrutinee_after_a_payload_was_moved_out_is_rejected() {
+    let diagnostic = move_diagnostic(
+        "fn consume(c: Cell<i64>) -> i64 { 0i64 }
+
+fn main() -> i64 {
+    val made: Option<Cell<i64>> = Option::Some(Cell::new(7i64))
+    val c = match made {
+        Option::Some(v) => v,
+        Option::None => { panic(\"empty\") }
+    }
+    val n: i64 = consume(c)
+    val again = match made {
+        Option::Some(v) => v.get(),
+        Option::None => 0i64,
+    }
+    n + again
+}",
+    );
+    assert!(
+        diagnostic.message.contains("`made` was moved"),
+        "the scrutinee should be the one reported: {}",
+        diagnostic.message
+    );
+}
+
+#[test]
+fn an_arm_may_hand_over_a_payload_when_the_other_variants_own_nothing() {
+    // `Option<Cell>`: the `None` path holds nothing to drop, so the
+    // scrutinee can simply not be dropped on any path.
+    assert_eq!(
+        run("fn consume(c: Cell<i64>) -> i64 { c.get() }
+fn main() -> i64 {
+    val made: Option<Cell<i64>> = Option::Some(Cell::new(7i64))
+    val n: i64 = match made {
+        Option::Some(v) => consume(v),
+        Option::None => 0i64,
+    }
+    n
+}"),
+        7i64
+    );
+}
+
+#[test]
+fn an_arm_may_not_hand_over_a_payload_when_another_variant_owns_one() {
+    // The `B` path would still have to drop its `Cell` while the `A` path
+    // must not drop at all: a runtime drop flag this language lacks.
+    let diagnostic = move_diagnostic(
+        "enum Two { A(Cell<i64>), B(Cell<i64>) }
+fn consume(c: Cell<i64>) -> i64 { 0i64 }
+
+fn main() -> i64 {
+    val t = Two::A(Cell::new(7i64))
+    val n: i64 = match t {
+        Two::A(v) => consume(v),
+        Two::B(w) => 0i64,
+    }
+    n
+}",
+    );
+    assert!(
+        diagnostic.message.contains("branch or a loop body"),
+        "the refusal should say why: {}",
+        diagnostic.message
+    );
+}

@@ -63,7 +63,7 @@ toylang には**同じ意味論を独立に実装した実行系が 4 つ**あ�
 
 | 関心事 | 場所 |
 |---|---|
-| 所有権の移動 / use-after-move (E0014) | `type_checker/move_check.rs::check_moves` (結果は `File::transferred_bindings`)。**所有の判定** (推移的 contains_drop) は `type_checker/contains_drop.rs::DropAnalysis` |
+| 所有権の移動 / use-after-move (E0014) | `type_checker/move_check.rs::check_moves` (結果は `File::transferred_bindings`)。**所有の判定** (推移的 contains_drop) は `type_checker/contains_drop.rs::DropAnalysis`。**別名** (`val b = a` / `match` の腕の payload 名 / `val x = match a {..}`) は `Owned::root` で根を持ち、渡すと根が移る (`use_binding` / `declare_owning` / `match_alias_source`)。腕の中で scrutinee の payload を渡してよいかは `arm_consumes` |
 | 再帰 drop (DROP-GLUE) | glue 関数の合成: `compiler_lower/src/drop_glue.rs` (`ensure_drop_glue` / `lower_drop_glue`)。**drop を抑制 / 登録する側** — tree-walker: `interpreter/src/evaluation/mod.rs::register_drop_if_needed` + `glue_drop` (値駆動の iterative walk)、AOT/IR VM: `compiler_lower/src/lib.rs::register_drop_for_struct_binding` / `register_drop_for_enum_binding` / `register_drop_for_tuple_binding` + match arm 束縛 (`match_lowering.rs` の `arm_drop_targets`)。冪等 free + never-reuse bump ヒープ: `compiler/runtime/toylang_rt/` (AOT と compiler JIT が共有、RUNTIME_PORT R1) |
 | 再帰型の検出 (E0013) | `type_checker/recursive_type.rs::check_recursive_types` (呼び出しは `interpreter/src/lib.rs::check_typing_diagnostics`)、lowering 側の保険は `compiler_lower/src/templates.rs` の `Guard` |
 | `val` の型注釈チェック | `type_checker/statement.rs::visit_val_impl` |

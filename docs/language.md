@@ -6424,6 +6424,33 @@ leaves the caller in charge.
 shows up in `a.x`, and one drop fires for the pair. The value has one
 owner; it just answers to two names.
 
+Three shapes make such an **alias**, and handing an alias over hands
+over the value of the binding it names — that binding stops dropping,
+and reading it afterwards is `[E0014]`:
+
+```rust
+val b = a                              # b aliases a
+match made { Result::Ok(c) => .. }     # c aliases made's payload
+var conn = match made {                # conn aliases made's payload,
+    Result::Ok(c) => c,                # and gets no drop of its own
+    Result::Err(e) => { panic("no") }
+}
+serve(conn)                            # made no longer owns anything
+```
+
+The third is the usual way to take a value out of a `Result` or an
+`Option`: every arm hands back a name its own pattern bound, or never
+finishes (`panic`, `return`, `break`, `continue`). The payload stays
+`made`'s to drop until `conn` is handed over. (Before 2026-09-24 the
+owner dropped the value even after an alias was handed over — twice
+in all, which closed a descriptor twice.)
+
+An arm may hand its own scrutinee's payload over — `match made {
+Option::Some(c) => keep(c), Option::None => 0u64 }` — when the other
+variants own nothing (`Result<File, IoError>`, `Option<T>`): then
+`made` is not dropped on any path. When another variant does own
+something, that is a transfer inside a branch and is refused like one.
+
 Two limits worth knowing:
 
 - A transfer inside a branch or a loop body is refused rather than

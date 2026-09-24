@@ -10,6 +10,20 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-09-24
+
+- **MATCH-MOVE-OUT-DOUBLE-DROP (+ MOVE-ALIAS-GAP): 別名を渡すと根も渡す** —
+  `val b = a` / `match a` の腕の payload 名 / `val x = match a { Ok(c) => c, .. }`
+  は `a` の値の別名で、別名を渡しても `a` が drop していた (fd なら二重
+  close。`poc/logsearch` の VM レーンが時々 abort した原因)。`move_check`
+  が別名の根を記録し、別名の移動を根の移動として扱う (根は drop しない・
+  以後の読みは E0014)。`val x = match a {..}` の `x` 自身は drop しない。
+  腕の中で自分の scrutinee の payload を渡すのは、他の variant が何も
+  所有しないときに限り許す。バックエンドは無変更。
+- **`if val` の `else` 無しで本体が `()`** (compiled レーンが拒否) と
+  **モジュール修飾の const の lowering** を修正。`poc/logsearch` の
+  数を返す関数 74 本を `const` 42 本と enum 9 つに移した。
+
 ### 2026-09-23
 
 - **ENUM-STRUCT-VARIANT: enum の struct variant** — `A { x: u64 }` を
@@ -2506,9 +2520,15 @@
 
 - **MOVE-CONDITIONAL: 分岐 / ループからの移動** ★ — 現状は E0014 で拒否。
   許すには実行時 drop flag (Rust と同じ) が要る。実プログラムで踏んだら着手。
-- **MOVE-ALIAS-GAP: `val b = a` 後の `a`** ★ — alias なので `b` を移動しても
-  `a` の読みは検出されない。DROP-GLUE の冪等 free + never-reuse ヒープが
-  二重 drop を無害化しているので、これは診断の網羅性の問題 (読み放題)。
+- **BY-VALUE-PARAM-NO-DROP: 値渡しの引数は受け手で drop されない** ★ —
+  呼び出し側は渡した束縛を drop しない (transfer) が、受け手の関数も
+  引数を drop しない。受け手が値をしまう (`Vec::push` など) か自分で
+  閉じれば 1 回で済むが、**しまいも閉じもしない受け手に渡した値は
+  解放されない** (fd なら閉じられない)。受け手が引数に drop を登録
+  すれば直るが、`self: Self` のレシーバは呼び出し側で transfer として
+  扱われていない (`move_check` の `MethodCall` は受け手を Read で歩く)
+  ので、そのまま足すと今度は二重 drop になりうる。レシーバの扱いと一緒に
+  直す必要がある。`move_check.rs` のモジュールコメント「Known gaps」。
 - **Trait 拡張** ★★★ (大規模、ロードマップ)
   - **A3: trait inheritance (`trait B: A`)** — 中。super trait 経由で `A` の method を `B` impl からも要求。
   - **A4: associated types (`trait Iterator { type Item }`)** — 中〜大。
@@ -2848,22 +2868,6 @@ changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 
 経緯は git log と完了済み節にある。`__getitem__` の 2 件
 (`&self` 受理 / generic 戻り型置換) も 2026-08-30 に解消
 (POINTER P2、完了済み節)。
-
-- **MATCH-MOVE-OUT-DOUBLE-DROP: `match` の腕から取り出した所有値を
-  move すると二重に drop される** ★★★ —
-  `var conn = match made { Result::Ok(c) => c, .. }` の `c` は `made` の
-  payload の別名 (MATCH-PAYLOAD-COPY 以来) で、`conn` を move しても
-  `made` は自分の payload として drop する。移動先 (受け手がしまった
-  `Vec` など) も drop するので 2 回になる。**3 レーンとも同じ**なので
-  consistency では見えない。メモリは解放が冪等なので無害だが、**fd は
-  冪等でない** — `poc/logsearch` の VM レーンが同じプロセスの Rust 側
-  の fd を閉じて時々 abort し (`IO Safety violation`)、AOT のサーバなら
-  間に開いた無関係な接続を閉じうる。最小再現は `Drop` が `println` する
-  `H` を `Result::Ok(H { .. })` から上の形で取り出し、`Vec` にしまう
-  関数へ渡す (`drop` が 2 回出る)。直し方は、腕から外へ出た所有値を
-  scrutinee からの move として扱う (scrutinee の drop を止める) か、
-  E0027 と同じく検査で断るか。回避は腕の中で使い切ること。
-  詳細は `poc/logsearch/design-docs/RUNTIME_GAPS.md` G14。
 
 - **CONST-UNSUFFIXED-INIT: サフィックス無しの整数で初期化した `const`
   が実行時に落ちる** ★ — `const J: u64 = 4` は型検査を通るが、

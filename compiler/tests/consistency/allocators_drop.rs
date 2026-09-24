@@ -347,3 +347,65 @@ fn cloning_a_vector_of_strings_leaves_the_original_whole() {
     "#;
     assert_consistent(src, "cloning_a_vector_of_strings_leaves_the_original_whole");
 }
+
+#[test]
+fn a_value_named_twice_is_dropped_once_on_every_lane() {
+    // MATCH-MOVE-OUT-DOUBLE-DROP: each shape below names one value twice
+    // -- a binding and its alias -- and used to drop it twice on every
+    // lane (a second `close` for a descriptor). One `drop N` line per
+    // value, at the point its last owner lets go.
+    let src = r#"
+        struct H { id: u64 }
+        impl Drop for H {
+            fn drop(&mut self) { println("drop {self.id}") }
+        }
+        fn keep(h: H) -> u64 {
+            var v: Vec<H> = Vec::with_capacity(1u64)
+            v.push(h)
+            v.size()
+        }
+        fn extracted() {
+            val made: Result<H, u64> = Result::Ok(H { id: 1u64 })
+            var conn = match made {
+                Result::Ok(c) => c,
+                Result::Err(e) => { panic("no") }
+            }
+            println("using {conn.id}")
+        }
+        fn extracted_and_moved() {
+            val made: Result<H, u64> = Result::Ok(H { id: 2u64 })
+            var conn = match made {
+                Result::Ok(c) => c,
+                Result::Err(e) => { panic("no") }
+            }
+            val n = keep(conn)
+            println("kept {n}")
+        }
+        fn moved_in_the_arm() {
+            val made: Option<H> = Option::Some(H { id: 3u64 })
+            val n = match made {
+                Option::Some(c) => keep(c),
+                Option::None => 0u64,
+            }
+            println("kept {n}")
+        }
+        fn alias_moved() {
+            val a = H { id: 4u64 }
+            val b = a
+            val n = keep(b)
+            println("kept {n}")
+        }
+        fn main() -> u64 {
+            extracted()
+            extracted_and_moved()
+            moved_in_the_arm()
+            alias_moved()
+            0u64
+        }
+    "#;
+    assert_renders(
+        src,
+        "value_named_twice_dropped_once",
+        "using 1\ndrop 1\ndrop 2\nkept 1\ndrop 3\nkept 1\ndrop 4\nkept 1\n",
+    );
+}

@@ -1652,6 +1652,38 @@ pub fn shout() -> u64 {
 }
 
 #[test]
+fn a_qualified_const_is_a_value_anywhere() {
+    // MODULE-CONST-PATH: `tbl::BASE` type-checked everywhere, but the
+    // compiled lanes lowered it only where `print` has its own path --
+    // in arithmetic or a `val` it was "compiler MVP cannot lower
+    // `tbl::BASE` yet" (and the `val` could not infer a type). Found by
+    // turning poc/logsearch's constant functions into `const`s.
+    let pkg = scratch("qualified_const_value");
+    write(&pkg, "src/tbl.t", "pub const BASE: u64 = 40u64\n");
+    write(
+        &pkg,
+        "main.t",
+        r#"
+fn main() -> u64 {
+    val a = tbl::BASE + 1u64
+    val b = tbl::BASE
+    println("{a} {b}")
+    0u64
+}
+"#,
+    );
+    for backend in ["vm", "aot"] {
+        let out = run(&pkg, &["run", pkg.0.to_str().unwrap(), "--backend", backend]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("41 40"),
+            "{backend}: stdout: {stdout}\nstderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
 fn a_const_names_the_module_that_has_it() {
     // MODULE-CONST-PATH: a call's qualifier has been checked since
     // MODULE-SYSTEM P3, and a `const` is the other thing a module

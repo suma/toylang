@@ -2025,6 +2025,23 @@ impl<'a> FunctionLower<'a> {
             Expr::Closure { params, return_type, body, .. } => {
                 self.lift_closure_inline(&params, &return_type, &body)
             }
+            // MODULE-CONST-PATH: `segfile::DATA_AT` -- a module's `const`
+            // named with its qualifier. The type checker has verified the
+            // qualifier (`check_module_paths`), and consts are flattened
+            // by name, so the last segment is the const. A qualified name
+            // never names a local, so the bindings are not consulted.
+            // (An enum's unit variant, the other two-segment path, was
+            // handled by its own arm above.)
+            Expr::QualifiedIdentifier(ref path)
+                if path.len() >= 2
+                    && !self.enum_defs.contains_key(&path[0])
+                    && path.last().is_some_and(|name| self.const_values.contains_key(name)) =>
+            {
+                let c = self.const_values[path.last().expect("checked by the guard")];
+                self.pending_struct_value = None;
+                let ty = c.ty();
+                Ok(self.emit(InstKind::Const(c), Some(ty)))
+            }
             other => Err(format!(
                 "compiler MVP cannot lower {} yet",
                 crate::spelling::describe_expr(self.interner, &other)

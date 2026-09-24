@@ -281,6 +281,16 @@ impl<'a> FunctionLower<'a> {
                 Some(_) => None,
                 None => self.const_values.get(&sym).map(|c| c.ty()),
             },
+            // MODULE-CONST-PATH: `mod::K`, lowered as the const `K`
+            // (`lower_expr`'s arm for it says why the bindings are not
+            // consulted).
+            Expr::QualifiedIdentifier(ref path)
+                if path.len() >= 2
+                    && !self.enum_defs.contains_key(&path[0])
+                    && path.last().is_some_and(|name| self.const_values.contains_key(name)) =>
+            {
+                path.last().and_then(|name| self.const_values.get(name)).map(|c| c.ty())
+            }
             Expr::FieldAccess(obj, field) => {
                 if let Some((_, ty)) = self.range_bound(&obj, field) {
                     return Some(ty);

@@ -196,12 +196,6 @@ test "the server answers over a real socket" {
         Result::Ok(u) => { }
         Result::Err(e) => { panic("set_blocking: {e}") }
     }
-    val taken = listener.accept()
-    var conn = match taken {
-        Result::Ok(c) => c,
-        Result::Err(e) => { panic("accept: {e}") }
-    }
-
     val made = Poller::new()
     var poller = match made {
         Result::Ok(p) => p,
@@ -215,9 +209,20 @@ test "the server answers over a real socket" {
     var ms = MountSet::new()
     var gens: Vec<u64> = Vec::new()
     # 接続はサーバに渡す。表が持ち主になるので、終わったら閉じる。
-    val keep = server::serve_connection(&poller, conn, "build/server-spec",
-                                        &mut st, &mut w, &mut ms, &gens,
-                                        &mut inbox, &mut outbox)
+    # **番号で受けて腕の中で組む** (本番の経路と同じ形)。`accept()` の
+    # `Result` から `var conn = match .. { Ok(c) => c }` で取り出すと、
+    # 渡した先と `Result` の両方が閉じて二重 close になる
+    # (todo.md MATCH-MOVE-OUT-DOUBLE-DROP、RUNTIME_GAPS.md G14)。
+    val taken = listener.accept_fd()
+    val keep = match taken {
+        Result::Ok(fd) => {
+            val conn = TcpStream::from_fd(fd)
+            server::serve_connection(&poller, conn, "build/server-spec",
+                                     &mut st, &mut w, &mut ms, &gens,
+                                     &mut inbox, &mut outbox)
+        }
+        Result::Err(e) => { panic("accept: {e}") }
+    }
     assert(keep, "one healthz does not stop the server")
     assert_eq(st.requests, 1u64)
     assert_eq(st.connections, 1u64)

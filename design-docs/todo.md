@@ -2849,6 +2849,22 @@ changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 
 (`&self` 受理 / generic 戻り型置換) も 2026-08-30 に解消
 (POINTER P2、完了済み節)。
 
+- **MATCH-MOVE-OUT-DOUBLE-DROP: `match` の腕から取り出した所有値を
+  move すると二重に drop される** ★★★ —
+  `var conn = match made { Result::Ok(c) => c, .. }` の `c` は `made` の
+  payload の別名 (MATCH-PAYLOAD-COPY 以来) で、`conn` を move しても
+  `made` は自分の payload として drop する。移動先 (受け手がしまった
+  `Vec` など) も drop するので 2 回になる。**3 レーンとも同じ**なので
+  consistency では見えない。メモリは解放が冪等なので無害だが、**fd は
+  冪等でない** — `poc/logsearch` の VM レーンが同じプロセスの Rust 側
+  の fd を閉じて時々 abort し (`IO Safety violation`)、AOT のサーバなら
+  間に開いた無関係な接続を閉じうる。最小再現は `Drop` が `println` する
+  `H` を `Result::Ok(H { .. })` から上の形で取り出し、`Vec` にしまう
+  関数へ渡す (`drop` が 2 回出る)。直し方は、腕から外へ出た所有値を
+  scrutinee からの move として扱う (scrutinee の drop を止める) か、
+  E0027 と同じく検査で断るか。回避は腕の中で使い切ること。
+  詳細は `poc/logsearch/design-docs/RUNTIME_GAPS.md` G14。
+
 - **CONST-UNSUFFIXED-INIT: サフィックス無しの整数で初期化した `const`
   が実行時に落ちる** ★ — `const J: u64 = 4` は型検査を通るが、
   `Const initializer for `J` failed: Internal error: Expr::Number

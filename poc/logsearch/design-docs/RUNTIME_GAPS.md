@@ -319,6 +319,35 @@ Error at scratch/probe/g.t:10:1:     # 入口は 9 行しかない
 `[E0014]` が全部 `main.t` の無関係な行を指していて、原因の特定が
 grep 頼みになった。
 
+### ⚠ `match` で取り出した所有値を move すると二重に drop される ★★★ (2026-09-24)
+
+VM レーンの `toy test` が**たまに** `fatal runtime error: IO Safety
+violation: owned file descriptor already closed` で落ちる。追うと
+`tests/server.t` の「the server answers over a real socket」が
+**ソケットを二度閉じていた** (移行前のコミットでも同じ):
+
+```rust
+val taken = listener.accept()
+var conn = match taken { Result::Ok(c) => c, Result::Err(e) => { panic(..) } }
+val keep = server::serve_connection(&poller, conn, ..)   # 表にしまい、閉じる
+# テストの終わりに `taken` の drop glue が payload を閉じる — 2 度目
+```
+
+腕の `c` は `taken` の payload の**別名**で、`conn` を move しても
+`taken` は自分の payload として drop する。移動先 (ここでは接続表) も
+drop するので 2 回になる。**3 レーンとも同じ振る舞い**なので
+consistency テストでは見えない。メモリなら解放が冪等なので害は無いが、
+**fd は冪等でない** — VM では同じプロセスで Rust 側が開いた fd を
+閉じて abort し、AOT のサーバなら間に開いた**無関係な接続を閉じうる**。
+
+最小再現 (`Drop` が `println` する struct で、`drop` が 2 回出る):
+`val made: Result<H, u64> = Result::Ok(H { .. })` →
+`var conn = match made { Result::Ok(c) => c, .. }` →
+`keep(conn)` (受け手が `Vec` にしまう)。
+→ todo の **MATCH-MOVE-OUT-DOUBLE-DROP**。**回避策**: 所有値を
+`match` の腕から外へ持ち出さず、腕の中で使い切る (この POC の本番の
+経路は `accept_fd` で番号を受けるので当たらない)。
+
 ## G15. SIMD に残っている穴 ★
 
 **あるもの**: 5 つの 128bit 型、lane-wise の演算子、17 の intrinsic
@@ -438,8 +467,21 @@ cannot be used in a match on a struct`。`String` は nominal struct
 > 変換は無い**ので、読む側は `match` を 1 本書く。**(b) struct variant
 > も同日に入った** (ENUM-STRUCT-VARIANT) — `Syslog { host: .., tag: .. }`
 > を宣言して `Rec::Syslog { host, .. }` で読める。表示 (`println`) だけ
-> は位置の形で出る。**この POC のタグ関数とフラットな struct は、まだ
-> どちらも移していない。**
+> は位置の形で出る。
+>
+> **2026-09-24: この POC を移した。** 数を返すだけの関数 74 本は、
+> サイズ・上限・番兵の 42 本が `const` に、タグの 8 系統が enum
+> (`LineShape` / `Section` / `RowKind` / `JournalOp` / `RemovalReason`
+> / `MountState` / `Method` / `OutputFormat` / `Field`) になった。
+> ディスクに出る番号は明示の discriminant で固定し、書く側は `as`、
+> 読む側は番号 → `Option<…>` の関数 1 本 (`segfile::section_of` /
+> `catalog::journal_op_of`) で戻す。**書き出したセグメントは移行前と
+> バイト一致** (実ログ 12 セグメント)。ディスクの行をそのまま写す
+> `CatRow::kind` だけは数のまま残した — 未知の値を enum にすると
+> 扱いを決め直すことになるため。**フラットな struct は struct variant
+> にしなかった**: 形ごとに違うのは syslog の `host` / `tag` だけで、
+> ディスクのレコードも全形共通のフラットな配置 (無い部分は長さ 0)
+> だからである。struct variant が当てはまる構造ではなかった。
 
 **無いもの**: (a) 明示 discriminant と整数変換 (`Red = 1` / `as u64`)、
 (b) **struct variant** (`enum E { A { x: u64 } }` は parse エラー)。
@@ -539,7 +581,7 @@ push している箇所は 0 件だった。
 | `loop` / `@label:` 付き `break` | 0 / 0 | 上の §5 のフラグ |
 | `str` のリテラル腕 + `\|` | 0 | `if` の表が **10 本** (`src/record.t:159` の `Jan`..`Dec` 12 連ほか) |
 | タプルの分割束縛 | 0 | §8 の `pack_span` |
-| `const` (配列 / struct / `str`) | **1** (`main.t:70`) | 74 本のタグ関数、実行時に組む表 |
+| `const` (配列 / struct / `str`) | ~~1~~ → **43** (2026-09-24) | 74 本のタグ関数は `const` と enum に移した (§3)。実行時に組む表 (CRC) は残る |
 | `soa Vec<T>` / `Column<T>` | 1 | 並列 `Vec` の手書き SoA (`ArchiveWriter` は **Vec 18 本**、`Conns` 8 本) |
 
 **インデント 24 桁 (6 段) 以上の行が 1,073 / 16,948 = 6.3%** で、

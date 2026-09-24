@@ -1123,3 +1123,33 @@ fn enum_struct_variants_on_every_lane() {
     "#;
     assert_renders(src, "enum_struct_variant", "307 1 0 205 3 2\n");
 }
+
+#[test]
+fn if_val_without_else_runs_a_unit_body_on_every_lane() {
+    // `if val PAT = x { .. }` with no `else` discarded the block's value
+    // through a synthetic `val __ifval_dummy = { .. }`. When the block
+    // was `()` -- an assignment, the usual body -- the compiled lanes
+    // could not infer a type for that `val` and refused the program. The
+    // arm is now `{ block; () }`. Pinned: an assignment body, a body with
+    // a value (discarded), and a test on an enum field through `&mut`.
+    let src = r#"
+        enum Sh { A, B, C }
+        struct L { kind: Sh, n: u64 }
+        fn mark(out: &mut L) {
+            var hit = false
+            if val Sh::C = out.kind { hit = true }
+            if hit { out.n = 9u64 }
+        }
+        fn main() -> u64 {
+            val o: Option<u64> = Option::Some(4u64)
+            var x = 0u64
+            if val Option::Some(v) = o { x = v }
+            if val Option::Some(v) = o { v + 1u64 }
+            var l = L { kind: Sh::C, n: 0u64 }
+            mark(&mut l)
+            println("{x} {l.n}")
+            0u64
+        }
+    "#;
+    assert_renders(src, "if_val_unit_body", "4 9\n");
+}

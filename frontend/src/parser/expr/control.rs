@@ -3,7 +3,6 @@ use crate::token::Kind;
 use crate::parser::core::Parser;
 use crate::parser::error::{ParserResult, ParserError};
 use crate::type_checker::SourceLocation;
-use crate::type_decl::TypeDecl;
 use super::{parse_logical_expr, parse_block, parse_match_pattern};
 
 /// Reject `else if`, which is not toylang syntax — `elif` is.
@@ -146,19 +145,19 @@ fn parse_if_val(parser: &mut Parser) -> ParserResult<ExprRef> {
             (then_block, else_block)
         }
         _ => {
-            let counter = parser.synthetic_counter;
-            parser.synthetic_counter += 1;
-            let dummy_name = format!("__ifval_dummy_{counter}");
-            let dummy_sym = parser.string_interner.get_or_intern(dummy_name.as_str());
-            let then_val_stmt = parser.ast_builder.val_stmt(
-                dummy_sym,
-                Some(TypeDecl::Unknown),
-                then_block,
-                Some(start_location),
-            );
+            // No `else`: the arm must be `()` whatever the block's
+            // value, so the block runs as a statement and a trailing
+            // `()` is the arm's value. This used to discard the value
+            // through `val __ifval_dummy_N: Unknown = { .. }`, which the
+            // compiled lanes cannot lower when the block is itself `()`
+            // (an assignment) -- "could not infer scalar type for
+            // val/var rhs" for `if val Some(v) = o { x = v }`.
+            let then_stmt = parser.ast_builder.expression_stmt(then_block, Some(start_location));
+            let unit = parser.ast_builder.tuple_literal_expr(vec![], Some(start_location));
+            let unit_stmt = parser.ast_builder.expression_stmt(unit, Some(start_location));
             let then_wrapped = parser
                 .ast_builder
-                .block_expr(vec![then_val_stmt], Some(start_location));
+                .block_expr(vec![then_stmt, unit_stmt], Some(start_location));
             let else_empty = parser
                 .ast_builder
                 .block_expr(vec![], Some(start_location));

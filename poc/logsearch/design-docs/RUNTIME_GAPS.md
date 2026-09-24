@@ -319,35 +319,6 @@ Error at scratch/probe/g.t:10:1:     # 入口は 9 行しかない
 `[E0014]` が全部 `main.t` の無関係な行を指していて、原因の特定が
 grep 頼みになった。
 
-### ⚠ `match` で取り出した所有値を move すると二重に drop される ★★★ (2026-09-24)
-
-VM レーンの `toy test` が**たまに** `fatal runtime error: IO Safety
-violation: owned file descriptor already closed` で落ちる。追うと
-`tests/server.t` の「the server answers over a real socket」が
-**ソケットを二度閉じていた** (移行前のコミットでも同じ):
-
-```rust
-val taken = listener.accept()
-var conn = match taken { Result::Ok(c) => c, Result::Err(e) => { panic(..) } }
-val keep = server::serve_connection(&poller, conn, ..)   # 表にしまい、閉じる
-# テストの終わりに `taken` の drop glue が payload を閉じる — 2 度目
-```
-
-腕の `c` は `taken` の payload の**別名**で、`conn` を move しても
-`taken` は自分の payload として drop する。移動先 (ここでは接続表) も
-drop するので 2 回になる。**3 レーンとも同じ振る舞い**なので
-consistency テストでは見えない。メモリなら解放が冪等なので害は無いが、
-**fd は冪等でない** — VM では同じプロセスで Rust 側が開いた fd を
-閉じて abort し、AOT のサーバなら間に開いた**無関係な接続を閉じうる**。
-
-最小再現 (`Drop` が `println` する struct で、`drop` が 2 回出る):
-`val made: Result<H, u64> = Result::Ok(H { .. })` →
-`var conn = match made { Result::Ok(c) => c, .. }` →
-`keep(conn)` (受け手が `Vec` にしまう)。
-→ todo の **MATCH-MOVE-OUT-DOUBLE-DROP**。**回避策**: 所有値を
-`match` の腕から外へ持ち出さず、腕の中で使い切る (この POC の本番の
-経路は `accept_fd` で番号を受けるので当たらない)。
-
 ## G15. SIMD に残っている穴 ★
 
 **あるもの**: 5 つの 128bit 型、lane-wise の演算子、17 の intrinsic
@@ -644,4 +615,5 @@ R2 / R5 は 2026-09-05 に解消し、**同日その回避策を設計から外�
 | **`Dict<u64, V>` が別モジュールから使えない** | 2026-09-05。`Dict` はハッシュ表になり、`impl Hash for u64` がモジュールを跨いで見える。**表側が splitmix64 で混ぜる**ので、`(from << 32) \| to` のような鍵でも退化しない (`archive.t` の自前表はこの理由では要らなくなった) |
 | **G19-1 文字列リテラルに逃げ道が無い** — `\"` も raw リテラルも無く、`{` は必ず補間 | `4de9ce70` (2026-09-23) で `\"` と `r"..."` / `r#"..."#` が入った。**同日に回避策を戻した**: `\u{22}` 435 → **0**、`{{` / `}}` 128 → **4 リテラル** (値そのものに `}}` があるか `\n` と同居するものだけ)、`ui.t` の `put_str` 133 → **1** (ページ全体が raw リテラル 1 つ。出力は書き換え前とバイト一致を確認) |
 | **G19-2 narrow int を match に掛けられない** | CHAR-LITERAL-MATCH (2026-09-23)。同日に `== '...'` の連鎖 3 本 (`mount.t` の単位、`query.t` の相対時刻、`record.t` の `fmt_name`) を match に戻した。残りの比較は 1 回きりの `if` で、表ではない |
+| **`match` で取り出した所有値を move すると二重に drop される** (G14、VM レーンが時々 `IO Safety violation` で abort した原因) | MATCH-MOVE-OUT-DOUBLE-DROP (2026-09-24)。`var conn = match taken { Result::Ok(c) => c, .. }` の `conn` は `taken` の payload の別名になり、渡すと `taken` も持ち主でなくなる。`tests/server.t` のソケットテストは元の形に戻し、全 152 テストで二重 close が 0 件なのを計測で確かめた |
 | **SHA-256 / SHA-224** | `core/std/crypto/` (2026-09-05)。ただしフレームの検査には重すぎるので `src/crc.t` は残る (G7) |

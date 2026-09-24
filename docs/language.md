@@ -6445,6 +6445,20 @@ finishes (`panic`, `return`, `break`, `continue`). The payload stays
 owner dropped the value even after an alias was handed over — twice
 in all, which closed a descriptor twice.)
 
+A by-value argument to a function that only **reads** the parameter —
+reads non-owning fields, calls `&self` methods, passes it on as `&T`,
+prints it, compares it, or passes it by value to another function that
+only reads it — is **lent**: the callee keeps nothing, so the caller
+keeps the drop, and the value is freed at the end of the caller's
+scope. Reading the binding after the call is still `[E0014]` (it is a
+move as far as the language goes), but since no drop becomes
+conditional, lending inside a branch is allowed. A callee that stores
+the value, returns it, frees it, matches on it or changes it (a
+`&mut self` method, a field write) takes it as before. (Before
+2026-09-24 a value handed to a function that only read it was never
+freed: the caller had handed it over, and a parameter registers no
+drop.)
+
 An arm may hand its own scrutinee's payload over — `match made {
 Option::Some(c) => keep(c), Option::None => 0u64 }` — when the other
 variants own nothing (`Result<File, IoError>`, `Option<T>`): then

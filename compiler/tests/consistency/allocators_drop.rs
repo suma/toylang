@@ -409,3 +409,58 @@ fn a_value_named_twice_is_dropped_once_on_every_lane() {
         "using 1\ndrop 1\ndrop 2\nkept 1\ndrop 3\nkept 1\ndrop 4\nkept 1\n",
     );
 }
+
+#[test]
+fn a_value_lent_to_a_reading_callee_is_dropped_by_the_caller() {
+    // BY-VALUE-PARAM-NO-DROP: a callee that only reads a by-value
+    // parameter (`reads`, and `passes_on`, which only hands it to
+    // `reads`) lends it, so the caller keeps the drop -- the value used
+    // to be freed by nobody. A callee that stores it (`keeps`) or
+    // closes it (`closes`, through a `&mut self` method) still takes
+    // it. Every value is closed exactly once, on every lane.
+    let src = r#"
+        struct H { id: u64, open: bool }
+        impl H {
+            fn shut(&mut self) {
+                if self.open { println("close {self.id}") }
+                self.open = false
+            }
+            fn id_of(&self) -> u64 { self.id }
+        }
+        impl Drop for H {
+            fn drop(&mut self) { self.shut() }
+        }
+        fn reads(h: H) -> u64 { h.id_of() + h.id }
+        fn keeps(h: H) -> u64 {
+            var v: Vec<H> = Vec::with_capacity(1u64)
+            v.push(h)
+            v.size()
+        }
+        fn closes(h: H) -> u64 {
+            var m = h
+            m.shut()
+            0u64
+        }
+        fn passes_on(h: H) -> u64 { reads(h) }
+        fn main() -> u64 {
+            val a = H { id: 1u64, open: true }
+            val x = reads(a)
+            println("after reads {x}")
+            val b = H { id: 2u64, open: true }
+            val y = keeps(b)
+            println("after keeps {y}")
+            val c = H { id: 3u64, open: true }
+            val z = closes(c)
+            println("after closes {z}")
+            val d = H { id: 4u64, open: true }
+            val w = passes_on(d)
+            println("after passes_on {w}")
+            0u64
+        }
+    "#;
+    assert_renders(
+        src,
+        "lent_param_dropped_by_caller",
+        "after reads 2\nclose 2\nafter keeps 1\nclose 3\nafter closes 0\nafter passes_on 8\nclose 4\nclose 1\n",
+    );
+}

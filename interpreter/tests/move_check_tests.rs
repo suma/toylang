@@ -525,12 +525,15 @@ fn an_arm_may_not_hand_over_a_payload_when_another_variant_owns_one() {
     // must not drop at all: a runtime drop flag this language lacks.
     let diagnostic = move_diagnostic(
         "enum Two { A(Cell<i64>), B(Cell<i64>) }
-fn consume(c: Cell<i64>) -> i64 { 0i64 }
+fn consume(c: Cell<i64>) -> Cell<i64> { c }
 
 fn main() -> i64 {
     val t = Two::A(Cell::new(7i64))
     val n: i64 = match t {
-        Two::A(v) => consume(v),
+        Two::A(v) => {
+            val kept = consume(v)
+            kept.get()
+        }
         Two::B(w) => 0i64,
     }
     n
@@ -540,5 +543,45 @@ fn main() -> i64 {
         diagnostic.message.contains("branch or a loop body"),
         "the refusal should say why: {}",
         diagnostic.message
+    );
+}
+
+// BY-VALUE-PARAM-NO-DROP: a by-value argument to a parameter the callee
+// only reads is *lent* -- the caller keeps the drop. The language still
+// calls it a move, so reading afterwards stays E0014; but nothing about
+// the drop is conditional, so lending inside a branch is fine.
+
+#[test]
+fn reading_a_value_after_lending_it_is_still_a_use_after_move() {
+    let diagnostic = move_diagnostic(
+        "fn peek(c: Cell<i64>) -> i64 { c.get() }
+
+fn main() -> i64 {
+    val c: Cell<i64> = Cell::new(7i64)
+    val n: i64 = peek(c)
+    val again: i64 = c.get()
+    n + again
+}",
+    );
+    assert!(
+        diagnostic.message.contains("`c` was moved"),
+        "lending is a move in the language: {}",
+        diagnostic.message
+    );
+}
+
+#[test]
+fn lending_inside_a_branch_is_not_a_conditional_move() {
+    assert_eq!(
+        run("fn peek(c: Cell<i64>) -> i64 { c.get() }
+fn main() -> i64 {
+    val c: Cell<i64> = Cell::new(7i64)
+    var n: i64 = 0i64
+    if n == 0i64 {
+        n = peek(c)
+    }
+    n
+}"),
+        7i64
     );
 }

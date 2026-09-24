@@ -66,11 +66,15 @@
 //! rather than tracked, since a conditionally-owned binding needs a
 //! runtime drop flag to know whether to fire. Handing over one owning
 //! field of a payload that holds several stops the root dropping the
-//! others too (a leak, not a double drop). A *parameter* is not dropped
-//! by the callee -- parameters register no drop -- so a value handed to
-//! one that neither stores nor frees it is never freed; one whose value
-//! is written into memory inside the callee (the `value: T` parameter of
-//! `Box::new` / `Vec::push`) is freed once, by whoever owns that memory.
+//! others too (a leak, not a double drop). A *parameter* is never
+//! dropped by the callee -- parameters register no drop. A value whose
+//! callee stores it (a container, raw memory via `Box::new` /
+//! `Vec::push`) or frees it is freed once, by whoever holds it then; a
+//! callee that only *reads* the parameter lends it instead, and the
+//! caller keeps the drop (BY-VALUE-PARAM-NO-DROP, `compute_lend`). What
+//! is left is a callee that changes the value (`&mut self`, a field
+//! write) without freeing it: the argument transfers, and nobody frees
+//! it.
 
 use std::collections::{HashMap, HashSet};
 
@@ -111,6 +115,7 @@ pub fn check_moves(
         };
     }
     let signatures = Signatures::collect(program, interner);
+    let lend = compute_lend(program, interner, expr_types, &drop_analysis, &signatures);
 
     let mut checker = MoveCheck {
         program,
@@ -127,6 +132,7 @@ pub fn check_moves(
         enums: collect_enums(program),
         cond_level: 0,
         consuming_arms: Vec::new(),
+        lend,
     };
     for function in &program.function {
         if function.is_extern {
@@ -221,6 +227,26 @@ struct Signatures {
     /// takes ownership of every payload — the value ends up inside the
     /// enum, which outlives the expression.
     enum_variants: HashSet<(DefaultSymbol, DefaultSymbol)>,
+    /// BY-VALUE-PARAM-NO-DROP: the bodies behind each key above, so a
+    /// call site can ask whether the callee only lends an argument.
+    /// A key several functions share lends a position only when every
+    /// one of them does.
+    local_function_bodies: HashMap<(DefaultSymbol, usize), Vec<StmtRef>>,
+    module_function_bodies: HashMap<(DefaultSymbol, DefaultSymbol, usize), Vec<StmtRef>>,
+    bare_module_function_bodies: HashMap<(DefaultSymbol, usize), Vec<StmtRef>>,
+    method_bodies: HashMap<(DefaultSymbol, usize), Vec<StmtRef>>,
+    associated_bodies: HashMap<(DefaultSymbol, DefaultSymbol), StmtRef>,
+    /// Method name -> whether every method of that name takes `&self`
+    /// (not `&mut self`, not `self: Self`). A parameter used as such a
+    /// receiver is only read.
+    method_reads_self: HashMap<DefaultSymbol, bool>,
+}
+
+/// What a call site resolved to: the parameter list, and the bodies
+/// that could be the callee.
+struct Target {
+    params: Vec<TypeDecl>,
+    bodies: Vec<StmtRef>,
 }
 
 impl Signatures {
@@ -233,6 +259,11 @@ impl Signatures {
         > = HashMap::new();
         let mut bare_module_functions: HashMap<(DefaultSymbol, usize), Option<Vec<TypeDecl>>> =
             HashMap::new();
+        let mut local_function_bodies: HashMap<(DefaultSymbol, usize), Vec<StmtRef>> = HashMap::new();
+        let mut module_function_bodies: HashMap<(DefaultSymbol, DefaultSymbol, usize), Vec<StmtRef>> =
+            HashMap::new();
+        let mut bare_module_function_bodies: HashMap<(DefaultSymbol, usize), Vec<StmtRef>> =
+            HashMap::new();
         for (i, f) in program.function.iter().enumerate() {
             let params: Vec<TypeDecl> = f.parameter.iter().map(|(_, t)| t.clone()).collect();
             let arity = params.len();
@@ -244,15 +275,21 @@ impl Signatures {
             match module_tail {
                 None => {
                     agree_or_none(&mut local_functions, (f.name, arity), params);
+                    local_function_bodies.entry((f.name, arity)).or_default().push(f.code);
                 }
                 Some(tail) => {
                     agree_or_none(&mut module_functions, (tail, f.name, arity), params.clone());
                     agree_or_none(&mut bare_module_functions, (f.name, arity), params);
+                    module_function_bodies.entry((tail, f.name, arity)).or_default().push(f.code);
+                    bare_module_function_bodies.entry((f.name, arity)).or_default().push(f.code);
                 }
             }
         }
         let mut methods: HashMap<(DefaultSymbol, usize), Option<Vec<TypeDecl>>> = HashMap::new();
         let mut associated: HashMap<(DefaultSymbol, DefaultSymbol), Vec<TypeDecl>> = HashMap::new();
+        let mut method_bodies: HashMap<(DefaultSymbol, usize), Vec<StmtRef>> = HashMap::new();
+        let mut associated_bodies: HashMap<(DefaultSymbol, DefaultSymbol), StmtRef> = HashMap::new();
+        let mut method_reads_self: HashMap<DefaultSymbol, bool> = HashMap::new();
         let mut enum_variants = HashSet::new();
         for i in 0..program.statement.len() {
             let stmt_ref = StmtRef(i as u32);
@@ -281,6 +318,11 @@ impl Signatures {
                     .map(|(_, t)| t.clone())
                     .collect();
                 associated.insert((target_type, m.name), params.clone());
+                associated_bodies.insert((target_type, m.name), m.code);
+                method_bodies.entry((m.name, params.len())).or_default().push(m.code);
+                let reads = m.has_self_param && !m.self_is_mut;
+                let entry = method_reads_self.entry(m.name).or_insert(true);
+                *entry = *entry && reads;
                 let key = (m.name, params.len());
                 match methods.get(&key) {
                     None => {
@@ -300,7 +342,54 @@ impl Signatures {
             methods,
             associated,
             enum_variants,
+            local_function_bodies,
+            module_function_bodies,
+            bare_module_function_bodies,
+            method_bodies,
+            associated_bodies,
+            method_reads_self,
         }
+    }
+
+    /// `name(args)`: the entry file's own function wins a bare name; a
+    /// module one answers only when the name is not taken and is
+    /// unambiguous among the modules. `None` when nothing answers.
+    fn call_target(&self, name: DefaultSymbol, arity: usize) -> Option<Target> {
+        let key = (name, arity);
+        if let Some(entry) = self.local_functions.get(&key) {
+            return entry.clone().map(|params| Target {
+                params,
+                bodies: self.local_function_bodies.get(&key).cloned().unwrap_or_default(),
+            });
+        }
+        self.bare_module_functions.get(&key).cloned().flatten().map(|params| Target {
+            params,
+            bodies: self.bare_module_function_bodies.get(&key).cloned().unwrap_or_default(),
+        })
+    }
+
+    /// `recv.method(args)`, receiver excluded.
+    fn method_target(&self, method: DefaultSymbol, arity: usize) -> Option<Target> {
+        let key = (method, arity);
+        self.methods.get(&key).cloned().flatten().map(|params| Target {
+            params,
+            bodies: self.method_bodies.get(&key).cloned().unwrap_or_default(),
+        })
+    }
+
+    /// `Type::f(args)` or `module::f(args)` (not an enum variant).
+    fn associated_target(&self, type_name: DefaultSymbol, fn_name: DefaultSymbol, arity: usize) -> Option<Target> {
+        if let Some(params) = self.associated.get(&(type_name, fn_name)) {
+            return Some(Target {
+                params: params.clone(),
+                bodies: self.associated_bodies.get(&(type_name, fn_name)).copied().into_iter().collect(),
+            });
+        }
+        let key = (type_name, fn_name, arity);
+        self.module_functions.get(&key).cloned().flatten().map(|params| Target {
+            params,
+            bodies: self.module_function_bodies.get(&key).cloned().unwrap_or_default(),
+        })
     }
 }
 
@@ -356,6 +445,22 @@ fn pattern_names(pattern: &Pattern, out: &mut Vec<DefaultSymbol>) {
     }
 }
 
+/// Every struct declaration's generic parameters and field types.
+fn collect_structs(program: &File) -> HashMap<DefaultSymbol, (Vec<DefaultSymbol>, Vec<(String, TypeDecl)>)> {
+    let mut out = HashMap::new();
+    for i in 0..program.statement.len() {
+        if let Some(Stmt::StructDecl { name, generic_params, fields, .. }) =
+            program.statement.get(&StmtRef(i as u32))
+        {
+            out.insert(
+                name,
+                (generic_params, fields.into_iter().map(|f| (f.name, f.type_decl)).collect()),
+            );
+        }
+    }
+    out
+}
+
 /// Every enum declaration's generic parameters and variants.
 fn collect_enums(program: &File) -> HashMap<DefaultSymbol, (Vec<DefaultSymbol>, Vec<EnumVariantDef>)> {
     let mut out = HashMap::new();
@@ -376,6 +481,12 @@ enum Use {
     Read,
     /// The value is put somewhere that can outlive this scope.
     Transfer,
+    /// BY-VALUE-PARAM-NO-DROP: passed by value to a parameter the
+    /// callee only reads. The language still calls it a move -- reading
+    /// the binding afterwards is `[E0014]` -- but the callee keeps
+    /// nothing, so the binding keeps its drop, and doing it inside a
+    /// branch makes no drop conditional.
+    Lend,
 }
 
 /// One binding of an owning type.
@@ -425,6 +536,9 @@ struct MoveCheck<'a> {
     /// being matched, and the `cond_level` of the arm itself. See
     /// `arm_consumes`.
     consuming_arms: Vec<(DefaultSymbol, usize)>,
+    /// BY-VALUE-PARAM-NO-DROP: per function body, which by-value
+    /// parameters it only lends (`compute_lend`).
+    lend: HashMap<StmtRef, Vec<bool>>,
 }
 
 impl MoveCheck<'_> {
@@ -955,14 +1069,8 @@ impl MoveCheck<'_> {
                 // The entry file's own function wins a bare name;
                 // a module one answers only when the name is not
                 // taken and is unambiguous among the modules.
-                let params = self
-                    .signatures
-                    .local_functions
-                    .get(&(name, arity))
-                    .cloned()
-                    .or_else(|| self.signatures.bare_module_functions.get(&(name, arity)).cloned())
-                    .flatten();
-                self.walk_args(args, params.as_deref(), conditional);
+                let target = self.signatures.call_target(name, arity);
+                self.walk_args(args, target.as_ref(), conditional);
             }
             Expr::MethodCall(receiver, method, args) => {
                 // The receiver is read, never handed over: the AST does
@@ -971,13 +1079,8 @@ impl MoveCheck<'_> {
                 // costs a missed transfer, where the other way round
                 // would reject working programs.
                 self.walk_expr(receiver, Use::Read, conditional);
-                let params = self
-                    .signatures
-                    .methods
-                    .get(&(method, args.len()))
-                    .cloned()
-                    .flatten();
-                self.walk_arg_list(&args, params.as_deref(), conditional);
+                let target = self.signatures.method_target(method, args.len());
+                self.walk_arg_list(&args, target.as_ref(), conditional);
             }
             Expr::AssociatedFunctionCall(type_name, fn_name, args) => {
                 // `Enum::Variant(payload)` puts the payload inside the
@@ -991,23 +1094,10 @@ impl MoveCheck<'_> {
                 }
                 // `module::f(args)` is spelled the same way as
                 // `Type::f(args)`, so a name that is not an associated
-                // function is looked up among the free ones.
-                let params = self
-                    .signatures
-                    .associated
-                    .get(&(type_name, fn_name))
-                    .cloned()
-                    .or_else(|| {
-                        // `module::f(args)`: the qualifier names the
-                        // module, so the signature is exact rather
-                        // than a guess among same-named functions.
-                        self.signatures
-                            .module_functions
-                            .get(&(type_name, fn_name, args.len()))
-                            .cloned()
-                            .flatten()
-                    });
-                self.walk_arg_list(&args, params.as_deref(), conditional);
+                // function is looked up among the free ones, where the
+                // qualifier names the module and the signature is exact.
+                let target = self.signatures.associated_target(type_name, fn_name, args.len());
+                self.walk_arg_list(&args, target.as_ref(), conditional);
             }
 
             // Raw pointer traffic is unchecked on purpose — see the
@@ -1094,21 +1184,30 @@ impl MoveCheck<'_> {
 
     /// `Expr::Call`'s argument list arrives as one `ExprRef` holding an
     /// `ExprList`.
-    fn walk_args(&mut self, args: ExprRef, params: Option<&[TypeDecl]>, conditional: bool) {
+    fn walk_args(&mut self, args: ExprRef, target: Option<&Target>, conditional: bool) {
         match self.program.expression.get(&args) {
-            Some(Expr::ExprList(items)) => self.walk_arg_list(&items, params, conditional),
-            Some(_) => self.walk_arg_list(&[args], params, conditional),
+            Some(Expr::ExprList(items)) => self.walk_arg_list(&items, target, conditional),
+            Some(_) => self.walk_arg_list(&[args], target, conditional),
             None => {}
         }
     }
 
-    fn walk_arg_list(&mut self, args: &[ExprRef], params: Option<&[TypeDecl]>, conditional: bool) {
+    fn walk_arg_list(&mut self, args: &[ExprRef], target: Option<&Target>, conditional: bool) {
         for (i, a) in args.iter().enumerate() {
-            // A `&T` parameter borrows; anything else takes the value.
-            // An unknown signature borrows too — refusing a program on
-            // a guess is worse than missing a transfer.
-            let use_kind = match params.and_then(|p| p.get(i)) {
-                Some(ty) if !is_borrow(ty) => Use::Transfer,
+            // A `&T` parameter borrows; anything else takes the value --
+            // unless every candidate callee only reads it
+            // (BY-VALUE-PARAM-NO-DROP), when it is lent and the caller
+            // keeps the drop. An unknown signature borrows too —
+            // refusing a program on a guess is worse than missing a
+            // transfer.
+            let use_kind = match target.and_then(|t| t.params.get(i).map(|ty| (t, ty))) {
+                Some((t, ty)) if !is_borrow(ty) => {
+                    if lends(&self.lend, &t.bodies, i) {
+                        Use::Lend
+                    } else {
+                        Use::Transfer
+                    }
+                }
                 _ => Use::Read,
             };
             self.walk_expr(*a, use_kind, conditional);
@@ -1173,6 +1272,17 @@ impl MoveCheck<'_> {
         // runtime flag the backends do not have -- unless this is an
         // arm handing over its own scrutinee's payload where the other
         // paths hold nothing to drop (`arm_consumes`).
+        if use_kind == Use::Lend {
+            // Still a move in the language, of the owner's value when
+            // this is an alias; only the drop stays where it was.
+            let at = self
+                .location(expr_ref)
+                .unwrap_or_else(|| SourceLocation::new(0, 0, 0, 0));
+            self.moved.insert(name, at);
+            self.moved.insert(owner, at);
+            return;
+        }
+
         if conditional && owner_depth <= self.conditional_boundary() {
             let consumed_here = self
                 .consuming_arms
@@ -1208,5 +1318,332 @@ impl MoveCheck<'_> {
         // Conditional contexts always open a scope of their own, so the
         // enclosing scope is the boundary.
         self.depth().saturating_sub(1)
+    }
+}
+
+/// How the surrounding expression uses a value (for `LendAnalysis`).
+#[derive(Clone, Copy, PartialEq)]
+enum Ctx {
+    /// Read where it stands: an operand, a `&self` receiver, a `&T`
+    /// argument, something printed.
+    Read,
+    /// Evaluated and thrown away (a statement that is not a tail).
+    Discard,
+    /// Kept: bound to a name, stored, returned, handed on by value.
+    Keep,
+    /// Written to (the left of an assignment).
+    Write,
+}
+
+/// BY-VALUE-PARAM-NO-DROP: which by-value parameters each function
+/// only **lends**.
+///
+/// A by-value argument transfers: the caller stops dropping it. But a
+/// parameter registers no drop in the callee either, so a value handed
+/// to a function that neither stores nor frees it was never freed. The
+/// fix chosen here keeps the drop with the caller when the callee
+/// provably only reads the parameter -- field reads of non-owning
+/// fields, `&self` methods, `&T` arguments, operands, printing, and
+/// by-value arguments to parameters that are themselves only lent. Any
+/// other use (bound to a name, stored, returned, matched on, written,
+/// `&mut`, a `&mut self` method, raw builtins, a closure mention) keeps
+/// the value, and the argument transfers as before. The callee then got
+/// a copy it only read, so the caller's drop is the one drop.
+///
+/// Computed as a greatest fixpoint so a function that only passes a
+/// parameter on to itself (recursion) or to another lending function
+/// still lends it.
+struct LendAnalysis<'a> {
+    program: &'a File,
+    expr_types: &'a HashMap<ExprRef, TypeDecl>,
+    drop_analysis: &'a DropAnalysis,
+    signatures: &'a Signatures,
+    lend: HashMap<StmtRef, Vec<bool>>,
+    /// Inside a closure body: any mention of the parameter keeps it,
+    /// since the closure may outlive the call.
+    in_closure: std::cell::Cell<bool>,
+    /// The parameter being examined's declared type, for a field read
+    /// the type checker left no type for (`h.id_of() + h.id` records
+    /// the call, not the operand's field access).
+    param_ty: std::cell::RefCell<TypeDecl>,
+    /// Struct name -> generic parameters and field types.
+    structs: HashMap<DefaultSymbol, (Vec<DefaultSymbol>, Vec<(String, TypeDecl)>)>,
+    interner: &'a DefaultStringInterner,
+}
+
+/// Each function body -> per by-value parameter (receiver excluded),
+/// whether the function only lends it.
+fn compute_lend(
+    program: &File,
+    interner: &DefaultStringInterner,
+    expr_types: &HashMap<ExprRef, TypeDecl>,
+    drop_analysis: &DropAnalysis,
+    signatures: &Signatures,
+) -> HashMap<StmtRef, Vec<bool>> {
+    let mut bodies: Vec<(StmtRef, Vec<(DefaultSymbol, TypeDecl)>)> = Vec::new();
+    for f in &program.function {
+        if f.is_extern {
+            continue;
+        }
+        bodies.push((f.code, f.parameter.clone()));
+    }
+    for i in 0..program.statement.len() {
+        if let Some(Stmt::ImplBlock { methods, .. }) = program.statement.get(&StmtRef(i as u32)) {
+            for m in &methods {
+                let params: Vec<(DefaultSymbol, TypeDecl)> = m
+                    .parameter
+                    .iter()
+                    .skip_while(|(name, _)| interner.resolve(*name) == Some("self"))
+                    .cloned()
+                    .collect();
+                bodies.push((m.code, params));
+            }
+        }
+    }
+    let mut analysis = LendAnalysis {
+        program,
+        expr_types,
+        drop_analysis,
+        signatures,
+        lend: bodies
+            .iter()
+            .map(|(body, params)| (*body, params.iter().map(|(_, t)| !is_borrow(t)).collect()))
+            .collect(),
+        in_closure: std::cell::Cell::new(false),
+        param_ty: std::cell::RefCell::new(TypeDecl::Unknown),
+        structs: collect_structs(program),
+        interner,
+    };
+    loop {
+        let mut changed = false;
+        for (body, params) in &bodies {
+            for (i, (name, ty)) in params.iter().enumerate() {
+                *analysis.param_ty.borrow_mut() = ty.clone();
+                if analysis.lend[body][i] && !analysis.body_only_reads(*body, *name) {
+                    analysis.lend.get_mut(body).expect("seeded above")[i] = false;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    analysis.lend
+}
+
+/// Whether position `i` of a call to one of `bodies` is lent: every
+/// candidate body lends it. No candidates answers no.
+fn lends(lend: &HashMap<StmtRef, Vec<bool>>, bodies: &[StmtRef], i: usize) -> bool {
+    !bodies.is_empty()
+        && bodies
+            .iter()
+            .all(|b| lend.get(b).and_then(|flags| flags.get(i)).copied().unwrap_or(false))
+}
+
+impl LendAnalysis<'_> {
+    fn body_only_reads(&self, body: StmtRef, p: DefaultSymbol) -> bool {
+        match self.program.statement.get(&body) {
+            // The body's value is the function's return value.
+            Some(Stmt::Expression(e)) => self.expr_ok(e, p, Ctx::Keep),
+            Some(_) => self.stmt_ok(body, p),
+            None => false,
+        }
+    }
+
+    fn stmt_ok(&self, s: StmtRef, p: DefaultSymbol) -> bool {
+        match self.program.statement.get(&s) {
+            Some(Stmt::Val(_, _, rhs)) | Some(Stmt::Var(_, _, Some(rhs))) => {
+                self.expr_ok(rhs, p, Ctx::Keep)
+            }
+            Some(Stmt::Expression(e)) => self.expr_ok(e, p, Ctx::Discard),
+            Some(Stmt::Return(Some(e))) => self.expr_ok(e, p, Ctx::Keep),
+            Some(Stmt::While(_, cond, body)) => {
+                self.expr_ok(cond, p, Ctx::Read) && self.expr_ok(body, p, Ctx::Discard)
+            }
+            Some(Stmt::For(_, _, start, end, body)) => {
+                self.expr_ok(start, p, Ctx::Read)
+                    && self.expr_ok(end, p, Ctx::Read)
+                    && self.expr_ok(body, p, Ctx::Discard)
+            }
+            _ => true,
+        }
+    }
+
+    /// Whether the value `e` produces owns something. A field read
+    /// straight off the parameter with no recorded type is answered
+    /// from the parameter's struct; anything else unknown owns, to be
+    /// safe.
+    fn owning(&self, e: ExprRef, p: DefaultSymbol) -> bool {
+        if let Some(ty) = self.expr_types.get(&e) {
+            return self.drop_analysis.contains_drop(ty);
+        }
+        if let Some(Expr::FieldAccess(obj, field)) = self.program.expression.get(&e)
+            && matches!(self.program.expression.get(&obj), Some(Expr::Identifier(s)) if s == p)
+            && let Some(ty) = self.field_type(&self.param_ty.borrow(), field)
+        {
+            return self.drop_analysis.contains_drop(&ty);
+        }
+        true
+    }
+
+    /// The type of `field` on a value of struct type `ty`.
+    fn field_type(&self, ty: &TypeDecl, field: DefaultSymbol) -> Option<TypeDecl> {
+        let (name, args) = match ty {
+            TypeDecl::Struct(name, args) => (*name, args.clone()),
+            TypeDecl::Identifier(name) => (*name, Vec::new()),
+            _ => return None,
+        };
+        let (params, fields) = self.structs.get(&name)?;
+        let field_name = self.interner.resolve(field)?;
+        let (_, fty) = fields.iter().find(|(n, _)| n == field_name)?;
+        let substitutions: HashMap<DefaultSymbol, TypeDecl> =
+            params.iter().copied().zip(args).collect();
+        Some(match fty {
+            TypeDecl::Identifier(s) if substitutions.contains_key(s) => substitutions[s].clone(),
+            other => other.substitute_generics(&substitutions),
+        })
+    }
+
+    /// The arguments of a call to `target`, position by position.
+    fn args_ok(&self, args: &[ExprRef], target: Option<Target>, p: DefaultSymbol) -> bool {
+        args.iter().enumerate().all(|(i, a)| {
+            let ctx = match target.as_ref().and_then(|t| t.params.get(i).map(|ty| (t, ty))) {
+                Some((_, TypeDecl::Ref { is_mut: false, .. })) => Ctx::Read,
+                Some((t, ty)) if !is_borrow(ty) && lends(&self.lend, &t.bodies, i) => Ctx::Read,
+                _ => Ctx::Keep,
+            };
+            self.expr_ok(*a, p, ctx)
+        })
+    }
+
+    fn expr_ok(&self, e: ExprRef, p: DefaultSymbol, ctx: Ctx) -> bool {
+        use crate::ast::{BuiltinFunction as B, UnaryOp};
+        let Some(expr) = self.program.expression.get(&e) else {
+            return true;
+        };
+        match expr {
+            Expr::Identifier(s) => {
+                s != p || (!self.in_closure.get() && matches!(ctx, Ctx::Read | Ctx::Discard))
+            }
+            Expr::Block(stmts) => stmts.iter().enumerate().all(|(i, s)| {
+                match (i + 1 == stmts.len(), self.program.statement.get(s)) {
+                    (true, Some(Stmt::Expression(tail))) => self.expr_ok(tail, p, ctx),
+                    _ => self.stmt_ok(*s, p),
+                }
+            }),
+            Expr::IfElifElse(c, t, elifs, el) => {
+                self.expr_ok(c, p, Ctx::Read)
+                    && self.expr_ok(t, p, ctx)
+                    && elifs
+                        .iter()
+                        .all(|(c, b)| self.expr_ok(*c, p, Ctx::Read) && self.expr_ok(*b, p, ctx))
+                    && self.expr_ok(el, p, ctx)
+            }
+            // A payload name would alias the parameter, and those names
+            // are not followed here: matching on it keeps it.
+            Expr::Match(scrutinee, arms) => {
+                self.expr_ok(scrutinee, p, Ctx::Keep)
+                    && arms.iter().all(|arm| {
+                        arm.guard.is_none_or(|g| self.expr_ok(g, p, Ctx::Read))
+                            && self.expr_ok(arm.body, p, ctx)
+                    })
+            }
+            Expr::Assign(lhs, rhs) => self.expr_ok(lhs, p, Ctx::Write) && self.expr_ok(rhs, p, Ctx::Keep),
+            Expr::FieldAccess(obj, _) | Expr::TupleAccess(obj, _) => {
+                let inner = if ctx == Ctx::Write || self.owning(e, p) { Ctx::Keep } else { Ctx::Read };
+                self.expr_ok(obj, p, inner)
+            }
+            Expr::SliceAccess(obj, info) => {
+                let inner = if ctx == Ctx::Write || self.owning(e, p) { Ctx::Keep } else { Ctx::Read };
+                self.expr_ok(obj, p, inner)
+                    && [info.start, info.end]
+                        .into_iter()
+                        .flatten()
+                        .all(|b| self.expr_ok(b, p, Ctx::Read))
+            }
+            Expr::SliceAssign(obj, start, end, value) => {
+                self.expr_ok(obj, p, Ctx::Keep)
+                    && [start, end].into_iter().flatten().all(|b| self.expr_ok(b, p, Ctx::Read))
+                    && self.expr_ok(value, p, Ctx::Keep)
+            }
+            Expr::StructLiteral(_, fields) => fields.iter().all(|(_, v)| self.expr_ok(*v, p, Ctx::Keep)),
+            Expr::StructUpdate { fields, base, .. } => {
+                fields.iter().all(|(_, v)| self.expr_ok(*v, p, Ctx::Keep)) && self.expr_ok(base, p, Ctx::Keep)
+            }
+            Expr::TupleLiteral(items) | Expr::ArrayLiteral(items) | Expr::ExprList(items) => {
+                items.iter().all(|x| self.expr_ok(*x, p, Ctx::Keep))
+            }
+            Expr::DictLiteral(entries) => entries
+                .iter()
+                .all(|(k, v)| self.expr_ok(*k, p, Ctx::Keep) && self.expr_ok(*v, p, Ctx::Keep)),
+            Expr::Call(name, args) => {
+                let items = match self.program.expression.get(&args) {
+                    Some(Expr::ExprList(items)) => items,
+                    Some(_) => vec![args],
+                    None => Vec::new(),
+                };
+                let target = self.signatures.call_target(name, items.len());
+                self.args_ok(&items, target, p)
+            }
+            Expr::MethodCall(recv, method, args) => {
+                let reads = self.signatures.method_reads_self.get(&method).copied().unwrap_or(false);
+                self.expr_ok(recv, p, if reads { Ctx::Read } else { Ctx::Keep })
+                    && self.args_ok(&args, self.signatures.method_target(method, args.len()), p)
+            }
+            Expr::AssociatedFunctionCall(type_name, fn_name, args) => {
+                if self.signatures.enum_variants.contains(&(type_name, fn_name)) {
+                    return args.iter().all(|a| self.expr_ok(*a, p, Ctx::Keep));
+                }
+                let target = self.signatures.associated_target(type_name, fn_name, args.len());
+                self.args_ok(&args, target, p)
+            }
+            Expr::BuiltinCall(func, args) => {
+                let reads = matches!(
+                    func,
+                    B::Print | B::Println | B::EPrint | B::EPrintln | B::ToString | B::Format
+                );
+                args.iter().all(|a| self.expr_ok(*a, p, if reads { Ctx::Read } else { Ctx::Keep }))
+            }
+            Expr::BuiltinMethodCall(recv, _, args) => {
+                self.expr_ok(recv, p, Ctx::Read) && args.iter().all(|a| self.expr_ok(*a, p, Ctx::Read))
+            }
+            Expr::Binary(_, l, r) => self.expr_ok(l, p, Ctx::Read) && self.expr_ok(r, p, Ctx::Read),
+            Expr::Unary(op, x) => {
+                let inner = if matches!(op, UnaryOp::BorrowMut) { Ctx::Keep } else { Ctx::Read };
+                self.expr_ok(x, p, inner)
+            }
+            Expr::Cast(inner, _) => self.expr_ok(inner, p, Ctx::Read),
+            Expr::Range(a, b) => self.expr_ok(a, p, Ctx::Read) && self.expr_ok(b, p, Ctx::Read),
+            Expr::With(alloc, body) => self.expr_ok(alloc, p, Ctx::Keep) && self.expr_ok(body, p, ctx),
+            Expr::Try { inner, .. } => self.expr_ok(inner, p, Ctx::Keep),
+            Expr::NullCoalesce { lhs, rhs, .. } => {
+                self.expr_ok(lhs, p, Ctx::Keep) && self.expr_ok(rhs, p, Ctx::Keep)
+            }
+            // A closure may outlive the call; any mention keeps it.
+            Expr::Closure { body, .. } => {
+                let outer = self.in_closure.replace(true);
+                let ok = self.expr_ok(body, p, Ctx::Keep);
+                self.in_closure.set(outer);
+                ok
+            }
+            Expr::QualifiedIdentifier(_)
+            | Expr::Int64(_)
+            | Expr::UInt64(_)
+            | Expr::Int8(_)
+            | Expr::Int16(_)
+            | Expr::Int32(_)
+            | Expr::UInt8(_)
+            | Expr::UInt16(_)
+            | Expr::UInt32(_)
+            | Expr::CharLiteral(_)
+            | Expr::Float64(_)
+            | Expr::Float32(_)
+            | Expr::Number(_)
+            | Expr::String(_)
+            | Expr::True
+            | Expr::False
+            | Expr::Null => true,
+        }
     }
 }

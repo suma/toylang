@@ -20,6 +20,13 @@
   以後の読みは E0014)。`val x = match a {..}` の `x` 自身は drop しない。
   腕の中で自分の scrutinee の payload を渡すのは、他の variant が何も
   所有しないときに限り許す。バックエンドは無変更。
+- **BY-VALUE-PARAM-NO-DROP: 読むだけの受け手への値渡しは貸し出し** —
+  値渡しの引数は呼び出し側が手放し、受け手も drop しないので、読む
+  だけの受け手に渡した値は誰も解放しなかった。`move_check` が各関数の
+  値渡し引数を「読むだけか」で不動点判定し (`compute_lend`)、読むだけ
+  なら呼び出し側が drop を持ち続ける。言語上は移動のまま (E0014)。
+  残る穴は「`&mut self` などで変えるが解放しない受け手」で、これは
+  従来どおり誰も解放しない。
 - **`if val` の `else` 無しで本体が `()`** (compiled レーンが拒否) と
   **モジュール修飾の const の lowering** を修正。`poc/logsearch` の
   数を返す関数 74 本を `const` 42 本と enum 9 つに移した。
@@ -2520,15 +2527,6 @@
 
 - **MOVE-CONDITIONAL: 分岐 / ループからの移動** ★ — 現状は E0014 で拒否。
   許すには実行時 drop flag (Rust と同じ) が要る。実プログラムで踏んだら着手。
-- **BY-VALUE-PARAM-NO-DROP: 値渡しの引数は受け手で drop されない** ★ —
-  呼び出し側は渡した束縛を drop しない (transfer) が、受け手の関数も
-  引数を drop しない。受け手が値をしまう (`Vec::push` など) か自分で
-  閉じれば 1 回で済むが、**しまいも閉じもしない受け手に渡した値は
-  解放されない** (fd なら閉じられない)。受け手が引数に drop を登録
-  すれば直るが、`self: Self` のレシーバは呼び出し側で transfer として
-  扱われていない (`move_check` の `MethodCall` は受け手を Read で歩く)
-  ので、そのまま足すと今度は二重 drop になりうる。レシーバの扱いと一緒に
-  直す必要がある。`move_check.rs` のモジュールコメント「Known gaps」。
 - **Trait 拡張** ★★★ (大規模、ロードマップ)
   - **A3: trait inheritance (`trait B: A`)** — 中。super trait 経由で `A` の method を `B` impl からも要求。
   - **A4: associated types (`trait Iterator { type Item }`)** — 中〜大。

@@ -990,10 +990,22 @@ impl<'a> FunctionLower<'a> {
         // an identifier-bound enum gets; without this the chain fell
         // through to the scalar path and reported the enum's IR type
         // as an unsupported scalar.
-        if matches!(scrut_expr, Expr::FieldAccess(_, _))
-            && let Ok(FieldChainResult::Enum(storage)) = self.resolve_field_chain(scrutinee)
-        {
-            return Ok(MatchScrutinee::Enum(storage));
+        //
+        // A struct-typed field is matched by its fields the same way a
+        // struct binding is: the chain resolves to the field's own
+        // locals. MATCH-STRING-LITERAL needs this for `match r.method
+        // { "GET" => .. }`, whose `String` field is a struct.
+        if matches!(scrut_expr, Expr::FieldAccess(_, _)) {
+            match self.resolve_field_chain(scrutinee) {
+                Ok(FieldChainResult::Enum(storage)) => return Ok(MatchScrutinee::Enum(storage)),
+                Ok(FieldChainResult::Struct { struct_id, fields }) => {
+                    return Ok(MatchScrutinee::Struct { struct_id, fields });
+                }
+                Ok(FieldChainResult::Tuple { elements }) => {
+                    return Ok(MatchScrutinee::Tuple { elements });
+                }
+                _ => {}
+            }
         }
         // ITER-PROTOCOL-AOT: `match obj.method(...)` where the
         // method returns an enum. Required by the iterator-protocol

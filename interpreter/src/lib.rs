@@ -706,14 +706,24 @@ fn check_typing_collecting(
     // Functions inherit the bottom-most variable scope, so a const
     // declared here is visible from every function body.
     for c in consts.iter() {
-        let value_ty = match tc.visit_expr(&c.value) {
+        // CONST-UNSUFFIXED-INIT: the declared type names the
+        // initializer's type the way a `val` annotation does, so a
+        // suffix-less literal (`const J: u64 = 4`) or a character
+        // literal (`const M: u8 = 'a'`) takes it. Checking without
+        // the hint left an `Expr::Number` in the pool, which passed
+        // here (`Number` was waved through) and then failed at run
+        // time.
+        let saved_hint = tc.type_inference.type_hint.replace(c.type_decl.clone());
+        let visited = tc.visit_expr(&c.value);
+        tc.type_inference.type_hint = saved_hint;
+        let value_ty = match visited.and_then(|t| tc.coerce_number_expr(&c.value, &t, &c.type_decl)) {
             Ok(t) => t,
             Err(err) => {
                 errors.push(Diagnostic::from_type_check_error(&err, diag_file, Some(tc.core.string_interner)));
                 continue;
             }
         };
-        if !value_ty.is_equivalent(&c.type_decl) && value_ty != TypeDecl::Number {
+        if !value_ty.is_equivalent(&c.type_decl) {
             let cname = tc.core.string_interner.resolve(c.name).unwrap_or("<unknown>");
             let spell = |ty: &TypeDecl| ty.spell_with(Some(tc.core.string_interner));
             let msg = format!(

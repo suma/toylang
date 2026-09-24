@@ -417,7 +417,7 @@ stdlib のバイト kernel も SIMD 化済み。使い方と実測は [`SIMD.md`
 
 ### 1. ~~文字列リテラルに逃げ道が無い~~ — 2026-09-23 に解消 (§Z)
 
-### 2. `String` をリテラル腕で match できない ★ (narrow int と const は解消)
+### 2. ~~`String` をリテラル腕で match できない~~ — 2026-09-24 に解消 (§Z)
 
 **narrow int の match は 2026-09-23 に解消** (CHAR-LITERAL-MATCH、§Z)。
 const 名を pattern に書くと黙って束縛になる件も同日に解消した
@@ -429,6 +429,9 @@ cannot be used in a match on a struct`。`String` は nominal struct
 なので、`str` では通るリテラル腕が `String` では通らない。この POC の
 `field_code` / `is_reserved` ほか **`eq_str` 33 箇所**がこれ
 (ただし半分は化石。§8 を見ること)。→ todo の **MATCH-STRING-LITERAL**。
+**2026-09-24 に解消した** — `String` の scrutinee に `"a" =>` が書ける
+(型検査器が `eq_str` の guard に書き換える)。この POC の表は §8 で既に
+`str` の match になっているので、書き換える場所は残っていない。
 
 ### 3. enum の表現力 ★★ — 2 つとも保存形式のモデリングに効く
 
@@ -615,5 +618,6 @@ R2 / R5 は 2026-09-05 に解消し、**同日その回避策を設計から外�
 | **`Dict<u64, V>` が別モジュールから使えない** | 2026-09-05。`Dict` はハッシュ表になり、`impl Hash for u64` がモジュールを跨いで見える。**表側が splitmix64 で混ぜる**ので、`(from << 32) \| to` のような鍵でも退化しない (`archive.t` の自前表はこの理由では要らなくなった) |
 | **G19-1 文字列リテラルに逃げ道が無い** — `\"` も raw リテラルも無く、`{` は必ず補間 | `4de9ce70` (2026-09-23) で `\"` と `r"..."` / `r#"..."#` が入った。**同日に回避策を戻した**: `\u{22}` 435 → **0**、`{{` / `}}` 128 → **4 リテラル** (値そのものに `}}` があるか `\n` と同居するものだけ)、`ui.t` の `put_str` 133 → **1** (ページ全体が raw リテラル 1 つ。出力は書き換え前とバイト一致を確認) |
 | **G19-2 narrow int を match に掛けられない** | CHAR-LITERAL-MATCH (2026-09-23)。同日に `== '...'` の連鎖 3 本 (`mount.t` の単位、`query.t` の相対時刻、`record.t` の `fmt_name`) を match に戻した。残りの比較は 1 回きりの `if` で、表ではない |
+| **G19-2 `String` をリテラル腕で match できない** | MATCH-STRING-LITERAL (2026-09-24)。表は §8 で `str` の match に移していたので POC 側の書き換えは無い。残る `eq_str` は 1 回きりの比較 |
 | **`match` で取り出した所有値を move すると二重に drop される** (G14、VM レーンが時々 `IO Safety violation` で abort した原因) | MATCH-MOVE-OUT-DOUBLE-DROP (2026-09-24)。`var conn = match taken { Result::Ok(c) => c, .. }` の `conn` は `taken` の payload の別名になり、渡すと `taken` も持ち主でなくなる。`tests/server.t` のソケットテストは元の形に戻し、全 152 テストで二重 close が 0 件なのを計測で確かめた |
 | **SHA-256 / SHA-224** | `core/std/crypto/` (2026-09-05)。ただしフレームの検査には重すぎるので `src/crc.t` は残る (G7) |

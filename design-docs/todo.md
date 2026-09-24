@@ -12,6 +12,20 @@
 
 ### 2026-09-24
 
+- **MATCH-STRING-LITERAL: `String` をリテラル腕で match** — `"a" =>` の
+  腕を型検査器が `_ if <scrutinee>.eq_str("a")` に書き換える (確保なし、
+  バックエンド無変更)。scrutinee は名前かフィールドパスに限り、計算式は
+  `val` を案内するエラー。**ネストした位置** (`Option::Some("a")` on
+  `Option<String>`) は未対応。同時に compiled レーンが struct / tuple の
+  **フィールド** (`match o.p { P { .. } => }`) を scrutinee にできるよう
+  にした (以前は scalar 扱いで拒否)。
+- **CONST-UNSUFFIXED-INIT: const の宣言型が初期化子の型を名指す** —
+  `const J: u64 = 4` が実行時に `Expr::Number` で落ち、`const M: u8 = 'a'`
+  は型エラーだった。初期化子を宣言型のヒントつきで検査する。同時に、
+  const 表 (`const T: [u32; 3]`) がある program で計算式の const が
+  compiled レーンに畳まれずに届く既存バグを修正 (fold の lowering が
+  表を scalar で仮置きしていた)。
+
 - **MATCH-MOVE-OUT-DOUBLE-DROP (+ MOVE-ALIAS-GAP): 別名を渡すと根も渡す** —
   `val b = a` / `match a` の腕の payload 名 / `val x = match a { Ok(c) => c, .. }`
   は `a` の値の別名で、別名を渡しても `a` が drop していた (fd なら二重
@@ -2587,12 +2601,6 @@
   (`interpreter/src/object.rs::to_display_string` /
   `compiler_lower/src/print.rs`) に `field_names` を渡す必要がある
   (`--api` の宣言の描画は対応済み)。踏んでから。
-- **MATCH-STRING-LITERAL: `String` をリテラル腕で match** ★ —
-  `str` は `match s { "a" => ..., "b" | "c" => ... }` が 3 レーンで
-  動くのに、`String` は `[E0010] literal pattern cannot be used in a
-  match on a struct` (nominal struct なので)。文字列は `String` で
-  持ち回ることが多いので、`==` が `eq` に落ちるのと同じ流儀で
-  リテラル腕を `eq` 呼び出しに書き換えれば済むはず。
 - **BREAK-WITH-VALUE: `break <expr>` でループを値にする** ★ —
   `loop` / `break` / ラベルはあるが**値を持ち出せない**ので、
   「見つかったか」「なぜ抜けたか」を必ず `var` のフラグに書き戻す
@@ -2866,15 +2874,6 @@ changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 
 経緯は git log と完了済み節にある。`__getitem__` の 2 件
 (`&self` 受理 / generic 戻り型置換) も 2026-08-30 に解消
 (POINTER P2、完了済み節)。
-
-- **CONST-UNSUFFIXED-INIT: サフィックス無しの整数で初期化した `const`
-  が実行時に落ちる** ★ — `const J: u64 = 4` は型検査を通るが、
-  `Const initializer for `J` failed: Internal error: Expr::Number
-  should be transformed to concrete type during type checking` で
-  止まる (`interpreter` で確認。2026-09-23 に MATCH-CONST-PATTERN
-  の確認中に踏んだ)。宣言型が「型を名指す位置」なのに、const の
-  初期化子は型ヒント無しで検査されている (`interpreter/src/lib.rs` の
-  const 登録ループ)。`4u64` と書けば通る。
 
 - **COMPOUND-FIELD-ARG: compound な *フィールド* を引数に渡せない** ★★ —
   束縛・リテラル・呼び出し結果は通る (COMPOUND-ARG-CALL、2026-09-02) が、

@@ -431,6 +431,14 @@ impl<'a> TypeCheckerVisitor<'a> {
             self.pattern_rewrites.rewrites.insert(*scrutinee, new_arms.clone());
         }
         let arms: &Vec<MatchArm> = rewritten.as_ref().unwrap_or(arms);
+        // MATCH-STRING-LITERAL: `"a" => ..` on a `String` compares
+        // through `eq_str`. After the const rewrite, so a `str` const
+        // names a literal by now.
+        let string_arms = self.rewrite_string_literal_arms(scrutinee, &scrutinee_ty, arms)?;
+        if let Some(new_arms) = &string_arms {
+            self.pattern_rewrites.rewrites.insert(*scrutinee, new_arms.clone());
+        }
+        let arms: &Vec<MatchArm> = string_arms.as_ref().unwrap_or(arms);
 
         // Classify the scrutinee. Enum matches and primitive matches accept
         // different pattern shapes, so we dispatch on this up-front.
@@ -1181,6 +1189,80 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Runs before the arms are checked, so everything downstream --
     /// type agreement, duplicate arms, exhaustiveness -- sees the
     /// rewritten form, which is also what the backends receive.
+    /// MATCH-STRING-LITERAL: in a match on a `String` (or `&String`),
+    /// each arm whose pattern is a string literal becomes a guarded
+    /// wildcard, `_ if <scrutinee>.eq_str("a") [&& <guard>]`, or
+    /// `None` when no arm has one.
+    ///
+    /// `String` is a nominal struct, so a literal pattern has nothing
+    /// to compare against structurally; `eq_str` is the comparison
+    /// `==` would pick, and it reads the buffer without allocating
+    /// (`to_str` would copy it). A guarded wildcard covers nothing, so
+    /// the match still needs a `_` arm, as a match on `str` does. An
+    /// or-pattern needs nothing here: the parser has already split it
+    /// into one arm per alternative.
+    ///
+    /// The guard names the scrutinee again, so the scrutinee must be
+    /// something that can be read twice without effect: a name or a
+    /// field path. Anything else is an error asking for a `val`, which
+    /// the compiled lanes want for a computed scrutinee anyway.
+    fn rewrite_string_literal_arms(
+        &mut self,
+        scrutinee: &ExprRef,
+        scrutinee_ty: &TypeDecl,
+        arms: &[MatchArm],
+    ) -> Result<Option<Vec<MatchArm>>, TypeCheckError> {
+        let inner = match scrutinee_ty {
+            TypeDecl::Ref { inner, .. } => inner.as_ref(),
+            other => other,
+        };
+        // A field or a `&String` parameter arrives as the bare name.
+        let is_string = match inner {
+            TypeDecl::Struct(sym, args) if args.is_empty() => {
+                self.core.string_interner.resolve(*sym) == Some("String")
+            }
+            TypeDecl::Identifier(sym) => self.core.string_interner.resolve(*sym) == Some("String"),
+            _ => false,
+        };
+        let is_str_literal = |pool: &ExprPool, pat: &Pattern| {
+            matches!(pat, Pattern::Literal(e) if matches!(pool.get(e), Some(Expr::String(_))))
+        };
+        if !is_string || !arms.iter().any(|arm| is_str_literal(self.core.expr_pool, &arm.pattern)) {
+            return Ok(None);
+        }
+        if !is_readable_twice(self.core.expr_pool, scrutinee) {
+            return Err(TypeCheckError::new(
+                "a match on a `String` with string-literal arms needs a name as its scrutinee \
+                 -- bind the value with `val` first"
+                    .to_string(),
+            ));
+        }
+        // `String` is only in scope with the stdlib loaded, and the
+        // stdlib declares `eq_str`, so the name is already interned.
+        let Some(eq_str) = self.core.string_interner.get("eq_str") else {
+            return Ok(None);
+        };
+        let mut out = Vec::with_capacity(arms.len());
+        for arm in arms {
+            let Pattern::Literal(literal) = &arm.pattern else {
+                out.push(arm.clone());
+                continue;
+            };
+            if !is_str_literal(self.core.expr_pool, &arm.pattern) {
+                out.push(arm.clone());
+                continue;
+            }
+            let receiver = copy_path(self.core.expr_pool, scrutinee);
+            let compare = self.core.expr_pool.add(Expr::MethodCall(receiver, eq_str, vec![*literal]));
+            let guard = match arm.guard {
+                Some(g) => self.core.expr_pool.add(Expr::Binary(Operator::LogicalAnd, compare, g)),
+                None => compare,
+            };
+            out.push(MatchArm { pattern: Pattern::Wildcard, guard: Some(guard), body: arm.body });
+        }
+        Ok(Some(out))
+    }
+
     pub(super) fn rewrite_patterns(
         &mut self,
         arms: &[MatchArm],
@@ -1270,5 +1352,28 @@ impl<'a> TypeCheckerVisitor<'a> {
                 self.core.expr_pool.update(&expr_ref, Expr::Match(scrutinee, arms.clone()));
             }
         }
+    }
+}
+
+/// Whether reading `expr` twice gives the same value with no effect:
+/// a name, or a field path rooted at one.
+fn is_readable_twice(pool: &ExprPool, expr: &ExprRef) -> bool {
+    match pool.get(expr) {
+        Some(Expr::Identifier(_)) => true,
+        Some(Expr::FieldAccess(base, _)) => is_readable_twice(pool, &base),
+        _ => false,
+    }
+}
+
+/// A fresh copy of a path [`is_readable_twice`] accepted, so the new
+/// node gets its own type entry rather than sharing the original's.
+fn copy_path(pool: &mut ExprPool, expr: &ExprRef) -> ExprRef {
+    match pool.get(expr) {
+        Some(Expr::FieldAccess(base, field)) => {
+            let base = copy_path(pool, &base);
+            pool.add(Expr::FieldAccess(base, field))
+        }
+        Some(other) => pool.add(other),
+        None => *expr,
     }
 }

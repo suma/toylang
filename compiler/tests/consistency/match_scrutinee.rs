@@ -1153,3 +1153,89 @@ fn if_val_without_else_runs_a_unit_body_on_every_lane() {
     "#;
     assert_renders(src, "if_val_unit_body", "4 9\n");
 }
+
+/// MATCH-STRING-LITERAL: a `String` matched against string literals
+/// compares through `eq_str`, on a binding, a `&String` parameter and
+/// a field alike. The literal arms become guarded wildcards, so an
+/// arm's own guard still applies, a name arm still binds the `String`,
+/// and a `_` is still needed. Nothing is allocated for the comparison.
+#[test]
+fn a_string_matches_string_literals() {
+    let src = r#"
+        struct Req { method: String }
+        fn kind(s: &String) -> u64 {
+            match s {
+                "GET" => 1u64,
+                "PUT" | "POST" => 2u64,
+                _ => 0u64,
+            }
+        }
+        fn main() -> u64 {
+            val a = String::from_str("POST")
+            val r = Req { method: String::from_str("GET") }
+            val n: u64 = 3u64
+            val x = match a {
+                "GET" => 10u64,
+                "POST" if n > 5u64 => 20u64,
+                "POST" => 30u64,
+                other => other.len(),
+            }
+            val y = match r.method {
+                "GET" => 1u64,
+                _ => 9u64,
+            }
+            val d = String::from_str("DELETE")
+            val k1 = kind(a)
+            val k2 = kind(d)
+            println("{x} {y} {k1} {k2}")
+            0u64
+        }
+    "#;
+    assert_renders(src, "string_literal_arms", "30 1 2 0\n");
+}
+
+/// The guard names the scrutinee again, so a computed `String` is
+/// refused with the fix rather than evaluated once per arm.
+#[test]
+fn a_computed_string_scrutinee_asks_for_a_val() {
+    let src = r#"
+        fn mk() -> String { String::from_str("a") }
+        fn main() -> u64 {
+            val r = match mk() {
+                "a" => 1u64,
+                _ => 0u64,
+            }
+            r
+        }
+    "#;
+    let errors = type_check_errors(src);
+    assert!(
+        errors.iter().any(|e| e.contains("bind the value with `val` first")),
+        "{errors:?}"
+    );
+}
+
+/// A struct or tuple *field* is a scrutinee the compiled lanes match by
+/// its fields, the way they already did for a binding. It used to be
+/// "`match` on scalar scrutinee only supports i64 / u64 / bool".
+#[test]
+fn a_compound_field_is_a_match_scrutinee() {
+    let src = r#"
+        struct P { x: i64, y: i64 }
+        struct O { p: P, t: (u64, u64) }
+        fn main() -> u64 {
+            val o = O { p: P { x: 0i64, y: 4i64 }, t: (1u64, 9u64) }
+            val a = match o.p {
+                P { x: 0i64, y } => y,
+                _ => -1i64,
+            }
+            val b = match o.t {
+                (1u64, v) => v,
+                _ => 0u64,
+            }
+            println("{a} {b}")
+            0u64
+        }
+    "#;
+    assert_renders(src, "compound_field_scrutinee", "4 9\n");
+}

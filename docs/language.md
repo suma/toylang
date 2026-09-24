@@ -2240,6 +2240,10 @@ fn area(r: f64) -> f64 { PI * r * r }
 ```
 
 - The type annotation is **mandatory** (no inference).
+- The annotation names the initializer's type the way a `val`
+  annotation does, so a suffix-less literal and a character literal
+  take it: `const J: u64 = 4`, `const M: u8 = 'a'`,
+  `const T: [u32; 3] = [1, 2, 3]`.
 - The initializer is an arbitrary expression — including references to
   *earlier-declared* consts. Forward references are not allowed.
 - Each const is evaluated **once** at program startup, before `main`,
@@ -3777,7 +3781,9 @@ Patterns:
   [Struct patterns](#struct-patterns))
 - `42i64`, `true`, `"hello"`, `'h'` — literal patterns for primitives
   (`bool`, `str`, and every integer width — see
-  [Matching integers and bytes](#matching-integers-and-bytes))
+  [Matching integers and bytes](#matching-integers-and-bytes)); a
+  string literal also matches a `String` (see
+  [Matching a `String`](#matching-a-string))
 - `K` where `K` is a top-level `const` — compares against its value
   (see [Constants in patterns](#constants-in-patterns))
 - `a | b | c` — alternatives, all sharing one arm body
@@ -3940,6 +3946,35 @@ Two limits, both reported rather than silently binding:
 this rule a const name in a pattern bound a fresh name that shadowed
 the const, which made the arm match everything and left only an
 "unreachable match arm" error on the `_` that followed.
+
+#### Matching a `String`
+
+A `String` is a struct, but a string literal still matches it by its
+text, the way it matches a `str`:
+
+```rust
+fn kind(method: &String) -> u64 {
+    match method {
+        "GET"          => 1u64,
+        "PUT" | "POST" => 2u64,
+        _              => 0u64,
+    }
+}
+```
+
+The type checker rewrites each literal arm into a guarded wildcard,
+`_ if method.eq_str("GET")`, so the comparison reads the buffer and
+allocates nothing, and the backends see only a method call. Because
+the arm is a guard:
+
+- a `_` (or a binding arm) is still required, as it is for a `str`;
+- an arm's own guard is kept (`"POST" if n > 5u64 =>`);
+- a binding arm (`other => other.len()`) binds the `String` itself.
+
+The scrutinee is read again by each guard, so it must be a name or a
+field path (`r.method`). A computed one (`match make() { "a" => .. }`)
+is an error asking for a `val`. A literal *inside* another pattern
+(`Option::Some("a")` on an `Option<String>`) is not rewritten yet.
 
 ### Guards
 

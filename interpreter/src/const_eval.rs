@@ -484,14 +484,42 @@ fn lower_for_fold(
 /// whose initialiser is not a literal (a `str` const, which the fold
 /// cannot turn into a literal). These are the ones the fold's
 /// lowering stubs, and the ones a folded body must not read.
+///
+/// A const whose initialiser is already a value (a literal, or an
+/// array of literals) is never stubbed, wherever it is declared: its
+/// value does not depend on evaluation order, and stubbing a table
+/// with a scalar `0` made every `K[i]` in the program unlowerable --
+/// the fold's lowering failed, pass 1 stopped without a word, and a
+/// computed const next to a `const K: [u32; 3]` reached the compiled
+/// lanes unfolded ("cannot evaluate the initialiser").
 fn stub_syms_for(program: &File, idx: usize) -> HashSet<DefaultSymbol> {
     program
         .consts
         .iter()
         .enumerate()
-        .filter(|(j, c)| *j >= idx || !is_const_literal(program, c.value))
+        .filter(|(j, c)| {
+            !is_known_value(program, c.value) && (*j >= idx || !is_const_literal(program, c.value))
+        })
         .map(|(_, c)| c.name)
         .collect()
+}
+
+/// Whether `compiler_lower::consts` reads this initialiser without any
+/// evaluation: a literal of any width, or an array literal of them.
+fn is_known_value(program: &File, value: ExprRef) -> bool {
+    fn scalar(program: &File, value: &ExprRef) -> bool {
+        matches!(
+            program.expression.get(value),
+            Some(Expr::Int64(_) | Expr::UInt64(_) | Expr::Int32(_) | Expr::UInt32(_)
+                | Expr::Int16(_) | Expr::UInt16(_) | Expr::Int8(_) | Expr::UInt8(_)
+                | Expr::CharLiteral(_) | Expr::Float64(_) | Expr::Float32(_)
+                | Expr::True | Expr::False)
+        )
+    }
+    match program.expression.get(&value) {
+        Some(Expr::ArrayLiteral(items)) => items.iter().all(|item| scalar(program, item)),
+        _ => scalar(program, &value),
+    }
 }
 
 /// Whether `compiler_lower::consts` can read this initialiser as-is:

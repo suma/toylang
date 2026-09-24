@@ -350,3 +350,47 @@ fn a_const_array_index_is_bounds_checked() {
     "#;
     assert_diagnostic_consistent(src, "const_array_out_of_bounds");
 }
+
+/// CONST-UNSUFFIXED-INIT: the declared type names the initializer's
+/// type, so a suffix-less literal and a character literal take it the
+/// way a `val` annotation makes them. This used to type-check and then
+/// fail at run time on an `Expr::Number` the checker left behind; the
+/// char literal was rejected outright (`declared as u8 but initializer
+/// has type u32`).
+#[test]
+fn a_const_initializer_takes_its_declared_type() {
+    let src = r#"
+        const J: u64 = 4
+        const K: i32 = -3
+        const M: u8 = 'a'
+        const S: u64 = 2 + 3
+        const W: u16 = 0xFF
+        const T: [u32; 3] = [1, 2, 3]
+
+        fn main() -> u64 {
+            println("{J} {K} {M} {S} {W} {T[2]}")
+            J + S
+        }
+    "#;
+    assert_renders(src, "const_unsuffixed_init", "4 -3 97 5 255 3\n");
+}
+
+/// A const table is already a value, so the fold never stubs it. It
+/// used to be stubbed with a scalar `0` while any other const was
+/// folded, which made the `T[1]` in `main` unlowerable: the fold gave
+/// up without a word and the computed `B` reached the compiled lanes
+/// unfolded ("cannot evaluate the initialiser for `const B`").
+#[test]
+fn a_const_table_does_not_stop_the_fold_of_its_neighbours() {
+    let src = r#"
+        const A: u64 = 5u64
+        const B: i64 = -(A as i64) * 2i64
+        const T: [u32; 3] = [1u32, 2u32, 3u32]
+
+        fn main() -> u64 {
+            println("{B} {T[1]}")
+            A
+        }
+    "#;
+    assert_renders(src, "const_table_beside_fold", "-10 2\n");
+}

@@ -510,7 +510,7 @@ fn main() -> u64 {
   - Both comment types can be used inline or as standalone statements
   - Multi-line comments do not support nesting
 - Don't use ';' symbol for end of statement. We can't use semicolon for separation of statements.
-- **トップレベル `const` 宣言**: `const NAME: Type = expr` を関数の外側に書ける。型注釈必須、起動時に 1 回評価して全関数から参照できる immutable な束縛になる。先行 const は参照可（前方参照は不可）。詳細は [`docs/language.md`](docs/language.md)
+- **トップレベル `const` 宣言**: `const NAME: Type = expr` を関数の外側に書ける。型注釈必須 (`val` の注釈と同じく**初期化子の型を名指す**ので `const J: u64 = 4` / `const M: u8 = 'a'` が通る)、起動時に 1 回評価して全関数から参照できる immutable な束縛になる。先行 const は参照可（前方参照は不可）。詳細は [`docs/language.md`](docs/language.md)
 - **`const fn`** (COMPILE-TIME-EVAL): `const fn double(n: u64) -> u64 { n * 2u64 }`
   — コンパイル時に走らせられる関数。`const D: u64 = double(21u64)` は
   **lowering 前にリテラルへ畳まれる**ので 4 実行系すべてで同じ値になる
@@ -692,7 +692,7 @@ fn main() -> u64 {
   - 網羅性チェック: wildcard がなく variant が欠落していると型チェックエラー
   - 到達性チェック: 同じ variant を 2 回 arm に書く、または `_` の後ろに arm を置くと型チェックエラー
   - ジェネリック enum: `enum Option<T> { None, Some(T) }` をサポート。タプル variant の引数から型パラメータを推論、ユニット variant（`None`）は `val x: Option<i64> = Option::None` のように型注釈から補完
-  - リテラルパターン: scrutinee が `bool`/`str`/**全整数幅** (`i64`/`u64` と narrow 6 種、CHAR-LITERAL-MATCH) のとき、`0i64 => ...` / `true => ...` / `"hello" => ...` / `3u32 => ...` のようにリテラルで分岐可能。**char リテラルは scrutinee の幅に narrow される** (`match b: u8 { 'h' => ... }`、収まらなければ型エラー)。`bool` は両値で網羅、整数は範囲で全値を覆えば `_` 不要 (実用的なのは narrow 幅)、文字列は wildcard 必須
+  - リテラルパターン: scrutinee が `bool`/`str`/**全整数幅** (`i64`/`u64` と narrow 6 種、CHAR-LITERAL-MATCH) のとき、`0i64 => ...` / `true => ...` / `"hello" => ...` / `3u32 => ...` のようにリテラルで分岐可能。**char リテラルは scrutinee の幅に narrow される** (`match b: u8 { 'h' => ... }`、収まらなければ型エラー)。`bool` は両値で網羅、整数は範囲で全値を覆えば `_` 不要 (実用的なのは narrow 幅)、文字列は wildcard 必須。**`String` にも文字列リテラルの腕が書ける** (MATCH-STRING-LITERAL) — 型検査器が `_ if s.eq_str("a")` に書き換える (確保なし)。scrutinee は名前かフィールドパス (計算式は `val` に束縛)、ネスト位置 (`Some("a")`) は未対応
   - **const パターン (MATCH-CONST-PATTERN)**: pattern の bare 名が top-level `const` なら**束縛せず値と比較する** (Rust と同じ規則、ネスト位置も)。型検査器がリテラルパターンに書き換えるのでバックエンドは名前を見ない。初期化子が型検査時点で literal でない const (`dbl(2u64)` など fold 待ち) と型の不一致はエラー (以前は黙って束縛になり `_` が unreachable と言われるだけだった)。`n @ pat` は常に束縛
   - ネストパターン: `Option::Some(Option::Some(v))` や `Box::Put(Color::Red)` のように、タプル variant のサブパターンに再帰的にパターンを書ける。サブパターン位置には**任意の pattern** — Name バインディング / `_` / リテラル / ネストした enum variant に加え、struct・tuple・or・範囲・`@` も書ける
 

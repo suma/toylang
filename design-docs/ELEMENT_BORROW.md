@@ -34,6 +34,14 @@ payload の複製ではなく別名を張るようになった。あちらは lo
 いる情報だけで決まったが、こちらは**「この method の戻り値は別名か、
 新しい所有者か」を型で言う**必要がある。それが `borrow` である。
 
+**別名にしたことの続きが 2026-09-24 に 2 つ出た** (どちらも move 検査で
+閉じ、バックエンドは無変更)。(1) 腕の別名や `var conn = match a { Ok(c)
+=> c, .. }` を外へ渡しても、`a` が自分の payload として drop していた —
+**別名の根を追い、渡すと根も渡した扱いにした** (MATCH-MOVE-OUT-DOUBLE-DROP)。
+(2) それで「読むだけの関数に値渡しした値は誰も解放しない」が表に出た —
+**読むだけの受け手への値渡しは貸し出しとし、呼び出し側が drop を持つ**
+ようにした (BY-VALUE-PARAM-NO-DROP)。
+
 ## 1. 採る形
 
 ```rust
@@ -291,4 +299,5 @@ read-modify-write で、読んだ値を `set` で書き戻す — move 検査が
 - [`CONCURRENCY.md`](CONCURRENCY.md) §2-a — 共有可変性を静的に止める
   道具が無い、という同じ話の別の顔
 - [`todo.md`](todo.md) — CONTAINER-ELEM-DROP (未実装) /
-  MATCH-PAYLOAD-COPY (2026-09-19 に完了) / REF-Stage-2 residual
+  MATCH-PAYLOAD-COPY (2026-09-19 に完了) / MATCH-MOVE-OUT-DOUBLE-DROP・
+  BY-VALUE-PARAM-NO-DROP (2026-09-24 に完了) / REF-Stage-2 residual

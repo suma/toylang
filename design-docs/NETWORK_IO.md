@@ -801,6 +801,12 @@ net が作った制約ではなく、**net を書いて初めて実プログラ�
    閉じうる)。`val b = a` が alias である以上、drop glue が 2 回走る形を
    作れてしまう。**対策: `closed: bool` を持ち、`close` は 2 回目を
    no-op にする**。これで toylang 側からは冪等に見える。
+   **2026-09-24 追記**: `closed` が守れるのは**同じ値**の 2 度目だけで、
+   別名 (`val b = a`、`var conn = match accept() { Ok(c) => c, .. }`) を
+   渡した後に元の束縛も drop する形は、2 つの写しがそれぞれ閉じていた
+   (実際に `poc/logsearch` の VM レーンが時々 abort した)。**move 検査が
+   別名の根を追い、別名を渡すと根も持ち主でなくなる**ようにして塞いだ
+   (todo の MATCH-MOVE-OUT-DOUBLE-DROP)。
    `io::exit` は Drop を走らせないが、プロセス終了で OS が閉じるので
    実害はない。
 3. **`Interest` を struct + 演算子オーバーロードにするか** —

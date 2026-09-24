@@ -101,6 +101,7 @@ warning: `decode` is defined in core/std/base64.t and core/std/hex.t and
 | `object` | `<spec> "<key>=<value>"` | 1 つの値の件数と初出 / 最終 |
 | `verify` | `<spec>` | 全セグメントを読み戻して CRC を照合 |
 | `catalog` | `<spec> [list\|repair\|compact]` | カタログの中身 / 作り直し / 世代交代 |
+| `compact` | `<spec>` | マウントごとに冷えたセグメントの一続きを 1 つのアーカイブへまとめる (1 回ぶん) |
 | `retain` | `<spec> [days]` | 保持期限を過ぎたセグメントを消す |
 | `serve` | `<spec> [port] [idle]` | HTTP で答える (Web UI つき) |
 
@@ -455,11 +456,14 @@ poc/logsearch/
     query.t           クエリのパースと実行・3 形式の描画
     store.t           セグメントの配置とカタログへの記録
     catalog.t         カタログ (スナップショット / ジャーナル / 再構築)
+    labels.t          ラベル辞書 (マウントが持つキーと値)
+    compact.t         コンパクション (冷えたセグメント群 → 1 アーカイブ)
     mount.t           マウントの宣言・配置ポリシー・`meta/mount.json`
     http.t            話すと決めた HTTP/1.1 の部分集合
     server.t          イベントループと経路
-    ui.t              Web UI (1 ページを埋め込みで持つ)
-  tests/              `toy test` が走らせる test ブロック (88 件)
+    ui.t              Web UI (1 ページを raw 文字列リテラル 1 つで持つ)
+  tests/              `toy test` が走らせる test ブロック (145 件。
+                      main.t の 7 件と合わせて 152)
   design-docs/        設計文書 11 本 + 目次
   build/              toy の出力 (実行ファイル / リンクキャッシュ、git 管理外)
   log/                読ませる実ログ (git 管理外)

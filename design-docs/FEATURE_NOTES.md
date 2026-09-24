@@ -28,3 +28,63 @@
 ## クロージャ
 
 - **クロージャ / ラムダ**: `fn(params) -> R { body }` 形式の anonymous function literal、関数型は `fn (T1, T2) -> R` (推奨、`fn` prefix で意図を明示) または `(T1, T2) -> R` (bare 形、後方互換) を parameter / return / val 注釈 / **struct field 型** 位置に書ける。bind は `val f = fn(x: i64) -> i64 { x + 1i64 }` (closure literal から型推論)、または `val f: fn (i64) -> i64 = fn(x: i64) -> i64 { x + 1i64 }` (明示注釈)。struct field に格納する場合は `struct S { f: fn (i64) -> i64 }`、call は `s.f(args)` (field-call dispatch)。free var capture は creation time の snapshot (primitive は値コピー、compound は Rc 共有)。**backend coverage**: interpreter は full support (literals + captures + HOF args + return + nest)、JIT は silent fallback、**AOT compiler は env-based ABI 統一 (Phase 6b) で direct call + HOF 引数の両方で capturing/non-capturing 両対応** — 残: closure を return / field 格納、narrow int capture (Phase 6c)。captures は 8-byte scalar (i64/u64/f64/bool) のみ。closure value = env_ptr (`[fn_ptr, cap0, cap1, ...]` を heap allocate)、callee body の第 1 param は env: U64。詳細は [`docs/language.md` → Closures](docs/language.md)。
+
+## 文字列リテラル・パターン・enum・所有権 (2026-09-23〜24)
+
+`poc/logsearch` の文法の空白 (RUNTIME_GAPS.md G19) から来た一連の追加。
+どれも**型検査器 (と字句解析) の書き換えで既存の形に落とす**方針で、
+バックエンドは lowering の穴を塞いだ 3 か所を除いて変えていない。
+
+- **`\"` と raw 文字列** (STR-ESCAPE-HATCH): 文字列の rule は開き引用符
+  `["]` だけに一致させ、閉じ引用符は `find_string_close` が手で探す
+  (バックスラッシュは次の 1 バイトと組にする)。単独の `\"` を rule に
+  すると rflex が `$` にも一致させるので文字クラスで書く。raw は
+  `r"#"*["]` で開き、`find_raw_string_close` が `"` + 同数の `#` を探して
+  `extend_token_to` でトークンを伸ばす (改行も数える)。`"""..."""` は
+  作らない — 通常リテラルが改行をまたげ、`"` を含む複数行は raw が受ける。
+- **const パターン** (MATCH-CONST-PATTERN): `visit_match_impl` の冒頭で
+  `rewrite_patterns` が腕を書き換え、const 名を「宣言型で型を固定した
+  literal の**複製**」を指す `Pattern::Literal` にする (初期化子の節点を
+  共有すると、pattern 側の型ヒントがサフィックス無しの数を書き換えて
+  const の型が変わるため)。書き換えた腕は scrutinee を鍵に
+  `apply_pattern_rewrites` が pool に戻す。初期化子が型検査時点で literal
+  でない const は、黙って束縛せずにエラー。
+- **全整数幅の match** (CHAR-LITERAL-MATCH): scrutinee の許容リストと
+  網羅性の区間 (`integer_type_span`) を 8 幅に広げ、literal / 範囲の値の
+  読み取りを `integer_literal_value` 1 か所にまとめた。char リテラルは
+  `coerce_char_literal` で scrutinee の幅に narrow する。
+- **`str` の match の比較** (バグ修正): compiled レーンは literal 腕を
+  `BinOp::Eq` (ポインタ比較) で、tree-walker は `Object` の構造的等値
+  (`ConstString` と `String` を別物とみなす) で比べていた。前者は
+  `StrEq`、後者は中身比較にした。
+- **enum の discriminant と `as`** (ENUM-DISCRIMINANT): `EnumVariantDef::
+  discriminant: Option<i128>`。番号は tag ではなく、`as` だけが使う。
+  `enum_cast.rs` が `e as T` を検査して、post-pass で `match` (素のパスは
+  literal) に書き換える — compiled レーンは素のパスを scrutinee に
+  できないので、畳むのは必須。
+- **struct variant** (ENUM-STRUCT-VARIANT): `EnumVariantDef::field_names`。
+  構築と pattern はパーサが `E::A` を**結合した 1 つの名前**で既存の
+  `StructLiteral` / `Pattern::Struct` に載せ、`enum_struct_variant.rs` が
+  宣言順に並べ替えて tuple variant の形に戻す。`match E::A {` と区別する
+  ため、構築は struct リテラルを許す文脈で `{ name :` が続くときだけ。
+- **qualified const の lowering** (バグ修正): `segfile::DATA_AT` を
+  `lower_expr` と `val` の推論が const として読む (最後の segment、束縛は
+  見ない)。
+- **`else` 無しの `if val`** (バグ修正): 値を捨てるための
+  `val __ifval_dummy = { .. }` が、本体が `()` のとき compiled レーンで
+  型推論できなかった。腕を `{ block; () }` にした。
+- **別名を渡すと根を渡す** (MATCH-MOVE-OUT-DOUBLE-DROP): `move_check` の
+  `Owned::root`。`val b = a` / `match a` の腕の payload 名 /
+  `val x = match a { Ok(c) => c, .. }` を根 `a` の別名とし、別名の移動は
+  根の移動 (根は `transferred` に入り drop しない)。`val x = match ..` の
+  `x` 自身も `transferred` に入れて drop させない。腕の中で自分の
+  scrutinee の payload を渡すのは、他の variant が何も所有しないとき
+  (`arm_consumes`) だけ許す。
+- **読むだけの受け手への値渡しは貸し出し** (BY-VALUE-PARAM-NO-DROP):
+  `compute_lend` が各関数の値渡し引数を「読むだけか」で判定する (大きい
+  不動点。再帰と「読むだけの関数に渡すだけ」の連鎖を扱うため)。
+  呼び出し側は `Use::Lend` で、移動済みにはする (E0014) が
+  `transferred` には入れない — 呼び出し側の drop が残る。受け手の側で
+  引数を drop させる案 (Rust と同じ) は、フィールドの値渡し・曖昧な
+  シグネチャ・生ポインタへの書き込みのそれぞれが二重 drop の経路に
+  なるので採らなかった。

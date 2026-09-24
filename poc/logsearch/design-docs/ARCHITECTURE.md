@@ -77,41 +77,49 @@ toylang のモジュールは**ファイル階層から経路が決まり、別�
 セグメント**になる (`docs/language.md` の Modules)。したがって
 ファイル名がそのまま呼び出し側の綴りになる — `segment::flush(...)`。
 
-**太字は実装済み。**
+2026-09-24 時点で**すべて実装済み** (設計だけの行は無い)。
 
 ```
 poc/logsearch/
-  main.t                  # **エントリ**。5 つのサブコマンド
-                          #   (archive / query / fields / verify / scan)
+  main.t                  # エントリ。10 のサブコマンド (archive / query /
+                          #   fields / object / verify / catalog / compact /
+                          #   retain / serve / scan)
   design-docs/            # この設計文書一式
   log/                    # 読ませる実ログ (git 管理外)
+  tests/                  # `toy test` が拾う結合テスト (+ golden/)
   src/
-    line.t                # **行分割** (Line / LineScan、Span<u8> の上)
-    logdir.t              # **ログファイルの再帰探索** (.gz などは除外)
-    reader.t              # **1 ファイルを使い回しバッファへ読む**
-    record.t              # **行の framing** (時刻・host/tag・ラベル・本文)
-    bytes.t               # **ByteWriter / ByteReader** (LE・varint・SIMD コピー)
-    crc.t                 # **CRC-32** (表は起動時に作る)
-    lsz.t                 # **LSZ1 圧縮** (LZ77、SIMD 化済み)
-    segfile.t             # **`.seg` のファイル層** (ヘッダ / セクション表 /
-                          #   read_at / write_at / フレーム展開)
-    archive.t             # **セグメントの書き出し・検証**、索引の意味
-    extract.t             # **フィールド抽出** (apache 2 書式 / KEY=value)
-    #   索引 (語彙・postings・リンク) は archive.t が持つ
-    search.t              # **部分一致検索** (SIMD、スカラー参照つき)
-    query.t               # **クエリのパースと実行**
-    # -- ここから下は設計のみ (まだファイルが無い) --
-    config.t              # 設定ファイルの読み取りと検証
-    labels.t              # ラベル辞書 (str → u32 code)
-    catalog.t             # カタログのスナップショット / ジャーナル / --repair
+    line.t                # 行分割 (Line / LineScan、Span<u8> の上)
+    logdir.t              # ログファイルの再帰探索 (.gz などは除外)
+    reader.t              # 1 ファイルを使い回しバッファへ読む
+    record.t              # 行の framing (形 `LineShape`・時刻・host/tag・
+                          #   ラベル・本文)
+    bytes.t               # ByteWriter / ByteReader (LE・varint・SIMD コピー)
+    crc.t                 # CRC-32 (表は起動時に作る)
+    lsz.t                 # LSZ1 圧縮 (LZ77、SIMD 化済み)
+    segfile.t             # `.seg` のファイル層 (ヘッダ / セクション表
+                          #   `Section` / read_at / write_at / フレーム展開)
+    archive.t             # セグメントの書き出し・検証、索引 (語彙・
+                          #   postings・リンク)
+    extract.t             # フィールド抽出 (apache 2 書式 / KEY=value)
+    search.t              # 部分一致検索 (SIMD、スカラー参照つき)
+    query.t               # クエリのパースと実行 (`Field` / `OutputFormat`)
+    labels.t              # ラベル辞書 (どのキー・値をマウントが持つか)
+    catalog.t             # カタログのスナップショット / ジャーナル /
+                          #   --repair (`RowKind` / `JournalOp` /
+                          #   `RemovalReason`)
+    compact.t             # コンパクション (冷えたセグメント群 → 1 アーカイブ)
     store.t               # マウント横断の目録。枝刈りと配置
-    mount.t               # マウントの宣言・選択・容量計上
+    mount.t               # マウントの宣言・選択・容量計上 (`MountState`)
     http.t                # HTTP/1.1 の最小パーサとレスポンス組み立て
-    json.t                # JSON の**書き手**だけ (読み手は `core/std/json.t`)
-    ui.t                  # 検索 UI の HTML (const str)
-    server.t              # poller、接続テーブル、ディスパッチ
-    stats.t               # カウンタと /v1/stats
+                          #   (`Method`)
+    ui.t                  # 検索 UI の HTML (raw 文字列リテラル 1 つ)
+    server.t              # poller、接続テーブル、ディスパッチ、統計
 ```
+
+タグは enum、サイズ・上限・番兵は `const` で持つ (2026-09-24 に数を返す
+0 引数関数 74 本から移した — RUNTIME_GAPS.md G19)。ディスクに出る番号は
+明示の discriminant で固定し、読み戻しは `segfile::section_of` /
+`catalog::journal_op_of` の 1 か所ずつが担う。
 
 > 以前ここには `bytes.t` / `crc.t` / `lsz.t` / `record.t` / `query.t` が
 > **実装済みの行と設計だけの行の両方に**並んでいた。書いた順に足して

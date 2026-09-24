@@ -47,7 +47,16 @@ is where most of the gaps in the language were found.
 - **Tuples**: `val (a, b) = (1u64, 2u64)` with destructuring (including nested patterns)
 - **Dictionary Type**: `dict{key1: value1, key2: value2}` with Object-keyable types
 - **Structures**: `struct Point { x: i64, y: i64 }` with method implementations
-- **Enums and Pattern Matching**: `enum Shape { Circle(i64), Rect(i64, i64), Point }` with tuple-variant binding, literal patterns, nested patterns, and per-arm `if` guards
+- **String literals**: `\"` for a quote, `{expr}` interpolation (`{{` for a
+  brace), and raw literals `r"..."` / `r#"..."#` with no escapes and no
+  interpolation — JSON and HTML are written as themselves. Any literal may
+  span lines
+- **Enums and Pattern Matching**: `enum Shape { Circle(i64), Rect(i64, i64), Point }`
+  with tuple-variant binding, **struct variants** (`Syslog { host: u64, tag: u64 }`),
+  **discriminants** on unit variants with `as` to an integer (`Apache = 10`,
+  `k as u32`), literal / range / or / `@` / nested patterns, per-arm `if`
+  guards, a `match` over **any integer width** with char literals narrowed to
+  it (`match b: u8 { '0'..':' => .. }`), and **named constants** as patterns
 - **Generics with bounds**: `fn id<T>(x: T) -> T` and `fn run<A: Allocator>(a: A)`
 - **Design by Contract**: `requires` (preconditions) and `ensures` (postconditions) on functions and methods, with `result` for the return value. Runtime gating via `INTERPRETER_CONTRACTS=all|pre|post|off`
 - **Termination primitives**: `panic("msg")` and `assert(cond, "msg")` for explicit failure
@@ -57,7 +66,10 @@ is where most of the gaps in the language were found.
 - **Ownership**: a type with an `impl Drop` has one owner. Handing it to
   something that outlives the scope **transfers** it (`[E0014]`), drop glue
   frees containers recursively, and a container **lends** an element with
-  `borrow` rather than handing out a second owner (`[E0028]`)
+  `borrow` rather than handing out a second owner (`[E0028]`). An alias
+  (`val b = a`, a value taken out of a `match`) hands over its owner's value,
+  and a by-value argument to a function that only reads it stays the
+  caller's to drop — so each value is freed exactly once
 - **Effects**: what a declaration can do besides compute — `never_allocates`
   and `const fn` are checked against the same reachability walk
 - **Data parallelism**: `parallel for i in 0u64..n { .. }` — the iterations
@@ -175,7 +187,7 @@ For the full CLI / env-var reference see [`interpreter/README.md`](interpreter/R
 lines, because the output is what makes a test run readable, not the speed.
 
 ```bash
-# Everything (~3,000 tests, about 45 s)
+# Everything (~3,100 tests, about 20 s once built)
 cargo nextest run
 
 # One crate, or a name (filters are substring matches, not exact)
@@ -238,6 +250,23 @@ fn collection_example() -> i64 {
 }
 ```
 
+### Strings
+```rust
+fn strings_example() -> u64 {
+    val n = 42u64
+    val json = "{{\"n\":{n}}}"               # {"n":42} -- `\"` quotes, `{n}` interpolates
+    val raw = r#"{"error":"not found"}"#     # raw: no escapes, no interpolation
+    val page = r#"<p class="note">
+  two lines
+</p>"#                                        # any literal may span lines
+    json.len() + raw.len() + page.len()
+}
+```
+
+A raw literal closes only at `"` followed by as many `#`s as it opened
+with, so `r##"..."##` holds a `"#`. Interpolation is for ordinary literals
+only, which is when `{{` / `}}` stand for a brace.
+
 ### Structures and Methods
 ```rust
 struct Point {
@@ -296,6 +325,38 @@ patterns are struct (`Point { x: 0i64, y }`), tuple, literal, or
 (`1i64 | 2i64`), half-open range (`0i64..5i64`), binding (`n @ 3i64`) and
 nesting of any of them — including inside a payload. Generic enums
 (`Option<T>` / `Result<T, E>`) are ordinary declarations in the stdlib.
+
+```rust
+# A unit variant may name the number it stands for; `as` yields it
+enum Kind { Plain, Syslog, Apache = 10, Epoch }     # 0, 1, 10, 11
+fn code(k: Kind) -> u32 { k as u32 }
+
+# A variant may name its fields
+enum Rec {
+    Syslog { host: u64, tag: u64 },
+    Plain,
+}
+fn host_of(r: Rec) -> u64 {
+    match r {
+        Rec::Syslog { host, .. } => host,    # `..` skips the rest
+        Rec::Plain => 0u64,
+    }
+}
+
+const SPACE: u8 = 32u8
+fn classify(b: u8) -> u64 {
+    match b {
+        SPACE => 0u64,        # a const name compares against its value
+        '0'..':' => 1u64,     # a char literal narrows to the `u8` scrutinee
+        _ => 2u64,
+    }
+}
+```
+
+`as` needs every variant to be a unit variant and every number to fit the
+target, and a struct variant is a tuple variant whose positions have names
+(`Rec::Syslog(3u64, 7u64)` works too). A `u8` covered by ranges needs no
+`_`: exhaustiveness counts values.
 
 ### Unary Operators
 ```rust
@@ -371,6 +432,23 @@ val s: &TcpStream = conns.borrow(0u64)  # names it without claiming it
 
 The rules and what they cost are in
 [`design-docs/ELEMENT_BORROW.md`](design-docs/ELEMENT_BORROW.md).
+
+Two more rules keep each value to one drop. A name that **aliases** another
+binding's value hands that binding's value over when it is handed over:
+
+```rust
+val taken = listener.accept()
+var conn = match taken {                 # `conn` aliases `taken`'s payload
+    Result::Ok(c) => c,
+    Result::Err(e) => { panic("accept: {e}") }
+}
+serve(conn)                              # `taken` stops owning it too
+```
+
+And a by-value argument to a function that only **reads** the parameter
+(fields, `&self` methods, printing, passing it on as `&T`) is **lent**: the
+callee keeps nothing, so the caller keeps the drop. Reading the binding
+after the call is still `[E0014]` — as far as the language goes, it moved.
 
 ### Generic Programming
 ```rust
@@ -642,7 +720,7 @@ largest open item is real parallel execution — the semantics of
 - **Design by Contract**: `requires` / `ensures` clauses with `result` binding and an `INTERPRETER_CONTRACTS=all|pre|post|off` runtime gate (D `-release` equivalent)
 - **Memory profiling**: request-based allocation counters, leak detection (per allocation site), and allocator layout reports — `--profile=mem` / `--format=json` on the interpreter and `TOY_PROFILE_MEM=1` on AOT binaries, byte-identical across all four backends. The same counters are readable from `requires` / `ensures` / `test`, so memory use can be pinned by contract (see [`design-docs/MEMORY_PROFILING.md`](design-docs/MEMORY_PROFILING.md))
 - **Efficient Memory Management**: Append-only `StmtPool` / `ExprPool` plus automatic destruction with custom `drop` methods
-- **Testing**: ~3,000 tests in the workspace, plus the POC's own 147. The
+- **Testing**: ~3,100 tests in the workspace, plus the POC's own 152. The
   interesting ones are the consistency tests, which run a program on all
   four engines and compare — and pin the *output*, because four engines
   agreeing on a wrong answer is the failure mode that costs the most

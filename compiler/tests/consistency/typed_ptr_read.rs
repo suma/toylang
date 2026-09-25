@@ -246,3 +246,32 @@ fn stdlib_ptr_access_carries_compound_elements() {
     "#;
     assert_renders(src, "ptr_intrinsic_compound", "-4 9 7 70 132\n");
 }
+
+// A `Ptr` literal takes its element type from the binding's
+// annotation, not from whatever `T` the calling generic has in scope.
+// The tree-walker's generic scope is every active call's, so
+// `first_byte` -- not generic itself -- used to see `through`'s
+// `T = u64` and tag its `Ptr<u8>` window `Ptr<u64>`. `Vec<String>`'s
+// `clone` hit it through `String::push`.
+#[test]
+fn a_ptr_window_ignores_its_callers_type_parameter() {
+    let src = r#"
+        fn first_byte(p: ptr) -> u8 {
+            val w: Ptr<u8> = Ptr { addr: p }
+            val b: u8 = w.get(1u64)
+            b
+        }
+        fn through<T>(x: T, p: ptr) -> u8 {
+            first_byte(p)
+        }
+        fn main() -> u64 {
+            val bytes: Ptr<u8> = Ptr::alloc(4u64)
+            bytes.set(0u64, 5u8)
+            bytes.set(1u64, 9u8)
+            val b: u8 = through(7u64, bytes.as_raw())
+            __builtin_heap_free(bytes.as_raw())
+            b as u64
+        }
+    "#;
+    assert_consistent(src, "ptr_window_callers_param");
+}

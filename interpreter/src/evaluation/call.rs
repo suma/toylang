@@ -1932,17 +1932,18 @@ impl EvaluationContext<'_> {
         // the generic scope it is evaluated in (`impl<T> Bag<T>`). A
         // declared type still naming an unknown parameter is not
         // stamped -- it says nothing about the value yet.
+        let mut annotated: HashMapStd<DefaultSymbol, TypeDecl> = HashMapStd::new();
         if let Some(entry) = self.struct_definitions.get(struct_name).cloned() {
-            let mut params: HashMapStd<DefaultSymbol, TypeDecl> = HashMapStd::new();
             if let Some(TypeDecl::Struct(name, args) | TypeDecl::Enum(name, args)) =
                 self.pending_annotation.as_ref()
             {
                 if name == struct_name && args.len() == entry.generic_params.len() {
                     for (p, a) in entry.generic_params.iter().zip(args) {
-                        params.insert(*p, a.clone());
+                        annotated.insert(*p, a.clone());
                     }
                 }
             }
+            let mut params = annotated.clone();
             let scope = self.merged_generic_scope();
             for p in &entry.generic_params {
                 if params.contains_key(p) {
@@ -1969,11 +1970,32 @@ impl EvaluationContext<'_> {
         }
 
         let active_scope = self.merged_generic_scope();
-        let type_args = self
+        let mut type_args = self
             .struct_definitions
             .get(struct_name)
             .map(|entry| derive_struct_type_args(entry, &field_values, &active_scope))
             .unwrap_or_default();
+        // The binding's annotation outranks the scope for a phantom
+        // parameter. The scope is every active call's, not the
+        // literal's own: `val bytes: Ptr<u8> = Ptr { addr: .. }` inside
+        // `String::push`, reached from `Vec<T>::clone` with `T` =
+        // `String`, otherwise tagged the window `Ptr<String>`.
+        // An annotation that names a parameter itself (`val p: Ptr<T>`
+        // inside `impl<T> Vec<T>`) is read through the scope first,
+        // and left alone if that does not make it concrete.
+        if let Some(entry) = self.struct_definitions.get(struct_name) {
+            for (slot, p) in type_args.iter_mut().zip(&entry.generic_params) {
+                if let Some(a) = annotated.get(p) {
+                    let resolved = substitute_params(a, &active_scope);
+                    if !mentions_any(&resolved, &entry.generic_params)
+                        && !mentions_any(&resolved, &active_scope.keys().copied().collect::<Vec<_>>())
+                        && !matches!(resolved, TypeDecl::Unknown)
+                    {
+                        *slot = resolved;
+                    }
+                }
+            }
+        }
         let struct_obj = Object::Struct {
             type_name: *struct_name,
             fields: Box::new(field_values),

@@ -327,24 +327,31 @@ fn u16_and_u32_report_and_clamp_at_their_own_max() {
 }
 
 #[test]
-fn u8_subtraction_wraps_so_checked_sub_is_the_only_report() {
-    // Unlike `u64`, narrow unsigned `-` below zero does not trap — it
-    // wraps to 251 and the program carries on. `checked_sub` is what
-    // turns that into an answer the caller has to look at.
+fn u8_subtraction_traps_and_checked_sub_reports() {
+    // NARROW-UNSIGNED-SUB: narrow unsigned `-` below zero traps, as
+    // `u64` does (it used to wrap to 251). `checked_sub` asks instead.
     assert_checked_u64(
         r#"
             val a: u8 = 5u8
             val b: u8 = 10u8
-            val wrapped = a - b
             val under = a.checked_sub(b)
             val reported = match under {
                 Option::Some(v) => 0u64,
                 Option::None => 1u64,
             }
             val clamped = if a.saturating_sub(b) == 0u8 { 1u64 } else { 0u64 }
-            (wrapped as u64) + reported + clamped
+            reported + clamped
         "#,
-        253,
+        2,
+    );
+    crate::common::assert_program_fails(
+        r#"
+        fn main() -> u64 {
+            val a: u8 = 5u8
+            val b: u8 = 10u8
+            (a - b) as u64
+        }
+        "#,
     );
 }
 

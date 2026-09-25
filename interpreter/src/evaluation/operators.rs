@@ -377,6 +377,28 @@ impl EvaluationContext<'_> {
                 site,
             ));
         }
+        // NARROW-UNSIGNED-SUB: the narrow unsigned widths trap on an
+        // underflowing subtraction exactly as `u64` does below.
+        if matches!(op, ArithmeticOp::Sub) {
+            let narrow = match (lhs, rhs) {
+                (Value::UInt32(l), Value::UInt32(r)) if l < r => {
+                    Some((compiler_ir::panic_kind::U32_UNDERFLOW, *l as u64, *r as u64))
+                }
+                (Value::UInt16(l), Value::UInt16(r)) if l < r => {
+                    Some((compiler_ir::panic_kind::U16_UNDERFLOW, *l as u64, *r as u64))
+                }
+                (Value::UInt8(l), Value::UInt8(r)) if l < r => {
+                    Some((compiler_ir::panic_kind::U8_UNDERFLOW, *l as u64, *r as u64))
+                }
+                _ => None,
+            };
+            if let Some((kind, l, r)) = narrow {
+                return Err(self.panic_error(
+                    compiler_ir::panic_values_message(kind, l as i64, r),
+                    site,
+                ));
+            }
+        }
         Ok(match (lhs, rhs) {
             (Value::Int64(l), Value::Int64(r)) => Value::Int64(op.apply_i64(*l, *r)),
             (Value::UInt64(l), Value::UInt64(r)) => {

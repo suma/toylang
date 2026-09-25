@@ -1191,6 +1191,24 @@ pub mod panic_kind {
     pub const U64_UNDERFLOW: u64 = 0;
     /// `array index out of bounds: index {a}, length {b}`
     pub const INDEX_OUT_OF_BOUNDS: u64 = 1;
+    /// NARROW-UNSIGNED-SUB: `u8 / u16 / u32 subtraction underflowed:
+    /// {a} - {b}` -- the narrow widths trap as `u64` does.
+    pub const U8_UNDERFLOW: u64 = 2;
+    pub const U16_UNDERFLOW: u64 = 3;
+    pub const U32_UNDERFLOW: u64 = 4;
+}
+
+/// The underflow trap an unsigned subtraction of `ty` carries, or
+/// `None` for a type whose subtraction does not trap (signed integers
+/// wrap, floats are IEEE).
+pub fn unsigned_underflow_kind(ty: Type) -> Option<u64> {
+    match ty {
+        Type::U64 => Some(panic_kind::U64_UNDERFLOW),
+        Type::U32 => Some(panic_kind::U32_UNDERFLOW),
+        Type::U16 => Some(panic_kind::U16_UNDERFLOW),
+        Type::U8 => Some(panic_kind::U8_UNDERFLOW),
+        _ => None,
+    }
 }
 
 /// The sentence for a value-carrying trap.
@@ -1206,6 +1224,15 @@ pub fn panic_values_message(kind: u64, a: i64, b: u64) -> String {
     match kind {
         panic_kind::U64_UNDERFLOW => {
             format!("u64 subtraction underflowed: {} - {b}", a as u64)
+        }
+        panic_kind::U32_UNDERFLOW => {
+            format!("u32 subtraction underflowed: {} - {b}", a as u64)
+        }
+        panic_kind::U16_UNDERFLOW => {
+            format!("u16 subtraction underflowed: {} - {b}", a as u64)
+        }
+        panic_kind::U8_UNDERFLOW => {
+            format!("u8 subtraction underflowed: {} - {b}", a as u64)
         }
         panic_kind::INDEX_OUT_OF_BOUNDS => {
             format!("array index out of bounds: index {a}, length {b}")

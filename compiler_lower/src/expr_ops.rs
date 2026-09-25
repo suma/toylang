@@ -35,17 +35,37 @@ impl<'a> FunctionLower<'a> {
     /// tree-walker, which has the values to hand, includes them; the
     /// lowered backends report the operation and the location. Both say
     /// the same thing about what happened.
-    fn emit_u64_underflow_guard(&mut self, lhs: ValueId, rhs: ValueId) -> Result<(), String> {
+    ///
+    /// NARROW-UNSIGNED-SUB: every unsigned width traps, not only `u64`;
+    /// `5u8 - 10u8` used to be `251u8`, a plausible byte far from the
+    /// mistake. The trap's operands travel as `u64`, so a narrow pair is
+    /// widened (zero-extended) for the message.
+    fn emit_unsigned_underflow_guard(
+        &mut self,
+        lhs: ValueId,
+        rhs: ValueId,
+        ty: Type,
+        kind: u64,
+    ) -> Result<(), String> {
         let ok = self
             .emit(
                 InstKind::BinOp { op: BinOp::Ge, lhs, rhs },
                 Some(Type::Bool),
             )
             .ok_or_else(|| "underflow guard produced no value".to_string())?;
+        let (a, b) = if ty == Type::U64 {
+            (lhs, rhs)
+        } else {
+            let widen = |this: &mut Self, v: ValueId| {
+                this.emit(InstKind::Cast { value: v, from: ty, to: Type::U64 }, Some(Type::U64))
+                    .expect("Cast returns a value")
+            };
+            (widen(self, lhs), widen(self, rhs))
+        };
         // The operands travel with the trap: `1 - 5` is the whole
         // diagnostic, and a fixed sentence about which side was
         // smaller is the same information minus the answer.
-        self.emit_trap_values_unless(ok, crate::ir::panic_kind::U64_UNDERFLOW, lhs, rhs);
+        self.emit_trap_values_unless(ok, kind, a, b);
         Ok(())
     }
 
@@ -358,10 +378,10 @@ impl<'a> FunctionLower<'a> {
         // compiler, the IR VM and the compiler-side JIT — all of which
         // consume this IR — get the check from one place.
         if matches!(ir_op, BinOp::Sub)
-            && matches!(lhs_ty, Type::U64)
+            && let Some(kind) = crate::ir::unsigned_underflow_kind(lhs_ty)
             && !self.contract_rules_out_underflow(lhs, rhs)
         {
-            self.emit_u64_underflow_guard(l, r)?;
+            self.emit_unsigned_underflow_guard(l, r, lhs_ty, kind)?;
         }
         // RUNTIME-TRAP: integer division / remainder by zero, and the
         // signed `MIN / -1` whose result is not representable.

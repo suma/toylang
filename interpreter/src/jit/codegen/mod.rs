@@ -1089,25 +1089,33 @@ impl<'a, 'b> State<'a, 'b> {
                 // is emitted in `compiler_lower`, which this JIT does
                 // not go through). Without it the JIT would be the one
                 // engine that silently produced 18446744073709551615.
-                // `U64` and not `!signed` on purpose: only `u64`
-                // subtraction traps on underflow, the narrow unsigned
-                // widths wrap (todo NARROW-UNSIGNED-SUB). Widening this
-                // to every unsigned width would make the JIT disagree
-                // with the other three engines.
-                if matches!(op, Operator::ISub) && matches!(lhs_ty, ScalarTy::U64) {
+                // NARROW-UNSIGNED-SUB: every unsigned width, as in the
+                // other three engines.
+                let underflow_kind = match lhs_ty {
+                    ScalarTy::U64 => Some(compiler_ir::panic_kind::U64_UNDERFLOW),
+                    ScalarTy::U32 => Some(compiler_ir::panic_kind::U32_UNDERFLOW),
+                    ScalarTy::U16 => Some(compiler_ir::panic_kind::U16_UNDERFLOW),
+                    ScalarTy::U8 => Some(compiler_ir::panic_kind::U8_UNDERFLOW),
+                    _ => None,
+                };
+                if let (true, Some(kind)) = (matches!(op, Operator::ISub), underflow_kind) {
                     let ok = self.builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, l, r);
                     let fail_blk = self.builder.create_block();
                     let cont_blk = self.builder.create_block();
                     self.brif(ok, cont_blk, fail_blk);
                     self.switch_to(fail_blk);
                     // The operands travel with the trap, so this says
-                    // `1 - 5` like every other engine.
-                    self.panic_with_values(
-                        &lhs_ref,
-                        compiler_ir::panic_kind::U64_UNDERFLOW,
-                        l,
-                        r,
-                    )?;
+                    // `1 - 5` like every other engine -- widened to the
+                    // 64-bit slots the helper takes.
+                    let (a, b) = if lhs_ty == ScalarTy::U64 {
+                        (l, r)
+                    } else {
+                        (
+                            self.builder.ins().uextend(types::I64, l),
+                            self.builder.ins().uextend(types::I64, r),
+                        )
+                    };
+                    self.panic_with_values(&lhs_ref, kind, a, b)?;
                     self.builder.ins().trap(TrapCode::user(1).expect("non-zero"));
                     self.switch_to(cont_blk);
                 }

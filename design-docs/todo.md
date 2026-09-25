@@ -12,6 +12,13 @@
 
 ### 2026-09-25
 
+- **NARROW-UNSIGNED-SUB: 符号なし減算は全幅で trap** — `u8` / `u16` /
+  `u32` のアンダーフローも `u64` と同じく trap する (以前は wrap、4 レーン
+  一致で `5u8 - 10u8 == 251u8`)。メッセージは幅を名指す。guard の省略
+  (契約・制御フロー) は全幅に効く。`poc/logsearch` の Apache 時刻の
+  分・秒が数字かを確かめずに `b - '0'` していた箇所が見つかった (秒が
+  1 桁のテスト入力でゴミの時刻を作っていた)。
+
 - **CONST-ARRAY: struct / tuple の表** — `const RS: [R; N]` を compiled
   レーンでも読める (以前は「only scalars are supported」)。要素は leaf の
   定数として評価し、読み出し時に `Vec<T>` と同じ詰めた配置で `.rodata` に
@@ -2606,19 +2613,6 @@
   2026-09-03 に `core/std/base64.t` の `symbol()` で踏んで、
   `'+' as u8` / `'/' as u8` で回避した (隣の 3 arm が元から `as u8`
   なので実害は小さい)。
-
-- **NARROW-UNSIGNED-SUB: `u8` / `u16` / `u32` の減算は
-  アンダーフローで trap せず wrap する** ★ — RUNTIME-TRAP-NARROW の
-  作業中に実測 (2026-08-31、4 レーン一致で `5u8 - 10u8` == `251u8`)。
-  trap するのは `u64` だけで、0 除算と `MIN / -1` は全幅で効いている。
-  `docs/language.md` の Runtime traps 表は元から `u64` としか書いて
-  いないので**嘘ではない**が、幅で意味論が割れているのが意図なのかは
-  決まっていない。揃えるなら (a) narrow unsigned も trap させる
-  (guard が 3 幅分増える、RUNTIME-TRAP の「wrap した答えが誤解を招く」
-  基準は narrow でも同じ) か、(b) 現状を明示的な決定として書く。
-  **今は (b) の書き方にしてある** — 「トラップでないもの」の一覧に
-  narrow unsigned の減算を足し、`core/std/checked.t` の doc comment が
-  「narrow 幅では `checked_sub` だけが報告する」と説明する
 
 - **TYPECHECK-LIES 残: `str.substring` / `str.split` の AOT/JIT 対応** ★ —
   2026-08-20 に 3 件を実測したところ、**本物の嘘は `null` だけ**だった

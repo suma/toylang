@@ -69,14 +69,11 @@ fn main() -> u64 {
     val floor = i_min.saturating_sub(two)
     println(floor)
 
-    # The same calls at a narrow width (RUNTIME-TRAP-NARROW). `u8`
-    # differs from `u64` in one way worth seeing: the operator `-`
-    # below zero *wraps* here rather than trapping, so `checked_sub`
-    # is reporting an underflow the program would otherwise have run
-    # past with 251 in hand.
+    # The same calls at a narrow width (RUNTIME-TRAP-NARROW). The
+    # operator `-` below zero traps here as it does for `u64`
+    # (NARROW-UNSIGNED-SUB), so `checked_sub` is how to ask instead.
     val byte: u8 = 5u8
     val bigger: u8 = 10u8
-    println(byte - bigger)
 
     val byte_diff = byte.checked_sub(bigger)
     match byte_diff {

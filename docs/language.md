@@ -6407,7 +6407,7 @@ the same input; `compiler/tests/consistency.rs` pins that.
 
 | Operation | Trap |
 |---|---|
-| `a - b` on `u64` where `a < b` | `u64 subtraction underflowed: 1 - 5` |
+| `a - b` on an unsigned integer (`u8` / `u16` / `u32` / `u64`) where `a < b` | `u64 subtraction underflowed: 1 - 5` (the message names the width: `u8 subtraction underflowed: 5 - 10`) |
 | `a / b` or `a % b` where `b == 0` (any integer width) | `integer division by zero` |
 | `a / b` or `a % b` where `a` is the type's most negative value and `b == -1` | `integer division overflowed` |
 | `arr[i]` / `arr[i] = v` where `i` is at or past the array's length | `array index out of bounds: index 5, length 3` |
@@ -6455,11 +6455,6 @@ What is deliberately **not** a trap:
   wrapped result is actively misleading rather than merely modular.
 - **`f64` division by zero** — IEEE-754 defines it as an infinity,
   which is a value.
-- **`a - b` below zero on `u8` / `u16` / `u32`** — the trap in the
-  table above is `u64`'s alone; the narrow unsigned widths wrap, so
-  `5u8 - 10u8` is `251u8` and the program carries on. `checked_sub` /
-  `saturating_sub` (*Overflow-aware arithmetic*) are what report it at
-  those widths.
 
 A `requires` clause that already rules a trap out **removes the
 guard** — see *Contracts and traps* below.

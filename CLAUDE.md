@@ -636,9 +636,9 @@ fn main() -> u64 {
     `saturating_add|sub|mul` → `Self` を**全 8 幅**
     (`u8`〜`u64` / `i8`〜`i64`) に impl (レシーバは名前束縛、enum 結果は
     `val` 束縛してから `match`、または `??` で畳む)。
-    **narrow unsigned の `-` はアンダーフローで trap せず wrap する**
-    (`5u8 - 10u8` は `251u8`) — trap するのは `u64` だけなので、
-    narrow 幅では `checked_sub` だけが報告する
+    **符号なし減算のアンダーフローは全幅 (`u8`〜`u64`) で trap する**
+    (NARROW-UNSIGNED-SUB。以前は narrow 幅だけ wrap していた —
+    `5u8 - 10u8` は `251u8`)。止めずに聞くなら `checked_sub`
   - 比較: `==`, `!=`, `<`, `<=`, `>`, `>=`。`==` / `!=` は同型 struct ペアで **operator overload** — その struct に `eq(&self, other: &Self) -> bool` method があれば dispatch (3 backend)。`s == t` で String/Vec<u8> 等の比較が動く
   - **全 binary / unary operator overload** (Phase B + OP-OVERLOAD-ARITH + OP-OVERLOAD-EXTEND Phase 1-4): 同型 struct ペアで以下に dispatch (3 backend、let-rhs context):
     - 算術: `+` / `-` / `*` / `/` / `%` → `add` / `sub` / `mul` / `div` / `rem` (`(&self, &Self) -> Self`)

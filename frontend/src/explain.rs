@@ -195,9 +195,9 @@ Other sources:
 
 Two nearby failures that are *not* this code:
 
-  * a `u64` subtraction that would go below zero type checks and traps
-    at run time (`u64 subtraction underflowed`). Compute in `i64` when
-    the result can be negative.
+  * an unsigned subtraction (`u8` to `u64`) that would go below zero
+    type checks and traps at run time (`u64 subtraction underflowed`).
+    Compute in a signed type when the result can be negative.
   * `%` on `f64` passes the type checker. It fails later, in the
     backend, because the operation is deliberately unsupported there.";
 

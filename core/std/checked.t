@@ -7,7 +7,8 @@ package std.checked
 # arithmetic semantics holds regardless of build profile. Two cases
 # are exceptions and stop the program instead, because their wrapped
 # answer is a plausible-looking number that surfaces far from the
-# mistake: `u64` subtraction below zero, and integer `/` or `%` by
+# mistake: unsigned subtraction below zero (every width, `u8` to
+# `u64`), and integer `/` or `%` by
 # zero (plus the signed `MIN / -1` whose result is not
 # representable). See `docs/language.md` -> "Numeric semantics".
 #
@@ -49,12 +50,9 @@ package std.checked
 #     Every product goes through `checked_mul`, which is what makes
 #     the overflow report exact rather than an estimate.
 #
-# Narrow widths differ from `u64` in one place worth naming: `a - b`
-# below zero **wraps** on `u8` / `u16` / `u32` where the same
-# expression on `u64` traps (`docs/language.md` -> "Runtime traps"
-# lists the trap for `u64` only). `checked_sub` / `saturating_sub`
-# therefore report a narrow underflow that the operator would have
-# silently wrapped past.
+# Narrow unsigned widths trap on `a - b` below zero exactly as `u64`
+# does (NARROW-UNSIGNED-SUB; they used to wrap). `checked_sub` /
+# `saturating_sub` are how to ask instead of stopping, at every width.
 
 # Both sides borrow, as `Ord` does. `other: &Self` on a primitive
 # receiver was the case that turned up three missing auto-borrows in

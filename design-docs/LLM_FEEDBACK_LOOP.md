@@ -712,7 +712,7 @@ tree-walker はそれを出し、他は操作と位置を出す。**起きたこ
 
 **スコープ**: **符号なし減算のみ**。加算 / 乗算の overflow は現状 wrap のまま
 (`u64_addition_still_wraps` テストで現在の境界を pin してある — 是認では
-なく現状の記録)。narrow unsigned (u8/u16/u32) も未対応。
+なく現状の記録)。narrow unsigned (u8/u16/u32) も 2026-09-25 に対象に入った (NARROW-UNSIGNED-SUB)。
 `i64` の負値は正常なので対象外。
 
 **リリース時の挙動は未決定** — 現状は `--release` でも check する。

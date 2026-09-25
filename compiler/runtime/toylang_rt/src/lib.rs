@@ -1553,6 +1553,19 @@ pub unsafe extern "C" fn toy_panic_values(
                 format_args!("panic: u64 subtraction underflowed: {a} - {b}"),
             )
         }
+        // panic_kind::U8_UNDERFLOW / U16_UNDERFLOW / U32_UNDERFLOW
+        2..=4 => {
+            let a = a as u64;
+            let width = match kind {
+                2 => "u8",
+                3 => "u16",
+                _ => "u32",
+            };
+            core::fmt::write(
+                &mut buf,
+                format_args!("panic: {width} subtraction underflowed: {a} - {b}"),
+            )
+        }
         // panic_kind::INDEX_OUT_OF_BOUNDS
         1 => core::fmt::write(
             &mut buf,

@@ -225,18 +225,15 @@ fn every_width_answers_at_its_own_bounds() {
     assert_consistent(src, "checked_every_width");
 }
 
-/// `u8` subtraction below zero wraps where the same expression on
-/// `u64` traps (`docs/language.md` -> "Runtime traps" lists the trap
-/// for `u64` only). That makes `checked_sub` / `saturating_sub` more
-/// load-bearing at narrow widths, not less: nothing else stops the
-/// program from carrying 251 forward.
+/// NARROW-UNSIGNED-SUB: `u8` subtraction below zero traps, as `u64`
+/// always has (it used to wrap to 251 on every lane). `checked_sub` /
+/// `saturating_sub` are the ways to ask instead of stopping.
 #[test]
-fn narrow_unsigned_subtraction_wraps_where_u64_traps() {
+fn narrow_unsigned_subtraction_traps_like_u64() {
     let src = r#"
         fn main() -> u64 {
             val a: u8 = 5u8
             val b: u8 = 10u8
-            println(a - b)
             val d = a.checked_sub(b)
             match d {
                 Option::Some(v) => println(v),
@@ -247,10 +244,21 @@ fn narrow_unsigned_subtraction_wraps_where_u64_traps() {
         }
     "#;
     assert_eq!(
-        interpreter_stdout(src, "checked_narrow_wrap", true),
-        "251\nunderflows\n0\n"
+        interpreter_stdout(src, "checked_narrow_report", true),
+        "underflows\n0\n"
     );
-    assert_stdout_consistent(src, "checked_narrow_wrap");
+    assert_stdout_consistent(src, "checked_narrow_report");
+    for (ty, a, b) in [("u8", "5u8", "10u8"), ("u16", "1u16", "2u16"), ("u32", "0u32", "7u32")] {
+        let trap = format!(
+            r#"
+            fn sub(x: {ty}, y: {ty}) -> {ty} {{ x - y }}
+            fn main() -> u64 {{
+                sub({a}, {b}) as u64
+            }}
+        "#
+        );
+        assert_diagnostic_consistent(&trap, &format!("narrow_sub_trap_{ty}"));
+    }
 }
 
 /// Signed `saturating_mul` is the one method the split traits never

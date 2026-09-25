@@ -299,10 +299,16 @@ pub fn save_full_module(
 /// `rename` is atomic on Unix and the racers write identical bytes, so
 /// whoever lands last is still correct.
 ///
-/// The temp name carries the pid and a timestamp so two populators
-/// cannot collide on it — the same shape as the link cache's
-/// `populate_link_cache` in `compiler/src/driver.rs`.
+/// The temp name carries the pid, a timestamp and a per-process
+/// sequence number so two populators cannot collide on it. The pid and
+/// the clock alone were not enough: `toy test` runs its jobs as
+/// *threads* of one process, the clock on macOS ticks in microseconds,
+/// and two jobs saving the same module in the same tick staged to the
+/// same file -- the first `rename` took it, and the second failed with
+/// "No such file or directory" (a warning on every first `toy test` of
+/// a fresh package).
 fn write_atomically(dir: &std::path::Path, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let stem = path
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
@@ -311,7 +317,8 @@ fn write_atomically(dir: &std::path::Path, path: &std::path::Path, bytes: &[u8])
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let tmp = dir.join(format!(".{stem}.{}.{nanos}.tmp", std::process::id()));
+    let seq = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir.join(format!(".{stem}.{}.{nanos}.{seq}.tmp", std::process::id()));
     // The path is part of the error. A bare "No such file or
     // directory" from here says nothing about *what* was missing —
     // the staging file, the directory it sits in, or the destination

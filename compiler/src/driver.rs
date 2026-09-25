@@ -162,14 +162,19 @@ fn record_exe_size(output: &Path) {
 /// is byte-identical so either outcome is correct.
 fn populate_link_cache(dir: &Path, hash: u64, output: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("create_dir_all {}: {}", dir.display(), e))?;
-    // Embed the PID + nanos in the temp name so two concurrent
-    // populators can't trip over each other's tmp file.
+    // Embed the PID + nanos + a per-process sequence number in the
+    // temp name so two concurrent populators can't trip over each
+    // other's tmp file. The sequence is what separates two *threads*
+    // of one process (`toy test` jobs) in the same clock tick -- the
+    // clock on macOS ticks in microseconds.
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let tmp = dir.join(format!(".{hash:016x}.{pid}.{nanos}.tmp"));
+    let tmp = dir.join(format!(".{hash:016x}.{pid}.{nanos}.{seq}.tmp"));
     std::fs::copy(output, &tmp)
         .map_err(|e| format!("link cache stage {}: {}", tmp.display(), e))?;
     let final_path = dir.join(format!("{hash:016x}.bin"));

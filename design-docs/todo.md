@@ -12,6 +12,13 @@
 
 ### 2026-09-25
 
+- **LEND-MUTATING-CALLEE: 何も所有しない場所だけを書き換える受け手も貸し出し** —
+  `b.n = ..` / それしかしない `&mut self` メソッド / 受け手内の
+  `var c = b` 経由の受け手に渡した値を、呼び出し側が drop する (以前は
+  誰も解放しなかった)。自前の `impl Drop` を持つ型のフィールドへの書き
+  込みは従来どおり移る。受け手内の仮引数の別名を tree-walker だけが
+  drop していたのも揃えた。
+
 - **TEST-PARALLEL P6 / TEST-TOOL T4: `toy test --backend all`** — aot と
   vm の両方で走らせ、テストごとの合否の食い違いを報告する (両方で落ちた
   テストも報告し、どちらもあれば終了コード 1。AOT で先の失敗のせいで
@@ -2661,17 +2668,15 @@
 
 - **MOVE-CONDITIONAL: 分岐 / ループからの移動** ★ — 現状は E0014 で拒否。
   許すには実行時 drop flag (Rust と同じ) が要る。実プログラムで踏んだら着手。
-- **LEND-MUTATING-CALLEE: 変えるが解放しない受け手に渡した値が漏れる** ★ —
-  BY-VALUE-PARAM-NO-DROP (2026-09-24) は「読むだけ」の受け手に値渡しした
-  値を呼び出し側に drop させるようにしたが、**受け手が値を変える**
-  (`var c = b` から `&mut self` メソッド / フィールドへの書き込み) だけで
-  しまいも返しも閉じもしない場合は、従来どおり誰も解放しない。
-  `fn touch(b: Buf) -> u64 { var c = b  c.bump()  c.n }` に
-  `Buf { s: String, .. }` を渡すと 3 レーンとも `leaks (1 sites, 3 bytes)`。
-  `compute_lend` の「読むだけ」を「値を外へ出さない」に広げるか
-  (変更が呼び出し側に見えないことの確認が要る)、受け手の側で drop する
-  か。後者は BY-VALUE-PARAM-NO-DROP で採らなかった案 (二重 drop の経路が
-  あるため) なので、前者が先。
+- **LEND-FREEING-CALLEE: 解放・再確保するがしまわない受け手に渡した値が漏れる** ★ —
+  受け手は値渡しの仮引数を drop しないので、`fn grow(s: String) -> u64
+  { s.push(100u8)  s.len() }` のように所有物を触る (realloc する) だけで
+  しまいも返しもしない受け手に渡すと、誰も解放しない (3 レーンとも
+  `leaks (1 sites, 6 bytes)`)。貸し出しにはできない (呼び出し側の持つ
+  旧バッファは解放済み)。受け手の側で「移されなかった仮引数を出口で
+  drop する」のが筋だが、`Box::new(v)` のように生メモリへ書いてしまう
+  受け手は move_check 上は移動に見えないので、そのまま drop すると二重
+  解放になる。その経路の扱いを決めてから。
 - **Trait 拡張** ★★★ (大規模、ロードマップ)
   - **A3: trait inheritance (`trait B: A`)** — 中。super trait 経由で `A` の method を `B` impl からも要求。
   - **A4: associated types (`trait Iterator { type Item }`)** — 中〜大。

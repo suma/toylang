@@ -71,10 +71,13 @@
 //! callee stores it (a container, raw memory via `Box::new` /
 //! `Vec::push`) or frees it is freed once, by whoever holds it then; a
 //! callee that only *reads* the parameter lends it instead, and the
-//! caller keeps the drop (BY-VALUE-PARAM-NO-DROP, `compute_lend`). What
-//! is left is a callee that changes the value (`&mut self`, a field
-//! write) without freeing it: the argument transfers, and nobody frees
-//! it.
+//! caller keeps the drop (BY-VALUE-PARAM-NO-DROP, `compute_lend`). So
+//! does a callee that changes only places owning nothing -- a plain
+//! field, directly or through a `&mut self` method that does no more,
+//! or through `var c = b` (LEND-MUTATING-CALLEE). What is left is a
+//! callee that frees or reallocates what the value owns (`s.push(..)`
+//! on a `String` parameter) without storing it: the argument transfers,
+//! and nobody frees it (LEND-FREEING-CALLEE).
 
 use std::collections::{HashMap, HashSet};
 
@@ -564,6 +567,13 @@ impl MoveCheck<'_> {
         // a transfer of `a`.
         if let Some(a) = self.owned_place(rhs) {
             let root = self.root_of(a);
+            // A parameter registers no drop (the caller keeps it when
+            // the callee lends, and nobody frees it otherwise), so an
+            // alias of one must not drop either. The compiled lanes
+            // never did; the tree-walker registered the alias.
+            if self.lookup(root).is_some_and(|o| o.decl.is_none() && o.root.is_none()) {
+                self.transferred.insert(stmt_ref);
+            }
             self.declare_alias(name, Some(stmt_ref), root);
             return;
         }
@@ -1333,6 +1343,12 @@ enum Ctx {
     Keep,
     /// Written to (the left of an assignment).
     Write,
+    /// LEND-MUTATING-CALLEE: on the path down to a written place that
+    /// owns nothing (`p.n = v`, `p.inner.n += 1`, a `&mut self` method
+    /// that only writes such places). Writing there changes the
+    /// callee's copy and frees nothing the caller will free again, so
+    /// the parameter can still be lent.
+    WriteThrough,
 }
 
 /// BY-VALUE-PARAM-NO-DROP: which by-value parameters each function
@@ -1369,6 +1385,18 @@ struct LendAnalysis<'a> {
     /// Struct name -> generic parameters and field types.
     structs: HashMap<DefaultSymbol, (Vec<DefaultSymbol>, Vec<(String, TypeDecl)>)>,
     interner: &'a DefaultStringInterner,
+    /// LEND-MUTATING-CALLEE: per method name, whether every method of
+    /// that name either reads its receiver or, taking `&mut self`, only
+    /// writes places of it that own nothing. A receiver in such a call
+    /// is written through, not kept. Keyed by name as
+    /// `method_reads_self` is, so a name any type uses otherwise
+    /// answers no.
+    receiver_lend: std::cell::RefCell<HashMap<DefaultSymbol, bool>>,
+    /// Names bound to the parameter in the body being analysed
+    /// (`var c = b`): each is the same value, so it answers as the
+    /// parameter does. A later binding that shadows one only makes the
+    /// answer stricter.
+    aliases: std::cell::RefCell<Vec<DefaultSymbol>>,
 }
 
 /// Each function body -> per by-value parameter (receiver excluded),
@@ -1381,6 +1409,10 @@ fn compute_lend(
     signatures: &Signatures,
 ) -> HashMap<StmtRef, Vec<bool>> {
     let mut bodies: Vec<(StmtRef, Vec<(DefaultSymbol, TypeDecl)>)> = Vec::new();
+    // Methods by name, for `receiver_lend`: (body, takes `&mut self`,
+    // has a receiver at all).
+    let mut methods_by_name: HashMap<DefaultSymbol, Vec<(StmtRef, bool, bool, TypeDecl)>> =
+        HashMap::new();
     for f in &program.function {
         if f.is_extern {
             continue;
@@ -1388,7 +1420,13 @@ fn compute_lend(
         bodies.push((f.code, f.parameter.clone()));
     }
     for i in 0..program.statement.len() {
-        if let Some(Stmt::ImplBlock { methods, .. }) = program.statement.get(&StmtRef(i as u32)) {
+        if let Some(Stmt::ImplBlock { methods, target_type, target_type_args, .. }) =
+            program.statement.get(&StmtRef(i as u32))
+        {
+            // The receiver's type, for `owning` on `self.field`. A
+            // generic impl leaves its parameters as names, which is
+            // what `field_type` substitutes.
+            let self_ty = TypeDecl::Struct(target_type, target_type_args.clone());
             for m in &methods {
                 let params: Vec<(DefaultSymbol, TypeDecl)> = m
                     .parameter
@@ -1397,6 +1435,10 @@ fn compute_lend(
                     .cloned()
                     .collect();
                 bodies.push((m.code, params));
+                methods_by_name
+                    .entry(m.name)
+                    .or_default()
+                    .push((m.code, m.self_is_mut, m.has_self_param, self_ty.clone()));
             }
         }
     }
@@ -1413,9 +1455,36 @@ fn compute_lend(
         param_ty: std::cell::RefCell::new(TypeDecl::Unknown),
         structs: collect_structs(program),
         interner,
+        receiver_lend: std::cell::RefCell::new(
+            methods_by_name
+                .iter()
+                .map(|(name, ms)| (*name, ms.iter().all(|(_, _, has_self, _)| *has_self)))
+                .collect(),
+        ),
+        aliases: std::cell::RefCell::new(Vec::new()),
     };
+    let self_sym = interner.get("self");
     loop {
         let mut changed = false;
+        // A `&mut self` method lends its receiver while its body only
+        // reads `self` or writes places of it that own nothing.
+        if let Some(self_sym) = self_sym {
+            for (name, ms) in &methods_by_name {
+                if !analysis.receiver_lend.borrow()[name] {
+                    continue;
+                }
+                let ok = ms.iter().all(|(body, is_mut, _, self_ty)| {
+                    !*is_mut || {
+                        *analysis.param_ty.borrow_mut() = self_ty.clone();
+                        analysis.body_only_reads(*body, self_sym)
+                    }
+                });
+                if !ok {
+                    analysis.receiver_lend.borrow_mut().insert(*name, false);
+                    changed = true;
+                }
+            }
+        }
         for (body, params) in &bodies {
             for (i, (name, ty)) in params.iter().enumerate() {
                 *analysis.param_ty.borrow_mut() = ty.clone();
@@ -1443,6 +1512,7 @@ fn lends(lend: &HashMap<StmtRef, Vec<bool>>, bodies: &[StmtRef], i: usize) -> bo
 
 impl LendAnalysis<'_> {
     fn body_only_reads(&self, body: StmtRef, p: DefaultSymbol) -> bool {
+        self.aliases.borrow_mut().clear();
         match self.program.statement.get(&body) {
             // The body's value is the function's return value.
             Some(Stmt::Expression(e)) => self.expr_ok(e, p, Ctx::Keep),
@@ -1453,6 +1523,14 @@ impl LendAnalysis<'_> {
 
     fn stmt_ok(&self, s: StmtRef, p: DefaultSymbol) -> bool {
         match self.program.statement.get(&s) {
+            // `var c = b`: `c` names the parameter's value from here on.
+            Some(Stmt::Val(name, _, rhs)) | Some(Stmt::Var(name, _, Some(rhs)))
+                if !self.in_closure.get()
+                    && matches!(self.program.expression.get(&rhs), Some(Expr::Identifier(r)) if self.is_param(r, p)) =>
+            {
+                self.aliases.borrow_mut().push(name);
+                true
+            }
             Some(Stmt::Val(_, _, rhs)) | Some(Stmt::Var(_, _, Some(rhs))) => {
                 self.expr_ok(rhs, p, Ctx::Keep)
             }
@@ -1474,17 +1552,37 @@ impl LendAnalysis<'_> {
     /// straight off the parameter with no recorded type is answered
     /// from the parameter's struct; anything else unknown owns, to be
     /// safe.
+    /// `s` names the parameter's value: the parameter or an alias of it.
+    fn is_param(&self, s: DefaultSymbol, p: DefaultSymbol) -> bool {
+        s == p || self.aliases.borrow().contains(&s)
+    }
+
     fn owning(&self, e: ExprRef, p: DefaultSymbol) -> bool {
         if let Some(ty) = self.expr_types.get(&e) {
             return self.drop_analysis.contains_drop(ty);
         }
         if let Some(Expr::FieldAccess(obj, field)) = self.program.expression.get(&e)
-            && matches!(self.program.expression.get(&obj), Some(Expr::Identifier(s)) if s == p)
+            && matches!(self.program.expression.get(&obj), Some(Expr::Identifier(s)) if self.is_param(s, p))
             && let Some(ty) = self.field_type(&self.param_ty.borrow(), field)
         {
             return self.drop_analysis.contains_drop(&ty);
         }
         true
+    }
+
+    /// Whether `obj`'s fields are plain data to whoever drops it: its
+    /// type is known and has no `impl Drop` of its own. `String`'s
+    /// `data` is a `ptr`, which owns nothing by type, yet its drop
+    /// frees what it points at -- so a write there is not lendable.
+    fn plain_container(&self, obj: ExprRef, p: DefaultSymbol) -> bool {
+        let ty = match self.expr_types.get(&obj) {
+            Some(ty) => ty.clone(),
+            None if matches!(self.program.expression.get(&obj), Some(Expr::Identifier(s)) if self.is_param(s, p)) => {
+                self.param_ty.borrow().clone()
+            }
+            None => return false,
+        };
+        !matches!(ty, TypeDecl::Unknown) && !self.drop_analysis.has_drop_impl(&ty)
     }
 
     /// The type of `field` on a value of struct type `ty`.
@@ -1524,7 +1622,9 @@ impl LendAnalysis<'_> {
         };
         match expr {
             Expr::Identifier(s) => {
-                s != p || (!self.in_closure.get() && matches!(ctx, Ctx::Read | Ctx::Discard))
+                !self.is_param(s, p)
+                    || (!self.in_closure.get()
+                        && matches!(ctx, Ctx::Read | Ctx::Discard | Ctx::WriteThrough))
             }
             Expr::Block(stmts) => stmts.iter().enumerate().all(|(i, s)| {
                 match (i + 1 == stmts.len(), self.program.statement.get(s)) {
@@ -1551,11 +1651,27 @@ impl LendAnalysis<'_> {
             }
             Expr::Assign(lhs, rhs) => self.expr_ok(lhs, p, Ctx::Write) && self.expr_ok(rhs, p, Ctx::Keep),
             Expr::FieldAccess(obj, _) | Expr::TupleAccess(obj, _) => {
-                let inner = if ctx == Ctx::Write || self.owning(e, p) { Ctx::Keep } else { Ctx::Read };
+                let inner = match ctx {
+                    // The written place owns nothing: its old value
+                    // frees nothing, so the write only changes the copy.
+                    Ctx::Write if !self.owning(e, p) && self.plain_container(obj, p) => {
+                        Ctx::WriteThrough
+                    }
+                    Ctx::Write => Ctx::Keep,
+                    Ctx::WriteThrough => Ctx::WriteThrough,
+                    _ if self.owning(e, p) => Ctx::Keep,
+                    _ => Ctx::Read,
+                };
                 self.expr_ok(obj, p, inner)
             }
             Expr::SliceAccess(obj, info) => {
-                let inner = if ctx == Ctx::Write || self.owning(e, p) { Ctx::Keep } else { Ctx::Read };
+                // An element write goes through `__setitem__` or into a
+                // buffer the caller shares: kept.
+                let inner = if matches!(ctx, Ctx::Write | Ctx::WriteThrough) || self.owning(e, p) {
+                    Ctx::Keep
+                } else {
+                    Ctx::Read
+                };
                 self.expr_ok(obj, p, inner)
                     && [info.start, info.end]
                         .into_iter()
@@ -1588,7 +1704,14 @@ impl LendAnalysis<'_> {
             }
             Expr::MethodCall(recv, method, args) => {
                 let reads = self.signatures.method_reads_self.get(&method).copied().unwrap_or(false);
-                self.expr_ok(recv, p, if reads { Ctx::Read } else { Ctx::Keep })
+                let recv_ctx = if reads {
+                    Ctx::Read
+                } else if self.receiver_lend.borrow().get(&method).copied().unwrap_or(false) {
+                    Ctx::WriteThrough
+                } else {
+                    Ctx::Keep
+                };
+                self.expr_ok(recv, p, recv_ctx)
                     && self.args_ok(&args, self.signatures.method_target(method, args.len()), p)
             }
             Expr::AssociatedFunctionCall(type_name, fn_name, args) => {

@@ -100,6 +100,19 @@ impl DropAnalysis {
         &self.drop_types
     }
 
+    /// Whether `ty` has an `impl Drop` of its own, whose body reads
+    /// its fields -- so a field of it that owns nothing by type (a
+    /// `ptr`, a length, an fd) is still what the drop acts on.
+    pub fn has_drop_impl(&self, ty: &TypeDecl) -> bool {
+        match ty {
+            TypeDecl::Ref { inner, .. } => self.has_drop_impl(inner),
+            TypeDecl::Struct(name, _) | TypeDecl::Identifier(name) | TypeDecl::Enum(name, _) => {
+                self.drop_types.contains(name)
+            }
+            _ => false,
+        }
+    }
+
     /// Whether a value of `ty` owns resources that must be freed
     /// when the binding dies — the type itself has a `Drop` impl,
     /// or it holds one by value.

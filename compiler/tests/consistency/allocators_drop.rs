@@ -465,6 +465,89 @@ fn a_value_lent_to_a_reading_callee_is_dropped_by_the_caller() {
     );
 }
 
+/// LEND-MUTATING-CALLEE: a callee that changes a by-value parameter
+/// only in places that own nothing -- a field write, a `&mut self`
+/// method that only does that, through an alias `var c = w` -- still
+/// lends it, so the caller drops it once. A write that reaches what a
+/// drop acts on (`w.h.shut()`, `H` has its own `Drop`) still takes it.
+#[test]
+fn a_callee_that_changes_but_frees_nothing_lends() {
+    let src = r#"
+        struct H { id: u64, open: bool }
+        impl H {
+            fn shut(&mut self) {
+                if self.open { println("close {self.id}") }
+                self.open = false
+            }
+        }
+        impl Drop for H {
+            fn drop(&mut self) { self.shut() }
+        }
+        struct Wrap { h: H, n: u64 }
+        impl Wrap {
+            fn bump(&mut self) { self.n = self.n + 1u64 }
+        }
+        fn touch(w: Wrap) -> u64 {
+            w.n = w.n + 10u64
+            w.bump()
+            w.n
+        }
+        fn through_alias(w: Wrap) -> u64 {
+            var c = w
+            c.bump()
+            c.n = c.n * 2u64
+            c.n
+        }
+        fn shuts(w: Wrap) -> u64 {
+            w.h.shut()
+            w.n
+        }
+        fn main() -> u64 {
+            val a = Wrap { h: H { id: 1u64, open: true }, n: 1u64 }
+            println("touch {touch(a)}")
+            val b = Wrap { h: H { id: 2u64, open: true }, n: 1u64 }
+            println("alias {through_alias(b)}")
+            val c = Wrap { h: H { id: 3u64, open: true }, n: 5u64 }
+            println("shuts {shuts(c)}")
+            0u64
+        }
+    "#;
+    assert_renders(
+        src,
+        "mutating_lent_param_dropped_by_caller",
+        "touch 12\nalias 4\nclose 3\nshuts 5\nclose 2\nclose 1\n",
+    );
+}
+
+/// LEND-MUTATING-CALLEE: the heap a lent parameter owns is freed by the
+/// caller, so a callee that only bumps a counter next to a `String`
+/// leaks nothing. Before, nobody freed the string.
+#[test]
+fn a_mutating_callee_leaks_nothing() {
+    let src = r#"
+        struct Buf { s: String, n: u64 }
+        impl Buf {
+            fn bump(&mut self) { self.n = self.n + 1u64 }
+        }
+        fn touch(b: Buf) -> u64 {
+            b.n = b.n + 10u64
+            b.bump()
+            b.n
+        }
+        fn run() -> u64 {
+            val b = Buf { s: String::from_str("abc"), n: 1u64 }
+            touch(b)
+        }
+        fn main() -> u64 {
+            val before = __builtin_live_bytes()
+            val r = run()
+            println("{r} {__builtin_live_bytes() - before}")
+            0u64
+        }
+    "#;
+    assert_renders(src, "mutating_lent_param_freed", "12 0\n");
+}
+
 /// #121: a program that never pushes an allocator heap-allocates
 /// through the default one at every operation, so the lowering names
 /// it (`alloc=static(0)`) and codegen skips asking the runtime stack.

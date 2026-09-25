@@ -6651,11 +6651,22 @@ keeps the drop, and the value is freed at the end of the caller's
 scope. Reading the binding after the call is still `[E0014]` (it is a
 move as far as the language goes), but since no drop becomes
 conditional, lending inside a branch is allowed. A callee that stores
-the value, returns it, frees it, matches on it or changes it (a
-`&mut self` method, a field write) takes it as before. (Before
-2026-09-24 a value handed to a function that only read it was never
-freed: the caller had handed it over, and a parameter registers no
-drop.)
+the value, returns it, frees it or matches on it takes it as before.
+
+A callee that **changes** the parameter is still lent it when every
+change lands in a place that owns nothing: a field write like `b.n =
+b.n + 1u64` (the field's type holds no `Drop`, and the struct holding
+it has no `impl Drop` of its own to read it), or a `&mut self` method
+whose body only does that. `var c = b` inside the callee is the same
+value under another name, so the same applies to `c`. The caller can
+never read the argument again, so the change is invisible to it; what
+matters is that nothing the caller will free has been freed or moved.
+A write to an owning field, or to any field of a type with its own
+`impl Drop` (`String`'s buffer pointer, a descriptor), still takes the
+value. (Before 2026-09-24 a value handed to a function that only read
+it was never freed: the caller had handed it over, and a parameter
+registers no drop. Before 2026-09-25 the same held for a callee that
+bumped a counter next to a `String`.)
 
 An arm may hand its own scrutinee's payload over — `match made {
 Option::Some(c) => keep(c), Option::None => 0u64 }` — when the other

@@ -209,7 +209,7 @@ impl<'a> FunctionLower<'a> {
         if self.interner.resolve(base) == Some("Vec") {
             return self.glue_vec_elements(struct_id, &def, &all_locals, false);
         }
-        // DATA-ORIENTED Phase 2: `SoaVec<T>` holds the same four
+        // DATA-ORIENTED Phase 2: `SoaVec<T>` holds the same three
         // fields and owns its elements the same way — only where a
         // leaf lives differs, so the walk is shared.
         if self.interner.resolve(base) == Some("SoaVec") {

@@ -142,3 +142,29 @@ impl<T> Ptr<T> {
         __builtin_ptr_write(self.addr, i * __builtin_sizeof::<T>(), value)
     }
 }
+
+# `Ptr<T>`'s column-split sibling (DATA-ORIENTED Phase 2): a window
+# over a buffer where leaf `j` of element `i` lives at
+# `prefix_j * cap + i * stride_j` rather than side by side. `cap` is
+# half of every address, so it travels with the window; a buffer that
+# grows needs a new window.
+#
+# Like `Ptr<T>` it is a window, not an owner, the index is unchecked,
+# and `get` / `set` are never a call on any lane -- they lower to the
+# `__builtin_soa_read` / `__builtin_soa_write` their bodies perform.
+# That is what lets `SoaVec<T>` keep its raw access here.
+struct SoaPtr<T> {
+    addr: ptr,
+    cap: u64,
+}
+
+impl<T> SoaPtr<T> {
+    unsafe fn get(&self, i: u64) -> T {
+        val v: T = __builtin_soa_read(self.addr, i, self.cap)
+        v
+    }
+
+    unsafe fn set(&self, i: u64, value: T) {
+        __builtin_soa_write(self.addr, i, self.cap, value)
+    }
+}

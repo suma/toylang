@@ -37,7 +37,7 @@ impl<T: Ord> PriorityQueue<T> {
     }
 
     # Add an element and sift it up to its place.
-    unsafe fn push(&mut self, value: T) {
+    fn push(&mut self, value: T) {
         self.v.push(value)
         var i: u64 = self.v.size() - 1u64
         while i > 0u64 {
@@ -54,7 +54,7 @@ impl<T: Ord> PriorityQueue<T> {
     }
 
     # Remove and return the least element, or `None` when empty.
-    unsafe fn pop(&mut self) -> Option<T> {
+    fn pop(&mut self) -> Option<T> {
         if self.v.is_empty() {
             return Option::None
         }
@@ -92,7 +92,7 @@ impl<T: Ord> PriorityQueue<T> {
     }
 
     # The least element without removing it, or `None` when empty.
-    unsafe fn peek(&self) -> Option<T> {
+    fn peek(&self) -> Option<T> {
         if self.v.is_empty() {
             return Option::None
         }

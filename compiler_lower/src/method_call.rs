@@ -1345,10 +1345,12 @@ impl<'a> FunctionLower<'a> {
         target_sym: DefaultSymbol,
         method: DefaultSymbol,
         recv_type_args: &[Type],
-    ) -> Option<(PtrAccess, LocalId, Type)> {
-        if self.interner.resolve(target_sym) != Some("Ptr") {
-            return None;
-        }
+    ) -> Option<(PtrAccess, PtrWindow, Type)> {
+        let columns = match self.interner.resolve(target_sym) {
+            Some("Ptr") => false,
+            Some("SoaPtr") => true,
+            _ => return None,
+        };
         // `borrow` is `get` here: references erase in the compiled
         // lanes (ELEMENT-BORROW E1), and the type checker is what keeps
         // drop glue off the binding that catches it.
@@ -1374,14 +1376,46 @@ impl<'a> FunctionLower<'a> {
             return None;
         };
         let leaves = flatten_struct_locals(fields);
-        let [(addr_local, Type::U64)] = leaves.as_slice() else {
-            return None;
+        let window = match (columns, leaves.as_slice()) {
+            (false, [(addr, Type::U64)]) => PtrWindow::Interleaved { addr: *addr },
+            (true, [(addr, Type::U64), (cap, Type::U64)]) => {
+                PtrWindow::Columns { addr: *addr, cap: *cap }
+            }
+            _ => return None,
         };
         // `Ptr<T>` reads and writes `T`: the receiver's one type argument.
         let [elem_ty] = recv_type_args else {
             return None;
         };
-        Some((access, *addr_local, *elem_ty))
+        Some((access, window, *elem_ty))
+    }
+
+    /// The buffer address and the addressing of element `index`
+    /// through `window` -- the arithmetic the window's body does.
+    fn ptr_intrinsic_buffer(
+        &mut self,
+        window: PtrWindow,
+        elem_ty: Type,
+        index: &ExprRef,
+    ) -> Result<(ValueId, super::soa::BufferAddress), String> {
+        match window {
+            PtrWindow::Interleaved { addr } => {
+                let (addr, base) = self.ptr_intrinsic_address(addr, elem_ty, index)?;
+                Ok((addr, super::soa::BufferAddress::Interleaved { base }))
+            }
+            PtrWindow::Columns { addr, cap } => {
+                let addr = self
+                    .emit(InstKind::LoadLocal(addr), Some(Type::U64))
+                    .expect("LoadLocal returns a value");
+                let index = self
+                    .lower_expr(index)?
+                    .ok_or_else(|| "SoaPtr index produced no value".to_string())?;
+                let cap = self
+                    .emit(InstKind::LoadLocal(cap), Some(Type::U64))
+                    .expect("LoadLocal returns a value");
+                Ok((addr, super::soa::BufferAddress::Columns { index, cap }))
+            }
+        }
     }
 
     /// The address and the byte offset `index * sizeof::<T>()` of
@@ -1438,7 +1472,7 @@ impl<'a> FunctionLower<'a> {
         recv_type_args: &[Type],
         args: &[ExprRef],
     ) -> Result<Option<Option<ValueId>>, String> {
-        let Some((access, addr_local, elem_ty)) =
+        let Some((access, window, elem_ty)) =
             self.ptr_intrinsic_target(binding, target_sym, method, recv_type_args)
         else {
             return Ok(None);
@@ -1448,7 +1482,14 @@ impl<'a> FunctionLower<'a> {
                 if args.len() != 1 || !elem_ty.is_scalar() {
                     return Ok(None);
                 }
-                let (addr, offset) = self.ptr_intrinsic_address(addr_local, elem_ty, &args[0])?;
+                let Some(columns) = self.soa_columns(elem_ty) else {
+                    return Ok(None);
+                };
+                let [column] = columns.as_slice() else {
+                    return Ok(None);
+                };
+                let (addr, address) = self.ptr_intrinsic_buffer(window, elem_ty, &args[0])?;
+                let offset = self.emit_leaf_offset(&address, column);
                 Ok(Some(self.emit(
                     InstKind::PtrRead { ptr: addr, offset, elem_ty },
                     Some(elem_ty),
@@ -1458,8 +1499,15 @@ impl<'a> FunctionLower<'a> {
                 if args.len() != 2 {
                     return Ok(None);
                 }
+                let Some(columns) = self.soa_columns(elem_ty) else {
+                    return Ok(None);
+                };
                 if elem_ty.is_scalar() {
-                    let (addr, offset) = self.ptr_intrinsic_address(addr_local, elem_ty, &args[0])?;
+                    let [column] = columns.as_slice() else {
+                        return Ok(None);
+                    };
+                    let (addr, address) = self.ptr_intrinsic_buffer(window, elem_ty, &args[0])?;
+                    let offset = self.emit_leaf_offset(&address, column);
                     let value = self
                         .lower_expr(&args[1])?
                         .ok_or_else(|| "Ptr value produced no value".to_string())?;
@@ -1473,18 +1521,14 @@ impl<'a> FunctionLower<'a> {
                     return Ok(None);
                 }
                 // A compound value: the leaves of its binding, one
-                // `PtrWrite` each at the leaf's offset in the element.
-                let Some(columns) = self.soa_columns(elem_ty) else {
-                    return Ok(None);
-                };
+                // `PtrWrite` each at the leaf's address.
                 let Ok(leaf_locals) = self.compound_leaf_locals(&args[1], "Ptr::set") else {
                     return Ok(None);
                 };
                 if leaf_locals.len() != columns.len() {
                     return Ok(None);
                 }
-                let (addr, base) = self.ptr_intrinsic_address(addr_local, elem_ty, &args[0])?;
-                let address = super::soa::BufferAddress::Interleaved { base };
+                let (addr, address) = self.ptr_intrinsic_buffer(window, elem_ty, &args[0])?;
                 for (column, (local, _)) in columns.iter().zip(leaf_locals.iter()) {
                     let leaf_ty = column.2;
                     let off_v = self.emit_leaf_offset(&address, column);
@@ -1526,7 +1570,7 @@ impl<'a> FunctionLower<'a> {
         };
         let def = self.module.struct_def(*struct_id);
         let (target_sym, recv_type_args) = (def.base_name, def.type_args.clone());
-        let Some((PtrAccess::Get, addr_local, elem_ty)) =
+        let Some((PtrAccess::Get, window, elem_ty)) =
             self.ptr_intrinsic_target(&binding, target_sym, method, &recv_type_args)
         else {
             return Ok(None);
@@ -1537,8 +1581,7 @@ impl<'a> FunctionLower<'a> {
         let Some(columns) = self.soa_columns(elem_ty) else {
             return Ok(None);
         };
-        let (addr, base) = self.ptr_intrinsic_address(addr_local, elem_ty, &args[0])?;
-        let address = super::soa::BufferAddress::Interleaved { base };
+        let (addr, address) = self.ptr_intrinsic_buffer(window, elem_ty, &args[0])?;
         self.bind_compound_read(name, elem_ty, &columns, addr, &address, "Ptr::get")
     }
 
@@ -2187,6 +2230,17 @@ impl<'a> FunctionLower<'a> {
 pub(super) enum PtrAccess {
     Get,
     Set,
+}
+
+/// Which stdlib window a `get` / `set` goes through, with the locals
+/// holding its fields.
+#[derive(Clone, Copy)]
+pub(super) enum PtrWindow {
+    /// `Ptr<T>`: element `i` at `addr + i * sizeof::<T>()`.
+    Interleaved { addr: LocalId },
+    /// `SoaPtr<T>`: leaf `j` of element `i` at
+    /// `addr + prefix_j * cap + i * stride_j`.
+    Columns { addr: LocalId, cap: LocalId },
 }
 
 /// A compound-returning method call resolved down to "emit this into

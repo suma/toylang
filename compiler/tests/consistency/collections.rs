@@ -633,6 +633,61 @@ fn main() -> u64 {
     assert_value(src, "deque_wrapped_growth", 127u64);
 }
 
+// The stride comes from `T` (`Ptr<T>` / `__builtin_sizeof::<T>()`), not
+// from a width learned off the first push. Every test above uses `u64`
+// elements, where a wrong stride of 8 still reads right; these use a
+// 1-byte, a 2-byte and a struct element through a wrapped growth.
+#[test]
+fn deque_and_set_stride_by_their_element_type() {
+    let src = r#"
+struct P { x: u8, y: u64 }
+fn main() -> u64 {
+    var q: Deque<u8> = Deque::new()
+    q.push_front(3u8)
+    q.push_front(2u8)
+    q.push_front(1u8)
+    var i: u64 = 0u64
+    while i < 20u64 {
+        q.push_back((100u64 + i) as u8)
+        i = i + 1u64
+    }
+    var ok: u64 = 0u64
+    if q.get(0u64) == 1u8 { ok = ok + 1u64 }
+    if q.get(3u64) == 100u8 { ok = ok + 2u64 }
+    if q.get(22u64) == 119u8 { ok = ok + 4u64 }
+
+    var ps: Deque<P> = Deque::new()
+    ps.push_front(P { x: 2u8, y: 20u64 })
+    ps.push_back(P { x: 3u8, y: 30u64 })
+    ps.push_front(P { x: 1u8, y: 10u64 })
+    val back: P = ps.pop_back()
+    val front: P = ps.get(0u64)
+    if back.x == 3u8 && back.y == 30u64 { ok = ok + 8u64 }
+    if front.x == 1u8 && front.y == 10u64 { ok = ok + 16u64 }
+
+    var s: Set<u16> = Set::new()
+    var k: u64 = 0u64
+    while k < 40u64 {
+        s.insert((k * 3u64) as u16)
+        k = k + 1u64
+    }
+    if s.contains(117u16) && !s.contains(118u16) { ok = ok + 32u64 }
+    s.remove(3u16)
+    var sum: u64 = 0u64
+    var first: u64 = 0u64
+    var n: u64 = 0u64
+    for v in s.iter() {
+        if n == 1u64 { first = v as u64 }
+        sum = sum + (v as u64)
+        n = n + 1u64
+    }
+    if n == 39u64 && first == 6u64 && sum == 2337u64 { ok = ok + 64u64 }
+    ok
+}
+"#;
+    assert_value(src, "deque_set_stride", 127u64);
+}
+
 // COLLECTIONS C5: `PriorityQueue<T: Ord>`, a binary min-heap over the
 // same `Vec` the sort uses. Pops have to come out in order however
 // they went in, which is what a wrong sift silently breaks.

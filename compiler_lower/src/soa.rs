@@ -334,7 +334,7 @@ impl FunctionLower<'_> {
         })?;
         let (prefix, stride, _) = columns[leaf];
 
-        // `SoaVec { data, len, cap, elem_size }` — the leaf locals are
+        // `SoaVec { data, len, cap }` — the leaf locals are
         // in declaration order, as everywhere else in the lowering.
         let locals = super::bindings::flatten_struct_locals(fields);
         let data_local = locals.first().ok_or("column window: SoaVec has no data field")?.0;

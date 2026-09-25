@@ -29,7 +29,6 @@ struct Set<T: Hash> {
     count: u64,
     # element capacity in the high 32 bits, slot-table size in the low.
     caps: u64,
-    elem_size: u64,
 }
 
 impl<T: Hash> Set<T> {
@@ -39,41 +38,40 @@ impl<T: Hash> Set<T> {
             slots: __builtin_heap_alloc(0u64),
             count: 0u64,
             caps: 0u64,
-            elem_size: 0u64,
         }
     }
 
     # Add `value`. Returns whether it was new: an element already in
     # the set leaves it untouched (and keeps its position, so
     # re-adding does not reorder iteration).
-    unsafe fn insert(&mut self, value: T) -> bool {
-        if self.elem_size == 0u64 {
-            self.elem_size = __builtin_sizeof(value)
-        }
-        val es: u64 = self.elem_size
+    fn insert(&mut self, value: T) -> bool {
+        val es: u64 = __builtin_sizeof::<T>()
         var ecap: u64 = self.caps >> 32u64
         var scap: u64 = self.caps & 0xFFFFFFFFu64
 
         if scap == 0u64 {
             scap = 8u64
             self.slots = __builtin_heap_realloc(self.slots, scap * 4u64)
+            val fresh: Ptr<u32> = Ptr { addr: self.slots }
             var t: u64 = 0u64
             while t < scap {
-                __builtin_ptr_write(self.slots, t * 4u64, dict_slot_empty())
+                fresh.set(t, dict_slot_empty())
                 t = t + 1u64
             }
             self.caps = (ecap << 32u64) | scap
         }
 
         val mask: u64 = scap - 1u64
+        val sp: Ptr<u32> = Ptr { addr: self.slots }
+        val ep: Ptr<T> = Ptr { addr: self.elems }
         var j: u64 = hash_mix(value.hash()) & mask
         loop {
-            val s: u32 = __builtin_ptr_read::<u32>(self.slots, j * 4u64)
+            val s: u32 = sp.get(j)
             if s == dict_slot_empty() {
                 break
             }
             val idx: u64 = s as u64
-            val existing: T = __builtin_ptr_read::<T>(self.elems, idx * es)
+            val existing: T = ep.get(idx)
             if existing == value {
                 return false
             }
@@ -89,8 +87,10 @@ impl<T: Hash> Set<T> {
             self.elems = __builtin_heap_realloc(self.elems, ecap * es)
             self.caps = (ecap << 32u64) | scap
         }
-        __builtin_ptr_write(self.elems, self.count * es, value)
-        __builtin_ptr_write(self.slots, j * 4u64, self.count as u32)
+        # The element buffer may have moved: address it afresh.
+        val grown_elems: Ptr<T> = Ptr { addr: self.elems }
+        grown_elems.set(self.count, value)
+        sp.set(j, self.count as u32)
         self.count = self.count + 1u64
 
         # Past a 7/8 load factor the table doubles: linear probing needs
@@ -98,24 +98,25 @@ impl<T: Hash> Set<T> {
         if self.count * 8u64 >= scap * 7u64 {
             val ncap: u64 = scap * 2u64
             self.slots = __builtin_heap_realloc(self.slots, ncap * 4u64)
+            val grown: Ptr<u32> = Ptr { addr: self.slots }
             var t2: u64 = 0u64
             while t2 < ncap {
-                __builtin_ptr_write(self.slots, t2 * 4u64, dict_slot_empty())
+                grown.set(t2, dict_slot_empty())
                 t2 = t2 + 1u64
             }
             val nmask: u64 = ncap - 1u64
             var i: u64 = 0u64
             while i < self.count {
-                val e2: T = __builtin_ptr_read::<T>(self.elems, i * es)
+                val e2: T = grown_elems.get(i)
                 var p: u64 = hash_mix(e2.hash()) & nmask
                 loop {
-                    val s2: u32 = __builtin_ptr_read::<u32>(self.slots, p * 4u64)
+                    val s2: u32 = grown.get(p)
                     if s2 == dict_slot_empty() {
                         break
                     }
                     p = (p + 1u64) & nmask
                 }
-                __builtin_ptr_write(self.slots, p * 4u64, i as u32)
+                grown.set(p, i as u32)
                 i = i + 1u64
             }
             self.caps = (ecap << 32u64) | ncap
@@ -123,21 +124,22 @@ impl<T: Hash> Set<T> {
         true
     }
 
-    unsafe fn contains(&self, value: T) -> bool {
+    fn contains(&self, value: T) -> bool {
         val scap: u64 = self.caps & 0xFFFFFFFFu64
         if scap == 0u64 {
             return false
         }
-        val es: u64 = self.elem_size
         val mask: u64 = scap - 1u64
+        val sp: Ptr<u32> = Ptr { addr: self.slots }
+        val ep: Ptr<T> = Ptr { addr: self.elems }
         var j: u64 = hash_mix(value.hash()) & mask
         loop {
-            val s: u32 = __builtin_ptr_read::<u32>(self.slots, j * 4u64)
+            val s: u32 = sp.get(j)
             if s == dict_slot_empty() {
                 break
             }
             val idx: u64 = s as u64
-            val existing: T = __builtin_ptr_read::<T>(self.elems, idx * es)
+            val existing: T = ep.get(idx)
             if existing == value {
                 return true
             }
@@ -151,22 +153,23 @@ impl<T: Hash> Set<T> {
     # Order-preserving, like `Dict::remove`: the elements after the
     # hole shift down one and the table is rebuilt, because every index
     # it holds above the hole has moved.
-    unsafe fn remove(&mut self, value: T) -> bool {
+    fn remove(&mut self, value: T) -> bool {
         val scap: u64 = self.caps & 0xFFFFFFFFu64
         if scap == 0u64 {
             return false
         }
-        val es: u64 = self.elem_size
         val mask: u64 = scap - 1u64
+        val sp: Ptr<u32> = Ptr { addr: self.slots }
+        val ep: Ptr<T> = Ptr { addr: self.elems }
         var j: u64 = hash_mix(value.hash()) & mask
         var found: u64 = self.count
         loop {
-            val s: u32 = __builtin_ptr_read::<u32>(self.slots, j * 4u64)
+            val s: u32 = sp.get(j)
             if s == dict_slot_empty() {
                 break
             }
             val idx: u64 = s as u64
-            val existing: T = __builtin_ptr_read::<T>(self.elems, idx * es)
+            val existing: T = ep.get(idx)
             if existing == value {
                 found = idx
                 break
@@ -179,29 +182,29 @@ impl<T: Hash> Set<T> {
 
         var i: u64 = found
         while i + 1u64 < self.count {
-            val nv: T = __builtin_ptr_read::<T>(self.elems, (i + 1u64) * es)
-            __builtin_ptr_write(self.elems, i * es, nv)
+            val nv: T = ep.get(i + 1u64)
+            ep.set(i, nv)
             i = i + 1u64
         }
         self.count = self.count - 1u64
 
         var t: u64 = 0u64
         while t < scap {
-            __builtin_ptr_write(self.slots, t * 4u64, dict_slot_empty())
+            sp.set(t, dict_slot_empty())
             t = t + 1u64
         }
         var e: u64 = 0u64
         while e < self.count {
-            val e2: T = __builtin_ptr_read::<T>(self.elems, e * es)
+            val e2: T = ep.get(e)
             var p: u64 = hash_mix(e2.hash()) & mask
             loop {
-                val s2: u32 = __builtin_ptr_read::<u32>(self.slots, p * 4u64)
+                val s2: u32 = sp.get(p)
                 if s2 == dict_slot_empty() {
                     break
                 }
                 p = (p + 1u64) & mask
             }
-            __builtin_ptr_write(self.slots, p * 4u64, e as u32)
+            sp.set(p, e as u32)
             e = e + 1u64
         }
         true
@@ -218,11 +221,12 @@ impl<T: Hash> Set<T> {
     # Forget every element. Keeps the buffers: the table is emptied
     # rather than freed, so a set that is refilled does not re-allocate
     # (same treatment `Vec::clear` gives its buffer).
-    unsafe fn clear(&mut self) {
+    fn clear(&mut self) {
         val scap: u64 = self.caps & 0xFFFFFFFFu64
+        val sp: Ptr<u32> = Ptr { addr: self.slots }
         var t: u64 = 0u64
         while t < scap {
-            __builtin_ptr_write(self.slots, t * 4u64, dict_slot_empty())
+            sp.set(t, dict_slot_empty())
             t = t + 1u64
         }
         self.count = 0u64
@@ -235,7 +239,6 @@ impl<T: Hash> Set<T> {
 struct SetIter<T> {
     elems: ptr,
     count: u64,
-    elem_size: u64,
     index: u64,
 }
 
@@ -246,20 +249,20 @@ impl<T: Hash> Set<T> {
         SetIter {
             elems: self.elems,
             count: self.count,
-            elem_size: self.elem_size,
             index: 0u64,
         }
     }
 }
 
 impl<T> Iterator<T> for SetIter<T> {
-    unsafe fn next(&mut self) -> Option<T> {
+    fn next(&mut self) -> Option<T> {
+        val ep: Ptr<T> = Ptr { addr: self.elems }
         if self.index >= self.count {
             Option::None
         } else {
             val i = self.index
             self.index = self.index + 1u64
-            val v: T = __builtin_ptr_read::<T>(self.elems, i * self.elem_size)
+            val v: T = ep.get(i)
             Option::Some(v)
         }
     }

@@ -545,6 +545,40 @@ impl EvaluationContext<'_> {
         let Some(addr_sym) = self.string_interner.get("addr") else {
             return Ok(None);
         };
+        // `SoaPtr<T>`: the tree-walker keys a column-split buffer by
+        // element index and keeps the whole value there, exactly as
+        // `__builtin_soa_read` / `__builtin_soa_write` do, so `cap` is
+        // not needed to find the slot.
+        let is_soa = match &*self_obj.borrow() {
+            Object::Struct { type_name, .. } => {
+                self.string_interner.resolve(*type_name) == Some("SoaPtr")
+            }
+            _ => false,
+        };
+        if is_soa {
+            let addr = match &*self_obj.borrow() {
+                Object::Struct { fields, .. } => {
+                    match fields.get(&addr_sym).and_then(|v| v.borrow().try_unwrap_pointer().ok()) {
+                        Some(a) => a,
+                        None => return Ok(None),
+                    }
+                }
+                _ => return Ok(None),
+            };
+            let index = args[0].borrow().try_unwrap_uint64().map_err(|_| {
+                InterpreterError::InternalError("SoaPtr index is not a u64".to_string())
+            })? as usize;
+            if is_set {
+                self.heap_manager.borrow_mut().typed_write(addr, index, args[1].clone());
+                return Ok(Some(EvaluationResult::Value(crate::object::Object::Unit.into())));
+            }
+            return match self.heap_manager.borrow().typed_read(addr, index) {
+                Some(v) => Ok(Some(EvaluationResult::Value(v.into()))),
+                None => Err(InterpreterError::InternalError(
+                    "Invalid memory access in soa_read (element never written)".to_string(),
+                )),
+            };
+        }
         let (addr, elem_ty) = match &*self_obj.borrow() {
             Object::Struct { fields, type_args, .. } => {
                 let Some(addr) = fields.get(&addr_sym).and_then(|v| v.borrow().try_unwrap_pointer().ok())

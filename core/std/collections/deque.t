@@ -21,7 +21,6 @@ struct Deque<T> {
     head: u64,
     len: u64,
     cap: u64,
-    elem_size: u64,
 }
 
 impl<T> Deque<T> {
@@ -31,16 +30,12 @@ impl<T> Deque<T> {
             head: 0u64,
             len: 0u64,
             cap: 0u64,
-            elem_size: 0u64,
         }
     }
 
     # Make room for one more element. Doubling, so `n` pushes cost
     # amortised O(1) at either end.
-    unsafe fn reserve_one(&mut self, value: T) {
-        if self.elem_size == 0u64 {
-            self.elem_size = __builtin_sizeof(value)
-        }
+    fn reserve_one(&mut self) {
         if self.len < self.cap {
             return
         }
@@ -49,68 +44,75 @@ impl<T> Deque<T> {
         if oldcap > 0u64 {
             newcap = oldcap * 2u64
         }
-        self.data = __builtin_heap_realloc(self.data, newcap * self.elem_size)
+        self.data = __builtin_heap_realloc(self.data, newcap * __builtin_sizeof::<T>())
         self.cap = newcap
+        val p: Ptr<T> = Ptr { addr: self.data }
         # The elements wrapped: [head, oldcap) then [0, wrapped). The
         # second run now belongs directly after the first, at oldcap.
         if oldcap > 0u64 && self.head + self.len > oldcap {
             val wrapped: u64 = self.head + self.len - oldcap
             var i: u64 = 0u64
             while i < wrapped {
-                val v: T = __builtin_ptr_read::<T>(self.data, i * self.elem_size)
-                __builtin_ptr_write(self.data, (oldcap + i) * self.elem_size, v)
+                val v: T = p.get(i)
+                p.set(oldcap + i, v)
                 i = i + 1u64
             }
         }
     }
 
-    unsafe fn push_back(&mut self, value: T) {
-        self.reserve_one(value)
+    fn push_back(&mut self, value: T) {
+        self.reserve_one()
         val slot: u64 = (self.head + self.len) % self.cap
-        __builtin_ptr_write(self.data, slot * self.elem_size, value)
+        val p: Ptr<T> = Ptr { addr: self.data }
+        p.set(slot, value)
         self.len = self.len + 1u64
     }
 
-    unsafe fn push_front(&mut self, value: T) {
-        self.reserve_one(value)
+    fn push_front(&mut self, value: T) {
+        self.reserve_one()
         # `head + cap - 1` rather than `head - 1`: u64 subtraction traps
         # rather than wrapping, and `head` is 0 half the time.
         self.head = (self.head + self.cap - 1u64) % self.cap
-        __builtin_ptr_write(self.data, self.head * self.elem_size, value)
+        val p: Ptr<T> = Ptr { addr: self.data }
+        p.set(self.head, value)
         self.len = self.len + 1u64
     }
 
     # Remove and return the front element. Panics when empty, like
     # `Vec::pop` — the alternative is reading whatever sits at the head
     # slot and underflowing `len`.
-    unsafe fn pop_front(&mut self) -> T {
+    fn pop_front(&mut self) -> T {
         if self.len == 0u64 { panic("Deque::pop_front on an empty Deque") }
-        val v: T = __builtin_ptr_read::<T>(self.data, self.head * self.elem_size)
+        val p: Ptr<T> = Ptr { addr: self.data }
+        val v: T = p.get(self.head)
         self.head = (self.head + 1u64) % self.cap
         self.len = self.len - 1u64
         v
     }
 
-    unsafe fn pop_back(&mut self) -> T {
+    fn pop_back(&mut self) -> T {
         if self.len == 0u64 { panic("Deque::pop_back on an empty Deque") }
         val slot: u64 = (self.head + self.len - 1u64) % self.cap
-        val v: T = __builtin_ptr_read::<T>(self.data, slot * self.elem_size)
+        val p: Ptr<T> = Ptr { addr: self.data }
+        val v: T = p.get(slot)
         self.len = self.len - 1u64
         v
     }
 
     # Read by logical position: 0 is the front, `size() - 1` the back.
-    unsafe fn get(&self, index: u64) -> T {
+    fn get(&self, index: u64) -> T {
         if index >= self.len { panic("Deque::get index out of bounds") }
         val slot: u64 = (self.head + index) % self.cap
-        val v: T = __builtin_ptr_read::<T>(self.data, slot * self.elem_size)
+        val p: Ptr<T> = Ptr { addr: self.data }
+        val v: T = p.get(slot)
         v
     }
 
-    unsafe fn set(&mut self, index: u64, value: T) {
+    fn set(&mut self, index: u64, value: T) {
         if index >= self.len { panic("Deque::set index out of bounds") }
         val slot: u64 = (self.head + index) % self.cap
-        __builtin_ptr_write(self.data, slot * self.elem_size, value)
+        val p: Ptr<T> = Ptr { addr: self.data }
+        p.set(slot, value)
     }
 
     fn size(&self) -> u64 {
@@ -144,14 +146,12 @@ impl<T> Drop for Deque<T> {
 #
 # `head` and `cap` share a field. The iterator's `next` is a
 # `&mut self` method, which returns one register per receiver leaf plus
-# its result, and six fields with a two-leaf `Option` would sit past
-# the backends' budget of eight.
+# its result, against the backends' budget of eight.
 struct DequeIter<T> {
     data: ptr,
     # head in the high 32 bits, capacity in the low.
     head_cap: u64,
     count: u64,
-    elem_size: u64,
     index: u64,
 }
 
@@ -161,14 +161,14 @@ impl<T> Deque<T> {
             data: self.data,
             head_cap: (self.head << 32u64) | self.cap,
             count: self.len,
-            elem_size: self.elem_size,
             index: 0u64,
         }
     }
 }
 
 impl<T> Iterator<T> for DequeIter<T> {
-    unsafe fn next(&mut self) -> Option<T> {
+    fn next(&mut self) -> Option<T> {
+        val p: Ptr<T> = Ptr { addr: self.data }
         if self.index >= self.count {
             Option::None
         } else {
@@ -176,7 +176,7 @@ impl<T> Iterator<T> for DequeIter<T> {
             val cap: u64 = self.head_cap & 0xFFFFFFFFu64
             val slot: u64 = (head + self.index) % cap
             self.index = self.index + 1u64
-            val v: T = __builtin_ptr_read::<T>(self.data, slot * self.elem_size)
+            val v: T = p.get(slot)
             Option::Some(v)
         }
     }

@@ -2234,6 +2234,32 @@ impl<'a> FunctionLower<'a> {
         }
     }
 
+    /// MOVE-REINIT: drop `decl`'s current value if its binding still
+    /// owns it (the flagged drop target clears the flag).
+    pub(crate) fn drop_for_reinit(&mut self, decl: frontend::ast::StmtRef) -> Result<(), String> {
+        let Some(flag) = self.drop_flag_locals.get(&decl).copied() else {
+            return Ok(());
+        };
+        let targets: Vec<DropTarget> = self
+            .drop_scopes
+            .iter()
+            .flatten()
+            .filter(|t| t.flag == Some(flag))
+            .cloned()
+            .collect();
+        for target in targets.iter().rev() {
+            self.emit_drop_call(target)?;
+        }
+        Ok(())
+    }
+
+    /// MOVE-REINIT: `decl`'s binding owns a value again.
+    pub(crate) fn rearm_drop_flag(&mut self, decl: frontend::ast::StmtRef) {
+        if let Some(flag) = self.drop_flag_locals.get(&decl).copied() {
+            self.store_drop_flag(flag, true);
+        }
+    }
+
     /// MOVE-CONDITIONAL: the bindings in `decls` hand their value over
     /// on this path; clear their flags.
     pub(crate) fn clear_drop_flags(&mut self, decls: &[frontend::ast::StmtRef]) {

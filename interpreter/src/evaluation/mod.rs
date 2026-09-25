@@ -342,6 +342,9 @@ pub(super) struct DropEntry {
     /// The `val` / `var` that registered it, so a conditional
     /// hand-over can take it back out (MOVE-CONDITIONAL).
     pub(super) decl: Option<frontend::ast::StmtRef>,
+    /// Whether the binding still owns `value`. A conditional hand-over
+    /// clears it; a reassignment (MOVE-REINIT) sets it with the new value.
+    pub(super) armed: bool,
 }
 
 impl<'a> EvaluationContext<'a> {
@@ -1015,6 +1018,9 @@ impl<'a> EvaluationContext<'a> {
         };
         let scope = self.drop_scopes.pop().unwrap_or_default();
         for entry in scope.into_iter().rev() {
+            if !entry.armed {
+                continue;
+            }
             if escaping
                 .as_ref()
                 .is_some_and(|kept| Self::value_holds(&entry.value, kept))
@@ -1106,20 +1112,64 @@ impl<'a> EvaluationContext<'a> {
             crate::value::Value::Heap(rc) => rc.clone(),
             _ => return, // Primitives have no Drop impl by definition.
         };
-        if !self.value_contains_drop(&rc) {
+        // A binding a reassignment may give an owning value later
+        // (`var o: Option<H> = None`) needs its entry now, in its own
+        // scope, even when this value owns nothing yet.
+        if !self.value_contains_drop(&rc) && !self.drop_flags.bindings.contains(&stmt_ref) {
             return;
         }
         if let Some(scope) = self.drop_scopes.last_mut() {
-            scope.push(DropEntry { name, value: rc, decl: Some(stmt_ref) });
+            scope.push(DropEntry { name, value: rc, decl: Some(stmt_ref), armed: true });
         }
     }
 
     /// MOVE-CONDITIONAL: the value of each binding in `decls` is being
     /// handed over on this path, so its drop entry comes out.
     pub(super) fn disarm_drops(&mut self, decls: &[frontend::ast::StmtRef]) {
-        for scope in self.drop_scopes.iter_mut() {
-            scope.retain(|entry| !entry.decl.is_some_and(|d| decls.contains(&d)));
+        for entry in self.drop_scopes.iter_mut().flatten() {
+            if entry.decl.is_some_and(|d| decls.contains(&d)) {
+                entry.armed = false;
+            }
         }
+    }
+
+    /// MOVE-REINIT: `decl`'s binding is given `value`. The old value is
+    /// dropped when the binding still owns it; the entry then owns the
+    /// new one, in the scope that declared the binding.
+    pub(super) fn reinit_drop(
+        &mut self,
+        decl: frontend::ast::StmtRef,
+        value: &crate::value::Value,
+    ) -> Result<(), InterpreterError> {
+        let found = self
+            .drop_scopes
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(i, scope)| {
+                scope.iter().rposition(|e| e.decl == Some(decl)).map(|j| (i, j))
+            });
+        let Some((i, j)) = found else {
+            return Ok(());
+        };
+        if self.drop_scopes[i][j].armed {
+            let old = DropEntry {
+                name: self.drop_scopes[i][j].name,
+                value: self.drop_scopes[i][j].value.clone(),
+                decl: None,
+                armed: true,
+            };
+            self.glue_drop(&old)?;
+        }
+        let entry = &mut self.drop_scopes[i][j];
+        match value {
+            crate::value::Value::Heap(rc) => {
+                entry.value = rc.clone();
+                entry.armed = true;
+            }
+            _ => entry.armed = false,
+        }
+        Ok(())
     }
 
     /// Whether the value (transitively) contains a type with a
@@ -1213,12 +1263,14 @@ impl<'a> EvaluationContext<'a> {
                         .string_interner
                         .get("data")
                         .and_then(|s| Self::struct_pointer_field(fields, s));
+                    // Pushed first so it pops last: the contents go
+                    // before the storage they live in.
+                    work.push((Phase::UserDrop, v.clone()));
                     if let Some(addr) = addr {
                         if let Some(inner) = self.heap_manager.borrow().typed_read(addr, 0) {
                             work.push((Phase::Contents, inner));
                         }
                     }
-                    work.push((Phase::UserDrop, v.clone()));
                 }
                 Object::Struct { type_name, fields, .. }
                     if self.drop_trait_structs.contains(type_name)
@@ -1232,11 +1284,13 @@ impl<'a> EvaluationContext<'a> {
                         .string_interner
                         .get("len")
                         .and_then(|s| Self::struct_uint_field(fields, s));
+                    // Storage last, elements first to last -- the
+                    // compiled lanes' order (the stack pops in reverse).
+                    work.push((Phase::UserDrop, v.clone()));
                     if let (Some(addr), Some(len)) = (addr, len) {
                         let elems = self.vec_element_slots(addr, len);
-                        work.extend(elems.into_iter().map(|e| (Phase::Contents, e)));
+                        work.extend(elems.into_iter().rev().map(|e| (Phase::Contents, e)));
                     }
-                    work.push((Phase::UserDrop, v.clone()));
                 }
                 // A user Drop impl runs first (Rust order — the body
                 // may read its fields), then the fields are glued.
@@ -1250,10 +1304,10 @@ impl<'a> EvaluationContext<'a> {
                     work.extend(fields.values().cloned().map(|f| (Phase::Contents, f)));
                 }
                 Object::EnumVariant { values, .. } => {
-                    work.extend(values.iter().cloned().map(|p| (Phase::Contents, p)));
+                    work.extend(values.iter().rev().cloned().map(|p| (Phase::Contents, p)));
                 }
                 Object::Tuple(elems) | Object::Array(elems) => {
-                    work.extend(elems.iter().cloned().map(|e| (Phase::Contents, e)));
+                    work.extend(elems.iter().rev().cloned().map(|e| (Phase::Contents, e)));
                 }
                 _ => {}
             }

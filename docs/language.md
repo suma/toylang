@@ -6700,6 +6700,17 @@ value over again. A transfer inside a closure is refused too.
 (Before 2026-09-25 every transfer inside a branch or a loop body was
 refused.)
 
+Assigning a whole owning binding (`x = e`, `x` a `var` of a type that
+owns something) gives it a value again. The value it still owns, if
+any, is dropped once `e` has been evaluated; after a move, `x` simply
+owns again and may be read. So a loop can hand a binding over and take
+the result straight back — `kept = keep(item, kept)` — since the next
+round finds it owned. A binding some alias still names (`val d = x`) is
+not given a new value this way: dropping the old one would leave the
+alias dangling, so after a move it stays moved. (Before 2026-09-25 a
+reassigned binding stayed moved, and the value it overwrote was freed
+by nobody.)
+
 A binding that is the function's value — the body's last expression,
 a `return`'s operand, or the last expression of a branch of either —
 leaves with it: it is handed over like an argument, so the function's

@@ -153,6 +153,7 @@ pub fn check_moves(
         exits: Vec::new(),
         closure_level: 0,
         tail: false,
+        transfer_anchors: HashMap::new(),
     };
     for function in &program.function {
         if function.is_extern {
@@ -579,6 +580,9 @@ struct MoveCheck<'a> {
     /// binding named there leaves with the value, so it is handed over
     /// rather than read -- the scope must not drop what it returns.
     tail: bool,
+    /// MOVE-REINIT: where each binding was handed over unconditionally,
+    /// so a later reassignment can put those hand-overs behind a flag.
+    transfer_anchors: HashMap<StmtRef, Vec<Anchor>>,
 }
 
 /// Where a conditional hand-over clears its flag (`DropFlags`).
@@ -1155,9 +1159,21 @@ impl MoveCheck<'_> {
             }
 
             // Storing into a place that outlives the statement.
+            // MOVE-REINIT: `x = e` on a whole owning binding gives it a
+            // value again -- after a move, or over one it still owns,
+            // which is dropped first.
             Expr::Assign(lhs, rhs) => {
-                self.walk_expr(lhs, Use::Read, conditional);
+                let reinit = match self.program.expression.get(&lhs) {
+                    Some(Expr::Identifier(x)) => self.reinit_target(x),
+                    _ => None,
+                };
+                if reinit.is_none() {
+                    self.walk_expr(lhs, Use::Read, conditional);
+                }
                 self.walk_expr(rhs, Use::Transfer, conditional);
+                if let Some((x, decl)) = reinit {
+                    self.reinit(x, decl, lhs);
+                }
             }
 
             // Aggregates take ownership of what they are built from.
@@ -1429,6 +1445,10 @@ impl MoveCheck<'_> {
                     Some("inside a closure, which may run any number of times")
                 } else if anchor.is_none() {
                     Some("here")
+                } else if self.anchor_reinits(anchor, name, owner) {
+                    // `x = keep(p, x)`: owned again before the loop
+                    // can come round to it.
+                    None
                 } else {
                     self.loop_refusal(owner_depth)
                 };
@@ -1454,8 +1474,12 @@ impl MoveCheck<'_> {
             }
         }
 
+        let anchor = self.anchors.last().copied();
         for decl in [owner_decl, alias_decl].into_iter().flatten() {
             self.transferred.insert(decl);
+            if let Some(anchor) = anchor {
+                self.transfer_anchors.entry(decl).or_default().push(anchor);
+            }
         }
         let at = self
             .location(expr_ref)
@@ -1465,6 +1489,49 @@ impl MoveCheck<'_> {
             .unwrap_or_else(|| SourceLocation::new(0, 0, 0, 0));
         self.moved.insert(name, at);
         self.moved.insert(owner, at);
+    }
+
+    /// MOVE-REINIT: the binding `x = e` gives a value again, when it is
+    /// a whole owning `val` / `var` no alias names -- dropping the old
+    /// value would leave an alias dangling -- outside a closure.
+    fn reinit_target(&self, x: DefaultSymbol) -> Option<(DefaultSymbol, StmtRef)> {
+        if self.closure_level > 0 {
+            return None;
+        }
+        let owned = self.lookup(x)?;
+        if owned.root.is_some() {
+            return None;
+        }
+        let decl = owned.decl?;
+        let aliased = self.scopes.iter().flatten().any(|o| o.root == Some(x));
+        (!aliased).then_some((x, decl))
+    }
+
+    /// MOVE-REINIT: `x` owns a value again. A hand-over that used to
+    /// end its ownership for good goes behind the flag instead.
+    fn reinit(&mut self, x: DefaultSymbol, decl: StmtRef, lhs: ExprRef) {
+        self.moved.remove(&x);
+        if self.transferred.remove(&decl) {
+            for anchor in self.transfer_anchors.get(&decl).cloned().unwrap_or_default() {
+                self.flag(decl, anchor);
+            }
+        }
+        self.drop_flags.bindings.insert(decl);
+        self.drop_flags.reinit.insert(lhs, decl);
+    }
+
+    /// Whether `anchor` is an assignment giving `name` (or its owner) a
+    /// value again, after the hand-over inside it.
+    fn anchor_reinits(&self, anchor: Option<Anchor>, name: DefaultSymbol, owner: DefaultSymbol) -> bool {
+        let e = match anchor {
+            Some(Anchor::Stmt(_, Some(e))) | Some(Anchor::Expr(e)) => e,
+            _ => return false,
+        };
+        let Some(Expr::Assign(lhs, _)) = self.program.expression.get(&e) else {
+            return false;
+        };
+        matches!(self.program.expression.get(&lhs), Some(Expr::Identifier(y)) if y == name || y == owner)
+            && self.reinit_target(owner).is_some()
     }
 
     /// MOVE-CONDITIONAL: put `decl`'s drop behind a flag, cleared

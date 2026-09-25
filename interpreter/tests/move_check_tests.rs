@@ -682,3 +682,50 @@ fn main() -> i64 {
         7i64
     );
 }
+
+/// MOVE-REINIT: assigning a whole binding gives it a value again, so it
+/// may be read after a move, and a loop may hand it over as long as the
+/// same statement takes a value back.
+#[test]
+fn a_reassigned_binding_can_be_used_again() {
+    assert_eq!(
+        run("fn keep(c: Cell<i64>, v: Vec<Cell<i64>>) -> Vec<Cell<i64>> {
+    v.push(c)
+    v
+}
+fn main() -> i64 {
+    var store: Vec<Cell<i64>> = Vec::new()
+    for i in 0u64..3u64 {
+        store = keep(Cell::new(7i64), store)
+    }
+    var c: Cell<i64> = Cell::new(1i64)
+    store.push(c)
+    c = Cell::new(5i64)
+    c.get() + store.size() as i64
+}"),
+        9i64
+    );
+}
+
+/// An alias of the binding would be left naming the dropped old value,
+/// so a binding with a live alias is not given a new one: after a move
+/// it stays moved.
+#[test]
+fn a_binding_with_an_alias_is_not_reinitialised() {
+    let diagnostics = diagnose(
+        "fn main() -> i64 {
+    var store: Vec<Cell<i64>> = Vec::new()
+    var c: Cell<i64> = Cell::new(1i64)
+    val d = c
+    store.push(c)
+    c = Cell::new(5i64)
+    c.get()
+}",
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code == "E0014" && d.message.contains("`c` was moved")),
+        "the refusal should name the move: {diagnostics:?}"
+    );
+}

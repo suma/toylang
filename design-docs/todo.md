@@ -12,6 +12,14 @@
 
 ### 2026-09-25
 
+- **MOVE-REINIT: 丸ごとの代入で所有し直す** — `x = e` は旧値を (まだ
+  持っていれば) `e` の評価後に drop して新しい値を持つ。移動の後も
+  読め、`kept = keep(p, kept)` はループ内でも通る。以前は代入した旧値を
+  誰も解放せず (compiled)、tree-walker は旧値の代わりに新しい値を
+  漏らしていた。compiled レーンは struct の丸ごと代入に対応した
+  (一時領域に作って写す)。tree-walker の drop glue は Vec / tuple /
+  配列 / enum payload を先頭から drop するようにした (compiled と同順)。
+
 - **RETURN-DROP: enum を返す関数のローカルが compiled レーンで drop されて
   いなかった** — 本体を戻り値の storage へ直接 lower する経路が drop
   スコープを開いていなかった (`Result` / `Option` を返す関数の中の
@@ -2690,11 +2698,6 @@
   (`{ val t = ..  match t { Ok(v) => v, .. } }`) で持ち主 `t` がブロック
   より先に死ぬので、「ブロックの末尾から外へ出る束縛」を move_check が
   移動として扱う (`?` の別名規則と合わせる) のが先。
-- **MOVE-REINIT: 移動した名前への代入し直し** ★ — `kept = keep(p, kept)`
-  のように渡した直後に同じ名前へ新しい値を入れる形は E0014 (`moved` から
-  外れない)。代入で束縛を所有し直し、ループ本体でも「次の周回は所有
-  している」と言えるようにする。旧値の drop (移動していないときの上書き)
-  をどのレーンもしていない点と合わせて決める。
 - **LEND-FREEING-CALLEE: 解放・再確保するがしまわない受け手に渡した値が漏れる** ★ —
   受け手は値渡しの仮引数を drop しないので、`fn grow(s: String) -> u64
   { s.push(100u8)  s.len() }` のように所有物を触る (realloc する) だけで

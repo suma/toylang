@@ -230,6 +230,7 @@ impl EvaluationContext<'_> {
                             name,
                             value: allocator_val.clone(),
                             decl: None,
+                            armed: true,
                         };
                         self.glue_drop(&entry)?;
                     }

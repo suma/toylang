@@ -596,7 +596,7 @@ impl EvaluationContext<'_> {
     fn handle_assignment(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         if let Some(lhs_expr) = self.expr_pool.get(lhs) {
             match lhs_expr {
-                Expr::Identifier(name) => self.handle_variable_assignment(name, rhs),
+                Expr::Identifier(name) => self.handle_variable_assignment(name, lhs, rhs),
                 Expr::FieldAccess(obj, field) => self.handle_field_assignment(&obj, field, rhs),
                 _ => {
                     Err(InterpreterError::InternalError("bad assignment due to lhs is not identifier or array access".to_string()))
@@ -655,7 +655,7 @@ impl EvaluationContext<'_> {
     }
 
     /// Handles variable assignment
-    fn handle_variable_assignment(&mut self, name: DefaultSymbol, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+    fn handle_variable_assignment(&mut self, name: DefaultSymbol, lhs: &ExprRef, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         use crate::try_value_v;
         // Handle null expressions specially in variable assignments
         let expr = self.expr_pool.get(rhs)
@@ -695,6 +695,11 @@ impl EvaluationContext<'_> {
             }
         }
 
+        if !self.drop_flags.is_empty() {
+            if let Some(decl) = self.drop_flags.reinit.get(lhs).copied() {
+                self.reinit_drop(decl, &rhs_v)?;
+            }
+        }
         self.environment.set_var(name, rhs_v.clone(), VariableSetType::Overwrite, self.string_interner)?;
         Ok(EvaluationResult::Value(rhs_v))
     }

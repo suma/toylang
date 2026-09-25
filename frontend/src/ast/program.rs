@@ -31,6 +31,11 @@ pub struct DropFlags {
     /// statement (a block's tail is lowered from its expression
     /// alone in places).
     pub clear_before_expr: HashMap<ExprRef, Vec<StmtRef>>,
+    /// MOVE-REINIT: a whole-binding assignment `x = e`, keyed by its
+    /// left-hand `x`, to the binding's `val` / `var`. After `e` is
+    /// evaluated the backend drops the old value if the binding still
+    /// owns it, stores the new one and sets the flag.
+    pub reinit: HashMap<ExprRef, StmtRef>,
 }
 
 impl DropFlags {

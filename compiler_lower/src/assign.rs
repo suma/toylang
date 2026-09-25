@@ -80,6 +80,52 @@ impl<'a> FunctionLower<'a> {
         }
     }
 
+    /// MOVE-REINIT: `x = e` on a whole struct / enum binding whose drop
+    /// is flagged. `e` is built into fresh storage first -- it may read
+    /// `x`, and may hand `x` over (`x = keep(p, x)`) -- then the old
+    /// value is dropped if `x` still owns it, the new one is copied in
+    /// and the flag set. `false` when the binding is not a struct or
+    /// enum, which leaves the assignment to the ordinary paths.
+    fn lower_reinit(
+        &mut self,
+        sym: DefaultSymbol,
+        rhs: &ExprRef,
+        decl: frontend::ast::StmtRef,
+    ) -> Result<bool, String> {
+        use super::bindings::{flatten_enum_storage_locals, flatten_struct_locals};
+        let (fresh, current) = match self.bindings.get(&sym).cloned() {
+            Some(Binding::Struct { struct_id, fields }) => {
+                let temp = self.allocate_struct_fields(struct_id);
+                self.lower_into_struct_fields(rhs, struct_id, &temp)?;
+                (flatten_struct_locals(&temp), flatten_struct_locals(&fields))
+            }
+            Some(Binding::Enum(storage)) => {
+                let temp = self.allocate_enum_storage(storage.enum_id);
+                self.lower_into_enum_storage(rhs, &temp)?;
+                (flatten_enum_storage_locals(&temp), flatten_enum_storage_locals(&storage))
+            }
+            _ => return Ok(false),
+        };
+        if fresh.len() != current.len() {
+            return Err(format!(
+                "reassignment of `{}`: the new value's storage has a different shape",
+                self.interner.resolve(sym).unwrap_or("?")
+            ));
+        }
+        if self.is_unreachable() {
+            return Ok(true);
+        }
+        self.drop_for_reinit(decl)?;
+        for ((dst, ty), (src, _)) in current.iter().zip(fresh.iter()) {
+            let v = self
+                .emit(InstKind::LoadLocal(*src), Some(*ty))
+                .expect("LoadLocal returns a value");
+            self.emit(InstKind::StoreLocal { dst: *dst, src: v }, None);
+        }
+        self.rearm_drop_flag(decl);
+        Ok(true)
+    }
+
     pub(super) fn lower_assign(
         &mut self,
         lhs: &ExprRef,
@@ -92,6 +138,13 @@ impl<'a> FunctionLower<'a> {
             .ok_or_else(|| "assign lhs missing".to_string())?;
         match lhs_expr {
             Expr::Identifier(sym) => {
+                // MOVE-REINIT: a whole owning struct / enum binding given
+                // a new value.
+                if let Some(decl) = self.program.drop_flags.reinit.get(lhs).copied()
+                    && self.lower_reinit(sym, rhs, decl)?
+                {
+                    return Ok(None);
+                }
                 // Enum reassignment: peek at the binding first so we
                 // can route the rhs through `lower_into_enum_storage`
                 // and reuse the existing storage tree (no need to

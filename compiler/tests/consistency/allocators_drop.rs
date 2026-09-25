@@ -812,3 +812,70 @@ fn a_binding_in_a_compound_branch_is_dropped_on_its_own_path() {
     "#;
     assert_renders(src, "compound_branch_drop", "close 7\n1\n0\n");
 }
+
+/// MOVE-REINIT: `x = e` on a whole owning binding drops the value it
+/// still owns (`over`: `close 1` before `assigned`), owns a value again
+/// after a move (`after_move`), may hand itself over and take the
+/// result back inside a loop (`kept = keep(.., kept)`), and does both
+/// through an `Option` that owned nothing at first (`opt`). Each value
+/// closes once. The old value used to be left to nobody (compiled
+/// lanes) or dropped in place of the new one (tree-walker).
+#[test]
+fn a_reassigned_binding_drops_what_it_owned_and_owns_again() {
+    let src = r#"
+struct H { id: u64 }
+impl Drop for H {
+    fn drop(&mut self) { println("close {self.id}") }
+}
+fn mk(n: u64) -> H { H { id: n } }
+fn keep(h: H, v: Vec<H>) -> Vec<H> {
+    v.push(h)
+    v
+}
+fn over() -> u64 {
+    var x = mk(1u64)
+    x = mk(2u64)
+    println("assigned")
+    x.id
+}
+fn after_move() -> u64 {
+    var x = mk(3u64)
+    var v: Vec<H> = Vec::with_capacity(2u64)
+    v.push(x)
+    x = mk(4u64)
+    println("reinit {x.id}")
+    v.size()
+}
+fn looped() -> u64 {
+    var kept: Vec<H> = Vec::with_capacity(1u64)
+    for i in 0u64..3u64 {
+        kept = keep(mk(10u64 + i), kept)
+    }
+    println("kept {kept.size()}")
+    kept.size()
+}
+fn opt(c: bool) -> u64 {
+    var o: Option<H> = Option::None
+    if c {
+        o = Option::Some(mk(20u64))
+    }
+    o = Option::Some(mk(21u64))
+    println("opt")
+    0u64
+}
+fn main() -> u64 {
+    println(over())
+    println(after_move())
+    println(looped())
+    println(opt(true))
+    println(opt(false))
+    0u64
+}
+    "#;
+    assert_renders(
+        src,
+        "move_reinit",
+        "close 1\nassigned\nclose 2\n2\nreinit 4\nclose 3\nclose 4\n1\nkept 3\n\
+         close 10\nclose 11\nclose 12\n3\nclose 20\nopt\nclose 21\n0\nopt\nclose 21\n0\n",
+    );
+}

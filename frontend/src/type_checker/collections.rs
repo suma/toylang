@@ -169,15 +169,12 @@ impl<'a> TypeCheckerVisitor<'a> {
         // caller's array (or a `const` table in the read-only section)
         // through a borrow that promised not to. The identifier's type
         // reads back as the array itself, so the declaration is asked.
-        if let Some(Expr::Identifier(sym)) = self.core.expr_pool.get(object)
-            && let Some(TypeDecl::Ref { is_mut: false, inner }) = self.context.get_var(sym)
-            && matches!(inner.as_ref(), TypeDecl::Array(..))
+        // SHARED-BORROW-WRITE generalises this to any shared root
+        // (`p.items[i] = v` with `p: &P`, `self.buf[i]` under `&self`).
+        if let Some((target, root, is_self)) =
+            self.shared_borrow_write_under(object, vec!["[..]".to_string()])
         {
-            let name = self.core.string_interner.resolve(sym).unwrap_or("?").to_string();
-            let err = TypeCheckError::generic_error(&format!(
-                "cannot assign to an element of `{name}`: it is a shared borrow (`&[T; N]`); \
-                 declare the parameter `&mut [T; N]` to write through it"
-            ));
+            let err = Self::shared_borrow_write_error(&target, &root, is_self);
             // As above: the index carries a position, the identifier not.
             let anchor = start.filter(|s| self.get_expr_location(s).is_some());
             return Err(self.error_with_location(err, anchor.as_ref().unwrap_or(object)));

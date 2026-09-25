@@ -220,6 +220,15 @@ Type system:
     rejected; there is no auto-deref.
 - Method dispatch on a `&T` / `&mut T` receiver auto-derefs to `T` for
   impl-table lookup (`(&s).len()` and `s.len()` resolve identically).
+- **Nothing is written through a shared borrow.** With `p: &P` (or
+  `self` in a `&self` method), assigning to a field, element or index
+  under it -- `p.x = v`, `p.inner.v += 1`, `p.items[i] = v`,
+  `self.x = v` -- is a type error, and so is calling a `&mut self`
+  method on it (`p.v.push(x)`). Such a write used to reach a *copy* on
+  every lane and be lost without a word. Declare the parameter `&mut P`
+  (or the method `&mut self`) to write through it. A by-value binding
+  (`self: Self`, a plain parameter) is its own copy and may still be
+  written.
 
 Explicit borrow expressions (`UnaryOp::Borrow` / `UnaryOp::BorrowMut`):
 

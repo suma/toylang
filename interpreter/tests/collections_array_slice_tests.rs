@@ -376,7 +376,7 @@ mod array_borrow_tests {
                 f(l) as u64
             }",
         );
-        assert!(err.contains("shared borrow") && err.contains("&mut [T; N]"), "{err}");
+        assert!(err.contains("shared borrow") && err.contains("as `&mut`"), "{err}");
     }
 
     #[test]
@@ -402,5 +402,115 @@ mod array_borrow_tests {
             fn main() -> u64 { f(K) as u64 }",
         );
         assert!(err.contains("[u32; 3]"), "{err}");
+    }
+}
+
+// SHARED-BORROW-WRITE: a write through a shared borrow reached a copy on
+// every lane and was silently lost -- the three agreed, on nothing
+// happening. It is a type error now, whatever the path to the field.
+#[cfg(test)]
+mod shared_borrow_write_tests {
+    use crate::common::test_program;
+
+    fn verdict(source: &str) -> Result<(), String> {
+        test_program(source).map(|_| ())
+    }
+
+    const TYPES: &str = "struct In { v: u64 }
+        struct P { x: u64, inner: In }
+        ";
+
+    fn refused(body: &str, needle: &str) {
+        let src = format!("{TYPES}{body}");
+        match verdict(&src) {
+            Ok(()) => panic!("expected a type error for:\n{body}"),
+            Err(e) => assert!(
+                e.contains("shared borrow") && e.contains(needle),
+                "{needle}: {e}"
+            ),
+        }
+    }
+
+    fn accepted(body: &str) {
+        let src = format!("{TYPES}{body}");
+        if let Err(e) = verdict(&src) {
+            panic!("expected this to check:\n{body}\n{e}");
+        }
+    }
+
+    #[test]
+    fn a_field_write_through_a_shared_parameter_is_refused() {
+        refused(
+            "fn f(p: &P) -> u64 { p.x = 5u64  p.x }
+            fn main() -> u64 { val q = P { x: 1u64, inner: In { v: 2u64 } }  f(q) }",
+            "`p.x`",
+        );
+        refused(
+            "fn f(p: &P) -> u64 { p.inner.v = 7u64  0u64 }
+            fn main() -> u64 { val q = P { x: 1u64, inner: In { v: 2u64 } }  f(q) }",
+            "`p.inner.v`",
+        );
+        // Compound assignment is the same write, desugared.
+        refused(
+            "fn f(p: &P) -> u64 { p.x += 1u64  p.x }
+            fn main() -> u64 { val q = P { x: 1u64, inner: In { v: 2u64 } }  f(q) }",
+            "`p.x`",
+        );
+    }
+
+    #[test]
+    fn a_write_through_a_shared_receiver_is_refused() {
+        refused(
+            "impl P { fn poke(&self) -> u64 { self.x = 9u64  self.x } }
+            fn main() -> u64 { val q = P { x: 1u64, inner: In { v: 2u64 } }  q.poke() }",
+            "`&mut self`",
+        );
+    }
+
+    #[test]
+    fn an_index_write_through_a_shared_collection_is_refused() {
+        refused(
+            "fn f(d: &Dict<u64, u64>) { d[1u64] = 2u64 }
+            fn main() -> u64 { var d: Dict<u64, u64> = Dict::new()  f(d)  0u64 }",
+            "`d[..]`",
+        );
+    }
+
+    #[test]
+    fn a_mutating_method_through_a_shared_borrow_is_refused() {
+        // `push` takes `&mut self`; through `p: &Q` it grew a copy's
+        // vector, so the caller's stayed empty.
+        let src = "struct Q { v: Vec<u64> }
+            fn f(p: &Q) -> u64 { p.v.push(3u64)  p.v.size() }
+            fn main() -> u64 { var q = Q { v: Vec::new() }  f(q) }";
+        match verdict(src) {
+            Ok(()) => panic!("expected a type error"),
+            Err(e) => assert!(e.contains("`&mut self`") && e.contains("`p.v`"), "{e}"),
+        }
+        // And from a `&self` method, on its own receiver.
+        let src = "struct Q { v: Vec<u64> }
+            impl Q { fn add(&self) { self.v.push(1u64) } }
+            fn main() -> u64 { val q = Q { v: Vec::new() }  q.add()  0u64 }";
+        match verdict(src) {
+            Ok(()) => panic!("expected a type error"),
+            Err(e) => assert!(e.contains("declare the method `&mut self`"), "{e}"),
+        }
+    }
+
+    #[test]
+    fn the_mutable_and_owned_forms_still_write() {
+        accepted(
+            "fn f(p: &mut P) { p.x = 5u64  p.inner.v = 6u64 }
+            impl P {
+                fn poke(&mut self) { self.x = 9u64 }
+                fn owned(self: Self) -> u64 { self.x = 3u64  self.x }
+            }
+            fn main() -> u64 {
+                var q = P { x: 1u64, inner: In { v: 2u64 } }
+                f(&mut q)
+                q.poke()
+                q.x
+            }",
+        );
     }
 }

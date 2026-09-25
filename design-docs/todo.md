@@ -12,6 +12,13 @@
 
 ### 2026-09-25
 
+- **SHARED-BORROW-WRITE: 共有の借用を通した書き込みは型エラー** —
+  `&T` 引数 / `&self` の下へのフィールド・要素・添字の代入 (複合代入を
+  含む) と、`&mut self` メソッドの呼び出しを拒否する。以前は全レーンで
+  写しに書かれて黙って失われていた。`jit_fixed_buffer_allocator.t` が
+  これを踏んでいた (`&FixedBuffer` 越しの `alloc` が割り当て量を
+  数えていなかった)。
+
 - **CONST-ARRAY: 表を名前で渡せる** — `&[T; N]` / `&mut [T; N]` (スカラー
   要素) の引数が compiled レーンで番地 1 つとして通る (`const` は
   `.rodata`、スタック配列は先頭要素の番地)。境界検査は所有する配列と同じ。
@@ -2310,13 +2317,6 @@
   `function_index collision` panic が、候補を名指しする型エラーに
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
-
-- **SHARED-BORROW-WRITE: 共有の借用を通した書き込みを型検査が拒否しない** —
-  `fn f(p: &P) { p.x = 5u64 }` が型検査を通る (tree-walker は書き込み、
-  compiled レーンは写しに書く可能性がある)。配列の添字代入
-  (`t[i] = v` with `t: &[T; N]`) だけは 2026-09-25 の CONST-ARRAY で型エラーに
-  した。フィールド代入 / 複合代入 / `&self` メソッド内の `self.x = ..` も
-  同じ規則の対象になるか検討する (現状の扱いは未確認)。
 
 - **TREE-WALKER-DYNAMIC-GENERIC-SCOPE — 呼び出し先が呼び出し元の型引数を
   見る** — tree-walker の `merged_generic_scope` は**実行中の全呼び出し**の

@@ -152,6 +152,11 @@ pub struct TypeCheckContext {
     /// nothing to do with it.
     pub current_module_path: Option<Vec<DefaultSymbol>>,
     pub current_impl_target: Option<DefaultSymbol>,  // For Self type resolution
+    /// SHARED-BORROW-WRITE: one entry per method being checked, `true`
+    /// when its receiver is `&self`. `self` is registered with the
+    /// receiver's own type whatever its form, so this is how a write
+    /// through a shared receiver is told from one through `self: Self`.
+    pub shared_self: Vec<bool>,
     pub current_impl_generic_params: Option<Vec<DefaultSymbol>>,  // For generic parameters in current impl block
     // Bounds for the generic parameters of the function currently being
     // type-checked (e.g. `<A: Allocator>`). Cleared between functions.
@@ -278,6 +283,7 @@ impl TypeCheckContext {
             struct_generic_bounds: HashMap::with_capacity(16),
             var_type_mappings: vec![HashMap::with_capacity(16)],
             current_impl_target: None,
+            shared_self: Vec::new(),
             current_impl_generic_params: None,
             current_fn_generic_bounds: HashMap::new(),
             current_fn_generic_params: Vec::new(),

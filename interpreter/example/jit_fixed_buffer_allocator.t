@@ -5,7 +5,11 @@
 # toylang (`FixedBuffer::alloc` checks `used_bytes + size > cap`).
 #
 # Expected: 1 + 0 + 7 = 8 → exit 8.
-fn run_with(fb: &FixedBuffer) -> u64 {
+#
+# `&mut`, because `alloc` / `free` move `used_bytes`: through a shared
+# `&FixedBuffer` they updated a copy, so the quota never saw the first
+# allocation (SHARED-BORROW-WRITE made that a type error).
+fn run_with(fb: &mut FixedBuffer) -> u64 {
     val p = fb.alloc(8u64)
     val ok = if __builtin_ptr_is_null(p) {
         0u64
@@ -25,7 +29,7 @@ fn run_with(fb: &FixedBuffer) -> u64 {
 }
 
 fn main() -> u64 {
-    val fb = FixedBuffer::new(64u64)
-    val r: u64 = run_with(fb)
+    var fb = FixedBuffer::new(64u64)
+    val r: u64 = run_with(&mut fb)
     r
 }

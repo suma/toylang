@@ -1227,6 +1227,75 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
     }
 
+    /// SHARED-BORROW-WRITE: the written path and its root when `lhs`
+    /// writes *through* a shared borrow -- a field, element or index
+    /// of a `&T` parameter, or of `self` in a `&self` method. Such a
+    /// write reached a copy on every lane and was silently discarded.
+    /// A bare `p = ..` is not a write through anything and is left to
+    /// the binding rules.
+    pub(crate) fn shared_borrow_write_target(&self, lhs: &ExprRef) -> Option<(String, String, bool)> {
+        self.shared_borrow_write_under(lhs, Vec::new())
+    }
+
+    /// `shared_borrow_write_target` for a target already one step
+    /// below `lhs` -- `t[i] = v` checks `t` with the index as the path.
+    pub(crate) fn shared_borrow_write_under(
+        &self,
+        lhs: &ExprRef,
+        mut path: Vec<String>,
+    ) -> Option<(String, String, bool)> {
+        let mut cursor = *lhs;
+        loop {
+            match self.core.expr_pool.get(&cursor)? {
+                Expr::Identifier(name) => {
+                    if path.is_empty() {
+                        return None;
+                    }
+                    let root = self.resolve_symbol_name(name);
+                    let is_self = root == "self";
+                    let shared = if is_self {
+                        self.context.shared_self.last().copied().unwrap_or(false)
+                    } else {
+                        matches!(self.context.get_var(name), Some(TypeDecl::Ref { is_mut: false, .. }))
+                    };
+                    if !shared {
+                        return None;
+                    }
+                    let mut target = root.clone();
+                    for segment in path.iter().rev() {
+                        target.push_str(segment);
+                    }
+                    return Some((target, root, is_self));
+                }
+                Expr::FieldAccess(obj, field) => {
+                    path.push(format!(".{}", self.resolve_symbol_name(field)));
+                    cursor = obj;
+                }
+                Expr::TupleAccess(obj, index) => {
+                    path.push(format!(".{index}"));
+                    cursor = obj;
+                }
+                Expr::SliceAccess(obj, _) => {
+                    path.push("[..]".to_string());
+                    cursor = obj;
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    pub(crate) fn shared_borrow_write_error(target: &str, root: &str, is_self: bool) -> TypeCheckError {
+        let fix = if is_self {
+            "declare the method `&mut self` to write through its receiver".to_string()
+        } else {
+            format!("declare `{root}` as `&mut` to write through it")
+        };
+        TypeCheckError::generic_error(&format!(
+            "cannot assign to `{target}`: `{root}` is a shared borrow, and a write through it \
+             would reach a copy and be lost; {fix}"
+        ))
+    }
+
     /// Type check assignment expressions
     pub fn visit_assign(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let lhs = *lhs;
@@ -1295,6 +1364,12 @@ impl<'a> TypeCheckerVisitor<'a> {
         if let Some((target, root)) = self.captured_assign_target(&lhs) {
             return Err(self.error_with_location(
                 TypeCheckError::captured_assign(target, root),
+                &lhs,
+            ));
+        }
+        if let Some((target, root, is_self)) = self.shared_borrow_write_target(&lhs) {
+            return Err(self.error_with_location(
+                Self::shared_borrow_write_error(&target, &root, is_self),
                 &lhs,
             ));
         }

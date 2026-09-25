@@ -289,6 +289,7 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
     /// Setup method parameter context for type checking
     fn setup_method_parameter_context(&mut self, method: &Rc<MethodFunction>) {
         self.context.push_scope();
+        self.context.shared_self.push(method.has_self_param && !method.self_is_mut);
         // Stage 1 of `&` references: implicit `&self` / `&mut self`
         // receivers don't appear in `method.parameter` (the parser
         // only sets `has_self_param=true` and tracks mutability via
@@ -337,6 +338,7 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
     /// Restore method parameter context after type checking
     fn restore_method_parameter_context(&mut self) {
         self.context.pop_scope();
+        self.context.shared_self.pop();
     }
 
     /// Validate method return type compatibility

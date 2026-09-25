@@ -99,6 +99,38 @@ impl<'a> TypeCheckerVisitor<'a> {
         // `String`'s impl table the same as a `String` receiver
         // would. Auto-deref is implicit for method receivers.
         let obj_type_deref = obj_type.deref_ref().clone();
+        // SHARED-BORROW-WRITE: a `&mut self` method called on a path
+        // under a shared borrow (`p.v.push(x)` with `p: &P`) writes
+        // through that borrow as surely as `p.v = ..` does, and the
+        // write reached a copy on every lane.
+        if let Some(struct_name) = match &obj_type_deref {
+            TypeDecl::Struct(n, _) | TypeDecl::Identifier(n) => Some(*n),
+            _ => None,
+        } {
+            let struct_str = self.resolve_symbol_name(struct_name);
+            let mutating = self
+                .context
+                .get_method_function_by_name(&struct_str, &method_name, self.core.string_interner)
+                .is_some_and(|m| m.has_self_param && m.self_is_mut);
+            if mutating
+                && let Some((target, root, is_self)) =
+                    self.shared_borrow_write_under(obj, vec![String::new()])
+            {
+                let fix = if is_self {
+                    "declare the method `&mut self`".to_string()
+                } else {
+                    format!("declare `{root}` as `&mut`")
+                };
+                return Err(self.error_with_location(
+                    TypeCheckError::generic_error(&format!(
+                        "cannot call `{method_name}` on `{target}`: it takes `&mut self`, and \
+                         `{root}` is a shared borrow -- the change would reach a copy and be \
+                         lost; {fix}"
+                    )),
+                    obj,
+                ));
+            }
+        }
         let resolved_obj_type = match &obj_type_deref {
             TypeDecl::Struct(name, args)
                 if self.context.enum_definitions.contains_key(name) =>

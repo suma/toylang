@@ -1941,7 +1941,8 @@ fn main() -> u64 {
     // rather than silently dropped.
     let out = run(&pkg, &["run", dir, "--backend=all", "--", "x"]);
     assert!(!out.status.success(), "{}", text(&out));
-    let out = run(&pkg, &["test", dir, "--backend", "all"]);
+    // `toy test` runs on aot, vm or both -- not on the JIT.
+    let out = run(&pkg, &["test", dir, "--backend", "jit"]);
     assert!(!out.status.success(), "{}", text(&out));
 }
 
@@ -1975,5 +1976,57 @@ pub fn half(n: u64) -> u64
     assert_eq!(String::from_utf8_lossy(&again.stderr), stderr);
     // `--seed` means nothing without `--check`.
     let out = run(&pkg, &["test", dir, "--seed=1"]);
+    assert!(!out.status.success(), "{}", text(&out));
+}
+
+#[test]
+fn test_on_every_backend_reports_by_verdict() {
+    // TEST-TOOL T4 / TEST-PARALLEL P6. The lanes agree here; what is
+    // pinned is how each verdict is reported and what fails the run.
+    let pkg = scratch("test_all_lanes");
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
+    write(
+        &pkg,
+        "tests/lanes.t",
+        r#"
+test "arithmetic agrees" {
+    assert_eq(2u64 + 2u64, 4u64)
+}
+test "both fail" {
+    assert_eq(1u64, 2u64)
+}
+test "after the failure" {
+    assert_eq(3u64, 3u64)
+}
+"#,
+    );
+    let dir = pkg.0.to_str().unwrap();
+    let out = run(&pkg, &["test", dir, "--backend", "all"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!out.status.success(), "a failure on both lanes fails the run\n{}", text(&out));
+    assert!(
+        stdout.contains("1 agree, 0 disagree, 1 failed on both, 1 not compared"),
+        "{}",
+        text(&out)
+    );
+    let out = run(&pkg, &["test", dir, "--backend=all", "--format=json"]);
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    let statuses: Vec<(&str, &str)> = doc
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["name"].as_str().unwrap(), r["status"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        statuses,
+        vec![
+            ("arithmetic agrees", "agrees"),
+            ("both fail", "failed"),
+            // AOT's driver ended at the failure before it; the VM ran it.
+            ("after the failure", "not compared"),
+        ]
+    );
+    // `--bless` writes the golden files once, so not on two lanes.
+    let out = run(&pkg, &["test", dir, "--backend", "all", "--bless"]);
     assert!(!out.status.success(), "{}", text(&out));
 }

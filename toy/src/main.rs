@@ -39,7 +39,7 @@ usage:
   toy clean [PATH] [--all] [--format=text|json] [-v]
   toy new   <DIR> [--format=text|json] [-v]
   toy init  [DIR] [--format=text|json] [-v]
-  toy test  [FILTER] [PATH] [-j N] [--list] [--bless] [--format=text|json] [-v]
+  toy test  [FILTER] [PATH] [--backend aot|vm|all] [-j N] [--list] [--bless] [--format=text|json] [-v]
   toy test  [PATH] --check [--seed=N] [-v]
   toy api <MODULE.t> [PATH] [--format=text|json]
   toy effects [PATH] [--format=text|json] [-v]
@@ -54,7 +54,8 @@ shadow a stdlib module of the same name.
 options:
   --release            compile contracts out
   --backend <B>        aot (default for build/run) | jit | vm | tree
-                       | all (run only: every lane, report a disagreement)
+                       | all (run: every lane; test: aot and vm, report
+                         where they disagree)
   -o, --output PATH    executable path (build only)
   --core-modules DIR   add a module root; repeatable, later wins
   -v, --verbose        print the equivalent compiler/interpreter call
@@ -712,12 +713,16 @@ fn cmd_test(args: &Args) -> Result<(), String> {
     if args.check_contracts {
         return check_contracts(args);
     }
-    if args.backend == Some(Backend::All) {
+    let all_lanes = args.backend == Some(Backend::All);
+    if all_lanes && args.bless {
         return Err(
-            "`toy test` runs on one lane (aot, or vm with --backend vm); \
-             `--backend all` is for `toy run`"
+            "`--bless` records the golden files once; run it on one lane, \
+             not with `--backend all`"
                 .to_string(),
         );
+    }
+    if matches!(args.backend, Some(Backend::Jit) | Some(Backend::Tree)) {
+        return Err("`toy test` runs on aot, vm, or both (`--backend all`)".to_string());
     }
     let pkg = locate(args)?;
     // TEST-PARALLEL X4: the IR VM lane runs inside this process, so
@@ -744,6 +749,9 @@ fn cmd_test(args: &Args) -> Result<(), String> {
         // them on the IR VM instead, which reports *every* failure in
         // one pass rather than stopping at the first.
         aot: !matches!(args.backend, Some(Backend::Vm) | Some(Backend::Tree)),
+        // TEST-TOOL T4 / TEST-PARALLEL P6: both lanes, disagreements
+        // reported (`assert_consistent` for toylang programs).
+        all_lanes,
         release: args.release,
         bless: args.bless,
         // `--bless` records golden files, so two tests writing the

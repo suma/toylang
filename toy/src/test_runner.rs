@@ -52,6 +52,7 @@ pub enum Format {
     Json,
 }
 
+#[derive(Clone)]
 pub struct Options {
     /// Substring filter on the test name. Empty runs everything.
     pub filter: Option<String>,
@@ -75,7 +76,15 @@ pub struct Options {
     /// How many jobs to run at once (TEST-PARALLEL D2). `1` is the
     /// sequential runner: no threads are spawned at all.
     pub jobs: usize,
+    /// `--backend all` (TEST-TOOL T4 / TEST-PARALLEL P6): run every test
+    /// on both lanes and report where they disagree. `aot` is ignored.
+    pub all_lanes: bool,
 }
+
+/// What an AOT test that never started reports: an earlier test in its
+/// driver ended the process. Not a verdict on the test, so `--backend
+/// all` leaves it out of the comparison.
+const NOT_RUN: &str = "not run: an earlier test ended the process";
 
 /// One `test` block's result, flattened for the report.
 struct Outcome {
@@ -195,6 +204,23 @@ fn run_in_package(pkg: &Package, opts: &Options) -> Result<(), String> {
             }
         }
         println!("{count} test(s)");
+        return Ok(());
+    }
+
+    if opts.all_lanes {
+        // One lane after the other, not one pool: a test that is not
+        // `serial` promises independence from *other* tests, not from a
+        // second copy of itself, and the two lanes' copies of a test
+        // that writes a fixed path would race each other (poc/logsearch's
+        // mount tests did). Each lane keeps its own parallelism.
+        let aot = Options { aot: true, ..opts.clone() };
+        let vm = Options { aot: false, ..opts.clone() };
+        let aot_outcomes = execute(pkg, &plans, &aot)?;
+        let vm_outcomes = execute(pkg, &plans, &vm)?;
+        let bad = report_lanes(&aot_outcomes, &vm_outcomes, opts.format, started.elapsed());
+        if bad {
+            std::process::exit(1);
+        }
         return Ok(());
     }
 
@@ -825,7 +851,7 @@ fn run_aot_driver(
         let failure = match position {
             None if died_at_startup => Some(startup_failure()),
             // Never started: an earlier test ended the process.
-            None => Some("not run: an earlier test ended the process".to_string()),
+            None => Some(NOT_RUN.to_string()),
             // Started, and it is the last one, and we died: this is it.
             Some(i) if !ok && i + 1 == started.len() => Some(failure_text.clone()),
             Some(_) => None,
@@ -861,6 +887,109 @@ fn clone_outcome(o: &Outcome) -> Outcome {
         failure: o.failure.clone(),
         output: o.output.clone(),
     }
+}
+
+/// `--backend all`: each test's verdict on both lanes, reported where
+/// they disagree -- `assert_consistent` for toylang programs. A test
+/// that fails on both is a failing test and is reported too; an AOT test
+/// that never started (an earlier one in its driver ended the process)
+/// is not compared. Answers whether the run should fail.
+fn report_lanes(
+    aot: &[Outcome],
+    vm: &[Outcome],
+    format: Format,
+    elapsed: std::time::Duration,
+) -> bool {
+    #[derive(PartialEq)]
+    enum Verdict {
+        Passed,
+        Failed,
+        NotRun,
+    }
+    let verdict = |o: &Outcome| match &o.failure {
+        None => Verdict::Passed,
+        Some(f) if f == NOT_RUN => Verdict::NotRun,
+        Some(_) => Verdict::Failed,
+    };
+    let word = |v: &Verdict| match v {
+        Verdict::Passed => "passed",
+        Verdict::Failed => "failed",
+        Verdict::NotRun => "not run",
+    };
+    let mut agree = 0usize;
+    let mut disagree = 0usize;
+    let mut failed_both = 0usize;
+    let mut not_compared = 0usize;
+    let mut records = Vec::new();
+    for (a, v) in aot.iter().zip(vm.iter()) {
+        let (va, vv) = (verdict(a), verdict(v));
+        let status = if va == Verdict::NotRun {
+            not_compared += 1;
+            "not compared"
+        } else if va != vv {
+            disagree += 1;
+            "disagrees"
+        } else if va == Verdict::Failed {
+            failed_both += 1;
+            "failed"
+        } else {
+            agree += 1;
+            "agrees"
+        };
+        if format == Format::Json {
+            records.push(serde_json::json!({
+                "name": a.name,
+                "file": a.file,
+                "line": a.line,
+                "status": status,
+                "aot": word(&va),
+                "vm": word(&vv),
+                "aot_failure": a.failure,
+                "vm_failure": v.failure,
+            }));
+            continue;
+        }
+        match status {
+            "disagrees" => {
+                println!("DISAGREES  {} ({}:{})", a.name, a.file, a.line);
+                for (lane, o, vd) in [("aot", a, &va), ("vm ", v, &vv)] {
+                    println!("    {lane}: {}", word(vd));
+                    if let Some(f) = &o.failure {
+                        for line in f.lines() {
+                            println!("        {line}");
+                        }
+                    }
+                }
+            }
+            "failed" => {
+                println!("FAILED  {} ({}:{}) on both lanes", a.name, a.file, a.line);
+                if let Some(f) = &v.failure {
+                    for line in f.lines() {
+                        println!("    {line}");
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if format == Format::Json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::Value::Array(records)).unwrap_or_default()
+        );
+    } else {
+        let mut summary = format!(
+            "{} test(s) on aot and vm: {agree} agree, {disagree} disagree, {failed_both} failed on both",
+            aot.len()
+        );
+        if not_compared > 0 {
+            summary.push_str(&format!(
+                ", {not_compared} not compared (aot stopped at an earlier failure)"
+            ));
+        }
+        println!("{summary}   {:.2} s", elapsed.as_secs_f64());
+    }
+    disagree > 0 || failed_both > 0
 }
 
 /// Failure-first, the shape `--test` already had: a passing run is a
@@ -924,4 +1053,44 @@ fn escape(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod lane_report_tests {
+    use super::*;
+
+    fn outcome(name: &str, failure: Option<&str>) -> Outcome {
+        Outcome {
+            name: name.to_string(),
+            file: "tests/t.t".to_string(),
+            line: 1,
+            failure: failure.map(str::to_string),
+            output: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_disagreement_fails_the_run() {
+        // The lanes are built to agree, so no toylang program here makes
+        // them differ on purpose; the verdict logic is what is pinned.
+        let aot = vec![outcome("a", None), outcome("b", Some("boom"))];
+        let vm = vec![outcome("a", None), outcome("b", None)];
+        assert!(report_lanes(&aot, &vm, Format::Json, std::time::Duration::ZERO));
+    }
+
+    #[test]
+    fn agreement_and_an_unrun_aot_test_pass_the_run() {
+        let aot = vec![outcome("a", None), outcome("c", Some(NOT_RUN))];
+        let vm = vec![outcome("a", None), outcome("c", Some("vm failed it"))];
+        // `c` never ran on AOT, so it is not compared -- and nothing
+        // else failed.
+        assert!(!report_lanes(&aot, &vm, Format::Json, std::time::Duration::ZERO));
+    }
+
+    #[test]
+    fn a_failure_on_both_lanes_fails_the_run() {
+        let aot = vec![outcome("a", Some("x"))];
+        let vm = vec![outcome("a", Some("y"))];
+        assert!(report_lanes(&aot, &vm, Format::Json, std::time::Duration::ZERO));
+    }
 }

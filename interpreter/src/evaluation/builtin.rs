@@ -146,7 +146,7 @@ impl EvaluationContext<'_> {
     /// Terminates because a type that reaches itself is rejected before
     /// anything runs — `[E0013]`, `frontend::type_checker::
     /// check_recursive_types` — so the declaration graph is acyclic.
-    fn type_decl_byte_size(
+    pub(super) fn type_decl_byte_size(
         &self,
         ty: &TypeDecl,
         subst: &HashMap<DefaultSymbol, TypeDecl>,
@@ -181,9 +181,18 @@ impl EvaluationContext<'_> {
             TypeDecl::Ref { inner, .. } => self.type_decl_byte_size(inner, subst),
             // A generic parameter is whatever this instance bound it
             // to; without a binding there is no width to report.
-            TypeDecl::Generic(p) => self.type_decl_byte_size(subst.get(p)?, subst),
+            // A scope can map a parameter to its own name (a generic body
+            // entered from another generic body with the same parameter
+            // name); following that binding would never end.
+            TypeDecl::Generic(p) => match subst.get(p)? {
+                TypeDecl::Generic(q) | TypeDecl::Identifier(q) if q == p => None,
+                bound => self.type_decl_byte_size(bound, subst),
+            },
             TypeDecl::Identifier(name) => {
                 if let Some(bound) = subst.get(name) {
+                    if matches!(bound, TypeDecl::Generic(q) | TypeDecl::Identifier(q) if q == name) {
+                        return None;
+                    }
                     return self.type_decl_byte_size(bound, subst);
                 }
                 self.named_type_byte_size(*name, &[], subst)
@@ -450,6 +459,67 @@ impl EvaluationContext<'_> {
             Object::Float32(v) => (4, v.to_bits() as u64),
             _ => return None,
         })
+    }
+
+    /// `__builtin_ptr_read::<T>(addr, offset)`: the bytes when `ty` is a
+    /// fixed-width scalar, else the typed-slot map.
+    pub(super) fn read_typed_at(
+        &self,
+        addr: usize,
+        offset: u64,
+        ty: &TypeDecl,
+    ) -> Result<crate::value::Value, InterpreterError> {
+        if let Some(value) = self.read_scalar_bytes_as(addr, offset as usize, ty) {
+            return Ok(value.into());
+        }
+        if let Some(value) = self.heap_manager.borrow().typed_read(addr, offset as usize) {
+            return Ok(value.into());
+        }
+        Err(InterpreterError::InternalError(
+            "Invalid memory access in ptr_read".to_string(),
+        ))
+    }
+
+    /// `__builtin_ptr_write(addr, offset, value)`.
+    pub(super) fn write_value_at(
+        &self,
+        addr: usize,
+        offset: u64,
+        value_obj: RcObject,
+    ) -> Result<(), InterpreterError> {
+        // Snapshot the value type so u64 writes can continue to land
+        // in the byte buffer (for existing consumers / future native
+        // codegen), while everything else is recorded only in the
+        // typed-slot map.
+        let value_type = value_obj.borrow().get_type();
+        let bytes_written = matches!(value_type, TypeDecl::UInt64) && {
+            let v = value_obj.borrow().try_unwrap_uint64().unwrap();
+            self.heap_manager.borrow_mut().write_u64(addr, offset as usize, v)
+        };
+        // EXTERN-BUF: mirror narrower scalars into the byte buffer
+        // too. Reads take the typed slot first, so this changes
+        // nothing for toylang code — but a native `extern fn`
+        // lent the same range (`io::write_file_bytes`) sees only
+        // the bytes, and used to find zeros where a `u8` had been
+        // written. The u64 case above already did this, for the
+        // same reason.
+        if !bytes_written {
+            let scalar = Self::scalar_bits(&value_obj.borrow());
+            if let Some((width, bits)) = scalar {
+                self.heap_manager
+                    .borrow_mut()
+                    .write_scalar_bytes(addr, offset as usize, width, bits);
+            }
+        }
+        // For typed reads we always store into the slot map so
+        // subsequent `ptr_read` calls can recover the original
+        // `RcObject` (needed for bool / i64 / user structs / enums).
+        self.heap_manager.borrow_mut().typed_write(addr, offset as usize, value_obj.clone());
+
+        if matches!(value_type, TypeDecl::UInt64) && !bytes_written {
+            return Err(InterpreterError::InternalError("Invalid memory access in ptr_write".to_string()));
+        }
+        Ok(())
     }
 
     /// The same read against a type named outright — the shape
@@ -777,15 +847,7 @@ impl EvaluationContext<'_> {
             let offset = offset_obj.borrow().try_unwrap_uint64()
                 .map_err(|_| InterpreterError::InternalError("ptr_read expects u64 offset as second argument".to_string()))?;
 
-            if let Some(value) = self.read_scalar_bytes_as(addr, offset as usize, ty) {
-                return Ok(EvaluationResult::Value(value.into()));
-            }
-            if let Some(value) = self.heap_manager.borrow().typed_read(addr, offset as usize) {
-                return Ok(EvaluationResult::Value(value.into()));
-            }
-            Err(InterpreterError::InternalError(
-                "Invalid memory access in ptr_read".to_string(),
-            ))
+            Ok(EvaluationResult::Value(self.read_typed_at(addr, offset, ty)?))
         }
 
         BuiltinFunction::PtrWrite => {
@@ -804,38 +866,7 @@ impl EvaluationContext<'_> {
             let value_result = self.evaluate(&args[2])?;
             let value_obj = try_value!(Ok(value_result));
 
-            // Snapshot the value type so u64 writes can continue to land
-            // in the byte buffer (for existing consumers / future native
-            // codegen), while everything else is recorded only in the
-            // typed-slot map.
-            let value_type = value_obj.borrow().get_type();
-            let bytes_written = matches!(value_type, TypeDecl::UInt64) && {
-                let v = value_obj.borrow().try_unwrap_uint64().unwrap();
-                self.heap_manager.borrow_mut().write_u64(addr, offset as usize, v)
-            };
-            // EXTERN-BUF: mirror narrower scalars into the byte buffer
-            // too. Reads take the typed slot first, so this changes
-            // nothing for toylang code — but a native `extern fn`
-            // lent the same range (`io::write_file_bytes`) sees only
-            // the bytes, and used to find zeros where a `u8` had been
-            // written. The u64 case above already did this, for the
-            // same reason.
-            if !bytes_written {
-                let scalar = Self::scalar_bits(&value_obj.borrow());
-                if let Some((width, bits)) = scalar {
-                    self.heap_manager
-                        .borrow_mut()
-                        .write_scalar_bytes(addr, offset as usize, width, bits);
-                }
-            }
-            // For typed reads we always store into the slot map so
-            // subsequent `ptr_read` calls can recover the original
-            // `RcObject` (needed for bool / i64 / user structs / enums).
-            self.heap_manager.borrow_mut().typed_write(addr, offset as usize, value_obj.clone());
-
-            if matches!(value_type, TypeDecl::UInt64) && !bytes_written {
-                return Err(InterpreterError::InternalError("Invalid memory access in ptr_write".to_string()));
-            }
+            self.write_value_at(addr, offset, value_obj)?;
             Ok(EvaluationResult::Value((Object::Unit).into()))
         }
 

@@ -1332,86 +1332,71 @@ impl<'a> FunctionLower<'a> {
         Ok(vec![self.temporary_address(&values, ty)?])
     }
 
-    /// MEMORY-ACCESS M5: `p.get(i)` / `p.set(i, v)` (and `p[i]` /
-    /// `p[i] = v`) on the stdlib `Ptr<T>`, lowered to the `PtrRead` /
-    /// `PtrWrite` its body performs instead of a call to it.
-    ///
-    /// The compiled lanes have no inliner, so a collection written over
-    /// `Ptr<T>` paid a call per element access -- measured at twice the
-    /// time of the raw builtin in an element loop. That cost was what
-    /// kept `Vec` / `String` / `Dict` on raw `ptr` and their methods
-    /// `unsafe`. The arithmetic is the body's, `i * sizeof::<T>()`
-    /// bytes from `addr`, so the answer cannot differ from the call's.
+    /// MEMORY-ACCESS M5: whether `method` on `binding` is the stdlib
+    /// `Ptr<T>`'s element access, and if so which one, the local holding
+    /// the address, and `T`.
     ///
     /// Only the stdlib's `Ptr` qualifies (the method's template was
-    /// written in `std.ptr`), only for a scalar `T` (a compound one
-    /// expands per leaf, which needs a destination binding -- it keeps
-    /// the call), and only when the receiver is the one-leaf struct the
-    /// stdlib declares. `Ok(None)` means "not this intrinsic".
-    pub(super) fn lower_ptr_access_intrinsic(
-        &mut self,
+    /// written in `std.ptr`; a program's own `Ptr` keeps its body), and
+    /// only the one-leaf receiver the stdlib declares.
+    pub(super) fn ptr_intrinsic_target(
+        &self,
         binding: &Binding,
         target_sym: DefaultSymbol,
         method: DefaultSymbol,
         recv_type_args: &[Type],
-        args: &[ExprRef],
-    ) -> Result<Option<Option<ValueId>>, String> {
-        #[derive(Clone, Copy)]
-        enum Access {
-            Get,
-            Set,
-        }
+    ) -> Option<(PtrAccess, LocalId, Type)> {
         if self.interner.resolve(target_sym) != Some("Ptr") {
-            return Ok(None);
+            return None;
         }
         let access = match self.interner.resolve(method) {
-            Some("get" | "__getitem__") => Access::Get,
-            Some("set" | "__setitem__") => Access::Set,
-            _ => return Ok(None),
+            Some("get" | "__getitem__") => PtrAccess::Get,
+            Some("set" | "__setitem__") => PtrAccess::Set,
+            _ => return None,
         };
-        let from_std_ptr = self
-            .generic_methods
-            .get(&(target_sym, method))
-            .is_some_and(|specs| {
-                !specs.is_empty()
-                    && specs.iter().all(|spec| {
-                        spec.method.module_path.as_deref().is_some_and(|path| {
-                            let names: Vec<&str> =
-                                path.iter().filter_map(|s| self.interner.resolve(*s)).collect();
-                            names == ["std", "ptr"]
-                        })
+        let from_std_ptr = self.generic_methods.get(&(target_sym, method)).is_some_and(|specs| {
+            !specs.is_empty()
+                && specs.iter().all(|spec| {
+                    spec.method.module_path.as_deref().is_some_and(|path| {
+                        let names: Vec<&str> =
+                            path.iter().filter_map(|s| self.interner.resolve(*s)).collect();
+                        names == ["std", "ptr"]
                     })
-            });
+                })
+        });
         if !from_std_ptr {
-            return Ok(None);
+            return None;
         }
         let Binding::Struct { fields, .. } = binding else {
-            return Ok(None);
+            return None;
         };
         let leaves = flatten_struct_locals(fields);
         let [(addr_local, Type::U64)] = leaves.as_slice() else {
-            return Ok(None);
+            return None;
         };
         // `Ptr<T>` reads and writes `T`: the receiver's one type argument.
         let [elem_ty] = recv_type_args else {
-            return Ok(None);
+            return None;
         };
-        let elem_ty = *elem_ty;
-        let Some(size) = elem_ty.scalar_byte_size() else {
-            return Ok(None);
-        };
-        let expected_args = match access {
-            Access::Get => 1,
-            Access::Set => 2,
-        };
-        if args.len() != expected_args {
-            return Ok(None);
-        }
+        Some((access, *addr_local, *elem_ty))
+    }
+
+    /// The address and the byte offset `index * sizeof::<T>()` of
+    /// element `index` -- the arithmetic `Ptr<T>`'s body does.
+    fn ptr_intrinsic_address(
+        &mut self,
+        addr_local: LocalId,
+        elem_ty: Type,
+        index: &ExprRef,
+    ) -> Result<(ValueId, ValueId), String> {
+        let size = self
+            .compute_byte_size(elem_ty)
+            .ok_or_else(|| "Ptr element has no byte size".to_string())?;
         let addr = self
-            .emit(InstKind::LoadLocal(*addr_local), Some(Type::U64))
+            .emit(InstKind::LoadLocal(addr_local), Some(Type::U64))
             .expect("LoadLocal returns a value");
         let index = self
-            .lower_expr(&args[0])?
+            .lower_expr(index)?
             .ok_or_else(|| "Ptr index produced no value".to_string())?;
         let size_v = self
             .emit(InstKind::Const(Const::U64(size)), Some(Type::U64))
@@ -1422,22 +1407,136 @@ impl<'a> FunctionLower<'a> {
                 Some(Type::U64),
             )
             .expect("imul returns a value");
-        Ok(Some(match access {
-            Access::Get => self.emit(
-                InstKind::PtrRead { ptr: addr, offset, elem_ty },
-                Some(elem_ty),
-            ),
-            Access::Set => {
-                let value = self
-                    .lower_expr(&args[1])?
-                    .ok_or_else(|| "Ptr value produced no value".to_string())?;
-                self.emit(
-                    InstKind::PtrWrite { ptr: addr, offset, value, value_ty: elem_ty },
-                    None,
-                );
-                None
+        Ok((addr, offset))
+    }
+
+    /// MEMORY-ACCESS M5: `p.get(i)` / `p.set(i, v)` (and `p[i]` /
+    /// `p[i] = v`) on the stdlib `Ptr<T>`, lowered to the `PtrRead` /
+    /// `PtrWrite` its body performs instead of a call to it.
+    ///
+    /// The compiled lanes have no inliner, so a collection written over
+    /// `Ptr<T>` paid a call per element access -- measured at twice the
+    /// time of the raw builtin in an element loop -- and on the IR VM,
+    /// whose calls recurse in Rust, a frame per access: JSON's
+    /// recursion ran out of stack. The arithmetic is the body's,
+    /// `i * sizeof::<T>()` bytes from `addr`, so the answer cannot
+    /// differ from the call's.
+    ///
+    /// A scalar read is a value; a compound read has no value to be and
+    /// is handled where it is bound (`val v: T = p.get(i)`,
+    /// `lower_let_ptr_get_intrinsic`). A compound write stores each leaf
+    /// of the value's binding. `Ok(None)` means "not this intrinsic
+    /// here".
+    pub(super) fn lower_ptr_access_intrinsic(
+        &mut self,
+        binding: &Binding,
+        target_sym: DefaultSymbol,
+        method: DefaultSymbol,
+        recv_type_args: &[Type],
+        args: &[ExprRef],
+    ) -> Result<Option<Option<ValueId>>, String> {
+        let Some((access, addr_local, elem_ty)) =
+            self.ptr_intrinsic_target(binding, target_sym, method, recv_type_args)
+        else {
+            return Ok(None);
+        };
+        match access {
+            PtrAccess::Get => {
+                if args.len() != 1 || !elem_ty.is_scalar() {
+                    return Ok(None);
+                }
+                let (addr, offset) = self.ptr_intrinsic_address(addr_local, elem_ty, &args[0])?;
+                Ok(Some(self.emit(
+                    InstKind::PtrRead { ptr: addr, offset, elem_ty },
+                    Some(elem_ty),
+                )))
             }
-        }))
+            PtrAccess::Set => {
+                if args.len() != 2 {
+                    return Ok(None);
+                }
+                if elem_ty.is_scalar() {
+                    let (addr, offset) = self.ptr_intrinsic_address(addr_local, elem_ty, &args[0])?;
+                    let value = self
+                        .lower_expr(&args[1])?
+                        .ok_or_else(|| "Ptr value produced no value".to_string())?;
+                    self.emit(
+                        InstKind::PtrWrite { ptr: addr, offset, value, value_ty: elem_ty },
+                        None,
+                    );
+                    return Ok(Some(None));
+                }
+                if !matches!(elem_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
+                    return Ok(None);
+                }
+                // A compound value: the leaves of its binding, one
+                // `PtrWrite` each at the leaf's offset in the element.
+                let Some(columns) = self.soa_columns(elem_ty) else {
+                    return Ok(None);
+                };
+                let Ok(leaf_locals) = self.compound_leaf_locals(&args[1], "Ptr::set") else {
+                    return Ok(None);
+                };
+                if leaf_locals.len() != columns.len() {
+                    return Ok(None);
+                }
+                let (addr, base) = self.ptr_intrinsic_address(addr_local, elem_ty, &args[0])?;
+                let address = super::soa::BufferAddress::Interleaved { base };
+                for (column, (local, _)) in columns.iter().zip(leaf_locals.iter()) {
+                    let leaf_ty = column.2;
+                    let off_v = self.emit_leaf_offset(&address, column);
+                    let value = self
+                        .emit(InstKind::LoadLocal(*local), Some(leaf_ty))
+                        .expect("LoadLocal returns a value");
+                    self.emit(
+                        InstKind::PtrWrite { ptr: addr, offset: off_v, value, value_ty: leaf_ty },
+                        None,
+                    );
+                }
+                Ok(Some(None))
+            }
+        }
+    }
+
+    /// MEMORY-ACCESS M5: `val v: T = p.get(i)` with a compound `T` on the
+    /// stdlib `Ptr<T>` -- the per-leaf read into `v`'s own locals that
+    /// `__builtin_ptr_read::<T>` gets, instead of a call returning `T`.
+    /// `Ok(None)` means "not this intrinsic".
+    pub(super) fn lower_let_ptr_get_intrinsic(
+        &mut self,
+        name: DefaultSymbol,
+        recv: &ExprRef,
+        method: DefaultSymbol,
+        args: &[ExprRef],
+    ) -> Result<Option<Option<ValueId>>, String> {
+        if args.len() != 1 {
+            return Ok(None);
+        }
+        if !matches!(self.interner.resolve(method), Some("get" | "__getitem__")) {
+            return Ok(None);
+        }
+        let Ok(binding) = self.resolve_method_receiver_binding(recv) else {
+            return Ok(None);
+        };
+        let Binding::Struct { struct_id, .. } = &binding else {
+            return Ok(None);
+        };
+        let def = self.module.struct_def(*struct_id);
+        let (target_sym, recv_type_args) = (def.base_name, def.type_args.clone());
+        let Some((PtrAccess::Get, addr_local, elem_ty)) =
+            self.ptr_intrinsic_target(&binding, target_sym, method, &recv_type_args)
+        else {
+            return Ok(None);
+        };
+        if !matches!(elem_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
+            return Ok(None);
+        }
+        let Some(columns) = self.soa_columns(elem_ty) else {
+            return Ok(None);
+        };
+        let (addr, base) = self.ptr_intrinsic_address(addr_local, elem_ty, &args[0])?;
+        let address = super::soa::BufferAddress::Interleaved { base };
+        self.bind_compound_read(name, elem_ty, &columns, addr, &address, "Ptr::get")
     }
 
     /// Write the receiver's leaves into a fresh per-call slot and
@@ -2078,6 +2177,13 @@ impl<'a> FunctionLower<'a> {
             reload,
         }))
     }
+}
+
+/// Which element access a stdlib `Ptr<T>` method is (MEMORY-ACCESS M5).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum PtrAccess {
+    Get,
+    Set,
 }
 
 /// A compound-returning method call resolved down to "emit this into

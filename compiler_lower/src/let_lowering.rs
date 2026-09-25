@@ -371,6 +371,15 @@ impl<'a> FunctionLower<'a> {
             )? {
                 return Ok(result);
             }
+        // MEMORY-ACCESS M5: `val v: T = p.get(i)` on the stdlib `Ptr<T>`
+        // with a compound `T` reads each leaf into `v`, as
+        // `__builtin_ptr_read::<T>` does, rather than calling `get`.
+        if let Expr::MethodCall(recv, method_sym, method_args) = rhs.clone()
+            && let Some(result) =
+                self.lower_let_ptr_get_intrinsic(name, &recv, method_sym, &method_args)?
+        {
+            return Ok(result);
+        }
         // Compound-returning method call RHS: `val q = p.swap()`.
         // Resolves the receiver / method target the same way
         // `lower_method_call` does, then routes the multi-result
@@ -696,61 +705,7 @@ impl<'a> FunctionLower<'a> {
                     .lower_expr(&args[0])?
                     .ok_or_else(|| format!("{who}: base produced no value"))?;
                 let address = self.lower_buffer_address(args, soa)?;
-                // Allocate the destination binding's leaf
-                // locals up front so we can store each
-                // PtrRead value straight into them in
-                // declaration order.
-                // DROP-GLUE: no drop registration here — a
-                // `ptr_read` copy is an alias of the slot it
-                // read; the slot's owner frees it when it dies.
-                let (leaf_locals, binding) = match elem_ty {
-                    Type::Struct(struct_id) => {
-                        let fields = self.allocate_struct_fields(struct_id);
-                        let locals = flatten_struct_locals(&fields);
-                        (locals, Binding::Struct { struct_id, fields })
-                    }
-                    Type::Tuple(tuple_id) => {
-                        let elements = self.allocate_tuple_elements(tuple_id)?;
-                        let locals = flatten_tuple_element_locals(&elements);
-                        (locals, Binding::Tuple { elements })
-                    }
-                    // PTR-READ-ENUM: a tag local plus one slot per
-                    // (variant, payload) — the destination shape that
-                    // `collect_leaves` walks the buffer in. Reading
-                    // fills the inactive variants' slots with whatever
-                    // the buffer holds there; the tag is what any
-                    // subsequent `match` dispatches on.
-                    Type::Enum(enum_id) => {
-                        let storage = self.allocate_enum_storage(enum_id);
-                        let locals = flatten_enum_storage_locals(&storage);
-                        (locals, Binding::Enum(storage))
-                    }
-                    _ => unreachable!("guarded above"),
-                };
-                if leaf_locals.len() != columns.len() {
-                    return Err(format!(
-                        "{who}: leaf count mismatch ({} locals vs {} layout entries) for `{}`",
-                        leaf_locals.len(),
-                        columns.len(),
-                        crate::spelling::spell_type(self.module, self.interner, elem_ty)
-                    ));
-                }
-                for (column, (local, _local_ty)) in columns.iter().zip(leaf_locals.iter()) {
-                    let leaf_ty = column.2;
-                    let off_v = self.emit_leaf_offset(&address, column);
-                    let v = self
-                        .emit(
-                            InstKind::PtrRead { ptr, offset: off_v, elem_ty: leaf_ty },
-                            Some(leaf_ty),
-                        )
-                        .expect("PtrRead returns a value");
-                    self.emit(
-                        InstKind::StoreLocal { dst: *local, src: v },
-                        None,
-                    );
-                }
-                self.bindings.insert(name, binding);
-                return Ok(Some(None));
+                return self.bind_compound_read(name, elem_ty, &columns, ptr, &address, who);
             }
             let ptr = self
                 .lower_expr(&args[0])?
@@ -783,6 +738,76 @@ impl<'a> FunctionLower<'a> {
             return Ok(Some(None));
         }
         Ok(None)
+    }
+
+    /// Read one compound element at `address` from `ptr` into a fresh
+    /// binding `name`, a `PtrRead` per leaf. Shared by the builtin read
+    /// and by `Ptr<T>::get` on a compound `T` (MEMORY-ACCESS M5), which
+    /// has no annotation and no argument expressions to hand over.
+    pub(super) fn bind_compound_read(
+        &mut self,
+        name: DefaultSymbol,
+        elem_ty: Type,
+        columns: &[(u64, u64, Type)],
+        ptr: ValueId,
+        address: &super::soa::BufferAddress,
+        who: &str,
+    ) -> Result<Option<Option<ValueId>>, String> {
+        // Allocate the destination binding's leaf
+        // locals up front so we can store each
+        // PtrRead value straight into them in
+        // declaration order.
+        // DROP-GLUE: no drop registration here — a
+        // `ptr_read` copy is an alias of the slot it
+        // read; the slot's owner frees it when it dies.
+        let (leaf_locals, binding) = match elem_ty {
+            Type::Struct(struct_id) => {
+                let fields = self.allocate_struct_fields(struct_id);
+                let locals = flatten_struct_locals(&fields);
+                (locals, Binding::Struct { struct_id, fields })
+            }
+            Type::Tuple(tuple_id) => {
+                let elements = self.allocate_tuple_elements(tuple_id)?;
+                let locals = flatten_tuple_element_locals(&elements);
+                (locals, Binding::Tuple { elements })
+            }
+            // PTR-READ-ENUM: a tag local plus one slot per
+            // (variant, payload) — the destination shape that
+            // `collect_leaves` walks the buffer in. Reading
+            // fills the inactive variants' slots with whatever
+            // the buffer holds there; the tag is what any
+            // subsequent `match` dispatches on.
+            Type::Enum(enum_id) => {
+                let storage = self.allocate_enum_storage(enum_id);
+                let locals = flatten_enum_storage_locals(&storage);
+                (locals, Binding::Enum(storage))
+            }
+            _ => unreachable!("guarded above"),
+        };
+        if leaf_locals.len() != columns.len() {
+            return Err(format!(
+                "{who}: leaf count mismatch ({} locals vs {} layout entries) for `{}`",
+                leaf_locals.len(),
+                columns.len(),
+                crate::spelling::spell_type(self.module, self.interner, elem_ty)
+            ));
+        }
+        for (column, (local, _local_ty)) in columns.iter().zip(leaf_locals.iter()) {
+            let leaf_ty = column.2;
+            let off_v = self.emit_leaf_offset(address, column);
+            let v = self
+                .emit(
+                    InstKind::PtrRead { ptr, offset: off_v, elem_ty: leaf_ty },
+                    Some(leaf_ty),
+                )
+                .expect("PtrRead returns a value");
+            self.emit(
+                InstKind::StoreLocal { dst: *local, src: v },
+                None,
+            );
+        }
+        self.bindings.insert(name, binding);
+        Ok(Some(None))
     }
 
     /// Function-pointer-returning call RHS helper

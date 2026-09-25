@@ -209,3 +209,40 @@ fn a_user_ptr_keeps_its_own_get() {
     "#;
     assert_renders(src, "user_ptr_get", "105\n");
 }
+
+/// The compound half of the `Ptr<T>` intrinsic: `set` stores each leaf of
+/// the value's binding, and `val v: T = p.get(i)` reads each leaf into
+/// `v`, on every lane -- a struct, a tuple and an enum element, and a
+/// `Ptr` reached through a field. The body of `main` makes no call but
+/// the allocations.
+#[test]
+fn stdlib_ptr_access_carries_compound_elements() {
+    let src = r#"
+        struct P { x: i64, y: u8 }
+        enum Shape { Dot(u8), Box(u16, u64), Point }
+        struct Holder { ps: Ptr<P> }
+        fn main() -> u64 {
+            val ps: Ptr<P> = Ptr::alloc(3u64)
+            val ts: Ptr<(u8, u64)> = Ptr::alloc(2u64)
+            val ss: Ptr<Shape> = Ptr::alloc(2u64)
+            val a = P { x: -4i64, y: 9u8 }
+            ps.set(2u64, a)
+            val t = (7u8, 70u64)
+            ts.set(1u64, t)
+            val s = Shape::Box(3u16, 44u64)
+            ss.set(1u64, s)
+            val h = Holder { ps }
+            val p2: P = h.ps.get(2u64)
+            val t1: (u8, u64) = ts.get(1u64)
+            val s1: Shape = ss.get(1u64)
+            val k = match s1 {
+                Shape::Dot(d) => d as u64,
+                Shape::Box(w, v) => (w as u64) * v,
+                Shape::Point => 0u64,
+            }
+            println("{p2.x} {p2.y} {t1.0} {t1.1} {k}")
+            0u64
+        }
+    "#;
+    assert_renders(src, "ptr_intrinsic_compound", "-4 9 7 70 132\n");
+}

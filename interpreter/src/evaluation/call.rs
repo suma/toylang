@@ -458,6 +458,77 @@ impl EvaluationContext<'_> {
         }
     }
 
+    /// MEMORY-ACCESS M5: the stdlib `Ptr<T>`'s `get` / `set` (and
+    /// `__getitem__` / `__setitem__`) performed here instead of entering
+    /// the method -- the tree-walker's side of the compiled lanes'
+    /// intrinsic. Each method call here costs a frame of native stack
+    /// and a scope, so a collection written over `Ptr<T>` would pay one
+    /// more of each per element access; with JSON's recursion on top,
+    /// that overflowed the stack. The read and write are the body's:
+    /// `i * sizeof::<T>()` bytes from `addr`.
+    ///
+    /// Only a method written in `std.ptr` qualifies; `Ok(None)` means
+    /// "call it".
+    fn ptr_access_intrinsic(
+        &mut self,
+        method: &MethodFunction,
+        self_obj: &RcObject,
+        args: &[RcObject],
+    ) -> Result<Option<EvaluationResult>, InterpreterError> {
+        let from_std_ptr = method.module_path.as_deref().is_some_and(|path| {
+            let names: Vec<&str> =
+                path.iter().filter_map(|s| self.string_interner.resolve(*s)).collect();
+            names == ["std", "ptr"]
+        });
+        if !from_std_ptr {
+            return Ok(None);
+        }
+        let is_set = match self.string_interner.resolve(method.name) {
+            Some("get" | "__getitem__") => false,
+            Some("set" | "__setitem__") => true,
+            _ => return Ok(None),
+        };
+        if args.len() != if is_set { 2 } else { 1 } {
+            return Ok(None);
+        }
+        let Some(addr_sym) = self.string_interner.get("addr") else {
+            return Ok(None);
+        };
+        let (addr, elem_ty) = match &*self_obj.borrow() {
+            Object::Struct { fields, type_args, .. } => {
+                let Some(addr) = fields.get(&addr_sym).and_then(|v| v.borrow().try_unwrap_pointer().ok())
+                else {
+                    return Ok(None);
+                };
+                let Some(elem_ty) = type_args.first().cloned() else {
+                    return Ok(None);
+                };
+                (addr, elem_ty)
+            }
+            _ => return Ok(None),
+        };
+        let scope = self.merged_generic_scope();
+        let elem_ty = match &elem_ty {
+            TypeDecl::Identifier(s) | TypeDecl::Generic(s) => {
+                scope.get(s).cloned().unwrap_or(elem_ty)
+            }
+            _ => elem_ty,
+        };
+        let Some(size) = self.type_decl_byte_size(&elem_ty, &scope) else {
+            return Ok(None);
+        };
+        let index = args[0].borrow().try_unwrap_uint64().map_err(|_| {
+            InterpreterError::InternalError("Ptr index is not a u64".to_string())
+        })?;
+        let offset = index.wrapping_mul(size);
+        if is_set {
+            self.write_value_at(addr, offset, args[1].clone())?;
+            Ok(Some(EvaluationResult::Value(crate::object::Object::Unit.into())))
+        } else {
+            Ok(Some(EvaluationResult::Value(self.read_typed_at(addr, offset, &elem_ty)?)))
+        }
+    }
+
     pub(super) fn call_method(
         &mut self,
         method: Rc<MethodFunction>,
@@ -465,6 +536,9 @@ impl EvaluationContext<'_> {
         args: Vec<RcObject>,
         call_site: Option<SourceLocation>,
     ) -> Result<EvaluationResult, InterpreterError> {
+        if let Some(result) = self.ptr_access_intrinsic(&method, &self_obj, &args)? {
+            return Ok(result);
+        }
         // DEBUG-OBS D1: this is the choke point every method reaches —
         // `s.boom()`, an operator overload, a `dyn` dispatch, drop
         // glue — so the frame goes here rather than at each of the

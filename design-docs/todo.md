@@ -2296,11 +2296,19 @@
   `data: ptr` → `Ptr<T>` / `Span<T>`** — 設計は
   [`MEMORY_ACCESS.md`](MEMORY_ACCESS.md)。生 builtin を直接叩く場所を
   `ptr.t` / `span.t` / `allocator.t` と extern 境界に集約すると、
-  stdlib の `unsafe fn` が **156 本 → 20 本前後**になり、
-  `--effects` の `raw_read` / `raw_write` が「本当に見るべき関数」を
-  指すようになる。P6 の狙いはこれだったが、集約先が stdlib 全体に
-  なっている。M2 で `Vec::elem_size` が撤去できなかった理由
-  (下の TREE-WALKER-GENERIC-SCOPE) が前提条件。
+  stdlib の `unsafe fn` が **156 本 → 20 本前後**になる。
+  **2026-09-25 に下地を入れた**: stdlib の `Ptr<T>` の `get` / `set` /
+  添字は compiled レーンでも tree-walker でも**呼び出しにならない**
+  (intrinsic、compound の `T` も)。`Ptr` を 1 段挟むと要素ループが
+  2 倍遅く、IR VM / tree-walker では再帰の深い JSON がスタックを使い
+  切ったため。TREE-WALKER-GENERIC-SCOPE (closure の型) も直した。
+  **残る前提条件**: tree-walker が実行時の値に型引数を**名前のまま**
+  持つ経路がある — `Json { nodes: Vec::new() }` のように注釈なしの
+  `Vec::new()` を struct フィールドに置くと、その `Vec` の型引数は
+  `T` のままで、`Ptr<T>` 経由の `Vec::get` が `sizeof::<T>()` を
+  解けない (`json::parse` で再現)。今の `Vec` が要素幅を最初の `push`
+  で学ぶのはこの回避。関数の戻り値と struct リテラルのフィールドで
+  型引数を具体化してから、`Vec` を `Ptr<T>` に移す。
 
 - **ZIP-ITER-GENERIC-SCOPE: method-level の型引数が turbofish から
   見えない** — `VecIter<T>::zip<U>(other: VecIter<U>)` の中で

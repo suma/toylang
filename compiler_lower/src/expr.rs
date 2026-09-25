@@ -58,7 +58,7 @@ impl<'a> FunctionLower<'a> {
     /// a `u64` tag plus every variant's payload (see the arm below).
     /// Alignment / padding are not modelled — the byte total is the
     /// natural sum, which lines up with how the user-space `Vec<T>`
-    /// body uses the result (`self.cap * self.elem_size` for raw
+    /// body uses the result (`cap * __builtin_sizeof::<T>()` for raw
     /// heap-alloc bookkeeping).
     pub(super) fn compute_byte_size(&self, ty: Type) -> Option<u64> {
         if let Some(size) = ty.scalar_byte_size() {

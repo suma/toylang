@@ -60,7 +60,7 @@ macro_rules! soa_buffer_slot {
 /// element happened to be pushed first, so a `Vec<Option<T>>` built
 /// `None`-first got a different stride than one built `Some`-first
 /// (PTR-READ-ENUM).
-fn object_byte_size(ctx: &EvaluationContext<'_>, value: &Object) -> Option<u64> {
+pub(super) fn object_byte_size(ctx: &EvaluationContext<'_>, value: &Object) -> Option<u64> {
     match value {
         Object::Int64(_) | Object::UInt64(_) | Object::Float64(_) | Object::Pointer(_) => Some(8),
         // NUM-W narrow widths: 1 byte for u8/i8, 2 for u16/i16,

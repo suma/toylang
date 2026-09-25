@@ -240,7 +240,7 @@ method は `unsafe` が外れる (156 → 20 前後の見込み)。
 |---|---|---|---|
 | M0 | `mem_move` / `mem_set` を compiled レーンで lowering、`mem_set` の署名を doc に合わせる (実測 4) ✅ (2026-09-05) | 小 | 4 レーン一致。以降の土台 |
 | M1 | `__builtin_ptr_read::<T>(p, off)` (A) と旧形の deprecation ✅ (2026-09-05、deprecation は文書のみ)。**旧形は 2026-09-25 に削除** — パースエラーで `::<T>` 形を案内する。旧形専用の分岐 (lowering の `val` / 代入の特例、tree-walker の注釈読み、interpreter JIT の `ptr_read_hints`) も消した。注釈の側路 (`pending_annotation`) は `__builtin_soa_read` が使うので残る | 中 | 実測 1・2 の解消 |
-| M2 | stdlib 213 箇所を `::<T>` 形へ機械移行 ✅ (2026-09-05) + `Vec::elem_size` 撤去 ❌ (下記) | 中 (stdlib) | 単位と幅が層で固定される |
+| M2 | stdlib 213 箇所を `::<T>` 形へ機械移行 ✅ (2026-09-05) + `Vec::elem_size` 撤去 ❌ (下記) → M5 で撤去 ✅ (2026-09-25) | 中 (stdlib) | 単位と幅が層で固定される |
 | M3 | `Span<T>` の範囲演算 (C の表) を `copy_from` / `fill` / `eq` / `find` / `find_seq` から ✅ (2026-09-05) | 中 | 実測 3・5 の解消。string.t の 5 重複が 1 に |
 | M4 | `chunks::<N>()` と `read_uNN_le/be` | 中 | hex / base64 / sha256 の手書き SIMD と桁合わせが runtime に移る |
 | M5 | `Vec` / `String` / `Dict` / `Box` の `data: ptr` → `Ptr<T>` / `Span<T>`、`unsafe fn` の縮小 (D) | 中 (stdlib) | `unsafe` が 20 本の印に戻る |
@@ -313,7 +313,13 @@ turbofish の scope にも tree-walker の subst にも見えない)。
 撤去は tree-walker の generic scope を直してから — todo の
 TREE-WALKER-GENERIC-SCOPE / ZIP-ITER-GENERIC-SCOPE。
 (2026-09-25 追記: `ZipIter` の `elems` は外れた。`next` が
-`Ptr<A>` / `Ptr<B>` で読むので stride は `Ptr` の型から出る。)
+`Ptr<A>` / `Ptr<B>` で読むので stride は `Ptr` の型から出る。
+同日 `Vec` / `VecIter` / `String` の `elem_size` も外した。前提だった
+tree-walker の型引数は struct リテラルのフィールドに宣言型を当てる
+修正で揃い、drop glue は compiled レーンが要素型の
+`compute_byte_size` を定数で、tree-walker が先頭要素の値の幅を使う。
+Vec が 4 leaf → 3 leaf になり、`poc/logsearch` の `__text` は −8.2%、
+archive は AOT・IR VM とも ~6% 速くなった。)
 
 移行で 2 つ出た:
 

@@ -192,7 +192,7 @@ impl<'a> FunctionLower<'a> {
     ///   `PtrRead`, then recurse), then run the user drop (frees the
     ///   slot).
     /// - `Vec<T>`: glue every element (runtime loop over `len`, each
-    ///   element read per-leaf at `data + i * elem_size`), then run
+    ///   element read per-leaf at `data + i * sizeof(T)`), then run
     ///   the user drop (frees the buffer).
     /// - A `Drop`-impl struct: run the user drop first (Rust order —
     ///   the body may read its fields), then glue each field that
@@ -277,7 +277,7 @@ impl<'a> FunctionLower<'a> {
         self.emit_user_drop_for_struct(struct_id, all_locals)
     }
 
-    /// Vec elements: iterate `data[i * elem_size]` for `i in
+    /// Vec elements: iterate `data[i * sizeof(T)]` for `i in
     /// 0..len`, reading each element per-leaf, recursing into each,
     /// then free the buffer via the user drop.
     ///
@@ -305,17 +305,16 @@ impl<'a> FunctionLower<'a> {
                     crate::spelling::spell_type(self.module, self.interner, elem_ty)
                 )
             })?;
-        // Locals: 0 = data, 1 = len, 2 = cap, 3 = elem_size (field
-        // declaration order — `Vec { data, len, cap, elem_size }`).
+        // Locals: 0 = data, 1 = len, 2 = cap (field declaration
+        // order — `Vec { data, len, cap }`). The stride is the element
+        // type's, as `__builtin_sizeof::<T>()` answers it in the body;
+        // the vector no longer carries it (MEMORY-ACCESS M5).
         let data_local = *all_locals
             .first()
             .ok_or_else(|| "drop glue: Vec has no data field".to_string())?;
         let len_local = *all_locals
             .get(1)
             .ok_or_else(|| "drop glue: Vec has no len field".to_string())?;
-        let elem_size_local = *all_locals
-            .get(3)
-            .ok_or_else(|| "drop glue: Vec has no elem_size field".to_string())?;
         let cap_local = *all_locals
             .get(2)
             .ok_or_else(|| "drop glue: Vec has no cap field".to_string())?;
@@ -325,9 +324,15 @@ impl<'a> FunctionLower<'a> {
         let len_v = self
             .emit(InstKind::LoadLocal(len_local.0), Some(Type::U64))
             .ok_or_else(|| "drop glue: vec len LoadLocal returned no value".to_string())?;
+        let stride = self.compute_byte_size(elem_ty).ok_or_else(|| {
+            format!(
+                "drop glue: no byte size for vec element {}",
+                crate::spelling::spell_type(self.module, self.interner, elem_ty)
+            )
+        })?;
         let elem_size_v = self
-            .emit(InstKind::LoadLocal(elem_size_local.0), Some(Type::U64))
-            .ok_or_else(|| "drop glue: vec elem_size LoadLocal returned no value".to_string())?;
+            .emit(InstKind::Const(Const::U64(stride)), Some(Type::U64))
+            .ok_or_else(|| "drop glue: vec stride Const returned no value".to_string())?;
         let cap_v = self
             .emit(InstKind::LoadLocal(cap_local.0), Some(Type::U64))
             .ok_or_else(|| "drop glue: vec cap LoadLocal returned no value".to_string())?;

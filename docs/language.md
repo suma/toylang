@@ -343,7 +343,7 @@ Stdlib types:
   scalar value without truncation. `String::push_char(c: char)`
   UTF-8 encodes the codepoint into 1-4 bytes (RFC 3629); surrogate
   codepoints (U+D800..U+DFFF) and codepoints >= U+110000 panic.
-- `core/std/string.t::struct String { data, len, cap, elem_size }`
+- `core/std/string.t::struct String { data, len, cap }`
   — **nominal struct** (no longer a `type` alias for `Vec<u8>`).
   Memory layout matches `Vec<u8>` exactly so the
   `__builtin_heap_*` / `ptr_read` / `ptr_write` family operates
@@ -2090,9 +2090,9 @@ form costs nothing.
 
 **`__simd_load(p, i)` addresses by *element*.** Lane `k` reads the
 bytes at `(i + k) * lane_bytes`. Note the contrast with
-`__builtin_ptr_read::<T>(p, off)`, whose `off` is a byte count — so the
-`Vec<T>` idiom `__builtin_ptr_read::<T>(self.data, i * self.elem_size)`
-becomes `__simd_load(self.data, i)` when `T` is the lane type.
+`__builtin_ptr_read::<T>(p, off)`, whose `off` is a byte count — so
+`__builtin_ptr_read::<T>(p, i * __builtin_sizeof::<T>())` becomes
+`__simd_load(p, i)` when `T` is the lane type.
 
 A lane index (`__simd_extract` / `__simd_insert`) must be a literal in
 range. The lane is part of the instruction, not a value it reads; to
@@ -5539,7 +5539,7 @@ that implements it; `a.lt(b)` is the same thing written out.
 
 ### `String` (heap byte buffer)
 
-`core/std/string.t::struct String { data, len, cap, elem_size }`
+`core/std/string.t::struct String { data, len, cap }`
 is a **nominal struct**. Memory layout matches `Vec<u8>`
 exactly (the `__builtin_heap_*` / `ptr_read` / `ptr_write`
 family operates on the underlying byte buffer with no per-type

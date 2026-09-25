@@ -1126,22 +1126,8 @@ impl<'a> EvaluationContext<'a> {
                             .string_interner
                             .get("len")
                             .and_then(|s| Self::struct_uint_field(fields, s));
-                        let elem_size = self
-                            .string_interner
-                            .get("elem_size")
-                            .and_then(|s| Self::struct_uint_field(fields, s));
-                        if let (Some(addr), Some(len), Some(elem_size)) = (addr, len, elem_size) {
-                            let mut i = 0u64;
-                            while i < len {
-                                if let Some(e) = self
-                                    .heap_manager
-                                    .borrow()
-                                    .typed_read(addr, (i * elem_size) as usize)
-                                {
-                                    work.push(e);
-                                }
-                                i += 1;
-                            }
+                        if let (Some(addr), Some(len)) = (addr, len) {
+                            work.extend(self.vec_element_slots(addr, len));
                         }
                     } else {
                         work.extend(fields.values().cloned());
@@ -1208,22 +1194,9 @@ impl<'a> EvaluationContext<'a> {
                         .string_interner
                         .get("len")
                         .and_then(|s| Self::struct_uint_field(fields, s));
-                    let elem_size = self
-                        .string_interner
-                        .get("elem_size")
-                        .and_then(|s| Self::struct_uint_field(fields, s));
-                    if let (Some(addr), Some(len), Some(elem_size)) = (addr, len, elem_size) {
-                        let mut i = 0u64;
-                        while i < len {
-                            if let Some(e) = self
-                                .heap_manager
-                                .borrow()
-                                .typed_read(addr, (i * elem_size) as usize)
-                            {
-                                work.push((Phase::Contents, e));
-                            }
-                            i += 1;
-                        }
+                    if let (Some(addr), Some(len)) = (addr, len) {
+                        let elems = self.vec_element_slots(addr, len);
+                        work.extend(elems.into_iter().map(|e| (Phase::Contents, e)));
                     }
                     work.push((Phase::UserDrop, v.clone()));
                 }
@@ -1258,6 +1231,30 @@ impl<'a> EvaluationContext<'a> {
         fields
             .get(&sym)
             .and_then(|v| v.borrow().try_unwrap_pointer().ok())
+    }
+
+    /// The live elements of a stdlib `Vec` buffer, `len` of them from
+    /// `addr`.
+    ///
+    /// The vector does not carry its stride (MEMORY-ACCESS M5 took
+    /// `elem_size` out); the body addresses element `i` at
+    /// `i * __builtin_sizeof::<T>()`. The value in slot 0 answers the
+    /// same question -- `sizeof` of a value is its type's, an enum's
+    /// included -- without needing `T` resolved on the vector value,
+    /// which a tree-walker value does not always have. It is the rule
+    /// the vector itself used when it learned the stride from its
+    /// first `push`.
+    fn vec_element_slots(&self, addr: usize, len: u64) -> Vec<RcObject> {
+        let heap = self.heap_manager.borrow();
+        let Some(first) = heap.typed_read(addr, 0) else {
+            return Vec::new();
+        };
+        let Some(stride) = builtin::object_byte_size(self, &first.borrow()) else {
+            return Vec::new();
+        };
+        (0..len)
+            .filter_map(|i| heap.typed_read(addr, (i * stride) as usize))
+            .collect()
     }
 
     /// Extract the `u64`-typed field of a struct value, by name.

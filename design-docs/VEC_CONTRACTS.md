@@ -163,7 +163,9 @@ body に heap 呼び出しが増えた日に `[E0016]` で止まる。**`--relea
 `Vec` の不変条件は 3 つ:
 
 1. `self.len <= self.cap`
-2. `self.elem_size == 0u64 || self.elem_size == __builtin_sizeof::<T>()`
+2. ~~`self.elem_size == 0u64 || self.elem_size == __builtin_sizeof::<T>()`~~
+   — 2026-09-25 に `elem_size` フィールドごと消えた (MEMORY-ACCESS M5)。
+   stride は型から出るので、破れる不変条件ではなくなった
 3. `self.cap == 0u64 || !__builtin_ptr_is_null(self.data)`
 
 `invariant` 節が無いので、書くなら代用形:
@@ -177,7 +179,7 @@ body に heap 呼び出しが増えた日に `[E0016]` で止まる。**`--relea
 
 D は B と重なる (`push` の `ensures self.cap >= self.len` は不変条件 1 その
 もの)。**B を選ぶなら D1 は B に吸収され、D2 は不要**。D2 が要るのは
-条件 2 / 3 まで縛りたいときで、それは `Vec` の内部実装の検査であって
+条件 3 まで縛りたいとき (2 は消えた) で、それは `Vec` の内部実装の検査であって
 利用者向けの仕様ではない。優先度は低い。言語側に `invariant` を足す
 話は [`todo.md`](todo.md) の DBC 節に既出 (未実装)。
 

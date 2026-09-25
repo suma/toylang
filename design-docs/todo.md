@@ -2344,8 +2344,12 @@
   `Ptr<A>` / `Ptr<B>` にして `elems` フィールドを外した (stdlib 全体で
   108 → 106)。`Vec<u8>::eq` は SIMD、`extend_bytes` は生の `ptr` を
   受けるので `unsafe` のまま。
-  残り: `borrow` (`Vec` / `Box` / `Dict`、`Ptr` に借用が要る)、
-  `elem_size` フィールドの撤去 (drop glue が読んでいる)。
+  **`Vec` / `VecIter` / `String` の `elem_size` も外した**: body は
+  `__builtin_sizeof::<T>()`、drop glue は compiled レーンが要素型の
+  幅を定数で、tree-walker が先頭要素の値の幅を使う。Vec が 3 leaf に
+  なり `poc/logsearch` の `__text` −8.2%、archive は AOT・IR VM とも
+  ~6% 速い。
+  残り: `borrow` (`Vec` / `Box` / `Dict`、`Ptr` に借用が要る)。
 
 - **ZIP-ITER-GENERIC-SCOPE: method-level の型引数が turbofish から
   見えない** — `VecIter<T>::zip<U>(other: VecIter<U>)` の中で

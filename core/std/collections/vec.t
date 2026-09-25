@@ -49,7 +49,6 @@ struct Vec<T> {
     data: ptr,
     len: u64,
     cap: u64,
-    elem_size: u64,
 }
 
 impl<T> Vec<T> {
@@ -58,7 +57,6 @@ impl<T> Vec<T> {
             data: __builtin_heap_alloc(0u64),
             len: 0u64,
             cap: 0u64,
-            elem_size: 0u64,
         }
     }
 
@@ -67,9 +65,8 @@ impl<T> Vec<T> {
     # goes. `size()` is still 0 — the room exists, the elements do
     # not.
     #
-    # The stride comes from the type rather than from a first
-    # `push`, which is what lets the buffer exist before any element
-    # does. `n == 0` allocates nothing, exactly like `new()`.
+    # The stride comes from the type, which is what lets the buffer
+    # exist before any element does. `n == 0` allocates nothing, exactly like `new()`.
     fn with_capacity(n: u64) -> Self
         ensures result.capacity() == n
         ensures result.size() == 0u64
@@ -88,7 +85,6 @@ impl<T> Vec<T> {
             data: data,
             len: 0u64,
             cap: n,
-            elem_size: stride,
         }
     }
 
@@ -111,7 +107,6 @@ impl<T> Vec<T> {
             data: data,
             len: 0u64,
             cap: n,
-            elem_size: stride,
         }
         Result::Ok(v)
     }
@@ -123,14 +118,7 @@ impl<T> Vec<T> {
     # which is what lets `push` keep a signature that does not return
     # a `Result`. The promise ends at that capacity: a push past it
     # reallocates again and can panic again.
-    #
-    # `elem_size` is 0 until the first `push` on a `Vec::new()`, since
-    # that is where the stride is learned; reserving before then reads
-    # it from the type instead.
     fn try_reserve(&mut self, n: u64) -> Result<(), AllocError> {
-        if self.elem_size == 0u64 {
-            self.elem_size = __builtin_sizeof::<T>()
-        }
         val used: u64 = self.len
         val want: Option<u64> = used.checked_add(n)
         val need: u64 = match want {
@@ -138,7 +126,7 @@ impl<T> Vec<T> {
             Option::None => { return Result::Err(AllocError::SizeOverflow) }
         }
         if need <= self.cap { return Result::Ok(()) }
-        val room: Option<u64> = need.checked_mul(self.elem_size)
+        val room: Option<u64> = need.checked_mul(__builtin_sizeof::<T>())
         val bytes: u64 = match room {
             Option::Some(b) => b,
             Option::None => { return Result::Err(AllocError::SizeOverflow) }
@@ -165,7 +153,7 @@ impl<T> Vec<T> {
     fn grow_to(&mut self, new_cap: u64)
         requires new_cap >= self.len
     {
-        val bytes: u64 = new_cap.checked_mul(self.elem_size) ?? panic("Vec::grow: capacity overflows u64")
+        val bytes: u64 = new_cap.checked_mul(__builtin_sizeof::<T>()) ?? panic("Vec::grow: capacity overflows u64")
         val grown: ptr = __builtin_heap_realloc(self.data, bytes)
         if bytes > 0u64 && __builtin_ptr_is_null(grown) {
             panic("Vec::grow: allocation failed ({bytes} bytes)")
@@ -230,9 +218,6 @@ impl<T> Vec<T> {
     # Append. Geometric grow: 0 → 4 → 8 → 16 → ... so `n`
     # consecutive `push`es cost amortised O(1).
     fn push(&mut self, value: T) {
-        if self.elem_size == 0u64 {
-            self.elem_size = __builtin_sizeof(value)
-        }
         if self.cap == 0u64 {
             self.grow_to(4u64)
         } elif self.len >= self.cap {
@@ -301,7 +286,7 @@ impl<T> Vec<T> {
         # Bound first: a compound `T` expands into one load per leaf,
         # and the compiled lanes want the destination binding for that
         # (the same reason `get` is written this way).
-        val e: &T = __builtin_ptr_ref::<T>(self.data, index * self.elem_size)
+        val e: &T = __builtin_ptr_ref::<T>(self.data, index * __builtin_sizeof::<T>())
         e
     }
 
@@ -360,9 +345,6 @@ impl<T> Vec<T> {
         requires index <= self.len
     {
         if index > self.len { panic("Vec::insert index out of bounds") }
-        if self.elem_size == 0u64 {
-            self.elem_size = __builtin_sizeof(value)
-        }
         if self.cap == 0u64 {
             self.grow_to(4u64)
         } elif self.len >= self.cap {
@@ -618,7 +600,6 @@ impl<T> Drop for Vec<T> {
 struct VecIter<T> {
     data: ptr,
     len: u64,
-    elem_size: u64,
     index: u64,
 }
 
@@ -629,7 +610,6 @@ impl<T> Vec<T> {
         VecIter {
             data: self.data,
             len: self.len,
-            elem_size: self.elem_size,
             index: 0u64,
         }
     }
@@ -698,7 +678,6 @@ impl Vec<u8> {
             data: data,
             len: n,
             cap: n,
-            elem_size: 1u64,
         }
         result
     }
@@ -867,7 +846,6 @@ impl<T> VecIter<T> {
         val src: VecIter<T> = VecIter {
             data: self.data,
             len: self.len,
-            elem_size: self.elem_size,
             index: self.index,
         }
         MapIter { source: src, f: f }
@@ -919,7 +897,6 @@ impl<T> VecIter<T> {
         val src: VecIter<T> = VecIter {
             data: self.data,
             len: self.len,
-            elem_size: self.elem_size,
             index: self.index,
         }
         FilterIter { source: src, pred: pred }
@@ -951,7 +928,6 @@ impl<T> VecIter<T> {
         val src: VecIter<T> = VecIter {
             data: self.data,
             len: self.len,
-            elem_size: self.elem_size,
             index: self.index,
         }
         EnumerateIter { source: src, index: 0u64 }

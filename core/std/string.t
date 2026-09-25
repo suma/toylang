@@ -1,8 +1,8 @@
 # `String` — heap-allocated growable byte buffer. **Nominal**
 # struct (no longer a `type` alias for `Vec<u8>`), so error
 # messages and trait dispatch see `String` as its own type. The
-# memory layout matches `Vec<u8>` exactly (data / len / cap /
-# elem_size), which keeps every backend's existing
+# memory layout matches `Vec<u8>` exactly (data / len / cap),
+# which keeps every backend's existing
 # generic-struct lowering paths working without per-type special-
 # casing — the field-by-field `__builtin_heap_*` / `ptr_read` /
 # `ptr_write` calls operate on raw bytes regardless of the
@@ -48,17 +48,15 @@ struct String {
     data: ptr,
     len: u64,
     cap: u64,
-    elem_size: u64,
 }
 
 impl String {
-    # Empty string. `elem_size = 1` because every byte is a u8.
+    # Empty string.
     fn new() -> Self {
         String {
             data: __builtin_heap_alloc(0u64),
             len: 0u64,
             cap: 0u64,
-            elem_size: 1u64,
         }
     }
 
@@ -84,7 +82,6 @@ impl String {
             data: data,
             len: 0u64,
             cap: n,
-            elem_size: 1u64,
         }
     }
 
@@ -159,7 +156,6 @@ impl String {
             data: data,
             len: n,
             cap: n,
-            elem_size: 1u64,
         }
     }
 
@@ -384,7 +380,6 @@ impl String {
             data: data,
             len: n,
             cap: n,
-            elem_size: 1u64,
         }
     }
 

@@ -111,6 +111,13 @@ pub struct Vm<'a> {
     /// `call_function` returns `()` and is called from deep inside
     /// instruction dispatch.
     recursion_limit_hit: bool,
+    /// IRVM-SELF-WRITEBACK-REALLOC: set when a `PtrRead` found no
+    /// allocation holding the bytes it names. The read has no value to
+    /// define, and the run loop turns this into a toylang runtime
+    /// error; before, the value was simply left undefined and the VM
+    /// panicked (in Rust) at the first instruction that used it, with
+    /// "value not defined" naming the wrong place.
+    memory_fault: Option<String>,
     /// Optional interner for resolving string symbols.
     interner: Option<&'a DefaultStringInterner>,
     /// Everything the VM cannot do itself: stdout, heap, allocator
@@ -142,6 +149,7 @@ impl<'a> Vm<'a> {
             frames: Vec::new(),
             pending_frame: None,
             recursion_limit_hit: false,
+            memory_fault: None,
             interner: None,
             host,
             vtable_addrs: HashMap::new(),
@@ -162,6 +170,7 @@ impl<'a> Vm<'a> {
             frames: Vec::new(),
             pending_frame: None,
             recursion_limit_hit: false,
+            memory_fault: None,
             interner: Some(interner),
             host,
             vtable_addrs: HashMap::new(),
@@ -242,8 +251,23 @@ impl<'a> Vm<'a> {
         compiler_ir::render_backtrace(&entries)
     }
 
+    /// Record a memory access the heap could not answer; the run loop
+    /// reports it before the next instruction.
+    pub(crate) fn memory_fault(&mut self, message: String) {
+        self.memory_fault.get_or_insert(message);
+    }
+
     fn run_loop(&mut self) -> VmResult {
         loop {
+            if let Some(message) = self.memory_fault.take() {
+                let backtrace = self.backtrace_text();
+                return VmResult::Diverged {
+                    message,
+                    site: None,
+                    backtrace,
+                    needs_panic_prefix: true,
+                };
+            }
             if self.recursion_limit_hit {
                 let backtrace = self.backtrace_text();
                 return VmResult::Diverged {
@@ -485,8 +509,8 @@ impl<'a> Vm<'a> {
     /// The panic names *where*, which is the whole of its value: this
     /// fires when lowering emitted a use with no reaching definition,
     /// or when an instruction that should have produced a value did
-    /// not (a `PtrRead` of a freed allocation is the case that
-    /// happens in practice). "value not defined" on its own sends the
+    /// not. (A `PtrRead` nothing answers used to be the case that
+    /// happened in practice; it is a `memory_fault` now.) "value not defined" on its own sends the
     /// reader to bisect the program; with the function and the
     /// instruction it is one look at `--emit ir`.
     fn read_value(&self, id: ValueId) -> RawSlot {

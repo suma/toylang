@@ -12,6 +12,15 @@
 
 ### 2026-09-25
 
+- **IRVM-SELF-WRITEBACK-REALLOC: IR VM の `value not defined` は無効な
+  読み出しだった** — 値渡しの `self: Self` は写しなので、`push` は
+  呼び出し元を伸ばさず、`get` が長さ 0 の確保 (番地 0) を読んでいた
+  (BY-VALUE-SELF-ALIAS 修正後はプログラム側の誤り)。IR VM は
+  `PtrRead` が何も読めないと値を未定義のまま進め、次の使用で Rust の
+  panic になっていた。今は toylang の実行時エラー (`invalid memory
+  access ...`、backtrace つき) で、tree-walker の `Invalid memory access`
+  と揃う。AOT は検査しない (未定義動作のまま)。
+
 - **`toy new` / `toy init` / `run --backend all` / `test --check`** —
   規約どおりの雛形 (上書きしない)、パッケージ単位の 3 レーン突き合わせ、
   契約のプロパティテスト ([`BUILD_TOOL.md`](BUILD_TOOL.md) D3)。途中で
@@ -2366,16 +2375,6 @@
   見ない)。`ZipIter` が 2 つの stride を `elems` にパックして持って
   いたのはこれの回避だったが、M5 で `Ptr<A>` / `Ptr<B>` 経由の読みに
   なり、stride 自体を持たなくなった (2026-09-25)。
-
-- **IRVM-SELF-WRITEBACK-REALLOC: by-value `self` + realloc で IR VM が
-  落ちる** ★ — `unsafe fn push(self: Self, ...)` が `self.data =
-  __builtin_heap_realloc(...)` と `self.len = ...` を書き戻す形で、
-  IR VM が `value not defined` で panic する
-  (`compiler_vm/src/lib.rs:480`)。旧形 / 新形どちらの ptr_read でも
-  再現するので MEMORY-ACCESS とは独立。`interpreter/example/allocator_list.t`
-  が旧形の read を残しているのはこれを避けるため (移行すると
-  lowering が通り、プログラムが IR VM レーンに乗ってしまう)。
-  最小再現は git log の MEMORY-ACCESS M2 コミット。
 
 - **CONST-ARRAY の残り: 名前で渡せない / 要素はスカラーだけ** ★ —
   2026-09-21 に `const K: [u32; 64] = [...]` は読めるようになった

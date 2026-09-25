@@ -505,3 +505,46 @@ fn a_dyn_call_does_not_show_its_dispatch_thunk() {
     assert!(diags.contains("Dog::speak"), "{diags}");
     assert!(!diags.contains("thunk"), "dispatch plumbing leaked:\n{diags}");
 }
+
+// IRVM-SELF-WRITEBACK-REALLOC. A by-value `self: Self` method gets a
+// copy, so `push` below never grows the caller's `list`, and `get`
+// reads a zero-size allocation. The IR VM used to leave that read's
+// value undefined and panic -- in Rust -- at the first use, with
+// "value not defined: ValueId(4)" naming neither the read nor the
+// line. It is a toylang runtime error now, with the call path, as the
+// tree-walker's "Invalid memory access" is.
+#[test]
+fn a_read_no_allocation_holds_is_a_runtime_error() {
+    let diags = runtime_failure(
+        "struct List {
+            data: ptr,
+            len: u64,
+            cap: u64,
+        }
+        impl List {
+            fn new() -> Self {
+                List { data: __builtin_heap_alloc(0u64), len: 0u64, cap: 0u64 }
+            }
+            unsafe fn push(self: Self, value: u64) -> u64 {
+                if self.len >= self.cap {
+                    self.cap = 8u64
+                    self.data = __builtin_heap_realloc(self.data, self.cap * 8u64)
+                }
+                __builtin_ptr_write(self.data, self.len * 8u64, value)
+                self.len = self.len + 1u64
+                self.len
+            }
+            unsafe fn get(self: Self, index: u64) -> u64 {
+                __builtin_ptr_read::<u64>(self.data, index * 8u64)
+            }
+        }
+        fn main() -> u64 {
+            var list = List::new()
+            list.push(10u64)
+            list.get(0u64)
+        }",
+    );
+    assert!(diags.contains("invalid memory access"), "{diags}");
+    assert!(diags.contains("List::get"), "expected the call path:\n{diags}");
+    assert!(!diags.contains("value not defined"), "{diags}");
+}

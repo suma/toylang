@@ -504,9 +504,21 @@ fn exec_heap_and_pointer(vm: &mut Vm, inst: &Instruction) {
         InstKind::PtrRead { ptr, offset, elem_ty } => {
             let p = vm.read_value(*ptr);
             let off = vm.read_value(*offset);
-            let result = host.ptr_read(unsafe { p.u64 }, unsafe { off.u64 }, *elem_ty);
-            if let (Some((vid, _)), Some(slot)) = (inst.result, result) {
-                vm.write_value(vid, slot);
+            let (addr, offset) = (unsafe { p.u64 }, unsafe { off.u64 });
+            match host.ptr_read(addr, offset, *elem_ty) {
+                Some(slot) => {
+                    if let Some((vid, _)) = inst.result {
+                        vm.write_value(vid, slot);
+                    }
+                }
+                // Nothing holds these bytes: a read of freed memory, of
+                // a zero-size allocation, or past the end of one. The
+                // tree-walker stops here too ("Invalid memory access in
+                // ptr_read"); the compiled lanes read whatever the
+                // address holds.
+                None => vm.memory_fault(format!(
+                    "invalid memory access: no allocation holds the `{elem_ty}` read at 0x{addr:x} + {offset}"
+                )),
             }
         }
         InstKind::PtrWrite { ptr, offset, value, value_ty } => {

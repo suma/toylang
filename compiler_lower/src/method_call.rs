@@ -1105,6 +1105,16 @@ impl<'a> FunctionLower<'a> {
             .ok_or_else(|| "primitive method receiver produced no value".to_string())?;
         let mut values: Vec<ValueId> = vec![receiver_value];
         for (arg_idx, a) in args.iter().enumerate() {
+            // RANGE-TYPE-ANNOTATION: a range argument is its bounds.
+            if matches!(
+                self.module.function(func_id).params.get(1 + arg_idx),
+                Some(Type::Tuple(_))
+            ) && let Some([start, end]) = self.range_value_pair(a)?
+            {
+                values.push(start);
+                values.push(end);
+                continue;
+            }
             // `T` -> `&T` auto-borrow, as at every other call. This
             // path did not have it, so `3u64.lt(5u64)` for
             // `fn lt(&self, other: &Self)` handed the *value* 5 to a
@@ -1741,6 +1751,14 @@ impl<'a> FunctionLower<'a> {
             _ => unreachable!("receiver shape already validated"),
         }
         for (arg_idx, a) in args.iter().enumerate() {
+            // RANGE-TYPE-ANNOTATION: a range argument is its bounds.
+            if matches!(param_tys.get(1 + arg_idx), Some(Type::Tuple(_)))
+                && let Some([start, end]) = self.range_value_pair(a)?
+            {
+                values.push(start);
+                values.push(end);
+                continue;
+            }
             // REF-Stage-2: a scalar borrow travels as an address —
             // the same four shapes a function call's arguments take
             // (`borrow_arg_address`). Compound borrows fall through

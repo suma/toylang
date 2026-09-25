@@ -174,6 +174,16 @@ impl<'a> FunctionLower<'a> {
                 // route through the tail-position path). Expand into
                 // per-element loads either way.
                 if let (Type::Tuple(_), Some(er)) = (ret_ty, &e) {
+                    // RANGE-TYPE-ANNOTATION: `return a..b` / `return r`
+                    // from a function declared to return a range.
+                    if self.range_return.is_some()
+                        && let Some([start, end]) = self.range_value_pair(er)?
+                    {
+                        let values = vec![start, end];
+                        self.emit_ensures_checks(&values)?;
+                        self.terminate_return(values);
+                        return Ok(None);
+                    }
                     let rhs_expr = self
                         .program
                         .expression

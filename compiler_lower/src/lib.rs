@@ -441,6 +441,11 @@ struct FunctionLower<'a> {
     /// expression is a tuple literal or tuple-bound identifier. Used
     /// only by `emit_implicit_return` for `Type::Tuple` returns.
     pending_tuple_value: Option<Vec<TupleElementBinding>>,
+    /// RANGE-TYPE-ANNOTATION: the two locals a function declared to
+    /// return `Range<T>` hands its `(start, end)` back through. Every
+    /// tail or `return` that produces a range writes them, so the
+    /// arms of an `if` returning ranges meet in one place.
+    range_return: Option<(LocalId, LocalId, Type)>,
     /// Sibling channel for enum-returning function bodies whose tail
     /// expression resolves to an enum binding (or a binding produced
     /// by a tail-position `Enum::Variant(args)`). Captures the

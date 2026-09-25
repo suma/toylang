@@ -1874,6 +1874,7 @@ impl<'a> FunctionLower<'a> {
             block_consts: HashMap::new(),
             pending_struct_value: None,
             pending_tuple_value: None,
+            range_return: None,
             pending_enum_value: None,
             pending_dyn_mut_writebacks: Vec::new(),
             generic_funcs,
@@ -2218,6 +2219,19 @@ impl<'a> FunctionLower<'a> {
                 );
                 continue;
             }
+            // RANGE-TYPE-ANNOTATION: a `Range<T>` parameter arrives as
+            // the `(start, end)` tuple the signature lowered it to
+            // (`lower_range_pair`), which the boundary flattens into
+            // two scalar slots -- bound here, in that order, as the
+            // range it is.
+            if let frontend::type_decl::TypeDecl::Range(element) = decl_ty
+                && let Some(ty) = self.lower_scalar_with_subst(element)
+            {
+                let start = self.module.function_mut(self.func_id).add_local(ty);
+                let end = self.module.function_mut(self.func_id).add_local(ty);
+                self.bindings.insert(*name, Binding::Range { start, end, ty });
+                continue;
+            }
             // GENERIC-SCALAR-REF: `lower_scalar_with_subst`, not
             // `lower_scalar` -- in a monomorphised body the pointee is
             // written `T` and only the substitution says what it is.
@@ -2532,6 +2546,13 @@ impl<'a> FunctionLower<'a> {
         // genuinely written on the path that reaches the return, and
         // routing them through a pre-allocated target would only add a
         // copy.
+        if let Some(frontend::type_decl::TypeDecl::Range(element)) = &func.return_type
+            && let Some(ty) = self.lower_scalar_with_subst(element)
+        {
+            let func_mut = self.module.function_mut(self.func_id);
+            let (start, end) = (func_mut.add_local(ty), func_mut.add_local(ty));
+            self.range_return = Some((start, end, ty));
+        }
         let body_value = if let Type::Enum(enum_id) = ret_ty {
             let storage = self.allocate_enum_storage(enum_id);
             self.pending_enum_value = Some(storage.clone());
@@ -2545,6 +2566,7 @@ impl<'a> FunctionLower<'a> {
             self.pending_struct_value = Some(fields);
             None
         } else if let Type::Tuple(tuple_id) = ret_ty
+            && self.range_return.is_none()
             && self.tail_is_composite(&body_expr)
         {
             let elements = self.allocate_tuple_elements(tuple_id)?;

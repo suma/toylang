@@ -59,7 +59,77 @@ impl<'a> FunctionLower<'a> {
         let outer_expr = self.current_expr.replace(*rhs_ref);
         let result = self.lower_let_inner(name, annotation, rhs_ref);
         self.current_expr = outer_expr;
+        if result.is_ok() {
+            self.rebind_returned_range(name, annotation, rhs_ref);
+        }
         result
+    }
+
+    /// RANGE-TYPE-ANNOTATION: a call that returns `Range<T>` comes back
+    /// as the `(start, end)` pair the signature lowered it to, and the
+    /// compound-call paths bind that as a tuple. It is a range --
+    /// `r.start`, `for i in r` and passing it on all ask the binding --
+    /// so the pair is re-bound as one when the callee's declared
+    /// return type (or the `val`'s annotation) says so.
+    fn rebind_returned_range(
+        &mut self,
+        name: DefaultSymbol,
+        annotation: Option<&TypeDecl>,
+        rhs_ref: &ExprRef,
+    ) {
+        let Some(Binding::Tuple { elements }) = self.bindings.get(&name).cloned() else {
+            return;
+        };
+        let [first, second] = elements.as_slice() else {
+            return;
+        };
+        let (Some((start, ty)), Some((end, end_ty))) = (first.scalar(), second.scalar()) else {
+            return;
+        };
+        if ty != end_ty {
+            return;
+        }
+        let annotated = matches!(annotation, Some(TypeDecl::Range(_)));
+        if annotated || self.call_returns_range(rhs_ref) {
+            self.bindings.insert(name, Binding::Range { start, end, ty });
+        }
+    }
+
+    /// Whether `expr` is a call whose callee is declared to return a
+    /// range.
+    fn call_returns_range(&self, expr: &ExprRef) -> bool {
+        let returns_range =
+            |ret: &Option<TypeDecl>| matches!(ret, Some(TypeDecl::Range(_)));
+        let method_returns_range = |target: DefaultSymbol, method: DefaultSymbol| {
+            let specs = self
+                .method_registry
+                .get(&(target, method))
+                .into_iter()
+                .chain(self.generic_methods.get(&(target, method)))
+                .flatten();
+            specs.into_iter().any(|spec| returns_range(&spec.method.return_type))
+        };
+        match self.program.expression.get(expr) {
+            Some(Expr::Call(fname, _)) => self
+                .program
+                .function
+                .iter()
+                .any(|f| f.name == fname && returns_range(&f.return_type)),
+            Some(Expr::AssociatedFunctionCall(target, method, _)) => {
+                method_returns_range(target, method)
+            }
+            Some(Expr::MethodCall(recv, method, _)) => {
+                let Some(Expr::Identifier(sym)) = self.program.expression.get(&recv) else {
+                    return false;
+                };
+                let Some(Binding::Struct { struct_id, .. }) = self.bindings.get(&sym) else {
+                    return false;
+                };
+                let base = self.module.struct_def(*struct_id).base_name;
+                method_returns_range(base, method)
+            }
+            _ => false,
+        }
     }
 
     fn lower_let_inner(

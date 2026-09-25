@@ -30,7 +30,9 @@ fn is_supported_impl_signature_shape(ty: &TypeDecl) -> bool {
         TypeDecl::Function(_, _) |
         // SIMD: a 128-bit vector is a value like any scalar
         // (`Span<u8>::load16` hands one back).
-        TypeDecl::Vector(_)
+        TypeDecl::Vector(_) |
+        // RANGE-TYPE-ANNOTATION: a range crosses as its two bounds.
+        TypeDecl::Range(_)
     )
     // ELEMENT-BORROW E1: a method may hand back a borrow of what it
     // was given (`Vec::borrow`). The reborrow rule is checked at the

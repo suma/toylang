@@ -462,6 +462,16 @@ impl<'a> FunctionLower<'a> {
                 self_type
             }
             TypeDecl::Generic(g) => subst.get(g).copied(),
+            // RANGE-TYPE-ANNOTATION: `Range<T>` is the `(start, end)`
+            // pair of the substituted element type, as a written-out
+            // `Range<u64>` is in `lower_param_or_return_type`.
+            TypeDecl::Range(element) => {
+                let element = self.lower_type_with_subst_self(element, subst, self_type)?;
+                if !element.is_scalar() {
+                    return None;
+                }
+                Some(super::types::lower_range_pair(self.module, element))
+            }
             // STDLIB-TRAIT-BASE B1/B4: a substituted `&T`. The arm was
             // missing, so the instantiation was refused with "cannot
             // lower parameter `v: &T` after substitution" -- after the

@@ -1958,12 +1958,26 @@ println(r)                    # 2..6
 
 In every lane a range can be bound (`val` / `var`, from a literal or
 another range), reassigned from either, iterated, printed, and have its
-bounds read. It cannot yet cross a function boundary on any lane: a
-`Range<u64>` annotation does not name the same type the literal has,
-so a parameter or return type written that way is a type mismatch.
-The compiled lanes also refuse a range inside a tuple and a range
-produced by a branch (`val r = if c { a..b } else { c..d }`), which
-the tree-walker accepts. A range literal on the right of `=` needs
+bounds read. `Range<T>` names its type, so it also crosses function
+boundaries -- as a parameter, a return type (from the tail, from either
+arm of an `if`, or by `return`), in a method signature, and with `T`
+generic:
+
+```rust
+fn upto(n: u64) -> Range<u64> { 0u64..n }
+fn sum(r: Range<u64>) -> u64 { ... }
+fn width<T>(r: Range<T>) -> T { r.end - r.start }
+
+val s = sum(upto(4u64))       # 6
+for i in upto(3u64) { ... }   # a call can be iterated directly
+```
+
+`Range<T>` with one type argument is always this built-in type; a user
+type cannot take the name. The compiled lanes pass a range as its two
+bounds. They still refuse a range inside a tuple or a struct field, and
+a range produced by a branch *inside* a body
+(`val r = if c { a..b } else { c..d }`), which the tree-walker accepts
+-- a function returning `Range<T>` is the way to choose between two. A range literal on the right of `=` needs
 parentheses (`w = (1u64..3u64)`).
 
 ### `with` blocks

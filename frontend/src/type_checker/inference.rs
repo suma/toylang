@@ -510,6 +510,14 @@ impl TypeInferenceState {
                 }])
             }
             
+            // RANGE-TYPE-ANNOTATION: `Range<T>` against `Range<i32>`
+            // unifies the element types, as `[T; N]` does.
+            (TypeDecl::Range(left_elem), TypeDecl::Range(right_elem)) => Ok(vec![TypeConstraint {
+                left: (**left_elem).clone(),
+                right: (**right_elem).clone(),
+                context: ConstraintContext::Generic,
+            }]),
+
             // Struct type unification
             (TypeDecl::Struct(left_name, left_params), TypeDecl::Struct(right_name, right_params)) => {
                 if left_name != right_name {

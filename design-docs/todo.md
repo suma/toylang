@@ -12,6 +12,14 @@
 
 ### 2026-09-25
 
+- **RANGE-TYPE-ANNOTATION: 範囲が関数の境界を越える** — パーサが
+  型引数 1 つの `Range<T>` を組み込みの範囲型に読む (以前は generic
+  struct として読まれ、`expected Range<u64>, but got Range<u64>`)。
+  compiled レーンは範囲を `(start, end)` の 2 要素タプルとして受け渡す
+  (`&dyn` と同じ平坦化)。引数・戻り値 (末尾 / if の両腕 / `return`)・
+  メソッド・generic `Range<T>` が 3 レーン一致。本体内の分岐が作る範囲と
+  タプル / フィールドの中の範囲は compiled レーンでは従来どおり不可。
+
 - **IRVM-SELF-WRITEBACK-REALLOC: IR VM の `value not defined` は無効な
   読み出しだった** — 値渡しの `self: Self` は写しなので、`push` は
   呼び出し元を伸ばさず、`get` が長さ 0 の確保 (番地 0) を読んでいた
@@ -2308,14 +2316,6 @@
   まだ呼び出し元の `T` を拾う。直すなら関数・メソッドの呼び出しで
   scope を**積むのではなく差し替える** (closure の本体だけは書かれた
   関数の scope を持ち込む)。
-
-- **RANGE-TYPE-ANNOTATION — `Range<u64>` と書いた型が範囲値の型と
-  一致しない** ★ — `fn f(r: Range<u64>)` に `0u64..3u64` を渡すと
-  ``expected Range<u64>, but got Range<u64>``。注釈は generic な
-  識別子として読まれ、リテラルの `TypeDecl::Range` と別物になる。
-  このため範囲値は**どのレーンでも関数境界を越えられない**。直すなら
-  型注釈の解決で `Range<T>` を `TypeDecl::Range` に寄せ、compiled lane
-  に引数 / 戻り値 (2 leaf) を足す。見つけたのは RANGE-FOR (2026-09-17)。
 
 - **TEST-PARALLEL の残り (P6 とスケジューリング)** ★ —
   **P0〜P3 は 2026-09-11、P5 は 2026-09-21 に landing** (完了済み節)。

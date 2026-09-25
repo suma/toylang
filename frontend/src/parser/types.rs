@@ -377,6 +377,21 @@ impl<'a> Parser<'a> {
                         }
                         return Ok(target.substitute_generics(&subst));
                     }
+                    // RANGE-TYPE-ANNOTATION: `Range<T>` names the type a
+                    // range literal has (`0u64..3u64` is `Range<u64>` in
+                    // every diagnostic). Read as a generic struct, the
+                    // annotation was a different type from the value, so
+                    // `fn f(r: Range<u64>)` refused `f(0u64..3u64)` with
+                    // "expected Range<u64>, but got Range<u64>" and no
+                    // range could cross a function boundary. There is no
+                    // `struct Range` in the stdlib; the name is the
+                    // built-in type's, as `Vec` is the stdlib's.
+                    if type_args.len() == 1
+                        && self.string_interner.resolve(ident) == Some("Range")
+                    {
+                        let element = type_args.into_iter().next().expect("one type argument");
+                        return Ok(TypeDecl::Range(Box::new(element)));
+                    }
                     Ok(TypeDecl::Struct(ident, type_args))
                 } else {
                     // No type arguments, just an identifier — first

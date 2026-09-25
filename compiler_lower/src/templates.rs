@@ -962,6 +962,10 @@ pub(super) fn lower_param_or_return_type(
     if let Some(t) = lower_scalar(ty) {
         return Some(t);
     }
+    if let TypeDecl::Range(element) = ty {
+        let element = lower_scalar(element)?;
+        return Some(super::types::lower_range_pair(module, element));
+    }
     match ty {
         TypeDecl::Identifier(name) if struct_defs.contains_key(name) => {
             instantiate_struct(module, struct_defs, enum_defs, *name, Vec::new(), interner)

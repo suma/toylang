@@ -41,6 +41,15 @@ pub(super) fn lower_dyn_fat_ptr(module: &mut Module) -> Type {
     Type::Tuple(id)
 }
 
+/// RANGE-TYPE-ANNOTATION: a range crosses a function boundary as the
+/// 2-tuple `(start, end)` of its element type -- the same flattening
+/// `&dyn Trait` rides, so codegen needs nothing new. Inside a body the
+/// two leaves are a `Binding::Range` again.
+pub(super) fn lower_range_pair(module: &mut Module, element: Type) -> Type {
+    let id = intern_tuple(module, vec![element, element]);
+    Type::Tuple(id)
+}
+
 /// Lower a `TypeDecl` to one of the IR's scalar `Type`s. Returns
 /// `None` for compound shapes (struct / tuple / enum / array) — the
 /// caller routes those through dedicated paths because they don't

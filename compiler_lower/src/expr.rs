@@ -1507,6 +1507,63 @@ impl<'a> FunctionLower<'a> {
     /// call sites (`Expr::ExprList` args) and the let-lowering
     /// compound intercepts whose `Vec<ExprRef>` args never live in
     /// the expression pool (module-qualified calls, RUNTIME-IO).
+    /// A range value's two bounds, when `expr` is one: a literal
+    /// `a..b` or a name bound to a range. `Ok(None)` for anything
+    /// else, which the caller lowers the ordinary way.
+    pub(super) fn range_value_pair(
+        &mut self,
+        expr: &ExprRef,
+    ) -> Result<Option<[ValueId; 2]>, String> {
+        match self.program.expression.get(expr) {
+            Some(Expr::Range(start, end)) => {
+                let s = self
+                    .lower_expr(&start)?
+                    .ok_or_else(|| "range start produced no value".to_string())?;
+                let e = self
+                    .lower_expr(&end)?
+                    .ok_or_else(|| "range end produced no value".to_string())?;
+                Ok(Some([s, e]))
+            }
+            Some(Expr::Identifier(sym)) => match self.bindings.get(&sym).cloned() {
+                Some(Binding::Range { start, end, ty }) => {
+                    let s = self.emit(InstKind::LoadLocal(start), Some(ty)).expect("LoadLocal returns a value");
+                    let e = self.emit(InstKind::LoadLocal(end), Some(ty)).expect("LoadLocal returns a value");
+                    Ok(Some([s, e]))
+                }
+                _ => Ok(None),
+            },
+            _ => Ok(None),
+        }
+    }
+
+    /// RANGE-TYPE-ANNOTATION: in a function returning `Range<T>`, a
+    /// range in tail position is written to the return pair and left
+    /// as the pending tuple the implicit return reads.
+    pub(super) fn stage_range_return(&mut self, expr: &ExprRef) -> Result<Option<ValueId>, String> {
+        let [start, end] = self
+            .range_value_pair(expr)?
+            .ok_or_else(|| "a range return needs a range value".to_string())?;
+        self.stage_range_pair(start, end)
+    }
+
+    fn stage_range_pair(&mut self, start: ValueId, end: ValueId) -> Result<Option<ValueId>, String> {
+        let (start_local, end_local, ty) =
+            self.range_return.expect("staged only while returning a range");
+        self.emit(InstKind::StoreLocal { dst: start_local, src: start }, None);
+        self.emit(InstKind::StoreLocal { dst: end_local, src: end }, None);
+        self.pending_tuple_value = Some(vec![
+            TupleElementBinding {
+                index: 0,
+                shape: super::bindings::TupleElementShape::Scalar { local: start_local, ty },
+            },
+            TupleElementBinding {
+                index: 1,
+                shape: super::bindings::TupleElementShape::Scalar { local: end_local, ty },
+            },
+        ]);
+        Ok(None)
+    }
+
     pub(super) fn lower_call_arg_items(
         &mut self,
         items: &[ExprRef],
@@ -1533,6 +1590,15 @@ impl<'a> FunctionLower<'a> {
         // after emitting the call.
         let mut ptr_arg_reloads: Vec<ReceiverReload> = Vec::new();
         for (arg_idx, a) in items.iter().enumerate() {
+            // RANGE-TYPE-ANNOTATION: a range argument crosses as the
+            // `(start, end)` pair the callee's signature expects.
+            if matches!(param_tys.get(arg_idx), Some(Type::Tuple(_)))
+                && let Some([start, end]) = self.range_value_pair(a)?
+            {
+                values.push(start);
+                values.push(end);
+                continue;
+            }
             // A5-P2: dyn-trait coercion at the call site. When the
             // callee's param at this slot is `&dyn TraitName`, the
             // caller must hand over a fat pointer (data_ptr,
@@ -1936,6 +2002,7 @@ impl<'a> FunctionLower<'a> {
                 }
                 self.lower_tuple_access(&tuple, index)
             }
+            Expr::Range(..) if self.range_return.is_some() => self.stage_range_return(expr_ref),
             Expr::TupleLiteral(elems) => {
                 // Tail-position tuple literal — materialise each
                 // element into a fresh local and stash the resulting
@@ -2121,6 +2188,11 @@ impl<'a> FunctionLower<'a> {
             // bounds, copying it into a name, iterating and printing it
             // each have their own path; reaching here means some other
             // use (an argument, a return, an operand).
+            Some(Binding::Range { start, end, ty }) if self.range_return.is_some() => {
+                let s = self.emit(InstKind::LoadLocal(start), Some(ty)).expect("LoadLocal returns a value");
+                let e = self.emit(InstKind::LoadLocal(end), Some(ty)).expect("LoadLocal returns a value");
+                self.stage_range_pair(s, e)
+            }
             Some(Binding::Range { .. }) => Err(format!(
                 "compiler MVP cannot use range `{}` as a value here (read `.start` / `.end`, \
                  iterate it with `for`, or print it)",

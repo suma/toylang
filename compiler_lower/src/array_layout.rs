@@ -1,36 +1,26 @@
 //! Static layout helpers for array stack slots.
 //!
 //! Array elements are stored in a single backing `StackSlot` per
-//! `Binding::Array`. Scalars take one 8-byte leaf slot; struct /
-//! tuple elements expand into `leaf_count` consecutive 8-byte
-//! slots, walked in declaration order so the layout matches what
-//! `flatten_struct_locals` and `flatten_tuple_element_locals`
-//! produce at function boundaries. The lowering at each access
-//! site computes `leaf_index = element_index * leaf_count + j`
-//! and hands the resulting index to `InstKind::ArrayLoad` /
-//! `InstKind::ArrayStore`, so codegen never has to know about the
-//! per-element stride at the IR level.
+//! `Binding::Array` (or one per leaf under `soa`). A scalar element
+//! takes its own width and is indexed by element. A struct / tuple /
+//! enum element is **packed** (NUM-W-AOT-pack Phase 3): its leaves sit
+//! at their own widths and alignments in declaration order, the order
+//! `flatten_struct_locals` and `flatten_tuple_element_locals` produce
+//! at function boundaries, and the slot is indexed in bytes --
+//! `element_index * size + offsets[j]` (`PackedElement`,
+//! `interleaved_units`). Codegen and the IR VM compute
+//! `index * stride` with stride 1 for such a slot, so neither has to
+//! know the layout.
 
 use crate::ir::{Module, Type};
 
 use super::bindings::ArrayStorage;
 use super::FunctionLower;
 
-/// Per-leaf byte stride for *compound* element arrays
-/// (`[Point; N]`, `[(i64, bool); N]`). Each leaf scalar in a
-/// compound element occupies one slot of this width regardless of
-/// the leaf's actual byte size, so the address arithmetic for
-/// `arr[i].field_j` stays a single `imul` by a constant
-/// (`leaf_idx * 8`) and the per-leaf type info is re-attached at
-/// the cranelift `load`/`store` site via the `elem_ty` field of
-/// `InstKind::ArrayLoad`/`ArrayStore`. Phase 2 of NUM-W-AOT-pack
-/// will replace this with per-leaf strides for tighter struct
-/// element layout (`[PackedRgba; N]` packing 4 u8 leaves into 4
-/// bytes instead of 32).
-///
-/// Homogeneous scalar element arrays (`[u8; N]`, `[u32; N]`,
-/// `[i64; N]`, `[f64; N]`, ...) already pack to the actual scalar
-/// size — see `elem_stride_bytes`.
+/// The stride `elem_stride_bytes` answers for a compound element
+/// type. Only asked of types that never back a slot directly -- a
+/// compound element's slot is byte-addressed (`PackedElement`) -- so
+/// it is a conservative placeholder, not a layout.
 pub(super) const ARRAY_LEAF_STRIDE: u32 = 8;
 
 /// How many leaf scalar slots one element of `ty` occupies in an
@@ -39,10 +29,8 @@ pub(super) const ARRAY_LEAF_STRIDE: u32 = 8;
 pub(super) fn leaf_scalar_count(module: &Module, ty: Type) -> usize {
     match ty {
         Type::I64 | Type::U64 | Type::F64 | Type::F32 | Type::Bool | Type::Str => 1,
-        // NUM-W-AOT: narrow ints occupy one leaf slot just like
-        // their wide siblings — they share the 8-byte stride
-        // currently hard-coded by `ARRAY_LEAF_STRIDE`. Future
-        // tighter packing would tweak the stride in concert.
+        // NUM-W-AOT: a narrow int is one leaf like its wide siblings;
+        // its width decides its offset in a packed element.
         Type::I8 | Type::U8 | Type::I16 | Type::U16 | Type::I32 | Type::U32 => 1,
         // SIMD: a vector is one SSA value, but it does not fit an
         // 8-byte leaf slot, so arrays of vectors are not supported.
@@ -99,11 +87,9 @@ pub(super) fn leaf_scalar_count(module: &Module, ty: Type) -> usize {
 /// index, and `byte_offset = leaf_idx * stride` lands on the
 /// correct narrow slot.
 ///
-/// For *compound* (struct / tuple) elements the stride stays at
-/// `ARRAY_LEAF_STRIDE` (8 bytes per leaf) so the existing
-/// per-leaf addressing for `arr[i].field_j` keeps working
-/// unchanged. NUM-W-AOT-pack Phase 2 will revisit struct element
-/// layout to pack narrow leaves tightly within each element.
+/// A *compound* (struct / tuple) element has no single stride: its
+/// slot is byte-addressed with per-leaf offsets (`PackedElement`),
+/// and this answers `ARRAY_LEAF_STRIDE` only as a placeholder.
 pub(super) fn elem_stride_bytes(ty: Type, _module: &Module) -> u32 {
     match ty {
         Type::I8 | Type::U8 | Type::Bool => 1,
@@ -112,8 +98,8 @@ pub(super) fn elem_stride_bytes(ty: Type, _module: &Module) -> u32 {
         // SIMD-F32: native 4-byte stride for f32 element arrays.
         Type::F32 => 4,
         Type::I64 | Type::U64 | Type::F64 | Type::Str => 8,
-        // Compound element arrays still use the uniform 8-byte
-        // per-leaf slot — see Phase 2 plan above.
+        // Compound elements are byte-addressed (`PackedElement`);
+        // this is never a slot's stride.
         Type::Struct(_) | Type::Tuple(_) => ARRAY_LEAF_STRIDE,
         // Unit / enum aren't valid array element types today; if
         // they ever reach here, the conservative 8-byte slot
@@ -122,6 +108,45 @@ pub(super) fn elem_stride_bytes(ty: Type, _module: &Module) -> u32 {
         // SIMD: 128 bits, whatever the lane type.
         Type::Vector(_) => 16,
     }
+}
+
+/// NUM-W-AOT-pack Phase 3: how one compound element is laid out in an
+/// interleaved (AoS) array slot.
+///
+/// Each leaf sits at its own width, aligned to it, in declaration
+/// order, and the element is rounded up to its widest leaf -- the C
+/// rule, so `[PackedRgba; N]` (four `u8`) is 4 bytes an element
+/// instead of the 32 the uniform 8-byte leaf slot cost, and a `u64`
+/// leaf is never split across an alignment boundary.
+///
+/// A compound-element slot is addressed in **bytes** (stride 1): leaf
+/// `j` of element `i` is at index `i * size + offsets[j]`. Codegen and
+/// the IR VM compute `index * stride`, so neither learns the layout.
+pub(super) struct PackedElement {
+    pub size: u64,
+    pub offsets: Vec<u64>,
+}
+
+/// Whether an interleaved slot of `element_ty` is byte-addressed with
+/// [`PackedElement`] offsets. Scalars keep their native stride and
+/// are indexed by element.
+pub(super) fn is_packed_element(element_ty: Type) -> bool {
+    matches!(element_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_))
+}
+
+pub(super) fn packed_element(module: &Module, element_ty: Type) -> PackedElement {
+    let count = leaf_scalar_count(module, element_ty);
+    let mut offsets = Vec::with_capacity(count);
+    let mut at: u64 = 0;
+    let mut align: u64 = 1;
+    for j in 0..count {
+        let width = elem_stride_bytes(leaf_type_at(module, element_ty, j), module) as u64;
+        at = at.div_ceil(width) * width;
+        offsets.push(at);
+        at += width;
+        align = align.max(width);
+    }
+    PackedElement { size: at.div_ceil(align).max(1) * align, offsets }
 }
 
 /// The IR type of leaf `j` (0-indexed) within an array element of
@@ -183,6 +208,21 @@ pub(super) fn leaf_type_at(module: &Module, element_ty: Type, j: usize) -> Type 
 }
 
 impl<'a> FunctionLower<'a> {
+    /// How an interleaved slot is indexed: one element spans `unit`
+    /// index steps, and leaf `j` sits `offsets[j]` steps into it. For a
+    /// packed compound slot those are bytes (NUM-W-AOT-pack Phase 3);
+    /// for a scalar slot one element is one step.
+    pub(super) fn interleaved_units(&self, slot: crate::ir::ArraySlotId) -> (u64, Vec<u64>) {
+        let element_ty = self.module.function(self.func_id).array_slots[slot.0 as usize].element_ty;
+        if is_packed_element(element_ty) {
+            let packed = packed_element(self.module, element_ty);
+            (packed.size, packed.offsets)
+        } else {
+            let n = leaf_scalar_count(self.module, element_ty) as u64;
+            (n, (0..n).collect())
+        }
+    }
+
     /// DATA-ORIENTED Phase 0: allocate the backing slots for one
     /// array binding of `element_ty` x `length`.
     ///
@@ -195,18 +235,12 @@ impl<'a> FunctionLower<'a> {
     /// math and never learn SoA exists.
     ///
     /// DATA-ORIENTED Phase 0.5: each column strides by its leaf's
-    /// real width rather than the uniform 8-byte
-    /// `ARRAY_LEAF_STRIDE` the interleaved layout still pays. A
-    /// column is homogeneous, so this is the packing
-    /// `elem_stride_bytes` already gives a scalar array
-    /// (`[u8; N]` is 1 byte per element) — nothing about the
-    /// addressing changes, and `soa [PackedRgba; N]` drops from
-    /// 32 bytes per element to 4.
-    ///
-    /// This is the one place the two layouts stop costing the
-    /// same. Values are unaffected (a column's elements are read
-    /// and written at the same stride), which is why the pin for
-    /// it is a *frame* test rather than an answer test.
+    /// real width. A column is homogeneous, so this is the packing
+    /// `elem_stride_bytes` already gives a scalar array (`[u8; N]` is
+    /// 1 byte per element). NUM-W-AOT-pack Phase 3 packs the
+    /// interleaved element too (`PackedElement`), so the two layouts
+    /// now differ only by the element's alignment padding. Values are
+    /// unaffected either way, which is why the pins are *frame* tests.
     pub(super) fn allocate_array_storage(
         &mut self,
         element_ty: Type,
@@ -215,11 +249,19 @@ impl<'a> FunctionLower<'a> {
     ) -> ArrayStorage {
         let leaf_count = leaf_scalar_count(self.module, element_ty);
         if !soa || leaf_count == 1 {
-            let stride = elem_stride_bytes(element_ty, self.module);
-            let slot = self
-                .module
-                .function_mut(self.func_id)
-                .add_array_slot(element_ty, length * leaf_count, stride);
+            // NUM-W-AOT-pack Phase 3: a compound element is packed and
+            // byte-addressed; `length` counts bytes for such a slot.
+            let slot = if is_packed_element(element_ty) {
+                let packed = packed_element(self.module, element_ty);
+                self.module
+                    .function_mut(self.func_id)
+                    .add_array_slot(element_ty, length * packed.size as usize, 1)
+            } else {
+                let stride = elem_stride_bytes(element_ty, self.module);
+                self.module
+                    .function_mut(self.func_id)
+                    .add_array_slot(element_ty, length * leaf_count, stride)
+            };
             return ArrayStorage::Interleaved(slot);
         }
         let mut columns = Vec::with_capacity(leaf_count);

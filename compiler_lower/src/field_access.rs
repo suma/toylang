@@ -623,23 +623,26 @@ impl<'a> FunctionLower<'a> {
         &mut self,
         info: &ArrayElementLeaf,
     ) -> Result<Option<Option<ValueId>>, String> {
-        let Some(Binding::Array { element_ty, length, storage, .. }) =
+        let Some(Binding::Array { length, storage, .. }) =
             self.bindings.get(&info.arr_sym).cloned()
         else {
             return Ok(None);
         };
-        let leaf_count = leaf_scalar_count(self.module, element_ty);
         let (idx_v, const_i) = self.lower_array_element_index(info, length)?;
-        // AoS: flat leaf index `i * leaf_count + leaf` (folded when
+        // AoS: flat leaf index `i * unit + offsets[leaf]` (folded when
         // the element index folded). SoA: the leaf's own column slot
         // at the element index — one load, no arithmetic.
         let (slot, leaf_idx_v) = match &storage {
             super::bindings::ArrayStorage::Columns(cols) => (cols[info.leaf], idx_v),
             super::bindings::ArrayStorage::Interleaved(slot) => {
+                // NUM-W-AOT-pack Phase 3: `unit` steps per element,
+                // the leaf `offsets[leaf]` steps in (bytes for a
+                // packed compound slot).
+                let (unit, offsets) = self.interleaved_units(*slot);
                 let leaf_idx_v = match const_i {
                     Some(i) => self
                         .emit(
-                            InstKind::Const(Const::U64((i * leaf_count + info.leaf) as u64)),
+                            InstKind::Const(Const::U64(i as u64 * unit + offsets[info.leaf])),
                             Some(Type::U64),
                         )
                         .expect("Const returns a value"),
@@ -647,7 +650,7 @@ impl<'a> FunctionLower<'a> {
                         let base_v = {
                             let leaf_count_v = self
                                 .emit(
-                                    InstKind::Const(Const::U64(leaf_count as u64)),
+                                    InstKind::Const(Const::U64(unit)),
                                     Some(Type::U64),
                                 )
                                 .expect("Const returns a value");
@@ -663,7 +666,7 @@ impl<'a> FunctionLower<'a> {
                         };
                         let off_v = self
                             .emit(
-                                InstKind::Const(Const::U64(info.leaf as u64)),
+                                InstKind::Const(Const::U64(offsets[info.leaf])),
                                 Some(Type::U64),
                             )
                             .expect("Const returns a value");
@@ -710,12 +713,11 @@ impl<'a> FunctionLower<'a> {
         let Some(info) = self.resolve_array_element_leaf(lhs)? else {
             return Ok(None);
         };
-        let Some(Binding::Array { element_ty, length, storage, .. }) =
+        let Some(Binding::Array { length, storage, .. }) =
             self.bindings.get(&info.arr_sym).cloned()
         else {
             return Ok(None);
         };
-        let leaf_count = leaf_scalar_count(self.module, element_ty);
         let (idx_v, const_i) = self.lower_array_element_index(&info, length)?;
         let v = self
             .lower_expr(rhs)?
@@ -723,10 +725,14 @@ impl<'a> FunctionLower<'a> {
         let (slot, leaf_idx_v) = match &storage {
             super::bindings::ArrayStorage::Columns(cols) => (cols[info.leaf], idx_v),
             super::bindings::ArrayStorage::Interleaved(slot) => {
+                // NUM-W-AOT-pack Phase 3: `unit` steps per element,
+                // the leaf `offsets[leaf]` steps in (bytes for a
+                // packed compound slot).
+                let (unit, offsets) = self.interleaved_units(*slot);
                 let leaf_idx_v = match const_i {
                     Some(i) => self
                         .emit(
-                            InstKind::Const(Const::U64((i * leaf_count + info.leaf) as u64)),
+                            InstKind::Const(Const::U64(i as u64 * unit + offsets[info.leaf])),
                             Some(Type::U64),
                         )
                         .expect("Const returns a value"),
@@ -734,7 +740,7 @@ impl<'a> FunctionLower<'a> {
                         let base_v = {
                             let leaf_count_v = self
                                 .emit(
-                                    InstKind::Const(Const::U64(leaf_count as u64)),
+                                    InstKind::Const(Const::U64(unit)),
                                     Some(Type::U64),
                                 )
                                 .expect("Const returns a value");
@@ -750,7 +756,7 @@ impl<'a> FunctionLower<'a> {
                         };
                         let off_v = self
                             .emit(
-                                InstKind::Const(Const::U64(info.leaf as u64)),
+                                InstKind::Const(Const::U64(offsets[info.leaf])),
                                 Some(Type::U64),
                             )
                             .expect("Const returns a value");

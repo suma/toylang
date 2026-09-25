@@ -12,6 +12,12 @@
 
 ### 2026-09-25
 
+- **NUM-W-AOT-pack Phase 3: compound 要素の AoS 配列を pack** — 要素内の
+  leaf を実幅・自然アラインメントで置き、slot はバイト単位で添字を取る
+  (stride 1、`要素番号 × size + offsets[j]`)。codegen / IR VM は無変更、
+  lowering の添字の組み立て 7 か所を `interleaved_units` に寄せた。
+  `[Mixed; 3]` (`bool` / `u8` / `f32` / `u64`) の frame は 96 → 48 バイト。
+
 - **REF-Stage-2 の残り: ポインタで渡す引数がすべての呼び出しの形に届いた** —
   compound の `&T` / `&mut T` を番地で渡す ABI (CODE-SIZE-SELF-ABI) が
   3 つの形で抜けていて、leaf 9 個以上の struct では**ビルドが止まって
@@ -2417,7 +2423,6 @@
   cranelift の `sqrt` は F32 を受けるので unary op 経路の supplied helper
   を増やせば direct にできる。(c) **`f32` の `min` / `max` 演算子**は
   f64 同様 AOT 未対応 (cranelift の fmin / fmax で入れられる)。
-- **NUM-W-AOT-pack Phase 3** ★ — compound element 配列の tighter layout (`[PackedRgba; N]` が 4 バイト相当のところ 32 バイト消費)。メモリ効率のみで機能差はない。
 - **195b. `extern fn` の monomorph 化** ★ — generic extern は現状 interpreter の type-erased registry でのみ動く。JIT / AOT には mangled symbol の emit と Rust 側実装の登録が要る。実需要なし。
 - **121-Phase-B-rest-leftover** ★ — `AllocatorBinding::Generic/Local/Ambient` の lower 配線 (perf のみ、観察可能な振る舞い変化なし)、`__builtin_default_allocator()` の戻り型を `u64` にして生比較を許すかの API 判断。
 - **PTR-ABI-LOW-THRESHOLD: 閾値を下げると lane 間で確保の集計が割れる** ★ —

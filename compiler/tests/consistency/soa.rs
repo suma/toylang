@@ -432,17 +432,18 @@ fn soa_field_loop_is_a_unit_stride_column_walk_in_the_aot_frame() {
     let aos_loop = loop_block(&aos);
     let soa_loop = loop_block(&soa);
 
-    // AoS: the element index is scaled by the leaf count and offset
-    // by the field's leaf before the byte scale — `(i * 3 + 2) * 8`,
-    // two multiplies, striding past `x` and `y` on every iteration.
+    // AoS: the element index is scaled by the element's byte size
+    // and offset by the field's — `i * 24 + 16` (NUM-W-AOT-pack
+    // Phase 3 addresses a compound slot in bytes, stride 1), striding
+    // past `x` and `y` on every iteration.
     assert_eq!(
         aos_loop.matches("imul").count(),
         2,
-        "AoS loop should scale by leaf count and by stride:\n{aos_loop}"
+        "AoS loop should scale by the element size and by the stride:\n{aos_loop}"
     );
     assert!(
-        aos_loop.contains("iconst.i64 3"),
-        "AoS loop should multiply by the 3-leaf element:\n{aos_loop}"
+        aos_loop.contains("iconst.i64 24"),
+        "AoS loop should multiply by the 24-byte element:\n{aos_loop}"
     );
 
     // SoA: `mass` is its own array, so the address is `i * 8` from
@@ -471,15 +472,15 @@ fn soa_field_loop_is_a_unit_stride_column_walk_in_the_aot_frame() {
 fn narrow_leaf_columns_pack_to_their_leaf_width_in_the_aot_frame() {
     // DATA-ORIENTED Phase 0.5. A column is homogeneous, so it strides
     // by its leaf's real width — the packing a scalar array has always
-    // had. The interleaved layout still pays the uniform 8 bytes per
-    // leaf (`ARRAY_LEAF_STRIDE`), which is where the two layouts stop
-    // costing the same: this element is 20 bytes of data stored in 32
-    // interleaved and in 20 split by column.
+    // had. NUM-W-AOT-pack Phase 3 packs the interleaved element too,
+    // C-style: each leaf at its own width and alignment, the element
+    // rounded to its widest leaf. This element is 14 bytes of data,
+    // stored in 16 interleaved (2 bytes of padding before the `f32`)
+    // and in 14 split by column. It used to be 32 interleaved, one
+    // 8-byte slot per leaf.
     //
-    // Values are untouched by the change — a column is read and
-    // written at one stride — which is exactly why this has to be a
-    // frame test. Every answer test in this file passed unchanged
-    // through Phase 0.5.
+    // Values are untouched by either change, which is exactly why
+    // this has to be a frame test.
     let src = |soa: &str| {
         format!(
             r#"
@@ -503,8 +504,9 @@ fn narrow_leaf_columns_pack_to_their_leaf_width_in_the_aot_frame() {
     let aos = clif_function(&aot_clif(&src("")), "main");
     let soa = clif_function(&aot_clif(&src("soa ")), "main");
 
-    // 3 elements * 4 leaves * 8 bytes, interleaved into one slot...
-    assert_eq!(clif_stack_slots(&aos), vec![96], "AoS frame:\n{aos}");
+    // 3 elements * 16 bytes (`bool` at 0, `u8` at 1, `f32` at 4,
+    // `u64` at 8), interleaved into one slot...
+    assert_eq!(clif_stack_slots(&aos), vec![48], "AoS frame:\n{aos}");
     // ...or one column per leaf, each 3 * that leaf's own width:
     // `bool` 1, `u8` 1, `f32` 4, `u64` 8.
     assert_eq!(
@@ -512,11 +514,11 @@ fn narrow_leaf_columns_pack_to_their_leaf_width_in_the_aot_frame() {
         vec![3, 3, 12, 24],
         "SoA frame:\n{soa}"
     );
-    // 42 bytes against 96 — and the interleaved half of that is
-    // padding, not data.
+    // 42 bytes against 48: what is left between them is the
+    // interleaved element's alignment padding.
     assert!(
-        clif_stack_slots(&soa).iter().sum::<u32>() * 2 < clif_stack_slots(&aos)[0],
-        "the split should more than halve the frame:\n{soa}"
+        clif_stack_slots(&soa).iter().sum::<u32>() < clif_stack_slots(&aos)[0],
+        "the split should drop the padding:\n{soa}"
     );
     // The `byte` loop walks its own column, now at a 1-byte stride.
     assert_eq!(slots_touched(&loop_block(&soa)), vec!["ss1"]);
@@ -1180,4 +1182,63 @@ fn a_generic_enum_element_takes_its_instantiation_from_the_annotation() {
     "#;
     assert_eq!(interpreter_value(src), 104);
     assert_consistent(src, "enum_array_generic");
+}
+
+
+/// NUM-W-AOT-pack Phase 3: an interleaved compound element is packed
+/// (each leaf at its own width and alignment) and its slot is
+/// addressed in bytes. Every way into such an array has to land on the
+/// same bytes: a field write at a runtime index, a whole-element read,
+/// a range slice, a `Column` window over the AoS array, and elements
+/// that are narrow structs, tuples and enums (whose payload leaves
+/// differ in width by variant).
+#[test]
+fn a_packed_compound_array_reads_back_what_was_written() {
+    let src = r#"
+        struct Mixed { flag: bool, byte: u8, single: f32, wide: u64 }
+        struct Rgba { r: u8, g: u8, b: u8, a: u8 }
+        enum Shape { Dot(u8), Box(u16, u64), Point }
+
+        fn sum_bytes(c: Column<u8>) -> u64 {
+            var t = 0u64
+            for i in 0u64..c.len() { t = t + c.get(i) as u64 }
+            t
+        }
+
+        fn main() -> u64 {
+            var ms: [Mixed; 3] = [
+                Mixed { flag: true,  byte: 1u8, single: 1.5f32, wide: 10u64 },
+                Mixed { flag: false, byte: 2u8, single: 2.5f32, wide: 20u64 },
+                Mixed { flag: true,  byte: 3u8, single: 3.5f32, wide: 30u64 },
+            ]
+            var n = 0u64
+            for i in 0u64..3u64 {
+                ms[i].byte = ms[i].byte + 10u8
+                if ms[i].flag { n = n + ms[i].wide }
+            }
+            val m = ms[1]
+            val tail = ms[1..3]
+            val bytes = ms.byte
+            val sb = sum_bytes(bytes)
+            var px: [Rgba; 2] = [Rgba { r: 1u8, g: 2u8, b: 3u8, a: 4u8 }, Rgba { r: 5u8, g: 6u8, b: 7u8, a: 8u8 }]
+            px[1].g = 60u8
+            var ts: [(u8, u64); 2] = [(1u8, 100u64), (2u8, 200u64)]
+            var ss: [Shape; 3] = [Shape::Dot(7u8), Shape::Box(3u16, 44u64), Shape::Point]
+            ss[2] = Shape::Dot(5u8)
+            var k = 0u64
+            for i in 0u64..3u64 {
+                val s = ss[i]
+                k = k + match s {
+                    Shape::Dot(d) => d as u64,
+                    Shape::Box(w, h) => (w as u64) * h,
+                    Shape::Point => 1000u64,
+                }
+            }
+            val t1 = ts[1]
+            println("{n} {m.byte} {m.single} {tail[1].wide} {sb} {px[1].g} {px[0].a} {t1.0} {t1.1} {k}")
+            0u64
+        }
+"#;
+    assert_renders(src, "packed_aos", "40 12 2.5 30 36 60 4 2 200 144
+");
 }

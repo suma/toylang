@@ -2264,6 +2264,14 @@ impl<'a> FunctionLower<'a> {
             ArrayStorage::Interleaved(_) => false,
         });
         let dst_storage = self.allocate_array_storage(element_ty, new_len, soa);
+        let src_units = match &src_storage {
+            ArrayStorage::Interleaved(slot) => self.interleaved_units(*slot),
+            ArrayStorage::Columns(_) => (1, Vec::new()),
+        };
+        let dst_units = match &dst_storage {
+            ArrayStorage::Interleaved(slot) => self.interleaved_units(*slot),
+            ArrayStorage::Columns(_) => (1, Vec::new()),
+        };
         for i in 0..new_len {
             for j in 0..leaf_count {
                 let leaf_ty = leaf_type_at(self.module, element_ty, j);
@@ -2272,11 +2280,15 @@ impl<'a> FunctionLower<'a> {
                 // layout — the pair is what makes a re-layouting
                 // slice the same code as a preserving one.
                 let (src_slot, src_idx) = match &src_storage {
-                    ArrayStorage::Interleaved(slot) => (*slot, (start + i) * leaf_count + j),
+                    ArrayStorage::Interleaved(slot) => {
+                        (*slot, (start + i) * src_units.0 as usize + src_units.1[j] as usize)
+                    }
                     ArrayStorage::Columns(cols) => (cols[j], start + i),
                 };
                 let (dst_slot, dst_idx) = match &dst_storage {
-                    ArrayStorage::Interleaved(slot) => (*slot, i * leaf_count + j),
+                    ArrayStorage::Interleaved(slot) => {
+                        (*slot, i * dst_units.0 as usize + dst_units.1[j] as usize)
+                    }
                     ArrayStorage::Columns(cols) => (cols[j], i),
                 };
                 let src_idx_v = self

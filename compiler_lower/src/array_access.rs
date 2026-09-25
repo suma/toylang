@@ -29,15 +29,18 @@ use crate::ir::{BinOp, Const, InstKind, LocalId, Terminator, Type, ValueId};
 /// whole element (see `begin_leaf_addressing`).
 pub(super) struct LeafAddressing {
     storage: ArrayStorage,
-    leaf_count: usize,
+    /// Interleaved only: index steps per element, and each leaf's
+    /// offset in steps (`interleaved_units`).
+    unit: u64,
+    offsets: Vec<u64>,
     /// The element index as a value — SoA addresses columns with it
     /// directly.
     elem_idx: ValueId,
     /// Set when the index folded, which lets AoS fold the whole leaf
     /// index into one constant.
     const_elem_idx: Option<usize>,
-    /// AoS with a runtime index: `i * leaf_count`, shared by the
-    /// element's leaves.
+    /// AoS with a runtime index: `i * unit`, shared by the element's
+    /// leaves.
     aos_base: Option<ValueId>,
 }
 
@@ -72,8 +75,12 @@ impl<'a> FunctionLower<'a> {
         value: ValueId,
         leaf_ty: Type,
     ) {
+        let _ = leaf_count;
         let (slot, leaf_idx) = match storage {
-            ArrayStorage::Interleaved(slot) => (*slot, i * leaf_count + j),
+            ArrayStorage::Interleaved(slot) => {
+                let (unit, offsets) = self.interleaved_units(*slot);
+                (*slot, i * unit as usize + offsets[j] as usize)
+            }
             ArrayStorage::Columns(cols) => (cols[j], i),
         };
         let idx_v = self
@@ -131,10 +138,15 @@ impl<'a> FunctionLower<'a> {
         elem_idx: ValueId,
         const_elem_idx: Option<usize>,
     ) -> LeafAddressing {
+        let _ = leaf_count;
+        let (unit, offsets) = match storage {
+            ArrayStorage::Interleaved(slot) => self.interleaved_units(*slot),
+            ArrayStorage::Columns(_) => (1, Vec::new()),
+        };
         let aos_base = match (storage, const_elem_idx) {
             (ArrayStorage::Interleaved(_), None) => {
                 let leaf_count_v = self
-                    .emit(InstKind::Const(Const::U64(leaf_count as u64)), Some(Type::U64))
+                    .emit(InstKind::Const(Const::U64(unit)), Some(Type::U64))
                     .expect("Const returns a value");
                 Some(
                     self.emit(
@@ -148,7 +160,8 @@ impl<'a> FunctionLower<'a> {
         };
         LeafAddressing {
             storage: storage.clone(),
-            leaf_count,
+            unit,
+            offsets,
             elem_idx,
             const_elem_idx,
             aos_base,
@@ -166,19 +179,18 @@ impl<'a> FunctionLower<'a> {
         match &addressing.storage {
             ArrayStorage::Columns(cols) => (cols[j], addressing.elem_idx),
             ArrayStorage::Interleaved(slot) => {
-                let index = match (addressing.const_elem_idx, addressing.aos_base, j) {
+                let offset = addressing.offsets[j];
+                let index = match (addressing.const_elem_idx, addressing.aos_base, offset) {
                     (Some(i), _, _) => self
                         .emit(
-                            InstKind::Const(
-                                Const::U64((i * addressing.leaf_count + j) as u64),
-                            ),
+                            InstKind::Const(Const::U64(i as u64 * addressing.unit + offset)),
                             Some(Type::U64),
                         )
                         .expect("Const returns a value"),
                     (None, Some(base), 0) => base,
                     (None, Some(base), _) => {
                         let off_v = self
-                            .emit(InstKind::Const(Const::U64(j as u64)), Some(Type::U64))
+                            .emit(InstKind::Const(Const::U64(offset)), Some(Type::U64))
                             .expect("Const returns");
                         self.emit(
                             InstKind::BinOp { op: BinOp::Add, lhs: base, rhs: off_v },

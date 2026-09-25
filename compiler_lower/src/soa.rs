@@ -249,7 +249,6 @@ impl FunctionLower<'_> {
             return Ok(None);
         };
         self.reject_compound_column(leaf_ty, field)?;
-        let leaf_count = super::array_layout::leaf_scalar_count(self.module, element_ty);
         let (slot, index, stride) = match storage {
             // One column per leaf: the window is that column's whole
             // slot, and its values are adjacent (Phase 0.5 sized each
@@ -259,16 +258,14 @@ impl FunctionLower<'_> {
                     super::array_layout::elem_stride_bytes(leaf_ty, self.module) as u64;
                 (columns[leaf], 0u64, stride)
             }
-            // Interleaved: the leaf sits `leaf` slots into element 0,
-            // and the next element's copy is a whole element further
-            // on. Every leaf of a compound element occupies one
-            // `ARRAY_LEAF_STRIDE` slot, which is what makes both
-            // numbers multiples of it.
-            super::bindings::ArrayStorage::Interleaved(slot) => (
-                *slot,
-                leaf as u64,
-                leaf_count as u64 * super::array_layout::ARRAY_LEAF_STRIDE as u64,
-            ),
+            // Interleaved: the slot is byte-addressed (NUM-W-AOT-pack
+            // Phase 3), so the leaf sits `offsets[leaf]` bytes into
+            // element 0 and the next element's copy is one packed
+            // element further on.
+            super::bindings::ArrayStorage::Interleaved(slot) => {
+                let (unit, offsets) = self.interleaved_units(*slot);
+                (*slot, offsets[leaf], unit)
+            }
         };
         // `ArrayElemAddr` scales by the *element type it is given*, so
         // the interleaved case asks in whole leaf slots (`U64`, 8

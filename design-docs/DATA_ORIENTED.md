@@ -80,6 +80,14 @@ SoA にすると**各列が同型になる**ので、列ごとに `elem_stride_b
 AoS 側は `ARRAY_LEAF_STRIDE` のまま (要素内の pack は SoA と違い
 アラインメントの問題を解く必要がある)。
 
+**2026-09-25: AoS 側も pack した** (NUM-W-AOT-pack Phase 3)。要素内の
+leaf を実幅・自然アラインメントで宣言順に置き、要素は最大幅に丸める
+(C と同じ規則)。compound 要素の slot は**バイト単位で添字を取る**
+(stride 1、`要素番号 × size + offsets[j]`) ので、codegen と IR VM の
+`index * stride` はそのまま。`Mixed` × 3 は 96 → **48 バイト**
+(SoA 42 との差 6 バイトは `f32` の前のパディング)。ARRAY_LEAF_STRIDE は
+compound の slot の stride としては使われなくなった。
+
 ## 中心案: `soa` 前置修飾子 — stack と heap で別の仕組み
 
 ```rust

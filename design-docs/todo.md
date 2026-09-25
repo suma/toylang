@@ -2556,6 +2556,17 @@
 
 - **MOVE-CONDITIONAL: 分岐 / ループからの移動** ★ — 現状は E0014 で拒否。
   許すには実行時 drop flag (Rust と同じ) が要る。実プログラムで踏んだら着手。
+- **LEND-MUTATING-CALLEE: 変えるが解放しない受け手に渡した値が漏れる** ★ —
+  BY-VALUE-PARAM-NO-DROP (2026-09-24) は「読むだけ」の受け手に値渡しした
+  値を呼び出し側に drop させるようにしたが、**受け手が値を変える**
+  (`var c = b` から `&mut self` メソッド / フィールドへの書き込み) だけで
+  しまいも返しも閉じもしない場合は、従来どおり誰も解放しない。
+  `fn touch(b: Buf) -> u64 { var c = b  c.bump()  c.n }` に
+  `Buf { s: String, .. }` を渡すと 3 レーンとも `leaks (1 sites, 3 bytes)`。
+  `compute_lend` の「読むだけ」を「値を外へ出さない」に広げるか
+  (変更が呼び出し側に見えないことの確認が要る)、受け手の側で drop する
+  か。後者は BY-VALUE-PARAM-NO-DROP で採らなかった案 (二重 drop の経路が
+  あるため) なので、前者が先。
 - **Trait 拡張** ★★★ (大規模、ロードマップ)
   - **A3: trait inheritance (`trait B: A`)** — 中。super trait 経由で `A` の method を `B` impl からも要求。
   - **A4: associated types (`trait Iterator { type Item }`)** — 中〜大。
@@ -2616,6 +2627,22 @@
   (`interpreter/src/object.rs::to_display_string` /
   `compiler_lower/src/print.rs`) に `field_names` を渡す必要がある
   (`--api` の宣言の描画は対応済み)。踏んでから。
+- **ENUM-TUPLE-SUBPATTERN-AOT: enum variant の中の tuple パターン** ★ —
+  `match o { Option::Some((a, b)) => .., Option::None => .. }` が AOT で
+  ``compiler MVP only supports `Name`, `_`, literal, and nested
+  `EnumVariant` sub-patterns inside enum variants, got a tuple pattern``
+  (interpreter は通る)。tuple パターン自体は PATTERN-STRUCT のときに
+  scrutinee 直下では lowering 対応したが、variant の payload の中は
+  未対応。struct パターンも同じ位置で落ちるか要確認。2026-09-25 に
+  README の例を書いていて踏んだ。
+- **MATCH-STRING-LITERAL-NESTED: 入れ子の位置の `String` リテラル** ★ —
+  MATCH-STRING-LITERAL (2026-09-24) は一番外の腕だけを
+  `_ if s.eq_str("a")` に書き換える。`Option<String>` に
+  `Option::Some("a") => ..` は `[E0010] literal pattern is only valid
+  where a primitive value is expected, got String`。入れ子の位置では
+  guard が名指す値が無いので、sub-pattern を束縛 (`Option::Some(__s)`)
+  に変えて guard に `__s.eq_str("a")` を足す形になる (or / 複数の
+  リテラルが同じ腕にあるときは guard の合成が要る)。
 - **COLLECTION-LITERAL: compiled レーンで使えるコレクションリテラル** ★ —
   `dict{...}` は interpreter 限定 (`compiler MVP cannot lower a dict
   literal yet`)、`Vec` のリテラルは無いので、表は `push` の列になる。

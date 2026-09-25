@@ -103,24 +103,32 @@ pub(super) fn primitive_target_sym_for_ir_type(
 /// version of this bug is a mutation that vanishes.
 #[must_use = "a materialised receiver must be read back (`apply`) or explicitly dropped (`skip`)"]
 pub(super) struct ReceiverReload {
-    /// `None` when the pointer was forwarded -- caller and callee are
-    /// looking at the same bytes, so there is nothing to read back.
-    slot: Option<(ValueId, Vec<(LocalId, u64, Type)>)>,
+    /// The slots owed a read-back: none when every pointer was
+    /// forwarded (caller and callee look at the same bytes), and more
+    /// than one when a call hands over the receiver *and* a `&T` /
+    /// `&mut T` argument by address.
+    slots: Vec<(ValueId, Vec<(LocalId, u64, Type)>)>,
 }
 
 impl ReceiverReload {
     /// The forwarded case: nothing owed.
     pub(super) fn none() -> Self {
-        ReceiverReload { slot: None }
+        ReceiverReload { slots: Vec::new() }
     }
 
     pub(super) fn slot(addr: ValueId, layout: Vec<(LocalId, u64, Type)>) -> Self {
-        ReceiverReload { slot: Some((addr, layout)) }
+        ReceiverReload { slots: vec![(addr, layout)] }
+    }
+
+    /// Take on `other`'s obligations too, so one value carries every
+    /// read-back a call owes (a `CompoundMethodCall` has room for one).
+    pub(super) fn merge(&mut self, mut other: ReceiverReload) {
+        self.slots.append(&mut other.slots);
     }
 
     /// Read the receiver back. Call immediately after the call.
     pub(super) fn apply(mut self, lower: &mut super::FunctionLower<'_>) {
-        if let Some((addr, layout)) = self.slot.take() {
+        for (addr, layout) in std::mem::take(&mut self.slots) {
             lower.reload_receiver_slot(addr, &layout);
         }
     }
@@ -128,13 +136,13 @@ impl ReceiverReload {
     /// Deliberately not read back -- only correct when the receiver is
     /// being destroyed, as in auto-drop glue.
     pub(super) fn skip(mut self) {
-        self.slot = None;
+        self.slots.clear();
     }
 }
 
 impl Drop for ReceiverReload {
     fn drop(&mut self) {
-        if self.slot.is_some() && !std::thread::panicking() {
+        if !self.slots.is_empty() && !std::thread::panicking() {
             panic!(
                 "internal error (CODE-SIZE-SELF-ABI): a materialised receiver was dropped \
                  without being read back; whichever call site emits the call must call \
@@ -1253,6 +1261,69 @@ impl<'a> FunctionLower<'a> {
         Ok((addr, ReceiverReload::slot(addr, layout)))
     }
 
+    /// CODE-SIZE-SELF-ABI: a compound *temporary* -- a literal or a
+    /// call's result, already lowered to its leaf values -- for a
+    /// parameter the callee takes by address. The leaves go into a
+    /// fresh slot laid out as `ty`, and its address is the argument.
+    /// Nothing is read back: no binding holds the temporary, so a
+    /// write through `&mut` has nowhere to be seen.
+    pub(super) fn temporary_address(&mut self, values: &[ValueId], ty: Type) -> Result<ValueId, String> {
+        let layout = crate::program::struct_leaf_layout(self.module, ty).ok_or_else(|| {
+            format!(
+                "CODE-SIZE-SELF-ABI: a temporary of type {} has no leaf layout",
+                crate::spelling::spell_type(self.module, self.interner, ty)
+            )
+        })?;
+        if layout.len() != values.len() {
+            return Err(format!(
+                "internal error (CODE-SIZE-SELF-ABI): a temporary has {} leaf value(s) but its \
+                 type lays out {}",
+                values.len(),
+                layout.len()
+            ));
+        }
+        let size = layout
+            .iter()
+            .map(|(off, t)| off + crate::program::scalar_byte_size(*t).unwrap_or(8))
+            .max()
+            .unwrap_or(1);
+        let slot_idx = {
+            let func = self.module.function_mut(self.func_id);
+            let idx = func.dyn_coerce_slots.len() as u32;
+            func.dyn_coerce_slots.push(size.max(1) as u32);
+            idx
+        };
+        let addr = self
+            .emit(InstKind::DynCoerceSlotAddr { slot_idx }, Some(Type::U64))
+            .expect("DynCoerceSlotAddr returns a value");
+        for ((off, leaf_ty), value) in layout.iter().zip(values) {
+            let off_v = self
+                .emit(InstKind::Const(Const::U64(*off)), Some(Type::U64))
+                .expect("Const returns a value");
+            self.emit(
+                InstKind::PtrWrite { ptr: addr, offset: off_v, value: *value, value_ty: *leaf_ty },
+                None,
+            );
+        }
+        Ok(addr)
+    }
+
+    /// The address a pointer parameter at `slot` of `target` takes for
+    /// a temporary's `values`, or the values themselves when that
+    /// parameter travels as its leaves.
+    pub(super) fn temporary_arg(
+        &mut self,
+        target: FuncId,
+        slot: usize,
+        values: Vec<ValueId>,
+    ) -> Result<Vec<ValueId>, String> {
+        if self.module.function(target).ptr_param(slot).is_none() {
+            return Ok(values);
+        }
+        let ty = self.module.function(target).params[slot];
+        Ok(vec![self.temporary_address(&values, ty)?])
+    }
+
     /// Write the receiver's leaves into a fresh per-call slot and
     /// answer its address plus the layout needed to read them back.
     fn materialise_receiver_slot(
@@ -1447,6 +1518,7 @@ impl<'a> FunctionLower<'a> {
             // see `lower_compound_literal_arg`.
             let param_ty = param_tys.get(1 + arg_idx).copied();
             if let Some(leaves) = self.lower_compound_literal_arg(param_ty, &arg_expr_ref)? {
+                let leaves = self.temporary_arg(target, 1 + arg_idx, leaves)?;
                 values.extend(leaves);
                 continue;
             }
@@ -1786,7 +1858,19 @@ impl<'a> FunctionLower<'a> {
             };
             if let Some(Expr::Identifier(sym)) = self.program.expression.get(&arg_expr_ref) {
                 if let Some(Binding::Struct { fields, .. }) = self.bindings.get(&sym).cloned() {
-                    for (local, ty) in flatten_struct_locals(&fields) {
+                    let leaves = flatten_struct_locals(&fields);
+                    // CODE-SIZE-SELF-ABI: the same check the
+                    // scalar-returning sibling makes -- a parameter the
+                    // callee takes by address gets one. Missing here,
+                    // `val v = s.split(&sep)` spread `sep` into leaves
+                    // the callee's signature no longer had room for.
+                    if self.module.function(target).ptr_param(1 + arg_idx).is_some() {
+                        let (addr, r) = self.receiver_address(&leaves)?;
+                        reload.merge(r);
+                        args.push(addr);
+                        continue;
+                    }
+                    for (local, ty) in leaves {
                         let v = self
                             .emit(InstKind::LoadLocal(local), Some(ty))
                             .expect("LoadLocal returns a value");
@@ -1838,6 +1922,7 @@ impl<'a> FunctionLower<'a> {
                 .get(1 + arg_idx)
                 .copied();
             if let Some(leaves) = self.lower_compound_literal_arg(param_ty, &arg_expr_ref)? {
+                let leaves = self.temporary_arg(target, 1 + arg_idx, leaves)?;
                 args.extend(leaves);
                 continue;
             }

@@ -12,6 +12,16 @@
 
 ### 2026-09-25
 
+- **REF-Stage-2 の残り: ポインタで渡す引数がすべての呼び出しの形に届いた** —
+  compound の `&T` / `&mut T` を番地で渡す ABI (CODE-SIZE-SELF-ABI) が
+  3 つの形で抜けていて、leaf 9 個以上の struct では**ビルドが止まって
+  いた**: struct / enum を返すメソッドへの参照引数 (`val v = w.plus(&o)`)、
+  一時値の参照引数 (`w.plus(&mk(7u64))`)、幅の広い iterator の `for`
+  (`match it.next()` が receiver の leaf を手で並べていた)。
+  `ReceiverReload` が複数の slot を持てるようにし、一時値は
+  `temporary_address` で slot に書いて渡す。閾値 8 の既存プログラムの
+  コードは変わらない (`poc/logsearch` の出力はバイト一致)。
+
 - **BREAK-WITH-VALUE: `break <value>` で `loop` を値にする** — パーサが
   `var __loop_value_N = None` + `while true` + 取り出しの `match` に
   desugar し、型検査器が最初に型を名指す `break` から var の注釈
@@ -2410,7 +2420,17 @@
 - **NUM-W-AOT-pack Phase 3** ★ — compound element 配列の tighter layout (`[PackedRgba; N]` が 4 バイト相当のところ 32 バイト消費)。メモリ効率のみで機能差はない。
 - **195b. `extern fn` の monomorph 化** ★ — generic extern は現状 interpreter の type-erased registry でのみ動く。JIT / AOT には mangled symbol の emit と Rust 側実装の登録が要る。実需要なし。
 - **121-Phase-B-rest-leftover** ★ — `AllocatorBinding::Generic/Local/Ambient` の lower 配線 (perf のみ、観察可能な振る舞い変化なし)、`__builtin_default_allocator()` の戻り型を `u64` にして生比較を許すかの API 判断。
-- **REF-Stage-2 (residual)** ★ — compound `&mut T` の真の pointer-passing、`&T` compound の RefScalar 経路活用。どちらも copy 削減で機能差はない。
+- **PTR-ABI-LOW-THRESHOLD: 閾値を下げると lane 間で確保の集計が割れる** ★ —
+  `PTR_SELF_LEAF_THRESHOLD` (既定 8) を下げて小さな struct もポインタで
+  渡すと、閾値 4 では全テストが通り `poc/logsearch` の `__text` が
+  −0.7%・`archive` が ~2% 速い (2026-09-25 実測)。だが閾値 2 では
+  値は合ったまま**確保の集計が lane 間で割れる**: `SoaVec<Box<i64>>` の
+  drop で interpreter レーンが box 3 個を残し JIT は解放する、
+  `Vec<String>` の sort で peak が 140 / 145 に割れる、`Vec` の範囲外
+  読みで IR VM がレーンから外れる。tree-walker は閾値に依らないので、
+  変わったのは lowering を通るレーンの側 (どちらが正しいかは未確認)。
+  **閾値 8 でも leaf 9 個以上の所有型で同じことが起きうる**ので、
+  閾値を下げる前にこちらを詰める。[`CODE_SIZE.md`](CODE_SIZE.md)。
 
 ### 標準ライブラリ・実行環境 (STDLIB-RUNTIME)
 

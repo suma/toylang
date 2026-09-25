@@ -1288,6 +1288,10 @@ impl<'a> FunctionLower<'a> {
             }
         }
         if let Some(values) = self.lower_compound_literal_arg(None, a)? {
+            let values = match target {
+                Some(t) => self.temporary_arg(t, param_index, values)?,
+                None => values,
+            };
             return Ok((values, ReceiverReload::none()));
         }
         let v = self
@@ -1810,6 +1814,10 @@ impl<'a> FunctionLower<'a> {
             if let Some(leaves) =
                 self.lower_compound_literal_arg(param_tys.get(arg_idx).copied(), &arg_expr_ref)?
             {
+                let leaves = match target {
+                    Some(t) => self.temporary_arg(t, arg_idx, leaves)?,
+                    None => leaves,
+                };
                 values.extend(leaves);
                 continue;
             }

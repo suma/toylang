@@ -888,3 +888,59 @@ fn a_mixed_borrow_list_counts_only_the_writeback_half() {
     "#;
     assert_consistent(src, "ptr_param_mixed_writeback");
 }
+
+
+/// Three call shapes the pointer ABI did not reach, each a build error
+/// ("passes 10 argument(s), but the callee's signature takes 2") for a
+/// struct past the threshold: a compound-returning method given a wide
+/// `&T` argument (bound, and a temporary written in place), an
+/// enum-returning one, and `for` over a wide iterator, whose
+/// `match it.next()` spread the receiver's leaves by hand.
+#[test]
+fn every_call_shape_hands_a_wide_reference_over_by_address() {
+    let src = r#"
+        struct Wide { a: u64, b: u64, c: u64, d: u64, e: u64, f: u64, g: u64, h: u64, i: u64 }
+
+        impl Wide {
+            fn sum(&self) -> u64 { self.a + self.b + self.c + self.d + self.e + self.f + self.g + self.h + self.i }
+            fn plus(&self, o: &Wide) -> Wide {
+                Wide { a: self.a + o.a, b: self.b, c: self.c, d: self.d, e: self.e, f: self.f, g: self.g, h: self.h, i: self.i }
+            }
+            fn find(&self, o: &Wide) -> Option<u64> {
+                if o.a == self.a { Option::Some(self.a) } else { Option::None }
+            }
+        }
+
+        struct Counter { n: u64, stop: u64, p1: u64, p2: u64, p3: u64, p4: u64, p5: u64, p6: u64, p7: u64 }
+
+        impl Counter {
+            fn next(&mut self) -> Option<u64> {
+                if self.n >= self.stop { return Option::None }
+                self.n = self.n + 1u64
+                Option::Some(self.n)
+            }
+        }
+
+        fn mk(k: u64) -> Wide { Wide { a: k, b: 1u64, c: 1u64, d: 1u64, e: 1u64, f: 1u64, g: 1u64, h: 1u64, i: 1u64 } }
+
+        fn main() -> u64 {
+            val w = mk(10u64)
+            val o = mk(5u64)
+            # a compound-returning method with a wide `&T` argument, bound and temporary
+            val x = w.plus(&o)
+            val y = w.plus(&mk(7u64))
+            # an enum-returning method with a wide `&T` argument
+            val f = w.find(&w) ?? 0u64
+            # `for` over a wide iterator: `match it.next()` with a pointer receiver
+            var it = Counter { n: 0u64, stop: 4u64, p1: 0u64, p2: 0u64, p3: 0u64, p4: 0u64, p5: 0u64, p6: 0u64, p7: 0u64 }
+            var total = 0u64
+            for v in it {
+                total = total + v
+            }
+            println("{x.sum()} {y.sum()} {f} {total} {it.n}")
+            0u64
+        }
+"#;
+    assert_renders(src, "ptr_arg_shapes", "23 25 10 10 4
+");
+}

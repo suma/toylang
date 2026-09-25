@@ -420,6 +420,28 @@ archive の出力セグメントは**変更前のコンパイラと byte 単位�
 
 閾値 8 では全 2,933 テストが通る。
 
+#### 閾値を下げる実験 (2026-09-25)
+
+閾値を 8 より下げると小さな struct も番地で渡る。まず**抜けていた
+呼び出しの形**が出た (閾値 8 でも leaf 9 個以上なら踏む形で、どれも
+verifier がビルドを止めていた): struct / enum を返すメソッドへの参照
+引数、一時値の参照引数、`for` の `match it.next()`。3 つとも塞いだ
+(`prepare_compound_method_call` の引数枠検査、`temporary_address`、
+`match` の対象を `prepare_compound_method_call` に寄せる)。
+
+| 閾値 | テスト | `poc/logsearch` `__text` | `archive` |
+|---:|---|---:|---:|
+| 8 (既定) | 全通過 | 342,216 B | 4.76〜5.24 s |
+| 4 | 全通過 | 339,744 B (−0.7%) | 4.69〜5.07 s |
+| 2 | 8 件失敗 | — | — |
+
+閾値 2 の失敗のうち 2 件は AOT の frame の形を見る `soa` のテストで、
+落ちるのが正しい。残りは**値は合ったまま確保の集計が lane 間で割れる**
+(`SoaVec<Box<i64>>` の drop、`Vec<String>` の sort の peak) か、IR VM が
+レーンから外れるもの。tree-walker は閾値に依らないので lowering 側の
+話で、閾値 8 でも leaf 9 個以上の所有型で起きうる。**閾値は 8 のまま**
+にして、todo の PTR-ABI-LOW-THRESHOLD に記録した。
+
 #### 残っている費用の見積もり
 
 `Binding::Struct` の consumer は **17 ファイル 74 か所**。S2 の同期

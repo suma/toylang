@@ -147,3 +147,65 @@ fn a_generic_parameter_is_a_usable_type_argument() {
     assert_eq!(interpreter_value(src), 42);
     assert_consistent(src, "typed_ptr_read_generic");
 }
+
+/// MEMORY-ACCESS M5: the stdlib `Ptr<T>`'s `get` / `set` lower to the
+/// read and write their bodies perform, not to calls -- the compiled
+/// lanes have no inliner, and the call doubled an element loop's time.
+/// Every scalar width reads back what it wrote, and `main` calls
+/// neither method.
+#[test]
+fn stdlib_ptr_access_lowers_to_the_read_itself() {
+    let src = r#"
+        fn main() -> u64 {
+            val b: Ptr<bool> = Ptr::alloc(2u64)
+            val u: Ptr<u8> = Ptr::alloc(3u64)
+            val h: Ptr<i16> = Ptr::alloc(2u64)
+            val f: Ptr<f32> = Ptr::alloc(2u64)
+            val w: Ptr<u64> = Ptr::alloc(2u64)
+            b.set(1u64, true)
+            u.set(2u64, 200u8)
+            h.set(1u64, -7i16)
+            f.set(1u64, 2.5f32)
+            w.set(1u64, 9u64)
+            w[0u64] = 4u64
+            val b1 = b.get(1u64)
+            val u2 = u.get(2u64)
+            val h1 = h.get(1u64)
+            val f1 = f.get(1u64)
+            val w0 = w[0u64]
+            val w1 = w.get(1u64)
+            println("{b1} {u2} {h1} {f1} {w0} {w1}")
+            0u64
+        }
+    "#;
+    assert_renders(src, "ptr_intrinsic_widths", "true 200 -7 2.5 4 9\n");
+    // `main` reads and writes directly. (A method body can still be
+    // instantiated when the type of `val w1 = w.get(..)` is worked out;
+    // nothing calls it.)
+    let ir = lowered_ir(src);
+    let start = ir.find("function main(").expect("main in the IR");
+    let main = &ir[start..start + ir[start..].find("\n}").expect("end of main")];
+    // Five calls, one per `Ptr::alloc`; every access is inline.
+    assert_eq!(main.matches("call").count(), 5, "{main}");
+    assert_eq!(main.matches("ptr_write").count(), 6, "{main}");
+    assert_eq!(main.matches("ptr_read").count(), 6, "{main}");
+}
+
+/// Only the stdlib's `Ptr` is the intrinsic. A program's own `Ptr` with
+/// a `get` of its own keeps its body.
+#[test]
+fn a_user_ptr_keeps_its_own_get() {
+    let src = r#"
+        struct Ptr<T> { addr: ptr }
+        impl<T> Ptr<T> {
+            fn get(&self, i: u64) -> u64 { i + 100u64 }
+        }
+        fn main() -> u64 {
+            val p: Ptr<u64> = Ptr { addr: __builtin_null_ptr() }
+            val v = p.get(5u64)
+            println(v)
+            0u64
+        }
+    "#;
+    assert_renders(src, "user_ptr_get", "105\n");
+}

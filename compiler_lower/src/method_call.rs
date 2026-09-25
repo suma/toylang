@@ -858,6 +858,14 @@ impl<'a> FunctionLower<'a> {
                 );
             }
         };
+        // MEMORY-ACCESS M5: the stdlib `Ptr<T>`'s element access is the
+        // read or write itself, not a call to it. Decided before the
+        // target resolves, so the method is not instantiated either.
+        if let Some(v) =
+            self.lower_ptr_access_intrinsic(&binding, target_sym, method, &recv_type_args, args)?
+        {
+            return Ok(v);
+        }
         // CONCRETE-IMPL Phase 2c: unified cross-registry dispatch —
         // exact concrete spec first, then the generic template
         // (instantiated against the receiver), then a lone concrete
@@ -1322,6 +1330,114 @@ impl<'a> FunctionLower<'a> {
         }
         let ty = self.module.function(target).params[slot];
         Ok(vec![self.temporary_address(&values, ty)?])
+    }
+
+    /// MEMORY-ACCESS M5: `p.get(i)` / `p.set(i, v)` (and `p[i]` /
+    /// `p[i] = v`) on the stdlib `Ptr<T>`, lowered to the `PtrRead` /
+    /// `PtrWrite` its body performs instead of a call to it.
+    ///
+    /// The compiled lanes have no inliner, so a collection written over
+    /// `Ptr<T>` paid a call per element access -- measured at twice the
+    /// time of the raw builtin in an element loop. That cost was what
+    /// kept `Vec` / `String` / `Dict` on raw `ptr` and their methods
+    /// `unsafe`. The arithmetic is the body's, `i * sizeof::<T>()`
+    /// bytes from `addr`, so the answer cannot differ from the call's.
+    ///
+    /// Only the stdlib's `Ptr` qualifies (the method's template was
+    /// written in `std.ptr`), only for a scalar `T` (a compound one
+    /// expands per leaf, which needs a destination binding -- it keeps
+    /// the call), and only when the receiver is the one-leaf struct the
+    /// stdlib declares. `Ok(None)` means "not this intrinsic".
+    pub(super) fn lower_ptr_access_intrinsic(
+        &mut self,
+        binding: &Binding,
+        target_sym: DefaultSymbol,
+        method: DefaultSymbol,
+        recv_type_args: &[Type],
+        args: &[ExprRef],
+    ) -> Result<Option<Option<ValueId>>, String> {
+        #[derive(Clone, Copy)]
+        enum Access {
+            Get,
+            Set,
+        }
+        if self.interner.resolve(target_sym) != Some("Ptr") {
+            return Ok(None);
+        }
+        let access = match self.interner.resolve(method) {
+            Some("get" | "__getitem__") => Access::Get,
+            Some("set" | "__setitem__") => Access::Set,
+            _ => return Ok(None),
+        };
+        let from_std_ptr = self
+            .generic_methods
+            .get(&(target_sym, method))
+            .is_some_and(|specs| {
+                !specs.is_empty()
+                    && specs.iter().all(|spec| {
+                        spec.method.module_path.as_deref().is_some_and(|path| {
+                            let names: Vec<&str> =
+                                path.iter().filter_map(|s| self.interner.resolve(*s)).collect();
+                            names == ["std", "ptr"]
+                        })
+                    })
+            });
+        if !from_std_ptr {
+            return Ok(None);
+        }
+        let Binding::Struct { fields, .. } = binding else {
+            return Ok(None);
+        };
+        let leaves = flatten_struct_locals(fields);
+        let [(addr_local, Type::U64)] = leaves.as_slice() else {
+            return Ok(None);
+        };
+        // `Ptr<T>` reads and writes `T`: the receiver's one type argument.
+        let [elem_ty] = recv_type_args else {
+            return Ok(None);
+        };
+        let elem_ty = *elem_ty;
+        let Some(size) = elem_ty.scalar_byte_size() else {
+            return Ok(None);
+        };
+        let expected_args = match access {
+            Access::Get => 1,
+            Access::Set => 2,
+        };
+        if args.len() != expected_args {
+            return Ok(None);
+        }
+        let addr = self
+            .emit(InstKind::LoadLocal(*addr_local), Some(Type::U64))
+            .expect("LoadLocal returns a value");
+        let index = self
+            .lower_expr(&args[0])?
+            .ok_or_else(|| "Ptr index produced no value".to_string())?;
+        let size_v = self
+            .emit(InstKind::Const(Const::U64(size)), Some(Type::U64))
+            .expect("Const returns a value");
+        let offset = self
+            .emit(
+                InstKind::BinOp { op: crate::ir::BinOp::Mul, lhs: index, rhs: size_v },
+                Some(Type::U64),
+            )
+            .expect("imul returns a value");
+        Ok(Some(match access {
+            Access::Get => self.emit(
+                InstKind::PtrRead { ptr: addr, offset, elem_ty },
+                Some(elem_ty),
+            ),
+            Access::Set => {
+                let value = self
+                    .lower_expr(&args[1])?
+                    .ok_or_else(|| "Ptr value produced no value".to_string())?;
+                self.emit(
+                    InstKind::PtrWrite { ptr: addr, offset, value, value_ty: elem_ty },
+                    None,
+                );
+                None
+            }
+        }))
     }
 
     /// Write the receiver's leaves into a fresh per-call slot and

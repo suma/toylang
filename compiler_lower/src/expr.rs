@@ -1561,7 +1561,7 @@ impl<'a> FunctionLower<'a> {
                 ))
             }
             Some(_) => Ok(None),
-            None => match self.const_arrays.get(&sym) {
+            None => match self.const_arrays.get(&sym).filter(|a| a.table.is_none()) {
                 Some(array) => {
                     let bytes = array.bytes.clone();
                     Ok(self.emit(InstKind::ConstBytesAddr { bytes }, Some(Type::U64)))
@@ -2061,6 +2061,9 @@ impl<'a> FunctionLower<'a> {
                 // DATA-ORIENTED: `ps[i].x` — a field chain rooted at
                 // an array element lowers to one leaf load instead of
                 // materialising the whole element.
+                if let Some(v) = self.try_lower_const_table_leaf(expr_ref)? {
+                    return Ok(v);
+                }
                 if let Some(v) = self.try_lower_array_element_leaf(expr_ref)? {
                     return Ok(v);
                 }
@@ -2069,6 +2072,9 @@ impl<'a> FunctionLower<'a> {
             Expr::TupleAccess(tuple, index) => {
                 self.pending_struct_value = None;
                 // Same shortcut for `ts[i].0`-shaped chains.
+                if let Some(v) = self.try_lower_const_table_leaf(expr_ref)? {
+                    return Ok(v);
+                }
                 if let Some(v) = self.try_lower_array_element_leaf(expr_ref)? {
                     return Ok(v);
                 }

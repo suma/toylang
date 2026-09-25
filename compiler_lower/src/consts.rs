@@ -39,6 +39,18 @@ pub struct ConstArray {
     pub stride: u64,
     pub length: u64,
     pub bytes: Vec<u8>,
+    /// CONST-ARRAY: a table of structs or tuples. Its element type needs
+    /// the IR's struct instances to lay out, which exist only once
+    /// lowering runs, so the elements are kept as their scalar leaves
+    /// (declaration order) and laid out at the first read. The scalar
+    /// fields above are unused for such a table.
+    pub table: Option<ConstTable>,
+}
+
+/// The leaves of a compound-element `const` table (CONST-ARRAY).
+pub struct ConstTable {
+    pub elem_decl: frontend::type_decl::TypeDecl,
+    pub elements: Vec<Vec<Const>>,
 }
 
 pub type ConstArrays = HashMap<DefaultSymbol, ConstArray>;
@@ -46,11 +58,12 @@ pub type ConstArrays = HashMap<DefaultSymbol, ConstArray>;
 pub(super) fn evaluate_consts(
     program: &File,
     interner: &DefaultStringInterner,
+    struct_defs: &crate::templates::StructDefs,
 ) -> Result<(ConstValues, ConstArrays), String> {
     let mut values: ConstValues = HashMap::new();
     let mut arrays: ConstArrays = HashMap::new();
     for c in &program.consts {
-        if let Some(array) = eval_const_array(c, program, &values, interner)? {
+        if let Some(array) = eval_const_array(c, program, &values, interner, struct_defs)? {
             arrays.insert(c.name, array);
             continue;
         }
@@ -79,11 +92,37 @@ fn eval_const_array(
     program: &File,
     values: &ConstValues,
     interner: &DefaultStringInterner,
+    struct_defs: &crate::templates::StructDefs,
 ) -> Result<Option<ConstArray>, String> {
     let Some(Expr::ArrayLiteral(items)) = program.expression.get(&decl.value) else {
         return Ok(None);
     };
     let name = interner.resolve(decl.name).unwrap_or("?");
+    // A table of structs or tuples: its leaves, per element.
+    if let frontend::type_decl::TypeDecl::Array(inner, _, _) = &decl.type_decl
+        && let Some(elem_decl) = inner.first()
+        && crate::types::lower_scalar(elem_decl).is_none()
+    {
+        let mut elements = Vec::with_capacity(items.len());
+        for item in &items {
+            let mut leaves = Vec::new();
+            if !flatten_const(item, elem_decl, program, values, interner, struct_defs, &mut leaves) {
+                return Err(format!(
+                    "compiler MVP cannot lay out an element of `const {name}`: a table's \
+                     elements must be scalars, or structs / tuples of them written as \
+                     literals"
+                ));
+            }
+            elements.push(leaves);
+        }
+        return Ok(Some(ConstArray {
+            elem_ty: crate::ir::Type::Unit,
+            stride: 0,
+            length: items.len() as u64,
+            bytes: Vec::new(),
+            table: Some(ConstTable { elem_decl: elem_decl.clone(), elements }),
+        }));
+    }
     let elem_ty = match &decl.type_decl {
         frontend::type_decl::TypeDecl::Array(inner, _, _) => inner
             .first()
@@ -117,7 +156,72 @@ fn eval_const_array(
         stride,
         length: items.len() as u64,
         bytes,
+        table: None,
     }))
+}
+
+/// The scalar leaves of one compound `const` element, in the order the
+/// lowering lays a value of `decl` out: struct fields in declaration
+/// order (whatever order the literal names them in), tuple elements in
+/// order, recursively. `false` for anything that is not a literal of
+/// that shape.
+fn flatten_const(
+    expr: &ExprRef,
+    decl: &frontend::type_decl::TypeDecl,
+    program: &File,
+    values: &ConstValues,
+    interner: &DefaultStringInterner,
+    struct_defs: &crate::templates::StructDefs,
+    out: &mut Vec<Const>,
+) -> bool {
+    use frontend::type_decl::TypeDecl;
+    if crate::types::lower_scalar(decl).is_some() {
+        return match eval_const_expr(expr, program, values, interner) {
+            Some(c) => {
+                out.push(c);
+                true
+            }
+            None => false,
+        };
+    }
+    match (decl, program.expression.get(expr)) {
+        (TypeDecl::Tuple(types), Some(Expr::TupleLiteral(elems))) if types.len() == elems.len() => {
+            types.iter().zip(elems.iter()).all(|(t, e)| {
+                flatten_const(e, t, program, values, interner, struct_defs, out)
+            })
+        }
+        (
+            TypeDecl::Struct(name, _) | TypeDecl::Identifier(name),
+            Some(Expr::StructLiteral(_, fields)),
+        ) => {
+            let Some(template) = struct_defs.get(name) else {
+                return false;
+            };
+            if !template.generic_params.is_empty() {
+                return false;
+            }
+            template.fields.iter().all(|(field_name, field_ty)| {
+                let written = fields
+                    .iter()
+                    .find(|(sym, _)| interner.resolve(*sym) == Some(field_name.as_str()));
+                match written {
+                    Some((_, value)) => {
+                        flatten_const(value, field_ty, program, values, interner, struct_defs, out)
+                    }
+                    None => false,
+                }
+            })
+        }
+        _ => false,
+    }
+}
+
+/// A leaf's bytes at its own width, little-endian -- the table layout
+/// the lowering builds for a compound `const` (CONST-ARRAY).
+pub(super) fn const_leaf_bytes(value: Const, width: u64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(width as usize);
+    append_const_bytes(&mut out, value, width);
+    out
 }
 
 /// The byte width of a scalar. `None` for anything that is not one,

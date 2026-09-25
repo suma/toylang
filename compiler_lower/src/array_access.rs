@@ -99,6 +99,80 @@ impl<'a> FunctionLower<'a> {
             None,
         );
     }
+    /// CONST-ARRAY: a compound `const` table laid out -- its element's IR
+    /// type, the element size, and the bytes -- packed the way a
+    /// `Ptr<T>` / `Vec<T>` buffer is (`compute_leaf_layout`), which is
+    /// what `bind_compound_read` and `emit_leaf_offset` address.
+    /// `Ok(None)` when `sym` is not such a table.
+    pub(super) fn const_table_layout(
+        &mut self,
+        sym: string_interner::DefaultSymbol,
+    ) -> Result<Option<(Type, u64, Vec<u8>, usize)>, String> {
+        if self.bindings.contains_key(&sym) {
+            return Ok(None);
+        }
+        let Some(table) = self.const_arrays.get(&sym).and_then(|a| a.table.as_ref()) else {
+            return Ok(None);
+        };
+        let decl = match &table.elem_decl {
+            frontend::type_decl::TypeDecl::Identifier(n) => {
+                frontend::type_decl::TypeDecl::Struct(*n, Vec::new())
+            }
+            other => other.clone(),
+        };
+        let elements = table.elements.clone();
+        let name = self.interner.resolve(sym).unwrap_or("?").to_string();
+        let elem_ty = self
+            .lower_type_with_subst(&decl, &std::collections::HashMap::new())
+            .ok_or_else(|| format!("compiler MVP cannot lay out the elements of `const {name}`"))?;
+        let leaves = self
+            .compute_leaf_layout(elem_ty)
+            .ok_or_else(|| format!("compiler MVP cannot lay out the elements of `const {name}`"))?;
+        let size = self
+            .compute_byte_size(elem_ty)
+            .ok_or_else(|| format!("compiler MVP cannot size the elements of `const {name}`"))?;
+        let mut bytes = vec![0u8; size as usize * elements.len()];
+        for (e, element) in elements.iter().enumerate() {
+            if element.len() != leaves.len() {
+                return Err(format!("`const {name}`: element {e} has the wrong number of fields"));
+            }
+            for ((offset, leaf_ty), value) in leaves.iter().zip(element) {
+                let width = leaf_ty
+                    .scalar_byte_size()
+                    .ok_or_else(|| format!("`const {name}`: a field has no fixed width"))?;
+                let at = e * size as usize + *offset as usize;
+                bytes[at..at + width as usize]
+                    .copy_from_slice(&crate::consts::const_leaf_bytes(*value, width));
+            }
+        }
+        Ok(Some((elem_ty, size, bytes, elements.len())))
+    }
+
+    /// CONST-ARRAY: the table's address and the byte offset of element
+    /// `index`, bounds-checked like any array index.
+    pub(super) fn const_table_element(
+        &mut self,
+        bytes: Vec<u8>,
+        size: u64,
+        length: usize,
+        index_ref: &ExprRef,
+    ) -> Result<(ValueId, ValueId), String> {
+        let idx = self.lower_element_index(index_ref, length)?;
+        let base = self
+            .emit(InstKind::ConstBytesAddr { bytes }, Some(Type::U64))
+            .expect("ConstBytesAddr returns a value");
+        let size_v = self
+            .emit(InstKind::Const(Const::U64(size)), Some(Type::U64))
+            .expect("Const returns a value");
+        let offset = self
+            .emit(
+                InstKind::BinOp { op: crate::ir::BinOp::Mul, lhs: idx, rhs: size_v },
+                Some(Type::U64),
+            )
+            .expect("BinOp returns a value");
+        Ok((base, offset))
+    }
+
     /// CONST-ARRAY: the address and byte offset of element `index` of
     /// a borrowed array -- the bounds check an owned array gets, then
     /// `index * stride` from the address the caller passed. The stride
@@ -555,7 +629,19 @@ impl<'a> FunctionLower<'a> {
             ));
         }
         if !matches!(self.bindings.get(&arr_sym), Some(Binding::Array { .. }))
+            && self.const_arrays.get(&arr_sym).is_some_and(|a| a.table.is_some())
+        {
+            return Err(format!(
+                "compiler MVP reads an element of the table `{}` into a binding \
+                 (`val e = {}[i]`) or one field of it (`{}[i].x`), not in this position",
+                self.interner.resolve(arr_sym).unwrap_or("?"),
+                self.interner.resolve(arr_sym).unwrap_or("?"),
+                self.interner.resolve(arr_sym).unwrap_or("?"),
+            ));
+        }
+        if !matches!(self.bindings.get(&arr_sym), Some(Binding::Array { .. }))
             && let Some(array) = self.const_arrays.get(&arr_sym)
+            && array.table.is_none()
         {
             let (elem_ty, stride, length, bytes) = (
                 array.elem_ty,

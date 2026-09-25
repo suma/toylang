@@ -2286,10 +2286,23 @@ const K: [u32; 4] = [11u32, 22u32, 33u32, 44u32]
 fn pick(i: u64) -> u32 { K[i] }
 ```
 
-- The elements are literals (or earlier consts), and their type is a
-  **scalar**. The table is laid out once, in the element's own width,
-  and lives in read-only memory: reading one **allocates nothing**, so
-  a function that only indexes tables can be `never_allocates`.
+- The elements are literals (or earlier consts) of a **scalar** type,
+  or **structs / tuples of them** written as literals (fields in any
+  order, nested structs and tuples included):
+
+  ```rust
+  struct R { n: u32, w: f64 }
+  const RS: [R; 2] = [R { n: 1u32, w: 0.5f64 }, R { w: 1.5f64, n: 2u32 }]
+  val r = RS[i]          # the whole element, into a binding
+  val w = RS[i].w        # one field, read on its own
+  ```
+
+  The table is laid out once and lives in read-only memory: reading
+  one **allocates nothing**, so a function that only indexes tables
+  can be `never_allocates`. On the compiled lanes a struct / tuple
+  element is read into a binding or one field at a time; using
+  `RS[i]` directly as a value elsewhere (`f(RS[i])`) asks for the
+  binding first, and such a table cannot yet be passed as `&[R; N]`.
 - An index is checked like any other array index — out of range is the
   same panic, with the same message.
 - A table travels **by reference**: a parameter `t: &[u32; 4]`

@@ -1306,7 +1306,7 @@ pub fn lower_program(
     // with a clear message. Each evaluated value is stashed in a map
     // that function-body lowering consults when it sees an Identifier
     // referring to a const symbol.
-    let (const_values, const_arrays) = evaluate_consts(program, interner)?;
+    let (const_values, const_arrays) = evaluate_consts(program, interner, &struct_defs)?;
 
     // Generic functions stay outside the IR module's `function_index`
     // until a call site instantiates them with concrete type args. We

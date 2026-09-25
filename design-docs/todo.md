@@ -12,6 +12,12 @@
 
 ### 2026-09-25
 
+- **CONST-ARRAY: struct / tuple の表** — `const RS: [R; N]` を compiled
+  レーンでも読める (以前は「only scalars are supported」)。要素は leaf の
+  定数として評価し、読み出し時に `Vec<T>` と同じ詰めた配置で `.rodata` に
+  置く。`val r = RS[i]` と `RS[i].w` (入れ子・タプル添字も) が 3 レーン
+  一致。リテラルのフィールド順は自由。
+
 - **SHARED-BORROW-WRITE: 共有の借用を通した書き込みは型エラー** —
   `&T` 引数 / `&self` の下へのフィールド・要素・添字の代入 (複合代入を
   含む) と、`&mut self` メソッドの呼び出しを拒否する。以前は全レーンで
@@ -2390,16 +2396,11 @@
   いたのはこれの回避だったが、M5 で `Ptr<A>` / `Ptr<B>` 経由の読みに
   なり、stride 自体を持たなくなった (2026-09-25)。
 
-- **CONST-ARRAY の残り: 要素はスカラーだけ** —
-  2026-09-25 に名前で渡せるように (`&[T; N]` / `&mut [T; N]`) なり、
-  値渡しの配列引数と配列リテラルの引数も通った (完了済み節)。残り:
-  要素がスカラーのみ — struct / tuple の表は `.rodata` のレイアウトを
-  スタック配列の詰め方 (`PackedElement`) と揃えて leaf 単位で決め、
-  `K[i]` の compound 読み出しと `K[i].x` の連なりを足す必要がある
-  (tree-walker は既に動く)。
-  `poc/logsearch` の CRC 表 (`src/crc.t`) が起動時構築なのは CTFE が配列を
-  作れないため (256 要素を書き下せば `const` にできる)。
-
+- **CONST-ARRAY の残り: struct / tuple の表の渡し方** — 2026-09-25 に
+  struct / tuple 要素の表が compiled レーンで読めるようになった
+  (`val r = RS[i]` / `RS[i].w`、完了済み節)。残り: その表を `&[R; N]` で
+  渡すこと (`scalar_array_ref` がスカラー要素だけを番地で渡す)、値の
+  位置に直接置く `f(RS[i])` (束縛を案内するエラー)、enum 要素の表。
 - **STDLIB-CRYPTO C2〜C4: SHA-512 族 / HMAC / SHA-1・MD5** —
   設計と優先順位は [`STDLIB_CRYPTO.md`](STDLIB_CRYPTO.md)。C2 (SHA-512 /
   384 / 512-256) は C1 と同型で lane が u64 になるだけ、C3 (HMAC) は

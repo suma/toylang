@@ -225,6 +225,53 @@ impl<'a> FunctionLower<'a> {
         found
     }
 
+    /// CONST-ARRAY: the scalar type of `TABLE[i].x.0` on a struct /
+    /// tuple `const` table, read off the declared element type (the IR
+    /// instance may not exist yet, and this cannot make one).
+    fn const_table_leaf_type(&self, expr_ref: &ExprRef) -> Option<Type> {
+        use frontend::type_decl::TypeDecl;
+        let mut steps: Vec<Result<DefaultSymbol, usize>> = Vec::new();
+        let mut cursor = *expr_ref;
+        let arr_sym = loop {
+            match self.program.expression.get(&cursor)? {
+                Expr::FieldAccess(inner, field) => {
+                    steps.push(Ok(field));
+                    cursor = inner;
+                }
+                Expr::TupleAccess(inner, idx) => {
+                    steps.push(Err(idx));
+                    cursor = inner;
+                }
+                Expr::SliceAccess(obj, _) => match self.program.expression.get(&obj)? {
+                    Expr::Identifier(sym) => break sym,
+                    _ => return None,
+                },
+                _ => return None,
+            }
+        };
+        if self.bindings.contains_key(&arr_sym) {
+            return None;
+        }
+        let mut decl = self.const_arrays.get(&arr_sym)?.table.as_ref()?.elem_decl.clone();
+        for step in steps.iter().rev() {
+            decl = match (step, &decl) {
+                (Ok(field), TypeDecl::Struct(name, _) | TypeDecl::Identifier(name)) => {
+                    let want = self.interner.resolve(*field)?;
+                    self.struct_defs
+                        .get(name)?
+                        .fields
+                        .iter()
+                        .find(|(f, _)| f == want)?
+                        .1
+                        .clone()
+                }
+                (Err(idx), TypeDecl::Tuple(elems)) => elems.get(*idx)?.clone(),
+                _ => return None,
+            };
+        }
+        super::types::lower_scalar(&decl)
+    }
+
     pub(super) fn value_scalar(&self, expr_ref: &ExprRef) -> Option<Type> {
         let e = self.program.expression.get(expr_ref)?;
         match e {
@@ -295,6 +342,9 @@ impl<'a> FunctionLower<'a> {
                 if let Some((_, ty)) = self.range_bound(&obj, field) {
                     return Some(ty);
                 }
+                if let Some(ty) = self.const_table_leaf_type(expr_ref) {
+                    return Some(ty);
+                }
                 // DATA-ORIENTED: a chain rooted at an array element
                 // (`ps[i].y`) names a leaf scalar — the same
                 // resolution the load lowering emits, so report the
@@ -332,6 +382,9 @@ impl<'a> FunctionLower<'a> {
                     })
             }
             Expr::TupleAccess(tuple, index) => {
+                if let Some(ty) = self.const_table_leaf_type(expr_ref) {
+                    return Some(ty);
+                }
                 // DATA-ORIENTED: same as the FieldAccess arm above —
                 // `ts[i].0` names a leaf of an array element.
                 if let Ok(Some(leaf)) = self.resolve_array_element_leaf(expr_ref) {
@@ -656,6 +709,7 @@ impl<'a> FunctionLower<'a> {
                 // index that could not be typed.
                 if !self.bindings.contains_key(&arr_sym)
                     && let Some(array) = self.const_arrays.get(&arr_sym)
+                    && array.table.is_none()
                 {
                     return Some(array.elem_ty);
                 }

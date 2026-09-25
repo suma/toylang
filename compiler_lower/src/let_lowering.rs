@@ -232,6 +232,25 @@ impl<'a> FunctionLower<'a> {
         // ArrayLoad sequence `lower_slice_access` would emit, so
         // chain access (`p.x`) and field-by-field reads work
         // through the existing struct-binding path.
+        // CONST-ARRAY: `val p = TABLE[i]` with a struct / tuple table --
+        // each leaf read out of the read-only bytes into `p`'s locals.
+        if let Expr::SliceAccess(arr_obj, info) = rhs.clone()
+            && matches!(info.slice_type, frontend::ast::SliceType::SingleElement)
+            && let Some(Expr::Identifier(sym)) = self.program.expression.get(&arr_obj)
+            && let Some(index_ref) = info.start
+            && let Some((elem_ty, size, bytes, length)) = self.const_table_layout(sym)?
+        {
+            let columns = self.soa_columns(elem_ty).ok_or_else(|| {
+                "compiler MVP cannot lay out a const table element".to_string()
+            })?;
+            let (base, offset) = self.const_table_element(bytes, size, length, &index_ref)?;
+            let address = super::soa::BufferAddress::Interleaved { base: offset };
+            if let Some(result) =
+                self.bind_compound_read(name, elem_ty, &columns, base, &address, "const table")?
+            {
+                return Ok(result);
+            }
+        }
         if let Expr::SliceAccess(arr_obj, info) = rhs.clone()
             && matches!(info.slice_type, frontend::ast::SliceType::SingleElement)
                 && let Some(result) =

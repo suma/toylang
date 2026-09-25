@@ -542,3 +542,56 @@ fn main() -> u64 {
 "#;
     assert_renders(src, "array_by_value", "108 50 102 7 9 51 40 1 15\n");
 }
+
+/// CONST-ARRAY: a table of structs or tuples. The compiled lanes refused
+/// it ("only scalars are supported") while the tree-walker read it; the
+/// elements are now laid out packed, as a `Vec<T>` buffer is, and read
+/// into a binding (`val r = RS[i]`) or one leaf at a time (`RS[i].w`,
+/// nested paths and tuple indices included). A literal may name its
+/// fields in any order.
+#[test]
+fn a_table_of_structs_and_tuples_is_read_on_every_lane() {
+    let src = r#"
+struct In { a: i16, b: bool }
+struct R { n: u32, inner: In, w: f64 }
+const RS: [R; 3] = [
+    R { w: 0.5f64, n: 1u32, inner: In { b: true, a: -7i16 } },
+    R { n: 2u32, inner: In { a: 8i16, b: false }, w: 1.5f64 },
+    R { inner: In { a: 9i16, b: true }, w: 2.5f64, n: 3u32 },
+]
+const PAIRS: [(u8, (u64, i8)); 2] = [(1u8, (100u64, -1i8)), (2u8, (200u64, -2i8))]
+fn main() -> u64 {
+    var total: u64 = 0u64
+    var wsum: f64 = 0f64
+    var i: u64 = 0u64
+    while i < 3u64 {
+        val r = RS[i]
+        total = total + (r.n as u64) * 10u64
+        if RS[i].inner.b { total = total + 1u64 }
+        wsum = wsum + RS[i].w
+        i = i + 1u64
+    }
+    val neg = RS[0u64].inner.a as i64
+    val p = PAIRS[1u64]
+    println("{total} {wsum} {neg} {p.0} {p.1.0} {p.1.1} {PAIRS[0u64].1.1}")
+    total
+}
+"#;
+    assert_renders(src, "const_struct_table", "62 4.5 -7 2 200 -2 -1\n");
+}
+
+#[test]
+fn a_struct_table_index_is_bounds_checked() {
+    let src = r#"
+        struct P { x: u8, y: u64 }
+        const T: [P; 2] = [P { x: 1u8, y: 10u64 }, P { x: 2u8, y: 20u64 }]
+
+        fn at(i: u64) -> u64 { T[i].y }
+
+        fn main() -> u64 {
+            println(at(5u64))
+            0u64
+        }
+    "#;
+    assert_diagnostic_consistent(src, "const_struct_table_out_of_bounds");
+}

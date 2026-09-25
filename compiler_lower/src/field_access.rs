@@ -611,6 +611,74 @@ impl<'a> FunctionLower<'a> {
     /// touches one column instead of materialising every leaf of
     /// every element. `Ok(None)` when the expression is not an
     /// array-element leaf chain.
+    /// CONST-ARRAY: `TABLE[i].x` / `TABLE[i].0` on a struct / tuple
+    /// `const` table -- one read of that leaf out of the read-only
+    /// bytes, at the element's offset plus the leaf's.
+    pub(super) fn try_lower_const_table_leaf(
+        &mut self,
+        expr: &ExprRef,
+    ) -> Result<Option<Option<ValueId>>, String> {
+        let mut steps: Vec<AccessStep> = Vec::new();
+        let mut cursor = *expr;
+        let (index_ref, arr_sym, slice_ref) = loop {
+            match self.program.expression.get(&cursor) {
+                Some(Expr::FieldAccess(inner, field)) => {
+                    steps.push(AccessStep::Field(field));
+                    cursor = inner;
+                }
+                Some(Expr::TupleAccess(inner, idx)) => {
+                    steps.push(AccessStep::TupleIdx(idx));
+                    cursor = inner;
+                }
+                Some(Expr::SliceAccess(obj, info))
+                    if matches!(info.slice_type, frontend::ast::SliceType::SingleElement) =>
+                {
+                    let (Some(index), Some(Expr::Identifier(sym))) =
+                        (info.start, self.program.expression.get(&obj))
+                    else {
+                        return Ok(None);
+                    };
+                    break (index, sym, cursor);
+                }
+                _ => return Ok(None),
+            }
+        };
+        let Some((elem_ty, size, bytes, length)) = self.const_table_layout(arr_sym)? else {
+            return Ok(None);
+        };
+        let Some((leaf, leaf_ty)) =
+            resolve_leaf_path(self.module, elem_ty, steps.iter().rev().copied(), self.interner)?
+        else {
+            return Ok(None);
+        };
+        if !leaf_ty.is_scalar() {
+            return Ok(None);
+        }
+        let leaves = self
+            .compute_leaf_layout(elem_ty)
+            .ok_or_else(|| "compiler MVP cannot lay out a const table element".to_string())?;
+        let leaf_offset = leaves[leaf].0;
+        // The bounds check belongs to `T[i]`, not to the whole chain --
+        // the position every other lane reports it at.
+        let outer = self.current_expr.replace(slice_ref);
+        let element = self.const_table_element(bytes, size, length, &index_ref);
+        self.current_expr = outer;
+        let (base, offset) = element?;
+        let leaf_off_v = self
+            .emit(InstKind::Const(crate::ir::Const::U64(leaf_offset)), Some(Type::U64))
+            .expect("Const returns a value");
+        let at = self
+            .emit(
+                InstKind::BinOp { op: crate::ir::BinOp::Add, lhs: offset, rhs: leaf_off_v },
+                Some(Type::U64),
+            )
+            .expect("BinOp returns a value");
+        Ok(Some(self.emit(
+            InstKind::PtrRead { ptr: base, offset: at, elem_ty: leaf_ty },
+            Some(leaf_ty),
+        )))
+    }
+
     pub(super) fn try_lower_array_element_leaf(
         &mut self,
         expr: &ExprRef,

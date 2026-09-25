@@ -127,7 +127,7 @@ impl<T> Vec<T> {
     # `elem_size` is 0 until the first `push` on a `Vec::new()`, since
     # that is where the stride is learned; reserving before then reads
     # it from the type instead.
-    unsafe fn try_reserve(&mut self, n: u64) -> Result<(), AllocError> {
+    fn try_reserve(&mut self, n: u64) -> Result<(), AllocError> {
         if self.elem_size == 0u64 {
             self.elem_size = __builtin_sizeof::<T>()
         }
@@ -162,7 +162,7 @@ impl<T> Vec<T> {
     # could not grow is still intact and still owns its bytes; writing
     # the null in first would lose the old pointer -- a leak, and every
     # later element written to address 0.
-    unsafe fn grow_to(&mut self, new_cap: u64)
+    fn grow_to(&mut self, new_cap: u64)
         requires new_cap >= self.len
     {
         val bytes: u64 = new_cap.checked_mul(self.elem_size) ?? panic("Vec::grow: capacity overflows u64")
@@ -229,7 +229,7 @@ impl<T> Vec<T> {
 
     # Append. Geometric grow: 0 → 4 → 8 → 16 → ... so `n`
     # consecutive `push`es cost amortised O(1).
-    unsafe fn push(&mut self, value: T) {
+    fn push(&mut self, value: T) {
         if self.elem_size == 0u64 {
             self.elem_size = __builtin_sizeof(value)
         }
@@ -238,7 +238,8 @@ impl<T> Vec<T> {
         } elif self.len >= self.cap {
             self.grow_to(self.cap * 2u64)
         }
-        __builtin_ptr_write(self.data, self.len * self.elem_size, value)
+        val p: Ptr<T> = Ptr { addr: self.data }
+        p.set(self.len, value)
         self.len = self.len + 1u64
     }
 
@@ -246,12 +247,13 @@ impl<T> Vec<T> {
     # element to name (DEBUG-OBS D6) — this used to read whatever sat
     # at offset 0 and underflow `self.len` to `u64::MAX`, which turned
     # one mistake into a Vec that reports 18 quintillion elements.
-    unsafe fn pop(&mut self) -> T
+    fn pop(&mut self) -> T
         requires self.len > 0u64
     {
         if self.len == 0u64 { panic("Vec::pop on an empty Vec") }
         self.len = self.len - 1u64
-        val v: T = __builtin_ptr_read::<T>(self.data, self.len * self.elem_size)
+        val p: Ptr<T> = Ptr { addr: self.data }
+        val v: T = p.get(self.len)
         v
     }
 
@@ -271,11 +273,12 @@ impl<T> Vec<T> {
     #
     # The two modifiers could not be stacked at all until 2026-09-21
     # (NEVER-ALLOCATES-METHOD-STACK).
-    never_allocates unsafe fn get(&self, index: u64) -> T
+    never_allocates fn get(&self, index: u64) -> T
         requires index < self.len
     {
         if index >= self.len { panic("Vec::get index out of bounds") }
-        val v: T = __builtin_ptr_read::<T>(self.data, index * self.elem_size)
+        val p: Ptr<T> = Ptr { addr: self.data }
+        val v: T = p.get(index)
         v
     }
 
@@ -304,11 +307,12 @@ impl<T> Vec<T> {
 
     # Random-access write. `push` writes through the raw pointer, so
     # appending is not affected by the bound stated here.
-    unsafe fn set(&mut self, index: u64, value: T)
+    fn set(&mut self, index: u64, value: T)
         requires index < self.len
     {
         if index >= self.len { panic("Vec::set index out of bounds") }
-        __builtin_ptr_write(self.data, index * self.elem_size, value)
+        val p: Ptr<T> = Ptr { addr: self.data }
+        p.set(index, value)
     }
 
     fn size(&self) -> u64 {
@@ -352,7 +356,7 @@ impl<T> Vec<T> {
     # Insert `value` at `index`, shifting everything from there up one
     # place. `index == size()` appends, which makes `insert` total over
     # the positions a caller can name — hence `<=` where `get` has `<`.
-    unsafe fn insert(&mut self, index: u64, value: T)
+    fn insert(&mut self, index: u64, value: T)
         requires index <= self.len
     {
         if index > self.len { panic("Vec::insert index out of bounds") }
@@ -365,12 +369,13 @@ impl<T> Vec<T> {
             self.grow_to(self.cap * 2u64)
         }
         var i: u64 = self.len
+        val p: Ptr<T> = Ptr { addr: self.data }
         while i > index {
-            val prev: T = __builtin_ptr_read::<T>(self.data, (i - 1u64) * self.elem_size)
-            __builtin_ptr_write(self.data, i * self.elem_size, prev)
+            val prev: T = p.get(i - 1u64)
+            p.set(i, prev)
             i = i - 1u64
         }
-        __builtin_ptr_write(self.data, index * self.elem_size, value)
+        p.set(index, value)
         self.len = self.len + 1u64
     }
 
@@ -382,26 +387,28 @@ impl<T> Vec<T> {
     # *is* the name (a poller token, a connection number). `set`
     # cannot do it either: it overwrites, and whatever was there is
     # never freed.
-    unsafe fn replace(&mut self, index: u64, value: T) -> T
+    fn replace(&mut self, index: u64, value: T) -> T
         requires index < self.len
     {
         if index >= self.len { panic("Vec::replace index out of bounds") }
-        val out: T = __builtin_ptr_read::<T>(self.data, index * self.elem_size)
-        __builtin_ptr_write(self.data, index * self.elem_size, value)
+        val p: Ptr<T> = Ptr { addr: self.data }
+        val out: T = p.get(index)
+        p.set(index, value)
         out
     }
 
     # Remove the element at `index` and return it, shifting the rest
     # down. Order-preserving and O(n); `swap_remove` is the O(1) one.
-    unsafe fn remove(&mut self, index: u64) -> T
+    fn remove(&mut self, index: u64) -> T
         requires index < self.len
     {
         if index >= self.len { panic("Vec::remove index out of bounds") }
-        val out: T = __builtin_ptr_read::<T>(self.data, index * self.elem_size)
+        val p: Ptr<T> = Ptr { addr: self.data }
+        val out: T = p.get(index)
         var i: u64 = index
         while i + 1u64 < self.len {
-            val next: T = __builtin_ptr_read::<T>(self.data, (i + 1u64) * self.elem_size)
-            __builtin_ptr_write(self.data, i * self.elem_size, next)
+            val next: T = p.get(i + 1u64)
+            p.set(i, next)
             i = i + 1u64
         }
         self.len = self.len - 1u64
@@ -412,22 +419,24 @@ impl<T> Vec<T> {
     # element into the hole. O(1), and it reorders — the name says so,
     # which `Dict::remove` used not to (it swapped silently and broke
     # iteration order).
-    unsafe fn swap_remove(&mut self, index: u64) -> T
+    fn swap_remove(&mut self, index: u64) -> T
         requires index < self.len
     {
         if index >= self.len { panic("Vec::swap_remove index out of bounds") }
-        val out: T = __builtin_ptr_read::<T>(self.data, index * self.elem_size)
-        val last: T = __builtin_ptr_read::<T>(self.data, (self.len - 1u64) * self.elem_size)
-        __builtin_ptr_write(self.data, index * self.elem_size, last)
+        val p: Ptr<T> = Ptr { addr: self.data }
+        val out: T = p.get(index)
+        val last: T = p.get(self.len - 1u64)
+        p.set(index, last)
         self.len = self.len - 1u64
         out
     }
 
     # Whether any element equals `value`. Linear.
-    unsafe fn contains(&self, value: T) -> bool {
+    fn contains(&self, value: T) -> bool {
         var i: u64 = 0u64
+        val p: Ptr<T> = Ptr { addr: self.data }
         while i < self.len {
-            val e: T = __builtin_ptr_read::<T>(self.data, i * self.elem_size)
+            val e: T = p.get(i)
             if e == value {
                 return true
             }
@@ -437,10 +446,11 @@ impl<T> Vec<T> {
     }
 
     # The position of the first element equal to `value`, or `None`.
-    unsafe fn index_of(&self, value: T) -> Option<u64> {
+    fn index_of(&self, value: T) -> Option<u64> {
         var i: u64 = 0u64
+        val p: Ptr<T> = Ptr { addr: self.data }
         while i < self.len {
-            val e: T = __builtin_ptr_read::<T>(self.data, i * self.elem_size)
+            val e: T = p.get(i)
             if e == value {
                 return Option::Some(i)
             }
@@ -450,17 +460,18 @@ impl<T> Vec<T> {
     }
 
     # Reverse in place.
-    unsafe fn reverse(&mut self) {
+    fn reverse(&mut self) {
         if self.len == 0u64 {
             return
         }
         var i: u64 = 0u64
         var j: u64 = self.len - 1u64
+        val p: Ptr<T> = Ptr { addr: self.data }
         while i < j {
-            val a: T = __builtin_ptr_read::<T>(self.data, i * self.elem_size)
-            val b: T = __builtin_ptr_read::<T>(self.data, j * self.elem_size)
-            __builtin_ptr_write(self.data, i * self.elem_size, b)
-            __builtin_ptr_write(self.data, j * self.elem_size, a)
+            val a: T = p.get(i)
+            val b: T = p.get(j)
+            p.set(i, b)
+            p.set(j, a)
             i = i + 1u64
             j = j - 1u64
         }
@@ -475,24 +486,25 @@ impl<T> Vec<T> {
     # An AOT closure cannot take a compound parameter, so this is
     # scalar element types on the compiled lanes; `sort` (the `Ord`
     # one) is what sorts a `Vec<String>` there.
-    unsafe fn sort_by(&mut self, less: fn (T, T) -> bool) {
+    fn sort_by(&mut self, less: fn (T, T) -> bool) {
         var i: u64 = 1u64
+        val p: Ptr<T> = Ptr { addr: self.data }
         while i < self.len {
             # Raw reads and writes rather than `get` / `set`, for the
             # reason spelled out on `sort` below: a local bound from a
             # compound-returning method call carries drop glue, and an
             # element copy is an alias rather than an owned value.
-            val key: T = __builtin_ptr_read::<T>(self.data, i * self.elem_size)
+            val key: T = p.get(i)
             var j: u64 = i
             while j > 0u64 {
-                val prev: T = __builtin_ptr_read::<T>(self.data, (j - 1u64) * self.elem_size)
+                val prev: T = p.get(j - 1u64)
                 if !less(key, prev) {
                     break
                 }
-                __builtin_ptr_write(self.data, j * self.elem_size, prev)
+                p.set(j, prev)
                 j = j - 1u64
             }
-            __builtin_ptr_write(self.data, j * self.elem_size, key)
+            p.set(j, key)
             i = i + 1u64
         }
     }
@@ -510,7 +522,7 @@ impl<T> Vec<T> {
 # block so `Vec<T>` does not require `T: Default` everywhere, the same
 # shape `sort` uses for `Ord`.
 impl<T: Clone> Clone for Vec<T> {
-    unsafe fn clone(&self) -> Self {
+    fn clone(&self) -> Self {
         var out: Vec<T> = Vec::new()
         var i: u64 = 0u64
         while i < self.len {
@@ -530,7 +542,7 @@ impl<T: Clone> Clone for Vec<T> {
 impl<T: Default> Vec<T> {
     # Make `size()` exactly `n`: drop the tail, or fill with `T`'s
     # default. Shrinking keeps the capacity, like `clear`.
-    unsafe fn resize(&mut self, n: u64) {
+    fn resize(&mut self, n: u64) {
         if n <= self.len {
             self.len = n
             return
@@ -562,20 +574,21 @@ impl<T: Ord> Vec<T> {
     # compound-returning method call directly in an expression
     # position (a `set` argument, a `lt` argument) does not AOT-lower
     # for compound `T`. Hence a `val` and a raw write.
-    unsafe fn sort(&mut self) {
+    fn sort(&mut self) {
         var i: u64 = 1u64
+        val p: Ptr<T> = Ptr { addr: self.data }
         while i < self.len {
-            val key: T = __builtin_ptr_read::<T>(self.data, i * self.elem_size)
+            val key: T = p.get(i)
             var j: u64 = i
             while j > 0u64 {
-                val prev: T = __builtin_ptr_read::<T>(self.data, (j - 1u64) * self.elem_size)
+                val prev: T = p.get(j - 1u64)
                 if !key.lt(prev) {
                     break
                 }
-                __builtin_ptr_write(self.data, j * self.elem_size, prev)
+                p.set(j, prev)
                 j = j - 1u64
             }
-            __builtin_ptr_write(self.data, j * self.elem_size, key)
+            p.set(j, key)
             i = i + 1u64
         }
     }
@@ -627,13 +640,14 @@ impl<T> Iterator<T> for VecIter<T> {
     # past `len`. The element is read as a copy out of the buffer —
     # exactly like `Vec::get`, so compound `T` (including `Box`) is
     # an alias of the stored value.
-    unsafe fn next(&mut self) -> Option<T> {
+    fn next(&mut self) -> Option<T> {
+        val p: Ptr<T> = Ptr { addr: self.data }
         if self.index >= self.len {
             Option::None
         } else {
             val i = self.index
             self.index = self.index + 1u64
-            val e: T = __builtin_ptr_read::<T>(self.data, i * self.elem_size)
+            val e: T = p.get(i)
             Option::Some(e)
         }
     }
@@ -831,7 +845,7 @@ impl<T, U> MapIter<T, U> {
 
 impl<T, U> Iterator<U> for MapIter<T, U> {
     # Apply `f` to each element on the way out.
-    unsafe fn next(&mut self) -> Option<U> {
+    fn next(&mut self) -> Option<U> {
         match self.source.next() {
             Option::Some(v) => Option::Some(self.f(v)),
             Option::None => Option::None,
@@ -872,7 +886,7 @@ impl<T> FilterIter<T> {
 
 impl<T> Iterator<T> for FilterIter<T> {
     # Yield only the elements for which `pred` returns true.
-    unsafe fn next(&mut self) -> Option<T> {
+    fn next(&mut self) -> Option<T> {
         loop {
             match self.source.next() {
                 Option::Some(v) => {
@@ -912,7 +926,7 @@ struct EnumerateIter<T> {
 
 impl<T> Iterator<(u64, T)> for EnumerateIter<T> {
     # Yield `(index, element)` pairs, starting at 0.
-    unsafe fn next(&mut self) -> Option<(u64, T)> {
+    fn next(&mut self) -> Option<(u64, T)> {
         match self.source.next() {
             Option::Some(v) => {
                 val i = self.index

@@ -2309,6 +2309,14 @@
   解けない (`json::parse` で再現)。今の `Vec` が要素幅を最初の `push`
   で学ぶのはこの回避。関数の戻り値と struct リテラルのフィールドで
   型引数を具体化してから、`Vec` を `Ptr<T>` に移す。
+  **2026-09-25 続き**: struct リテラルのフィールドに宣言型を当てる修正で
+  前提が揃い、**`Vec` を移した** (`data: ptr` のまま、メソッド内で
+  `Ptr { addr: self.data }` を作って読み書き)。`vec.t` の `unsafe fn` は
+  27 → 6、stdlib 全体で 172 → 151。AOT は `poc/logsearch` の出力一致の
+  まま 2〜3% 速く、IR VM は `Vec` の要素ループで ~5% 遅い (局所変数 1 組)。
+  残り: `String` / `Dict` / `Box` と `Vec<u8>` の文字列処理、
+  `Vec::borrow` (`Ptr` に借用が要る)、`elem_size` フィールドの撤去
+  (drop glue が読んでいる)。
 
 - **ZIP-ITER-GENERIC-SCOPE: method-level の型引数が turbofish から
   見えない** — `VecIter<T>::zip<U>(other: VecIter<U>)` の中で

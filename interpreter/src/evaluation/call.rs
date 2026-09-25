@@ -1180,8 +1180,10 @@ impl EvaluationContext<'_> {
         let return_type = method.return_type.clone();
         match stmt {
             frontend::ast::Stmt::Expression(expr_ref) => {
+                let code = method.code;
                 self.with_return_annotation(return_type.as_ref(), |ctx| {
                     if let Some(Expr::Block(statements)) = ctx.expr_pool.get(&expr_ref) {
+                        ctx.prime_param_drops(code);
                         ctx.evaluate_block(&statements)
                     } else {
                         // Single expression method body
@@ -2310,6 +2312,7 @@ impl EvaluationContext<'_> {
 
         // TREE-WALKER-SELF-TYPE-ARG: the declared return type is the
         // annotation for whatever the body returns.
+        self.prime_param_drops(function.code);
         let res = self
             .with_return_annotation(function.return_type.as_ref(), |ctx| {
                 ctx.evaluate_block(&block)
@@ -2530,6 +2533,7 @@ impl EvaluationContext<'_> {
         }
 
         // TREE-WALKER-SELF-TYPE-ARG: see the sibling path above.
+        self.prime_param_drops(function.code);
         let res = self
             .with_return_annotation(function.return_type.as_ref(), |ctx| {
                 ctx.evaluate_block(&block)

@@ -294,6 +294,9 @@ pub struct EvaluationContext<'a> {
     /// leaves. The tree-walker needs no flag: taking the binding's entry
     /// out of `drop_scopes` on the path that hands it over is the flag.
     pub(crate) drop_flags: std::rc::Rc<frontend::ast::DropFlags>,
+    /// LEND-FREEING-CALLEE: the parameters the body about to run owns,
+    /// registered by the body's own block when it opens its scope.
+    pub(crate) pending_param_drops: Vec<(DefaultSymbol, frontend::ast::StmtRef)>,
     /// Per-`match` nesting: whether the value being matched lives in
     /// storage that outlives the arm (see `bind_pattern_name`).
     pub(crate) match_scrutinee_is_place: Vec<bool>,
@@ -481,6 +484,7 @@ impl<'a> EvaluationContext<'a> {
             drop_trait_structs: Rc::new(std::collections::HashSet::new()),
             transferred_bindings: Rc::new(std::collections::HashSet::new()),
             drop_flags: Rc::new(frontend::ast::DropFlags::default()),
+            pending_param_drops: Vec::new(),
             match_scrutinee_is_place: Vec::new(),
             drop_scopes: vec![Vec::new()],
             generic_type_scopes: Vec::new(),
@@ -545,6 +549,7 @@ impl<'a> EvaluationContext<'a> {
             drop_trait_structs: shared.drop_trait_structs.clone(),
             transferred_bindings: shared.transferred_bindings.clone(),
             drop_flags: shared.drop_flags.clone(),
+            pending_param_drops: Vec::new(),
             match_scrutinee_is_place: Vec::new(),
             drop_scopes: vec![Vec::new()],
             generic_type_scopes: Vec::new(),
@@ -1130,6 +1135,14 @@ impl<'a> EvaluationContext<'a> {
             if entry.decl.is_some_and(|d| decls.contains(&d)) {
                 entry.armed = false;
             }
+        }
+    }
+
+    /// LEND-FREEING-CALLEE: the body at `code` owns some of its
+    /// parameters; its block registers them (`evaluate_block`).
+    pub(super) fn prime_param_drops(&mut self, code: frontend::ast::StmtRef) {
+        if let Some(params) = self.drop_flags.param_drops.get(&code) {
+            self.pending_param_drops = params.clone();
         }
     }
 

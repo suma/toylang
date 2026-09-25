@@ -6717,6 +6717,18 @@ leaves with it: it is handed over like an argument, so the function's
 scope does not drop what it returns (a flag again when it is returned
 on some paths only).
 
+A callee that is handed an argument — one it does not only lend —
+**owns** it, and drops it when it returns unless it hands it on (stores
+it, returns it, passes it to another taker; on some paths only, behind
+a flag). So `fn grow(s: String) -> u64 { s.push(b)  s.len() }` frees
+the string, grown buffer and all. Two kinds of callee leave the
+argument unfreed instead: a generic one (`Vec::extend(other)` copies
+elements out through raw memory, so dropping `other` would free them
+twice), and one whose name several bodies share, where a call cannot
+say which body it reaches. (Before 2026-09-25 no callee dropped an
+argument, so a callee that changed what the argument owned without
+storing it leaked it.)
+
 A limit worth knowing:
 - Ownership is transitive (DROP-GLUE): a `Vec`, a struct field or an
   enum payload that received a transferred value frees it when the

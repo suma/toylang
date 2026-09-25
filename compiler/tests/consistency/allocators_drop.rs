@@ -879,3 +879,66 @@ fn main() -> u64 {
          close 10\nclose 11\nclose 12\n3\nclose 20\nopt\nclose 21\n0\nopt\nclose 21\n0\n",
     );
 }
+
+/// LEND-FREEING-CALLEE: a callee handed an argument it does not only
+/// lend owns it, and drops it at its end unless it hands it on -- to a
+/// container (`consume`), back to the caller (`pass`), or on one path
+/// only (`maybe`, behind a flag). `grow` reallocates the string's
+/// buffer, which is why it could not simply be lent: nobody freed the
+/// argument before, on any lane.
+#[test]
+fn a_callee_drops_the_arguments_it_owns() {
+    let src = r#"
+struct H { id: u64 }
+impl Drop for H {
+    fn drop(&mut self) { println("close {self.id}") }
+}
+struct W { h: H, n: u64 }
+fn grow(s: String) -> u64 {
+    s.push(100u8)
+    s.len()
+}
+fn consume(h: H) -> u64 {
+    var v: Vec<H> = Vec::with_capacity(1u64)
+    v.push(h)
+    println("stored")
+    0u64
+}
+fn shut(w: W) -> u64 {
+    w.h.id = w.h.id + 100u64
+    println("shut")
+    w.n
+}
+fn pass(h: H) -> H { h }
+fn maybe(h: H, c: bool) -> u64 {
+    if c {
+        consume(h)
+        return 1u64
+    }
+    println("kept")
+    0u64
+}
+fn run() -> u64 {
+    println(grow(String::from_str("abc")))
+    println(consume(H { id: 1u64 }))
+    println(shut(W { h: H { id: 2u64 }, n: 7u64 }))
+    val p = pass(H { id: 3u64 })
+    println("passed {p.id}")
+    println(maybe(H { id: 4u64 }, true))
+    println(maybe(H { id: 5u64 }, false))
+    0u64
+}
+fn main() -> u64 {
+    val before = __builtin_live_bytes()
+    run()
+    println("leak {__builtin_live_bytes() - before}")
+    0u64
+}
+    "#;
+    assert_renders(
+        src,
+        "callee_owned_param",
+        "4\nstored\nclose 1\n0\nshut\nclose 102\n7\npassed 3\nstored\nclose 4\n1\n\
+         kept\nclose 5\n0\nclose 3\nleak 0\n",
+    );
+}

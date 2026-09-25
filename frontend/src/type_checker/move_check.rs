@@ -74,18 +74,18 @@
 //! handed over too: the scope must not drop what it returns
 //! (RETURN-DROP). Handing over one owning
 //! field of a payload that holds several stops the root dropping the
-//! others too (a leak, not a double drop). A *parameter* is never
-//! dropped by the callee -- parameters register no drop. A value whose
-//! callee stores it (a container, raw memory via `Box::new` /
-//! `Vec::push`) or frees it is freed once, by whoever holds it then; a
-//! callee that only *reads* the parameter lends it instead, and the
-//! caller keeps the drop (BY-VALUE-PARAM-NO-DROP, `compute_lend`). So
-//! does a callee that changes only places owning nothing -- a plain
-//! field, directly or through a `&mut self` method that does no more,
-//! or through `var c = b` (LEND-MUTATING-CALLEE). What is left is a
-//! callee that frees or reallocates what the value owns (`s.push(..)`
-//! on a `String` parameter) without storing it: the argument transfers,
-//! and nobody frees it (LEND-FREEING-CALLEE).
+//! others too (a leak, not a double drop). A callee that only *reads* a
+//! by-value parameter lends it, and the caller keeps the drop
+//! (BY-VALUE-PARAM-NO-DROP, `compute_lend`). So does a callee that
+//! changes only places owning nothing -- a plain field, directly or
+//! through a `&mut self` method that does no more, or through `var c =
+//! b` (LEND-MUTATING-CALLEE). Any other callee owns the argument and
+//! drops it unless it hands it on: the parameter is declared under a
+//! stand-in `val` (`DropFlags::param_drops`), so every rule above
+//! applies to it (LEND-FREEING-CALLEE). Not for a generic callee, which
+//! may have copied the contents out through raw memory, nor for a name
+//! several bodies share, where the caller cannot tell which it reaches
+//! and keeps the argument: those arguments still leak.
 
 use std::collections::{HashMap, HashSet};
 
@@ -154,12 +154,32 @@ pub fn check_moves(
         closure_level: 0,
         tail: false,
         transfer_anchors: HashMap::new(),
+        stand_ins: 0,
     };
+    // LEND-FREEING-CALLEE: a name every call resolves to one body.
+    // A caller that cannot tell which body a call reaches keeps the
+    // argument (`walk_arg_list`), so such a body must not drop it too.
+    let mut fn_names: HashMap<DefaultSymbol, usize> = HashMap::new();
+    for f in &program.function {
+        *fn_names.entry(f.name).or_default() += 1;
+    }
+    let generic_structs: HashSet<DefaultSymbol> = collect_structs(program)
+        .into_iter()
+        .filter(|(_, (params, _))| !params.is_empty())
+        .map(|(name, _)| name)
+        .chain(
+            collect_enums(program)
+                .into_iter()
+                .filter(|(_, (params, _))| !params.is_empty())
+                .map(|(name, _)| name),
+        )
+        .collect();
     for function in &program.function {
         if function.is_extern {
             continue;
         }
-        checker.run_function(&function.parameter, function.code);
+        let owns = function.generic_params.is_empty() && fn_names[&function.name] == 1;
+        checker.run_function_owning(&function.parameter, function.code, owns);
     }
     // Impl-block methods, which `program.function` does not contain.
     //
@@ -179,8 +199,20 @@ pub fn check_moves(
         let Some(Stmt::ImplBlock { methods, .. }) = program.statement.get(&stmt_ref) else {
             continue;
         };
+        let generic_impl = match program.statement.get(&stmt_ref) {
+            Some(Stmt::ImplBlock { target_type, .. }) => generic_structs.contains(&target_type),
+            _ => true,
+        };
         for m in &methods {
-            checker.run_function(&m.parameter, m.code);
+            let arity = m
+                .parameter
+                .iter()
+                .skip_while(|(name, _)| interner.resolve(*name) == Some("self"))
+                .count();
+            let owns = !generic_impl
+                && m.generic_params.is_empty()
+                && signatures.method_target(m.name, arity).is_some();
+            checker.run_function_owning(&m.parameter, m.code, owns);
         }
     }
     // ELEMENT-BORROW E5, reported here rather than in the walk: a
@@ -583,6 +615,8 @@ struct MoveCheck<'a> {
     /// MOVE-REINIT: where each binding was handed over unconditionally,
     /// so a later reassignment can put those hand-overs behind a flag.
     transfer_anchors: HashMap<StmtRef, Vec<Anchor>>,
+    /// LEND-FREEING-CALLEE: stand-in `val`s handed out so far.
+    stand_ins: u32,
 }
 
 /// Where a conditional hand-over clears its flag (`DropFlags`).
@@ -606,13 +640,40 @@ enum Exit {
 }
 
 impl MoveCheck<'_> {
-    fn run_function(&mut self, params: &[(DefaultSymbol, TypeDecl)], body: StmtRef) {
+    /// LEND-FREEING-CALLEE: `owns` says every call reaches this body
+    /// unambiguously, so a by-value parameter the caller hands over
+    /// (one the body does not only lend) is the body's to drop. It is
+    /// declared under a stand-in `val` (see `DropFlags::param_drops`),
+    /// which lets every hand-over rule for locals apply to it.
+    fn run_function_owning(&mut self, params: &[(DefaultSymbol, TypeDecl)], body: StmtRef, owns: bool) {
         self.scopes.clear();
         self.moved.clear();
         self.borrows.clear();
         self.scopes.push(Vec::new());
+        let lend = self.lend.get(&body).cloned().unwrap_or_default();
+        let mut index = 0usize;
         for (name, ty) in params {
-            if self.is_owning(ty) {
+            if self.interner.resolve(*name) == Some("self") {
+                if self.is_owning(ty) {
+                    self.declare(*name, None);
+                }
+                continue;
+            }
+            let i = index;
+            index += 1;
+            if !self.is_owning(ty) {
+                continue;
+            }
+            let dropped_here = owns
+                && !is_borrow(ty)
+                && !ty.contains_generic()
+                && !lend.get(i).copied().unwrap_or(true);
+            if dropped_here {
+                let stand_in = StmtRef(u32::MAX - 1 - self.stand_ins);
+                self.stand_ins += 1;
+                self.drop_flags.param_drops.entry(body).or_default().push((*name, stand_in));
+                self.declare(*name, Some(stand_in));
+            } else {
                 self.declare(*name, None);
             }
         }

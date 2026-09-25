@@ -577,7 +577,7 @@ impl<'a> FunctionLower<'a> {
         // would drop it on paths that never made it.
         let own_scope = self.drop_scopes.is_empty();
         if own_scope {
-            self.enter_drop_scope();
+            self.enter_function_drop_scope();
         } else {
             self.compound_block_depth += 1;
         }

@@ -36,6 +36,13 @@ pub struct DropFlags {
     /// evaluated the backend drops the old value if the binding still
     /// owns it, stores the new one and sets the flag.
     pub reinit: HashMap<ExprRef, StmtRef>,
+    /// LEND-FREEING-CALLEE: per function / method body, the by-value
+    /// parameters the callee owns and drops at its end (unless it hands
+    /// them on), each with the stand-in `val` it is known by here.
+    /// A stand-in is `StmtRef(u32::MAX - 1 - k)`: never a real statement,
+    /// only a key -- `transferred_bindings` and the flag maps hold it
+    /// like any other binding.
+    pub param_drops: HashMap<StmtRef, Vec<(string_interner::DefaultSymbol, StmtRef)>>,
 }
 
 impl DropFlags {

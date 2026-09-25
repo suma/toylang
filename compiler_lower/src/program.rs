@@ -1880,6 +1880,7 @@ impl<'a> FunctionLower<'a> {
             not_owned_locals: std::collections::HashSet::new(),
             drop_flag_locals: HashMap::new(),
             compound_block_depth: 0,
+            pending_param_drops: Vec::new(),
             current_let_stmt: None,
             current_block: None,
             next_value: 0,
@@ -2570,6 +2571,10 @@ impl<'a> FunctionLower<'a> {
             .statement
             .get(&func.code)
             .ok_or_else(|| "function body missing".to_string())?;
+        // LEND-FREEING-CALLEE: the parameters this body owns, for its
+        // scope to register when it opens.
+        self.pending_param_drops =
+            self.program.drop_flags.param_drops.get(&func.code).cloned().unwrap_or_default();
         let body_expr = match stmt {
             Stmt::Expression(e) => e,
             _ => {

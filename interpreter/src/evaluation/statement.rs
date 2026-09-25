@@ -202,6 +202,15 @@ impl EvaluationContext<'_> {
         // double-faulting. The inner method holds the body so
         // the scope mgmt sits cleanly around it.
         self.enter_drop_scope();
+        // LEND-FREEING-CALLEE: a function body's own scope holds the
+        // parameters it was handed.
+        if !self.pending_param_drops.is_empty() {
+            for (name, decl) in std::mem::take(&mut self.pending_param_drops) {
+                if let Some(value) = self.environment.get_val(name) {
+                    self.register_drop_if_needed(decl, name, &value);
+                }
+            }
+        }
         let result = self.evaluate_block_body(statements);
         match result {
             Ok(v) => {

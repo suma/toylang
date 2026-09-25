@@ -2201,7 +2201,11 @@ impl<'a> FunctionLower<'a> {
         // `with` bodies) are entered with at least one scope already
         // on the stack.
         let is_function_body = self.drop_scopes.is_empty();
-        self.enter_drop_scope();
+        if is_function_body {
+            self.enter_function_drop_scope();
+        } else {
+            self.enter_drop_scope();
+        }
         // Restore any binding this block shadows. `bindings` is a flat
         // map, so a `var x` inside a block was permanently overwriting
         // an outer `x` — `interpreter/example/scope.t` returned 1011

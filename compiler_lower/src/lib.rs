@@ -401,6 +401,9 @@ struct FunctionLower<'a> {
     /// lowered. Such a block registers into the scope around it, which
     /// it may be a branch of, so what it registers is flagged.
     compound_block_depth: usize,
+    /// LEND-FREEING-CALLEE: parameters the body owns, registered in the
+    /// function's scope when it opens (`enter_function_drop_scope`).
+    pending_param_drops: Vec<(DefaultSymbol, frontend::ast::StmtRef)>,
     /// The `val` / `var` statement currently being lowered, so
     /// `register_drop_for_struct_binding` can ask whether this binding
     /// transferred its value away (BOX-T). Parked here because that
@@ -2023,6 +2026,29 @@ impl<'a> FunctionLower<'a> {
     // -------------------------------------------------------------
     // Phase 5 (汎用 RAII): user-struct auto-drop wiring.
     // -------------------------------------------------------------
+
+    /// The function body's own drop scope, holding the parameters the
+    /// body owns (LEND-FREEING-CALLEE) under their stand-in `val`s.
+    pub(crate) fn enter_function_drop_scope(&mut self) {
+        self.enter_drop_scope();
+        let previous = self.current_let_stmt;
+        for (name, decl) in std::mem::take(&mut self.pending_param_drops) {
+            self.current_let_stmt = Some(decl);
+            match self.bindings.get(&name).cloned() {
+                Some(bindings::Binding::Struct { struct_id, fields }) => {
+                    self.register_drop_for_struct_binding(struct_id, &fields)
+                }
+                Some(bindings::Binding::Enum(storage)) => {
+                    self.register_drop_for_enum_binding(storage.enum_id, &storage)
+                }
+                Some(bindings::Binding::Tuple { elements }) => {
+                    self.register_drop_for_tuple_binding(&elements)
+                }
+                _ => {}
+            }
+        }
+        self.current_let_stmt = previous;
+    }
 
     /// Push a fresh drop scope on entry to a `{ ... }` block.
     /// Mirrors `with_scope_arena_drops` for `with` blocks but

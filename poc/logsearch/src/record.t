@@ -354,6 +354,10 @@ pub fn parse_line(w: Span<u8>, ln: Line, out: &mut ParsedLine) {
                 && digits_at(w, d0 + 7u64, 4u64, end)
                 && matches_at(w, d0 + 11u64, ":")
                 && digits_at(w, d0 + 12u64, 2u64, end)
+                && matches_at(w, d0 + 14u64, ":")
+                && digits_at(w, d0 + 15u64, 2u64, end)
+                && matches_at(w, d0 + 17u64, ":")
+                && digits_at(w, d0 + 18u64, 2u64, end)
             if ok {
                 val d = num_at(w, d0, 2u64)
                 val mo = month_at(w, d0 + 3u64)

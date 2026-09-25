@@ -619,3 +619,35 @@ fn simd_shuffle_mask_is_folded_in_every_position() {
     "#;
     assert_simd(src, "simd_shuffle_mask_is_folded_in_every_position", 65u64);
 }
+
+// A method may take and hand back a vector (the impl-block signature
+// check used to refuse `u8x16` there), and the stdlib `Span<u8>` does:
+// `load16` / `store16` are the bounds-checked 16-byte accesses
+// `String`'s case folding runs on.
+#[test]
+fn a_method_takes_and_returns_a_vector() {
+    let src = r#"
+        struct Shift { by: u8 }
+        impl Shift {
+            fn apply(&self, v: u8x16) -> u8x16 {
+                val d: u8x16 = __simd_splat(self.by)
+                v + d
+            }
+        }
+        fn main() -> u64 {
+            val p: Ptr<u8> = Ptr::alloc(32u64)
+            val s: Span<u8> = Span::from_parts(p, 32u64)
+            s.fill(3u8)
+            val v: u8x16 = s.load16(8u64)
+            val sh = Shift { by: 4u8 }
+            val w: u8x16 = sh.apply(v)
+            s.store16(16u64, w)
+            val a: u64 = s.get(15u64) as u64
+            val b: u64 = s.get(16u64) as u64
+            val c: u64 = s.get(31u64) as u64
+            __builtin_heap_free(p.as_raw())
+            a * 100u64 + b * 10u64 + c
+        }
+    "#;
+    assert_simd(src, "simd_vector_method", 377u64);
+}

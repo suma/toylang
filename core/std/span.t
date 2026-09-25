@@ -239,4 +239,28 @@ impl Span<u8> {
     unsafe fn fill(&self, value: u8) {
         __builtin_mem_set(self.data.addr, value, self.count)
     }
+
+    # The window's bytes as a `str` -- a copy, so the result does not
+    # alias the buffer and a later write through the window does not
+    # reach it. Not `to_str`: that name is `Display`'s, and a window
+    # prints as the window it is.
+    unsafe fn copy_to_str(&self) -> str {
+        __builtin_str_from_bytes(self.data.addr, self.count)
+    }
+
+    # The 16 bytes from index `i`, as one vector -- a bounds-checked
+    # `__simd_load`. A vector load reads all sixteen, so a chunk that
+    # would straddle the end of the window panics rather than read
+    # past it.
+    unsafe fn load16(&self, i: u64) -> u8x16 {
+        if i + 16u64 > self.count { panic("Span::load16 out of bounds") }
+        val v: u8x16 = __simd_load(self.data.addr, i)
+        v
+    }
+
+    # Write 16 bytes from index `i`; the same bound as `load16`.
+    unsafe fn store16(&self, i: u64, v: u8x16) {
+        if i + 16u64 > self.count { panic("Span::store16 out of bounds") }
+        __simd_store(self.data.addr, i, v)
+    }
 }

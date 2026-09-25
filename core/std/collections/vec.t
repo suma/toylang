@@ -755,38 +755,25 @@ impl Vec<u8> {
     # Byte-wise equality. Two byte vectors are equal iff they
     # have the same length and every byte matches. Length check
     # first so different-sized vectors short-circuit without
-    # walking the buffer. Both receivers are immutable references
+    # touching the buffer. Both receivers are immutable references
     # — callers may pass either `Vec<u8>` (i.e. `String`) or
     # `&Vec<u8>` thanks to auto-borrow.
-    unsafe fn eq(&self, other: &Vec<u8>) -> bool {
+    fn eq(&self, other: &Vec<u8>) -> bool {
         val n: u64 = self.size()
         if n != other.size() {
             return false
         }
-        val pa: ptr = self.as_ptr()
-        val pb: ptr = other.as_ptr()
-        # SIMD: 16 bytes per comparison while a whole chunk fits.
-        # The bound is `i + 16 <= n`, never `i < n` -- a vector load
-        # reads all 16 bytes, so a chunk straddling the end of the
-        # buffer would read past the allocation.
-        var i: u64 = 0u64
-        while i + 16u64 <= n {
-            val va: u8x16 = __simd_load(pa, i)
-            val vb: u8x16 = __simd_load(pb, i)
-            if !__simd_all(va == vb) {
-                return false
-            }
-            i = i + 16u64
+        # One range comparison (MEMORY-ACCESS M3), the same
+        # `toy_mem_eq` `Span::bytes_eq` is. An empty vector may never
+        # have allocated, and a `Ptr` is never null.
+        if n == 0u64 {
+            return true
         }
-        while i < n {
-            val a: u8 = __builtin_ptr_read::<u8>(pa, i)
-            val b: u8 = __builtin_ptr_read::<u8>(pb, i)
-            if a != b {
-                return false
-            }
-            i = i + 1u64
-        }
-        true
+        val a: Ptr<u8> = Ptr { addr: self.data }
+        val b: Ptr<u8> = Ptr { addr: other.data }
+        val mine: Span<u8> = Span::from_parts(a, n)
+        val theirs: Span<u8> = Span::from_parts(b, n)
+        mine.bytes_eq(theirs)
     }
 }
 

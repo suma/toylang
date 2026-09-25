@@ -4610,6 +4610,12 @@ nothing over the raw builtin -- which is what lets `Vec` / `String` /
 that is merely named `Ptr` is not affected. `borrow` answers a `&T`
 for an owning `T` whose copy would share the element's resource
 (ELEMENT-BORROW).
+
+`SoaPtr<T>` (same file) is the column-split sibling: `addr` plus the
+buffer's `cap`, with leaf `j` of element `i` at
+`prefix_j * cap + i * stride_j`. Its `get` / `set` are the same kind of
+intrinsic over `__builtin_soa_read` / `__builtin_soa_write`, and
+`SoaVec<T>` goes through it the way `Vec<T>` goes through `Ptr<T>`.
 `Ptr<T>` is a **window, not an owner**: `alloc` sizes a buffer the
 caller owns (free it with `__builtin_heap_free(p.as_raw())`), the
 indexes are unchecked, and `offset` shares the allocation with the
@@ -4698,9 +4704,25 @@ buf.fill(0u8)
 ```
 
 `find_seq` finds an empty needle at 0 and never finds one longer than
-the window. These are the operations `String::eq` and
-`String::find_from` are built on, so a search is one runtime call on
-every backend instead of a byte loop written out per caller.
+the window. These are the operations `Vec<u8>::eq`,
+`String::find_from`, `String::contains` and `String::split` are built
+on, so a search is one runtime call on every backend instead of a byte
+loop written out per caller.
+
+A `Span<u8>` also reads and writes 16 bytes at a time and copies itself
+into a `str`:
+
+```rust
+val v: u8x16 = buf.load16(i)   # panics unless i + 16 <= len()
+buf.store16(i, v)              # the same bound
+val s: str = buf.copy_to_str() # a copy; later writes do not reach it
+```
+
+`load16` / `store16` are the bounds-checked form of `__simd_load` /
+`__simd_store` over the window -- what lets `String`'s ASCII case
+folding stay vectorised without an `unsafe fn` of its own. The method
+is `copy_to_str`, not `to_str`, because `to_str` is what `Display`
+looks for, and a window prints as the window it is.
 
 Converting to and from `str`:
 

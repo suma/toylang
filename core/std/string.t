@@ -337,44 +337,50 @@ impl String {
     #
     # `up` picks the direction: subtract to reach uppercase, add to
     # reach lowercase.
-    unsafe fn fold_ascii_case(&self, lo: u8, hi: u8, up: bool) -> String {
+    fn fold_ascii_case(&self, lo: u8, hi: u8, up: bool) -> String {
         val n: u64 = self.len
         val raw: ptr = __builtin_heap_alloc(0u64)
         val data: ptr = __builtin_heap_realloc(raw, n)
         if n > 0u64 && __builtin_ptr_is_null(data) {
             panic("String::fold_ascii_case: allocation failed ({n} bytes)")
         }
-        __builtin_mem_copy(self.data, data, n)
-        # SIMD: 16 bytes per pass while a whole chunk fits. The bound
-        # is `i + 16 <= n` -- a vector load reads all 16 bytes, so a
-        # chunk straddling the end would read past the allocation.
-        val lo_v: u8x16 = __simd_splat(lo)
-        val hi_v: u8x16 = __simd_splat(hi)
-        val delta: u8x16 = __simd_splat(0x20u8)
-        var i: u64 = 0u64
-        while i + 16u64 <= n {
-            val v: u8x16 = __simd_load(data, i)
-            # `>=` and `<=` each answer per lane, so the two masks
-            # combine with a bitwise `&` rather than `&&`.
-            val in_range = (v >= lo_v) & (v <= hi_v)
-            var folded: u8x16 = v + delta
-            if up {
-                folded = v - delta
-            }
-            __simd_store(data, i, __simd_select(in_range, folded, v))
-            i = i + 16u64
-        }
-        val db: Ptr<u8> = Ptr { addr: data }
-        while i < n {
-            val b: u8 = db.get(i)
-            if b >= lo && b <= hi {
+        # Only a non-empty buffer has addresses to window.
+        if n > 0u64 {
+            val dest: Ptr<u8> = Ptr { addr: data }
+            val origin: Ptr<u8> = Ptr { addr: self.data }
+            val out: Span<u8> = Span::from_parts(dest, n)
+            val text: Span<u8> = Span::from_parts(origin, n)
+            out.copy_from(text)
+            # SIMD: 16 bytes per pass while a whole chunk fits (`load16`
+            # refuses a chunk that would straddle the end).
+            val lo_v: u8x16 = __simd_splat(lo)
+            val hi_v: u8x16 = __simd_splat(hi)
+            val delta: u8x16 = __simd_splat(0x20u8)
+            var i: u64 = 0u64
+            while i + 16u64 <= n {
+                val v: u8x16 = out.load16(i)
+                # `>=` and `<=` each answer per lane, so the two masks
+                # combine with a bitwise `&` rather than `&&`.
+                val in_range = (v >= lo_v) & (v <= hi_v)
+                var folded: u8x16 = v + delta
                 if up {
-                    db.set(i, b - 0x20u8)
-                } else {
-                    db.set(i, b + 0x20u8)
+                    folded = v - delta
                 }
+                val r: u8x16 = __simd_select(in_range, folded, v)
+                out.store16(i, r)
+                i = i + 16u64
             }
-            i = i + 1u64
+            while i < n {
+                val b: u8 = dest.get(i)
+                if b >= lo && b <= hi {
+                    if up {
+                        dest.set(i, b - 0x20u8)
+                    } else {
+                        dest.set(i, b + 0x20u8)
+                    }
+                }
+                i = i + 1u64
+            }
         }
         String {
             data: data,
@@ -503,8 +509,15 @@ impl Clone for String {
 }
 
 impl Display for String {
-    unsafe fn to_str(&self) -> str {
-        __builtin_str_from_bytes(self.data, self.len)
+    fn to_str(&self) -> str {
+        # An empty String may never have allocated, and a `Ptr` is
+        # never null.
+        if self.len == 0u64 {
+            return ""
+        }
+        val bytes: Ptr<u8> = Ptr { addr: self.data }
+        val window: Span<u8> = Span::from_parts(bytes, self.len)
+        window.copy_to_str()
     }
 }
 
@@ -611,135 +624,41 @@ impl Concat<String> for String {
     }
 }
 
-# `contains(needle)` — O(n * m) worst case, but the scan for a
-# candidate start is done 16 bytes at a time (memchr's trick).
-# Empty `needle` matches at position 0 (Rust / libc convention).
-#
-# The skip is sound because a match starting anywhere in
-# `[i, i+16)` would have to begin with `needle`'s first byte: if no
-# lane in that window equals it, all sixteen positions can be
-# discarded at once.
+# `contains(needle)` -- one range search (MEMORY-ACCESS M3): the
+# runtime's `toy_mem_find_seq`, vectorised there once for every caller,
+# rather than a scan written out here. Empty `needle` matches at
+# position 0 (Rust / libc convention).
 impl Contains<String> for String {
-    unsafe fn contains(&self, needle: &String) -> bool {
-        val n: u64 = self.len
-        val m: u64 = needle.len
-        if m == 0u64 {
-            return true
+    fn contains(&self, needle: &String) -> bool {
+        val at: Option<u64> = self.find_from(needle, 0u64)
+        match at {
+            Option::Some(_) => true,
+            Option::None => false,
         }
-        if m > n {
-            return false
-        }
-        val nb: Ptr<u8> = Ptr { addr: needle.data }
-        val first: u8 = nb.get(0u64)
-        val first_v: u8x16 = __simd_splat(first)
-        var i: u64 = 0u64
-        val bytes: Ptr<u8> = Ptr { addr: self.data }
-        while i + m <= n {
-            # Only when a whole chunk fits: a vector load reads all
-            # 16 bytes, so a chunk straddling the end of the buffer
-            # would read past the allocation.
-            if i + 16u64 <= n {
-                val chunk: u8x16 = __simd_load(self.data, i)
-                val eq: u8x16 = chunk == first_v
-                if !__simd_any(eq) {
-                    i = i + 16u64
-                    continue
-                }
-                # A hit somewhere in the window is not enough: ask
-                # *which* byte it was and jump there. Without this the
-                # loop falls back to advancing one byte at a time as
-                # soon as the first byte appears anywhere, which is
-                # why the dense case used to run at scalar speed.
-                #
-                # `__simd_any` still gates it: on the common
-                # (no-match) window it is one instruction, while
-                # `__simd_bitmask` is a several-instruction gather on
-                # NEON. Ask the cheap question first, the precise one
-                # only when the answer is yes.
-                i = i + (__simd_bitmask(eq).trailing_zeros() as u64)
-                if i + m > n {
-                    break
-                }
-            }
-            var matched: bool = true
-            var j: u64 = 0u64
-            while j < m {
-                val a: u8 = bytes.get(i + j)
-                val b: u8 = nb.get(j)
-                if a != b {
-                    matched = false
-                    break
-                }
-                j = j + 1u64
-            }
-            if matched {
-                return true
-            }
-            i = i + 1u64
-        }
-        false
     }
 }
 
-# `split(sep)` — O(n * m) worst case, with the scan for a candidate
-# separator done 16 bytes at a time and `__simd_bitmask` naming the
-# byte that matched (the same memchr trick `contains` uses). Empty `sep` panics. Each part is a fresh `String` allocated through the
-# active allocator; the outer `Vec<String>` holds them in
-# encounter order (including a trailing empty slice if the input
-# ends with `sep`, matching Rust's `str::split` shape).
+# `split(sep)` -- each separator found by one range search
+# (`find_from`, the runtime's vectorised `toy_mem_find_seq`). Empty
+# `sep` panics. Each part is a fresh `String` allocated through the
+# active allocator; the outer `Vec<String>` holds them in encounter
+# order (including a trailing empty slice if the input ends with
+# `sep`, matching Rust's `str::split` shape).
 impl Split<String, Vec<String>> for String {
-    unsafe fn split(&self, sep: &String) -> Vec<String> {
+    fn split(&self, sep: &String) -> Vec<String> {
         assert(sep.len > 0u64, "split: separator must be non-empty")
         var result: Vec<String> = Vec::new()
         val n: u64 = self.len
-        val m: u64 = sep.len
-        val sb: Ptr<u8> = Ptr { addr: sep.data }
-        val first: u8 = sb.get(0u64)
-        val first_v: u8x16 = __simd_splat(first)
         var start: u64 = 0u64
-        var i: u64 = 0u64
-        val bytes: Ptr<u8> = Ptr { addr: self.data }
-        while i + m <= n {
-            # Same memchr-style skip `contains` uses: a match must
-            # begin with the separator's first byte, so a 16-byte
-            # window containing none of it can be discarded whole.
-            # `start` is untouched -- it only moves on a match -- so
-            # skipping does not disturb the part boundaries.
-            if i + 16u64 <= n {
-                val chunk: u8x16 = __simd_load(self.data, i)
-                val eq: u8x16 = chunk == first_v
-                if !__simd_any(eq) {
-                    i = i + 16u64
-                    continue
+        loop {
+            val at: Option<u64> = self.find_from(sep, start)
+            match at {
+                Option::Some(i) => {
+                    val part: String = self.substring(start, i)
+                    result.push(part)
+                    start = i + sep.len
                 }
-                # Jump to the byte that matched rather than to the
-                # window that contains it. `start` still only moves on
-                # a full match, so the part boundaries are untouched.
-                # The cheap `__simd_any` gates the more expensive
-                # `__simd_bitmask`, as in `contains`.
-                i = i + (__simd_bitmask(eq).trailing_zeros() as u64)
-                if i + m > n {
-                    break
-                }
-            }
-            var matched: bool = true
-            var j: u64 = 0u64
-            while j < m {
-                val a: u8 = bytes.get(i + j)
-                val b: u8 = sb.get(j)
-                if a != b {
-                    matched = false
-                    break
-                }
-                j = j + 1u64
-            }
-            if matched {
-                val part: String = self.substring(start, i)
-                result.push(part)
-                start = i + m
-                i = start
-            } else {
-                i = i + 1u64
+                Option::None => { break }
             }
         }
         val tail: String = self.substring(start, n)

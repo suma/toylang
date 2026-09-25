@@ -36,7 +36,7 @@ pub fn assert_close(a: f64, b: f64, eps: f64) {
 # `assert_eq` compares `str` already; this adds the position. Two
 # strings that differ at byte 400 of 4,000 produce a diagnostic that
 # is unreadable as two whole values and obvious as an offset.
-pub unsafe fn assert_str_eq(a: str, b: str) {
+pub fn assert_str_eq(a: str, b: str) {
     if a == b {
         return
     }
@@ -44,11 +44,11 @@ pub unsafe fn assert_str_eq(a: str, b: str) {
     val lb: u64 = b.len()
     var i: u64 = 0u64
     val shorter: u64 = if la < lb { la } else { lb }
-    val pa: ptr = a.as_ptr()
-    val pb: ptr = b.as_ptr()
+    val pa: Ptr<u8> = Ptr { addr: a.as_ptr() }
+    val pb: Ptr<u8> = Ptr { addr: b.as_ptr() }
     while i < shorter {
-        val x: u8 = __builtin_ptr_read::<u8>(pa, i)
-        val y: u8 = __builtin_ptr_read::<u8>(pb, i)
+        val x: u8 = pa.get(i)
+        val y: u8 = pb.get(i)
         if x != y {
             panic("assert_str_eq failed: byte {i} differs: left {x}, right {y} (lengths {la} and {lb})")
         }
@@ -67,7 +67,7 @@ pub unsafe fn assert_str_eq(a: str, b: str) {
 # `Span::bytes_eq` already answers the yes/no question in a single
 # runtime call (MEMORY-ACCESS M3), so the scan only runs on failure --
 # a passing assertion costs exactly what `bytes_eq` costs.
-pub unsafe fn assert_bytes_eq(a: Span<u8>, b: Span<u8>) {
+pub fn assert_bytes_eq(a: Span<u8>, b: Span<u8>) {
     val la: u64 = a.len()
     val lb: u64 = b.len()
     if la != lb {
@@ -217,7 +217,7 @@ fn blessing() -> bool {
 # tests from. A missing file is a failure that names the remedy rather
 # than a silent pass — recording on first sight would mean a test that
 # has never once been looked at still goes green.
-pub unsafe fn assert_golden(path: str, actual: Span<u8>) {
+pub fn assert_golden(path: str, actual: Span<u8>) {
     if blessing() {
         val wrote = io::write_file_bytes(path, actual)
         match wrote {

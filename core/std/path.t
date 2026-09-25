@@ -17,7 +17,7 @@
 # there and operate on a different file. The functions below panic on
 # one rather than returning a failure, the way an out-of-range index
 # does -- this is the way to ask first.
-pub unsafe fn is_valid(p: str) -> bool {
+pub fn is_valid(p: str) -> bool {
     val b: String = String::from_str(p)
     var i: u64 = 0u64
     while i < b.size() {
@@ -27,7 +27,7 @@ pub unsafe fn is_valid(p: str) -> bool {
     true
 }
 
-unsafe fn require_valid(p: str, who: str) {
+fn require_valid(p: str, who: str) {
     if is_valid(p) == false {
         panic("path::{who}: a path cannot contain a NUL byte")
     }
@@ -42,7 +42,7 @@ pub fn is_absolute(p: str) -> bool { p.starts_with("/") }
 #     join("a", "/b")  == "/b"       # an absolute right side wins
 #     join("", "b")    == "b"
 #     join("a", "")    == "a"        # no trailing separator is added
-pub unsafe fn join(a: str, b: str) -> String {
+pub fn join(a: str, b: str) -> String {
     require_valid(a, "join")
     require_valid(b, "join")
     if b.len() == 0u64 {
@@ -69,7 +69,7 @@ pub unsafe fn join(a: str, b: str) -> String {
 #     dirname("a")     == "."        # as POSIX dirname(1)
 #     dirname("/")     == "/"
 #     dirname("a/b/")  == "a"        # a trailing separator is dropped first
-pub unsafe fn dirname(p: str) -> String {
+pub fn dirname(p: str) -> String {
     require_valid(p, "dirname")
     val b: String = trim_trailing_slashes(p)
     val n: u64 = b.size()
@@ -95,7 +95,7 @@ pub unsafe fn dirname(p: str) -> String {
 #     basename("/a/b")  == "b"
 #     basename("/a/b/") == "b"
 #     basename("/")     == "/"
-pub unsafe fn basename(p: str) -> String {
+pub fn basename(p: str) -> String {
     require_valid(p, "basename")
     val b: String = trim_trailing_slashes(p)
     val n: u64 = b.size()
@@ -121,7 +121,7 @@ pub unsafe fn basename(p: str) -> String {
 #     extension(".bashrc")  == ""    # a leading dot is not an extension
 #     extension("a.")       == ""
 #     extension("a")        == ""
-pub unsafe fn extension(p: str) -> String {
+pub fn extension(p: str) -> String {
     val name: String = basename(p)
     val n: u64 = name.size()
     var i: u64 = n
@@ -148,7 +148,7 @@ pub unsafe fn extension(p: str) -> String {
 # The file name without its extension -- `extension`'s complement.
 #
 #     stem("a.tar.gz") == "a.tar"
-pub unsafe fn stem(p: str) -> String {
+pub fn stem(p: str) -> String {
     val name: String = basename(p)
     val ext: String = extension(p)
     if ext.size() == 0u64 { return name }
@@ -158,7 +158,7 @@ pub unsafe fn stem(p: str) -> String {
 }
 
 # The path with a different extension. An empty `ext` removes it.
-pub unsafe fn with_extension(p: str, ext: str) -> String {
+pub fn with_extension(p: str, ext: str) -> String {
     val dir: String = dirname(p)
     val base: String = stem(p)
     var name: String = base
@@ -185,7 +185,7 @@ pub unsafe fn with_extension(p: str, ext: str) -> String {
 # `a/b/../c` is not `a/c`. When that matters, `fs::realpath` asks the
 # kernel -- and fails if the path does not exist, which is why both
 # exist.
-pub unsafe fn normalize(p: str) -> String {
+pub fn normalize(p: str) -> String {
     require_valid(p, "normalize")
     val absolute: bool = is_absolute(p)
     val b: String = String::from_str(p)
@@ -251,7 +251,7 @@ pub unsafe fn normalize(p: str) -> String {
 
 # The path with any trailing separators removed. The root keeps its
 # one separator, which is why `basename("/")` is `/`.
-unsafe fn trim_trailing_slashes(p: str) -> String {
+fn trim_trailing_slashes(p: str) -> String {
     val b: String = String::from_str(p)
     var n: u64 = b.size()
     while n > 1u64 && b.get(n - 1u64) == '/' {

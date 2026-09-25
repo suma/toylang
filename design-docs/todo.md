@@ -17,11 +17,18 @@
   `borrow` は全レーンで intrinsic、呼び出しにならない)、範囲操作は
   `Span<T>`。`Vec` / `VecIter` / `String` の `elem_size`、`Dict` の
   `sizes`、`ZipIter` の `elems` を撤去し、Vec は 3 leaf に。stdlib の
-  `unsafe fn` は 172 → 104、`poc/logsearch` は出力一致のまま `__text`
+  `unsafe fn` 宣言は 102 本に (コメント行を除いた数)、`poc/logsearch` は出力一致のまま `__text`
   −8.2%・archive ~6% 速い。途中で tree-walker の型引数の穴を 3 つ直した
   (struct リテラルのフィールド型、`Ptr` 注釈と呼び出し元の `T`、
   enum 値の型引数)。残りは未実装節の UNSAFE-REST / SPAN-RANGE-INTRINSIC /
   WINDOW-ESCAPE-UNWRAP。
+
+- **UNSAFE-REST 前半: コレクションから `unsafe fn` を外した** — `Deque` /
+  `Set` / `PriorityQueue` / `SoaVec` と String の SIMD 走査が `Ptr<T>` /
+  新設の `SoaPtr<T>` (列分割の窓、intrinsic) / `Span<u8>` の範囲演算・
+  `load16` / `store16` を通る。`Deque` / `Set` の `elem_size` も撤去。
+  impl メソッドがベクトル型を受け渡せるようにした。stdlib の
+  `unsafe fn` は 102 → 61、`poc/logsearch` は出力・速度とも不変。
 
 - **TREE-WALKER-GENERIC-SCOPE: closure の型がメソッドの型引数を決める** —
   `map<U>(&self, f: fn (T) -> U)` の `U` を tree-walker が束縛して
@@ -2315,15 +2322,18 @@
   書き手は 1 回で済み、`s.read_u32_le(i)` は endianness を型の側に
   置ける。
 
-- **UNSAFE-REST: M5 の外に残る `unsafe fn` (104 本)** — M5 は
-  `Vec` / `String` / `Dict` / `Box` を `Ptr<T>` / `Span<T>` 経由にした
-  (完了済み節)。[`MEMORY_ACCESS.md`](MEMORY_ACCESS.md) の目標
-  「20 本前後」までの残りは `allocator.t` 30 / `span.t` 11 / `path.t` 10 /
-  `deque.t` 8 / `string.t` 7 / `ptr.t` 5 / `soa_vec.t` 5 / `set.t` 5 ほか。
-  `ptr.t` / `span.t` / `allocator.t` は生 builtin の置き場なので残る側。
-  `Deque` / `Set` / `PriorityQueue` は `Vec` と同じ手順で移せる (要素幅の
-  フィールドも外せる)。`SoaVec` は列ごとの番地を `__builtin_soa_*` で
-  作るので別扱い。
+- **UNSAFE-REST: 残る `unsafe fn` (61 本)** — 2026-09-25 にコレクション
+  (`Deque` / `Set` / `PriorityQueue` / `SoaVec`) と String の SIMD・`to_str`、
+  `path` / `fs` / `time` / `testing` / `io` の名残 (生アクセスの無い
+  `unsafe`) を外し、102 → 61。**生 builtin の置き場** (`allocator.t` 30 /
+  `span.t` 14 / `ptr.t` 7 / `column.t` 3) が 54 で、これは残る側。
+  それ以外は 7: `hex.t` / `base64.t` の encode・decode (手書き SIMD の
+  符号化カーネル。`Span<u8>::load16` / `store16` は呼び出しになるので
+  16 バイトごとに 1 call 増える — 移すなら `Ptr` と同じく intrinsic に
+  する)、`String::eq` (SPAN-RANGE-INTRINSIC)、`Vec<u8>::extend_bytes` /
+  `String::extend_bytes` (生の `ptr` を受ける — 呼ぶ側に義務がある API
+  なので `unsafe` が正しい)。`unsafe` の意味を「呼ぶ側に義務がある」に
+  変える案 (呼び出しに `unsafe { }` を要求) はユーザ判断待ち。
 
 - **SPAN-RANGE-INTRINSIC: `Span` の範囲演算を呼び出しにしない** —
   `String::eq` を `Span::bytes_eq` で書くと `poc/logsearch` の archive が

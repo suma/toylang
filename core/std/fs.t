@@ -82,7 +82,7 @@ impl Display for FileKind {
 # **The order is unspecified.** It is whatever the file system hands
 # over, and it differs between systems for the same directory. Sort
 # before comparing.
-pub unsafe fn list_dir(path: str) -> Result<Vec<String>, IoError> {
+pub fn list_dir(path: str) -> Result<Vec<String>, IoError> {
     val n: u64 = __extern_fs_dir_open(path)
     val status: u64 = __extern_fs_status()
     if status != 0u64 {
@@ -211,7 +211,7 @@ pub fn temp_dir() -> String {
 
 # Create `path` and any missing parent, like `mkdir -p`. Succeeds when
 # the directory already exists.
-pub unsafe fn mkdir_all(path: str) -> Result<(), IoError> {
+pub fn mkdir_all(path: str) -> Result<(), IoError> {
     if is_dir(path) { return Result::Ok(()) }
     val parent: String = path::dirname(path)
     val p: str = parent.to_str()
@@ -240,7 +240,7 @@ pub unsafe fn mkdir_all(path: str) -> Result<(), IoError> {
 # **Binary safe**: it goes through `read_file_into` and a `Span<u8>`
 # rather than `read_file`, which would refuse anything that is not
 # UTF-8 -- `str` holds text (STDLIB-TEXT §2), and a file need not.
-pub unsafe fn copy_file(from_path: str, to_path: str) -> Result<u64, IoError> {
+pub fn copy_file(from_path: str, to_path: str) -> Result<u64, IoError> {
     val sized = file_size(from_path)
     val n: u64 = match sized {
         Result::Ok(v) => v,

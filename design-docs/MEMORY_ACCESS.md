@@ -243,7 +243,7 @@ method は `unsafe` が外れる (156 → 20 前後の見込み)。
 | M2 | stdlib 213 箇所を `::<T>` 形へ機械移行 ✅ (2026-09-05) + `Vec::elem_size` 撤去 ❌ (下記) → M5 で撤去 ✅ (2026-09-25) | 中 (stdlib) | 単位と幅が層で固定される |
 | M3 | `Span<T>` の範囲演算 (C の表) を `copy_from` / `fill` / `eq` / `find` / `find_seq` から ✅ (2026-09-05) | 中 | 実測 3・5 の解消。string.t の 5 重複が 1 に |
 | M4 | `chunks::<N>()` と `read_uNN_le/be` | 中 | hex / base64 / sha256 の手書き SIMD と桁合わせが runtime に移る |
-| M5 | `Vec` / `String` / `Dict` / `Box` の `data: ptr` → `Ptr<T>` / `Span<T>`、`unsafe fn` の縮小 (D) ✅ (2026-09-25)。フィールドは `data: ptr` のまま、メソッドが `Ptr { addr: self.data }` を作って読み書きする (`Ptr` の `get` / `set` / `borrow` は intrinsic なので窓はコストにならない)。stdlib の `unsafe fn` は 172 → 104、残りは todo の UNSAFE-REST | 中 (stdlib) | `unsafe` が 20 本の印に戻る |
+| M5 | `Vec` / `String` / `Dict` / `Box` の `data: ptr` → `Ptr<T>` / `Span<T>`、`unsafe fn` の縮小 (D) ✅ (2026-09-25)。フィールドは `data: ptr` のまま、メソッドが `Ptr { addr: self.data }` を作って読み書きする (`Ptr` の `get` / `set` / `borrow` は intrinsic なので窓はコストにならない)。stdlib の `unsafe fn` 宣言は M5 後に 102 本、続く UNSAFE-REST 前半で 61 本 (残りは生 builtin の置き場 54 と todo の UNSAFE-REST) | 中 (stdlib) | `unsafe` が 20 本の印に戻る |
 
 ## 実装メモ
 

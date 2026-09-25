@@ -227,7 +227,7 @@ impl DateTime {
 # `parse_iso8601(dt.to_str())` gives `dt` back, which is what the
 # tests check rather than either half alone.
 impl Display for DateTime {
-    unsafe fn to_str(&self) -> str {
+    fn to_str(&self) -> str {
         var out: String = String::new()
         out.push_str(pad4_years(self.year()))
         out.push_str("-")
@@ -275,7 +275,7 @@ fn pad4_years(v: i64) -> str {
 # Strict like `parse::to_u64`: no surrounding whitespace, fixed digit
 # counts (`2026-9-3` is invalid), and ranges checked. An offset is
 # folded to UTC on the spot.
-pub unsafe fn parse_iso8601(s: str) -> Result<DateTime, TimeError> {
+pub fn parse_iso8601(s: str) -> Result<DateTime, TimeError> {
     val n: u64 = s.len()
     if n == 0u64 { return Result::Err(TimeError::Empty) }
     if n < 10u64 { return Result::Err(TimeError::Invalid) }
@@ -385,7 +385,7 @@ pub unsafe fn parse_iso8601(s: str) -> Result<DateTime, TimeError> {
 # `count` decimal digits starting at `at`, or `None` if any of them is
 # not a digit. Fixed-width on purpose: the grammar has no variable
 # fields.
-unsafe fn iso_digits(b: &String, at: u64, count: u64) -> Option<u64> {
+fn iso_digits(b: &String, at: u64, count: u64) -> Option<u64> {
     if at + count > b.size() { return Option::None }
     var acc: u64 = 0u64
     var i: u64 = 0u64

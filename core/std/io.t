@@ -116,7 +116,7 @@ fn io_error_from_status(status: u64) -> IoError {
 # `\r\n`). `Err(IoError::EndOfInput)` at EOF — raised only before any
 # byte was read, so a final line without a newline is still an `Ok`.
 # An empty line is `Ok("")`.
-pub unsafe fn read_line() -> Result<str, IoError> {
+pub fn read_line() -> Result<str, IoError> {
     val first: i32 = getchar()
     if first == -1i32 {
         return Result::Err(IoError::EndOfInput)
@@ -133,7 +133,14 @@ pub unsafe fn read_line() -> Result<str, IoError> {
         val last: u8 = buf.get(buf.size() - 1u64)
         if last == '\r' { buf.pop() }   # strip the CR of a CRLF
     }
-    Result::Ok(__builtin_str_from_bytes(buf.as_ptr(), buf.size()))
+    # An empty line may never have allocated, and a `Ptr` is never null.
+    if buf.size() == 0u64 {
+        return Result::Ok("")
+    }
+    val bytes: Ptr<u8> = Ptr { addr: buf.as_ptr() }
+    val window: Span<u8> = Span::from_parts(bytes, buf.size())
+    val line: str = window.copy_to_str()
+    Result::Ok(line)
 }
 
 # Read the file at `path` into `buf`, returning how many bytes landed

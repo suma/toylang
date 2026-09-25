@@ -191,6 +191,44 @@ fn collect_generic_bindings(
                 }
             }
         }
+        // TREE-WALKER-GENERIC-SCOPE: a method-level parameter named only
+        // by a function argument -- `map<U>(&self, f: fn (T) -> U)` --
+        // is the closure's own type. Without this `U` was never bound,
+        // so the `MapIter<T, U>` it built carried `U` unresolved and a
+        // `Vec<U>` made from it could not size its elements.
+        TypeDecl::Function(decl_params, decl_ret) => {
+            if let Object::Closure { params, return_ty, .. } = value {
+                for (decl, (_, actual)) in decl_params.iter().zip(params.iter()) {
+                    bind_declared_type(decl, actual, bindings);
+                }
+                bind_declared_type(decl_ret, return_ty, bindings);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `collect_generic_bindings` for a declared type against a *type*
+/// (a closure's signature) rather than a value.
+fn bind_declared_type(
+    declared: &TypeDecl,
+    actual: &TypeDecl,
+    bindings: &mut HashMapStd<DefaultSymbol, TypeDecl>,
+) {
+    match (declared, actual) {
+        (TypeDecl::Generic(sym), _) if !matches!(actual, TypeDecl::Unknown) => {
+            bindings.entry(*sym).or_insert(actual.clone());
+        }
+        (TypeDecl::Struct(_, d), TypeDecl::Struct(_, a)) | (TypeDecl::Enum(_, d), TypeDecl::Enum(_, a)) => {
+            for (dd, aa) in d.iter().zip(a.iter()) {
+                bind_declared_type(dd, aa, bindings);
+            }
+        }
+        (TypeDecl::Tuple(d), TypeDecl::Tuple(a)) => {
+            for (dd, aa) in d.iter().zip(a.iter()) {
+                bind_declared_type(dd, aa, bindings);
+            }
+        }
         _ => {}
     }
 }

@@ -74,3 +74,37 @@ fn a_qualified_generic_call_leaves_the_callers_bindings_alone() {
     // 60, and the same 60 on every backend.
     assert_consistent(src, "qualified_generic_call_scope");
 }
+
+/// TREE-WALKER-GENERIC-SCOPE: a method's own type parameter named only by
+/// a closure argument -- `conv<U>(&self, f: fn (T) -> U)` -- was never
+/// bound on the tree-walker, which did not read the closure's
+/// signature, so `__builtin_sizeof::<U>()` below it was "unbound generic
+/// parameter". `MapIter<T, U>` (`v.iter().map(f)`) has this shape, and
+/// it is why `Vec` learns its stride from the first `push` instead of
+/// asking `sizeof::<T>()`. (The compiled lanes do not infer a
+/// method-only parameter from a closure at all, so this is the
+/// tree-walker alone.)
+#[test]
+fn a_closures_signature_binds_the_parameter_it_names() {
+    let src = r#"
+        struct Cell<T> { n: u64 }
+        impl<T> Cell<T> {
+            fn new() -> Self { Cell { n: 0u64 } }
+            fn width(&self) -> u64 { __builtin_sizeof::<T>() }
+        }
+        struct Wrap<T> { v: T }
+        impl<T> Wrap<T> {
+            fn conv<U>(&self, f: fn (T) -> U) -> u64 {
+                val c: Cell<U> = Cell::new()
+                c.width()
+            }
+        }
+        fn main() -> u64 {
+            val w: Wrap<u64> = Wrap { v: 5u64 }
+            val a = w.conv(fn(x: u64) -> u8 { x as u8 })
+            val b = w.conv(fn(x: u64) -> (u16, u64) { (x as u16, x) })
+            a * 100u64 + b
+        }
+    "#;
+    assert_eq!(interpreter_value(src), 110);
+}

@@ -12,6 +12,16 @@
 
 ### 2026-09-25
 
+- **TREE-WALKER-GENERIC-SCOPE: closure の型がメソッドの型引数を決める** —
+  `map<U>(&self, f: fn (T) -> U)` の `U` を tree-walker が束縛して
+  いなかった (引数の値から型引数を拾う `collect_generic_bindings` が
+  closure のシグネチャを見ていなかった)。そのため `MapIter<T, U>` の
+  `U` が名前のまま残り、そこから作った `Vec<U>` の中の
+  `__builtin_sizeof::<T>()` が「unbound generic parameter」で落ちていた。
+  compiled レーンは monomorph で置き換えるので元から通る。`Vec` が
+  `elem_size` を最初の `push` で学ぶ回避策は、これで不要になった
+  (撤去は MEMORY-ACCESS M5 と一緒に行う)。
+
 - **AOT 実行ファイルの非再現性** — 「run ごとに変わる」のではなく
   **出力先のディレクトリで変わる**のだった。ld64 が runtime の各 object に
   `N_OSO` の stab を書き、その archive を絶対パスで名指す — archive は
@@ -2291,15 +2301,6 @@
   指すようになる。P6 の狙いはこれだったが、集約先が stdlib 全体に
   なっている。M2 で `Vec::elem_size` が撤去できなかった理由
   (下の TREE-WALKER-GENERIC-SCOPE) が前提条件。
-
-- **TREE-WALKER-GENERIC-SCOPE: 入れ子の generic で `T` が解決できない**
-  ★ — `MapIter<T, U>::collect` の `val out: Vec<U> = Vec::new()` が
-  持つ型引数は `Identifier(U)` のままで、続く `out.push(v)` の中の
-  `__builtin_sizeof::<T>()` が「unbound generic parameter」で落ちる。
-  呼び出し元の scope に `U` が無いため。`Vec` が `elem_size` フィールドを
-  持ち、**最初の push が値から stride を学ぶ**形になっているのはこれの
-  回避で、MEMORY-ACCESS M2 はこれが理由で field を撤去できなかった。
-  compiled レーンは monomorph subst があるので通る。
 
 - **ZIP-ITER-GENERIC-SCOPE: method-level の型引数が turbofish から
   見えない** — `VecIter<T>::zip<U>(other: VecIter<U>)` の中で

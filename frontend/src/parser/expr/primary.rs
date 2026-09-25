@@ -624,6 +624,19 @@ fn parse_primary_after_identifier(
             let args = parse_expr_list(parser, vec![])?;
             parser.expect_err(&Kind::ParenClose)?;
             if let Some(builtin_func) = parser.builtin_symbols.symbol_to_builtin(name) {
+                // MEMORY-ACCESS: the untyped `__builtin_ptr_read(p, off)`
+                // took its width from the surrounding annotation, which
+                // made the read a statement rather than an expression
+                // and let three engines give three answers. It is gone;
+                // the element type is part of the call.
+                if matches!(builtin_func, BuiltinFunction::PtrRead) {
+                    return Err(ParserError::generic_error(
+                        location,
+                        "`__builtin_ptr_read` needs its element type: write \
+                         `__builtin_ptr_read::<T>(p, offset)`"
+                            .to_string(),
+                    ));
+                }
                 // SIMD: `__simd_shuffle`'s mask is a constant, not a
                 // value. Fold it here so nothing downstream sees the
                 // array literal.

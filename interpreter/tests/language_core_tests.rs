@@ -1520,7 +1520,7 @@ mod heap_operations {
                     0u64
                 } else {
                     __builtin_ptr_write(heap_ptr, 0u64, 100u64)
-                    val value = __builtin_ptr_read(heap_ptr, 0u64)
+                    val value = __builtin_ptr_read::<u64>(heap_ptr, 0u64)
                     __builtin_heap_free(heap_ptr)
                     value
                 }
@@ -1543,8 +1543,8 @@ mod heap_operations {
 
                 __builtin_mem_copy(src, dst, 16u64)
 
-                val result1 = __builtin_ptr_read(dst, 0u64)
-                val result2 = __builtin_ptr_read(dst, 8u64)
+                val result1 = __builtin_ptr_read::<u64>(dst, 0u64)
+                val result2 = __builtin_ptr_read::<u64>(dst, 8u64)
 
                 __builtin_heap_free(src)
                 __builtin_heap_free(dst)
@@ -1565,7 +1565,7 @@ mod heap_operations {
                 __builtin_ptr_write(heap_ptr1, 0u64, 200u64)
 
                 val heap_ptr2 = __builtin_heap_realloc(heap_ptr1, 16u64)
-                val value = __builtin_ptr_read(heap_ptr2, 0u64)
+                val value = __builtin_ptr_read::<u64>(heap_ptr2, 0u64)
 
                 __builtin_heap_free(heap_ptr2)
                 value
@@ -1587,7 +1587,7 @@ mod heap_operations {
                 __builtin_mem_set(heap_ptr, fill_value, 8u64)
 
                 # Read back as u64 (should be all 0xFF bytes)
-                val result = __builtin_ptr_read(heap_ptr, 0u64)
+                val result = __builtin_ptr_read::<u64>(heap_ptr, 0u64)
 
                 __builtin_heap_free(heap_ptr)
 
@@ -1615,7 +1615,7 @@ mod heap_operations {
                     0u64
                 } else {
                     __builtin_ptr_write(heap_ptr, 0u64, value)
-                    val stored = __builtin_ptr_read(heap_ptr, 0u64)
+                    val stored = __builtin_ptr_read::<u64>(heap_ptr, 0u64)
                     __builtin_heap_free(heap_ptr)
                     stored
                 }
@@ -1663,7 +1663,7 @@ mod heap_operations {
                 }
 
                 unsafe fn get(self: Self, index: u64) -> u64 {
-                    __builtin_ptr_read(self.data, index * 8u64)
+                    __builtin_ptr_read::<u64>(self.data, index * 8u64)
                 }
             }
 
@@ -1928,7 +1928,7 @@ mod heap_operations {
                 with allocator = arena {
                     val p = __builtin_heap_alloc(__builtin_sizeof(0u64))
                     __builtin_ptr_write(p, 0u64, 42u64)
-                    __builtin_ptr_read(p, 0u64)
+                    __builtin_ptr_read::<u64>(p, 0u64)
                 }
             }
         "#;

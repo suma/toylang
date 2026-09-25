@@ -22,7 +22,7 @@ fn test_val_heap_alloc_free_cycle() {
                 } else {
                     val test_value = i * 10u64 + 1u64
                     __builtin_ptr_write(heap_ptr, 0u64, test_value)
-                    val read_value = __builtin_ptr_read(heap_ptr, 0u64)
+                    val read_value = __builtin_ptr_read::<u64>(heap_ptr, 0u64)
 
                     if read_value == test_value {
                         success_count = success_count + 1u64
@@ -61,10 +61,10 @@ fn test_val_heap_memory_consistency() {
             __builtin_ptr_write(heap_ptr2, 8u64, pattern1)
 
             # Verify data integrity
-            val read1_0 = __builtin_ptr_read(heap_ptr1, 0u64)
-            val read1_8 = __builtin_ptr_read(heap_ptr1, 8u64)
-            val read2_0 = __builtin_ptr_read(heap_ptr2, 0u64)
-            val read2_8 = __builtin_ptr_read(heap_ptr2, 8u64)
+            val read1_0 = __builtin_ptr_read::<u64>(heap_ptr1, 0u64)
+            val read1_8 = __builtin_ptr_read::<u64>(heap_ptr1, 8u64)
+            val read2_0 = __builtin_ptr_read::<u64>(heap_ptr2, 0u64)
+            val read2_8 = __builtin_ptr_read::<u64>(heap_ptr2, 8u64)
 
             val check1 = if read1_0 == pattern1 { 1u64 } else { 0u64 }
             val check2 = if read1_8 == pattern2 { 1u64 } else { 0u64 }
@@ -96,12 +96,12 @@ fn test_val_heap_realloc_preserve_data() {
             val new_heap_ptr = __builtin_heap_realloc(original_heap_ptr, 16u64)
 
             # Check if data was preserved
-            val preserved_value = __builtin_ptr_read(new_heap_ptr, 0u64)
+            val preserved_value = __builtin_ptr_read::<u64>(new_heap_ptr, 0u64)
 
             # Write new data to the expanded area
             val new_value = 1147797409030816545u64
             __builtin_ptr_write(new_heap_ptr, 8u64, new_value)
-            val second_value = __builtin_ptr_read(new_heap_ptr, 8u64)
+            val second_value = __builtin_ptr_read::<u64>(new_heap_ptr, 8u64)
 
             __builtin_heap_free(new_heap_ptr)
 
@@ -139,10 +139,10 @@ fn test_val_heap_mem_copy_operations() {
             __builtin_mem_copy(src_heap_ptr, dst_heap_ptr, 32u64)
 
             # Verify copied data
-            val copied1 = __builtin_ptr_read(dst_heap_ptr, 0u64)
-            val copied2 = __builtin_ptr_read(dst_heap_ptr, 8u64)
-            val copied3 = __builtin_ptr_read(dst_heap_ptr, 16u64)
-            val copied4 = __builtin_ptr_read(dst_heap_ptr, 24u64)
+            val copied1 = __builtin_ptr_read::<u64>(dst_heap_ptr, 0u64)
+            val copied2 = __builtin_ptr_read::<u64>(dst_heap_ptr, 8u64)
+            val copied3 = __builtin_ptr_read::<u64>(dst_heap_ptr, 16u64)
+            val copied4 = __builtin_ptr_read::<u64>(dst_heap_ptr, 24u64)
 
             val check1 = if copied1 == value1 { 1u64 } else { 0u64 }
             val check2 = if copied2 == value2 { 1u64 } else { 0u64 }
@@ -172,13 +172,13 @@ fn test_val_heap_mem_set_operations() {
             __builtin_mem_set(heap_ptr, fill_byte, 8u64)
 
             # Read as u64 (should be all 0xAA bytes = 12297829382473034410)
-            val filled_value = __builtin_ptr_read(heap_ptr, 0u64)
+            val filled_value = __builtin_ptr_read::<u64>(heap_ptr, 0u64)
             val expected = 12297829382473034410u64
 
             # Write a different pattern to second 8 bytes
             val different_value = 6148914691236517205u64
             __builtin_ptr_write(heap_ptr, 8u64, different_value)
-            val second_value = __builtin_ptr_read(heap_ptr, 8u64)
+            val second_value = __builtin_ptr_read::<u64>(heap_ptr, 8u64)
 
             __builtin_heap_free(heap_ptr)
 
@@ -213,7 +213,7 @@ fn test_val_heap_null_pointer_safety() {
                 } else {
                     # Normal allocation worked
                     __builtin_ptr_write(normal_heap_ptr, 0u64, 42u64)
-                    val value = __builtin_ptr_read(normal_heap_ptr, 0u64)
+                    val value = __builtin_ptr_read::<u64>(normal_heap_ptr, 0u64)
                     __builtin_heap_free(normal_heap_ptr)
 
                     if value == 42u64 { 1u64 } else { 0u64 }
@@ -258,9 +258,9 @@ fn test_val_heap_stress_small_allocations() {
                     __builtin_ptr_write(heap_ptr2, 0u64, test_val + 2u64)
                     __builtin_ptr_write(heap_ptr3, 0u64, test_val + 3u64)
 
-                    val read1 = __builtin_ptr_read(heap_ptr1, 0u64)
-                    val read2 = __builtin_ptr_read(heap_ptr2, 0u64)
-                    val read3 = __builtin_ptr_read(heap_ptr3, 0u64)
+                    val read1 = __builtin_ptr_read::<u64>(heap_ptr1, 0u64)
+                    val read2 = __builtin_ptr_read::<u64>(heap_ptr2, 0u64)
+                    val read3 = __builtin_ptr_read::<u64>(heap_ptr3, 0u64)
 
                     val data_ok = if read1 == (test_val + 1u64) {
                         if read2 == (test_val + 2u64) {
@@ -464,7 +464,7 @@ fn test_arena_alloc_read_write_cycle() {
             with allocator = arena {
                 val p = __builtin_heap_alloc(8u64)
                 __builtin_ptr_write(p, 0u64, 12345u64)
-                __builtin_ptr_read(p, 0u64)
+                __builtin_ptr_read::<u64>(p, 0u64)
             }
         }
     "#;
@@ -599,7 +599,7 @@ const USER_LIST_SOURCE: &str = r#"
         }
 
         unsafe fn get(self: Self, index: u64) -> u64 {
-            __builtin_ptr_read(self.data, index * 8u64)
+            __builtin_ptr_read::<u64>(self.data, index * 8u64)
         }
     }
 
@@ -865,4 +865,22 @@ fn test_heap_alloc_unsatisfiable_size_returns_null_not_a_panic() {
     let result = test_program(source);
     let obj = result.expect("unsatisfiable realloc must not crash the interpreter");
     assert_eq!(obj.borrow().unwrap_uint64(), 1, "huge realloc must report null");
+}
+
+/// MEMORY-ACCESS: the untyped read took its width from the annotation
+/// it was bound by, which kept it out of expression position and let the
+/// engines disagree about a mismatched width. It is a parse error now,
+/// and the message names the form to write.
+#[test]
+fn an_untyped_ptr_read_is_rejected_with_the_typed_form() {
+    let source = r#"
+        unsafe fn main() -> u64 {
+            val p = __builtin_heap_alloc(8u64)
+            __builtin_ptr_write(p, 0u64, 7u64)
+            val v: u64 = __builtin_ptr_read(p, 0u64)
+            v
+        }
+    "#;
+    let err = test_program(source).expect_err("the untyped read must not parse");
+    assert!(err.contains("__builtin_ptr_read::<T>(p, offset)"), "actual: {err}");
 }

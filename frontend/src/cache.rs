@@ -32,7 +32,7 @@ use crate::ast::module_interface::ModuleInterface;
 ///
 /// Mismatched versions are treated as a cache miss by
 /// [`load_full_module`].
-pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 55;
+pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 56;
 // v2: `File` gained `id` (JIT cache key) and `tests` (LLM-LOOP P4).
 // v3: `BuiltinFunctionSymbols` interns the MEMORY_PROFILING M4 counter
 // names, shifting every later symbol id.
@@ -114,6 +114,8 @@ pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 55;
 // unchanged module would be read back against the old intern order
 // (the same reason convert.t bumped v9). See
 // `design-docs/MODULE_SYSTEM.md`.
+// v56: the untyped `__builtin_ptr_read(p, off)` is a parse error, so a
+//      cached AST may not carry the `PtrRead` node any more.
 // v55: STRUCT-SUGAR-GAP — `P { x, y }` field shorthand and the
 //      `val P { x, .. } = e` destructuring desugar.
 // v54: `if val` without `else` desugars its arm to `{ block; () }` instead

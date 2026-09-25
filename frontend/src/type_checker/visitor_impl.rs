@@ -580,7 +580,7 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
         // `__builtin_soa_read` (DATA-ORIENTED Phase 2) answers the same
         // way: its element type is the annotation's, never the
         // buffer's — the buffer is a column split and holds no shape.
-        if matches!(func, BuiltinFunction::PtrRead | BuiltinFunction::SoaRead) {
+        if matches!(func, BuiltinFunction::SoaRead) {
             if let Some(hint) = &self.type_inference.type_hint
                 && matches!(hint,
                     TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool

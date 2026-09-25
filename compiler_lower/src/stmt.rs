@@ -55,13 +55,14 @@ impl<'a> FunctionLower<'a> {
                 // `lower_let`). Must run *before* `current_let_stmt`
                 // is restored — the transferred check needs this
                 // statement to decide whether the binding still
-                // owns its value. A `__builtin_ptr_read` copy is an
+                // owns its value. A `__builtin_ptr_read::<T>` copy is an
                 // *alias* of the slot it read — the slot's owner
                 // frees it, so the copy must not register.
                 let from_ptr_read = matches!(
                     self.program.expression.get(&e),
                     Some(frontend::ast::Expr::BuiltinCall(
-                        frontend::ast::BuiltinFunction::PtrRead,
+                        frontend::ast::BuiltinFunction::PtrReadTyped(_)
+                            | frontend::ast::BuiltinFunction::PtrRefTyped(_),
                         _
                     ))
                 );

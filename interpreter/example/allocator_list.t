@@ -51,7 +51,7 @@ impl List {
     # (BY-VALUE-SELF-ALIAS), and this example is one of the two places
     # that had been relying on it.
     unsafe fn get(&self, index: u64) -> u64 {
-        __builtin_ptr_read(self.data, index * 8u64)
+        __builtin_ptr_read::<u64>(self.data, index * 8u64)
     }
 }
 

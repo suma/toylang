@@ -43,7 +43,6 @@ pub fn translate_function<M: Module>(
     func_ids: &HashMap<MonoKey, FuncId>,
     helper_ids: &HashMap<HelperKind, FuncId>,
     call_targets: &HashMap<ExprRef, MonoKey>,
-    ptr_read_hints: &HashMap<ExprRef, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     ctx: &mut Context,
     builder_ctx: &mut FunctionBuilderContext,
@@ -183,7 +182,6 @@ pub fn translate_function<M: Module>(
         func_refs: &func_refs,
         helper_refs: &helper_refs,
         call_targets,
-        ptr_read_hints,
         struct_layouts,
         loop_stack: Vec::new(),
         return_ty: sig.ret.clone(),
@@ -675,10 +673,6 @@ struct State<'a, 'b> {
     /// Map from each `Expr::Call` ExprRef to the monomorphization the
     /// JIT must dispatch to. Set during eligibility analysis.
     call_targets: &'a HashMap<ExprRef, MonoKey>,
-    /// Pre-computed expected return type for each `__builtin_ptr_read(...)`
-    /// expression in the function body. Built by eligibility from the
-    /// surrounding val/var/assign annotations.
-    ptr_read_hints: &'a HashMap<ExprRef, ScalarTy>,
     /// Layout for every JIT-compatible struct in the program.
     struct_layouts: &'a HashMap<DefaultSymbol, StructLayout>,
     loop_stack: Vec<LoopFrame>,
@@ -1634,26 +1628,9 @@ impl<'a, 'b> State<'a, 'b> {
                         };
                         Ok(Some(self.call_helper(kind, &[v])?))
                     }
+                    // The untyped read is a parse error (MEMORY-ACCESS).
                     BuiltinFunction::PtrRead => {
-                        let expected = self
-                            .ptr_read_hints
-                            .get(expr_ref)
-                            .copied()
-                            .ok_or_else(|| "ptr_read without registered type hint".to_string())?;
-                        let p = self
-                            .gen_expr(&args[0])?
-                            .ok_or_else(|| "ptr_read ptr".to_string())?;
-                        let off = self
-                            .gen_expr(&args[1])?
-                            .ok_or_else(|| "ptr_read offset".to_string())?;
-                        let kind = match expected {
-                            ScalarTy::I64 => HelperKind::PtrReadI64,
-                            ScalarTy::U64 => HelperKind::PtrReadU64,
-                            ScalarTy::Bool => HelperKind::PtrReadBool,
-                            ScalarTy::Ptr => HelperKind::PtrReadPtr,
-                            _ => return Err("ptr_read expected type unsupported".into()),
-                        };
-                        Ok(Some(self.call_helper(kind, &[p, off])?))
+                        Err("an untyped `__builtin_ptr_read` reached JIT codegen".into())
                     }
                     // MEMORY-ACCESS M1: same helpers, but the type
                     // comes from the call rather than the hint map.
@@ -3340,10 +3317,6 @@ impl<'a, 'b> State<'a, 'b> {
     fn expr_type(&self, expr_ref: &ExprRef) -> Result<ScalarTy, String> {
         let mut callees = Vec::new();
         let mut snapshot = self.local_types.clone();
-        // The hint map was finalized during eligibility analysis; cloning
-        // gives us a writable scratch copy without disturbing the shared
-        // state if check_expr happens to add a duplicate entry.
-        let mut hints = self.ptr_read_hints.clone();
         let mut reason: Option<String> = None;
         // The substitutions for the current monomorph were already applied
         // when local types were registered, so codegen-time type lookups
@@ -3376,7 +3349,6 @@ impl<'a, 'b> State<'a, 'b> {
             &mut snapshot,
             &mut compound_view,
             &mut callees,
-            &mut hints,
             &mut reason,
         )
         .check_expr(expr_ref)

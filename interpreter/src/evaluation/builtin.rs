@@ -452,23 +452,6 @@ impl EvaluationContext<'_> {
         })
     }
 
-    /// EXTERN-BUF: read a scalar of the width the pending `val`
-    /// annotation asks for straight out of the byte buffer.
-    ///
-    /// The typed-slot map is this engine's normal record of what a
-    /// `__builtin_ptr_write` stored, and reads consult it first. Bytes
-    /// that arrived some other way — a native extern filling a
-    /// caller-owned buffer — leave no slot, and the only fallback was
-    /// an 8-byte read, so a `Vec<u8>` filled that way was unreadable
-    /// here while the other engines managed fine.
-    ///
-    /// `None` when the annotation is missing or is not a fixed-width
-    /// scalar, so the caller keeps its existing behaviour.
-    fn read_annotated_scalar_bytes(&self, addr: usize, offset: usize) -> Option<crate::object::Object> {
-        let annotation = self.pending_annotation.clone()?;
-        self.read_scalar_bytes_as(addr, offset, &annotation)
-    }
-
     /// The same read against a type named outright — the shape
     /// `__builtin_ptr_read::<T>(p, off)` asks for (MEMORY-ACCESS M1).
     ///
@@ -753,43 +736,11 @@ impl EvaluationContext<'_> {
             Ok(EvaluationResult::Value((Object::Pointer(new_addr)).into()))
         }
 
-        // Pointer operations
-        BuiltinFunction::PtrRead => {
-            Self::expect_args("ptr_read", args, 2)?;
-
-            let ptr_result = self.evaluate(&args[0])?;
-            let ptr_obj = try_value!(Ok(ptr_result));
-            let addr = ptr_obj.borrow().try_unwrap_pointer()
-                .map_err(|_| InterpreterError::InternalError("ptr_read expects pointer as first argument".to_string()))?;
-
-            let offset_result = self.evaluate(&args[1])?;
-            let offset_obj = try_value!(Ok(offset_result));
-            let offset = offset_obj.borrow().try_unwrap_uint64()
-                .map_err(|_| InterpreterError::InternalError("ptr_read expects u64 offset as second argument".to_string()))?;
-
-            // Prefer a previously-stashed typed slot (non-u64 writes and
-            // generic `List<T>` reads both round-trip through this map).
-            // Fall back to the byte-level u64 read so the classic
-            // List<u64> path keeps working.
-            if let Some(value) = self.heap_manager.borrow().typed_read(addr, offset as usize) {
-                return Ok(EvaluationResult::Value(value.into()));
-            }
-            // EXTERN-BUF: bytes a native `extern fn` wrote have no
-            // typed slot — it deposited raw bytes and the stale slots
-            // over the range were dropped, or there never were any.
-            // Read the width the annotation asks for. Without this the
-            // only fallback was an 8-byte read, so a `Vec<u8>` filled
-            // by `io::read_file_into` could not be read back on this
-            // engine while the IR VM (which has the same fallback in
-            // `ir_vm::host`) and the compiled lanes could.
-            if let Some(value) = self.read_annotated_scalar_bytes(addr, offset as usize) {
-                return Ok(EvaluationResult::Value(value.into()));
-            }
-            match self.heap_manager.borrow().read_u64(addr, offset as usize) {
-                Some(value) => Ok(EvaluationResult::Value((Object::UInt64(value)).into())),
-                None => Err(InterpreterError::InternalError("Invalid memory access in ptr_read".to_string())),
-            }
-        }
+        // Pointer operations. The untyped read is a parse error
+        // (MEMORY-ACCESS); the variant only names the builtin.
+        BuiltinFunction::PtrRead => Err(InterpreterError::InternalError(
+            "an untyped `__builtin_ptr_read` reached the evaluator".to_string(),
+        )),
 
         // MEMORY-ACCESS M1: `__builtin_ptr_read::<T>(p, off)`. The
         // width is the written type, so unlike `PtrRead` above this

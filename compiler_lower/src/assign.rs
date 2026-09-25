@@ -284,33 +284,6 @@ impl<'a> FunctionLower<'a> {
                     self.emit(InstKind::StoreRef { ptr, value: rhs_val, ty: pointee_ty }, None);
                     return Ok(None);
                 }
-                // PTR-READ-ASSIGN: `b = __builtin_ptr_read(p, i)`. The
-                // read width comes from the annotation on a `val`, and
-                // an assignment has nowhere to put one -- but the
-                // binding it writes to already has a width, which is
-                // the same answer. Without this the read was refused
-                // as needing an annotation that cannot be written in
-                // this position, so the same code had to be spelled as
-                // a fresh `val` inside the loop.
-                if let Some(Binding::Scalar { local, ty }) = self.bindings.get(&sym).cloned()
-                    && let Some(Expr::BuiltinCall(
-                        frontend::ast::BuiltinFunction::PtrRead,
-                        read_args,
-                    )) = self.program.expression.get(rhs)
-                    && read_args.len() == 2
-                {
-                    let ptr = self
-                        .lower_expr(&read_args[0])?
-                        .ok_or_else(|| "ptr_read ptr produced no value".to_string())?;
-                    let offset = self
-                        .lower_expr(&read_args[1])?
-                        .ok_or_else(|| "ptr_read offset produced no value".to_string())?;
-                    let v = self
-                        .emit(InstKind::PtrRead { ptr, offset, elem_ty: ty }, Some(ty))
-                        .ok_or_else(|| "ptr_read produced no value".to_string())?;
-                    self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
-                    return Ok(None);
-                }
                 let rhs_val = self
                     .lower_expr(rhs)?
                     .ok_or_else(|| "assignment rhs produced no value".to_string())?;

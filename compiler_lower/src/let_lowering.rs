@@ -441,31 +441,12 @@ impl<'a> FunctionLower<'a> {
             {
                 return Ok(result);
             }
-        // #121 Phase A: `val name: T = __builtin_ptr_read(p, off)` —
-        // the legacy form, whose width comes from the annotation.
-        // Without this intercept, lower_builtin_call's PtrRead arm
-        // rejects the call with an error pointing at the typed form,
-        // but a let-binding always supplies an annotation.
-        //
-        // AOT-COMPOUND-PTR-RW: when the annotation is a compound
-        // (struct / tuple) the call expands into one `PtrRead` per
-        // leaf scalar at `off + leaf_off`, then stores each leaf
-        // into a freshly-allocated `Binding::Struct` /
-        // `Binding::Tuple` local. Mirrors the per-leaf write loop
-        // in `expr.rs::PtrWrite`. Pre-existing scalar callers
-        // continue through the original single-PtrRead path.
-        if let Expr::BuiltinCall(frontend::ast::BuiltinFunction::PtrRead, args) = rhs.clone()
-            && args.len() == 2
-                && let Some(result) =
-                    self.lower_let_builtin_ptr_read(name, annotation, &args, false)?
-                {
-                    return Ok(result);
-                }
-        // MEMORY-ACCESS M1: the same read with the width written at
-        // the call. The type argument replaces the annotation as the
-        // element type -- including for a compound `T`, which is why
-        // it routes here rather than through `lower_builtin_call`
-        // (the per-leaf expansion needs the destination binding).
+        // MEMORY-ACCESS M1: `val name = __builtin_ptr_read::<T>(p, off)`
+        // -- the width is written at the call (the untyped form, which
+        // took it from the annotation, is gone). Routed here rather
+        // than through `lower_builtin_call` for a compound `T`: the
+        // per-leaf expansion (AOT-COMPOUND-PTR-RW, one `PtrRead` per
+        // leaf at `off + leaf_off`) needs the destination binding.
         // ELEMENT-BORROW E1: `__builtin_ptr_ref::<T>` rides the same
         // path — a borrow lowers exactly like the read it borrows
         // from, and the binding that catches it differs only in

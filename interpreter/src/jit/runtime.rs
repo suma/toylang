@@ -1069,7 +1069,6 @@ fn build_cache_entry(
             &func_ids,
             &helper_ids,
             &eligible.call_targets,
-            &eligible.ptr_read_hints,
             &eligible.struct_layouts,
             &mut ctx,
             &mut builder_ctx,

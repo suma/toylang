@@ -12,6 +12,14 @@
 
 ### 2026-09-25
 
+- **MEMORY-ACCESS: 旧形 `__builtin_ptr_read(p, off)` を削除** — 型引数の無い
+  読み出しはパースエラーで `::<T>` 形を案内する (警告期間は置かなかった —
+  stdlib は M2 で移行済み、残る使用者はテストと例 1 本だった)。旧形専用の
+  分岐 (lowering の `val` / 代入の特例、tree-walker の注釈読み、
+  interpreter JIT の `ptr_read_hints` 一式) を削除。`allocator_list.t` は
+  新形に移って AOT で動くようになり、`AOT_UNSUPPORTED` から外れた。
+  `pending_annotation` は `__builtin_soa_read` が使うので残る。
+
 - **NUM-W-ENUMERATION: 「全スカラー」を名指すリストを述語に寄せた** — IR
   `Type` に `is_scalar` / `is_unsigned` / `is_narrow_int` /
   `scalar_byte_size` を置き、幅の表 6 コピーを 1 つに、`matches!` で
@@ -2274,14 +2282,6 @@
   指すようになる。P6 の狙いはこれだったが、集約先が stdlib 全体に
   なっている。M2 で `Vec::elem_size` が撤去できなかった理由
   (下の TREE-WALKER-GENERIC-SCOPE) が前提条件。
-
-- **MEMORY-ACCESS: 旧形 `__builtin_ptr_read(p, off)` の削除** —
-  M2 で stdlib は全部 `::<T>` 形になったので、残る使用者は旧形を
-  pin しているテストだけ (`memory_tests` / `region_tests` /
-  `conv_span` の PTR-READ-ASSIGN)。落とせば `pending_annotation` の
-  ptr_read 経路・`ptr_read_hints` (19 箇所)・`let_lowering.rs` の
-  構文特例が消える。**先に警告を出す期間を置くかは要判断** (警告に
-  すると上記テストが毎回鳴る)。
 
 - **TREE-WALKER-GENERIC-SCOPE: 入れ子の generic で `T` が解決できない**
   ★ — `MapIter<T, U>::collect` の `val out: Vec<U> = Vec::new()` が

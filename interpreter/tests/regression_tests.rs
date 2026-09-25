@@ -49,7 +49,7 @@ fn test_regression_val_heap_operations() {
                 0u64
             } else {
                 __builtin_ptr_write(heap_ptr, 0u64, 42u64)
-                val value = __builtin_ptr_read(heap_ptr, 0u64)
+                val value = __builtin_ptr_read::<u64>(heap_ptr, 0u64)
                 __builtin_heap_free(heap_ptr)
                 value
             }

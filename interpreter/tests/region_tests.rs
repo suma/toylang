@@ -123,7 +123,7 @@ unsafe fn main() -> u64 {
     with allocator = arena {
         val p = __builtin_heap_alloc(8u64)
         __builtin_ptr_write(p, 0u64, 7u64)
-        __builtin_ptr_read(p, 0u64)
+        __builtin_ptr_read::<u64>(p, 0u64)
     }
 }
 "#;
@@ -139,7 +139,7 @@ unsafe fn main() -> u64 {
         __builtin_heap_alloc(8u64)
     }
     __builtin_ptr_write(p, 0u64, 7u64)
-    __builtin_ptr_read(p, 0u64)
+    __builtin_ptr_read::<u64>(p, 0u64)
 }
 "#;
     assert_accepted(source);
@@ -177,7 +177,7 @@ impl List {
         self.len
     }
     unsafe fn get(self: Self, index: u64) -> u64 {
-        __builtin_ptr_read(self.data, index * 8u64)
+        __builtin_ptr_read::<u64>(self.data, index * 8u64)
     }
 }
 unsafe fn make_list() -> List {

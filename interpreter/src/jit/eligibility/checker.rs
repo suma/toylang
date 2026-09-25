@@ -41,20 +41,9 @@ pub(super) fn check_callable_body(
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
-    ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
     reject_reason: &mut Option<String>,
 ) -> bool {
     let code = source.code();
-    // Generic sources are forbidden from using `__builtin_ptr_read`
-    // because the hint table is keyed by ExprRef, which is shared across
-    // monomorphs of the same body. Reject early so the diagnostic is
-    // clearer than a per-arm rejection deep inside the body.
-    if !source.generic_params().is_empty() && body_has_ptr_read(program, &code) {
-        note(reject_reason, || {
-            "generic functions cannot use __builtin_ptr_read in JIT".to_string()
-        });
-        return false;
-    }
     let mut locals: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
     let mut compound_locals = CompoundLocals::new();
     for (n, t) in &sig.params {
@@ -89,7 +78,6 @@ pub(super) fn check_callable_body(
         &mut locals,
         &mut compound_locals,
         callees,
-        ptr_read_hints,
         reject_reason,
     );
 
@@ -126,8 +114,8 @@ pub(super) fn check_callable_body(
 /// The walk is one recursive descent over a callable's body, and every
 /// step of it needs the same seven things: the AST to look into, the
 /// monomorph's type substitutions and struct layouts to resolve against,
-/// the local types it has learned so far, and the three outputs it
-/// accumulates (callees to enqueue, `__builtin_ptr_read` type hints, and
+/// the local types it has learned so far, and the two outputs it
+/// accumulates (callees to enqueue, and
 /// the rejection reason). Passing those as parameters made every one of
 /// the eighteen functions below take nine to eleven arguments, of which
 /// eight were always the same eight names in the same order.
@@ -143,7 +131,6 @@ pub(crate) struct Checker<'a> {
     locals: &'a mut HashMap<DefaultSymbol, ScalarTy>,
     compound_locals: &'a mut CompoundLocals,
     callees: &'a mut Vec<MonoCall>,
-    ptr_read_hints: &'a mut HashMap<ExprRef, ScalarTy>,
     reject_reason: &'a mut Option<String>,
 }
 
@@ -156,7 +143,6 @@ impl<'a> Checker<'a> {
         locals: &'a mut HashMap<DefaultSymbol, ScalarTy>,
         compound_locals: &'a mut CompoundLocals,
         callees: &'a mut Vec<MonoCall>,
-        ptr_read_hints: &'a mut HashMap<ExprRef, ScalarTy>,
         reject_reason: &'a mut Option<String>,
     ) -> Self {
         Self {
@@ -166,7 +152,6 @@ impl<'a> Checker<'a> {
             locals,
             compound_locals,
             callees,
-            ptr_read_hints,
             reject_reason,
         }
     }
@@ -214,7 +199,6 @@ impl<'a> Checker<'a> {
             locals: &mut scoped,
             compound_locals: self.compound_locals,
             callees: self.callees,
-            ptr_read_hints: self.ptr_read_hints,
             reject_reason: self.reject_reason,
         };
         f(&mut inner)
@@ -614,7 +598,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Validate every element of a tuple literal against the expected
-    /// element types. Records callees / ptr_read hints encountered while
+    /// element types. Records callees encountered while
     /// typing the individual element initializers.
     fn check_tuple_literal_fields(
         &mut self,
@@ -927,7 +911,7 @@ impl<'a> Checker<'a> {
         ///
         /// Returns `None` for everything else (the regular check_expr path
         /// runs). Side effect: validates the payload arg via `check_expr`,
-        /// which recursively records callees / ptr_read hints.
+        /// which recursively records callees.
     ///
     /// `annotation_hint` is the val/var annotation if available (the
     /// declared enum type with type args). Used when the rhs is a unit
@@ -1040,7 +1024,7 @@ impl<'a> Checker<'a> {
 
     /// Validate every field of a struct literal against the registered
     /// layout and (#159) determine the binding's type arguments. Records
-    /// callees / ptr_read hints encountered while typing the individual
+    /// callees encountered while typing the individual
     /// field initializers.
     ///
     /// `expected_args` is `Some(args)` when the position already pins the
@@ -1427,13 +1411,6 @@ impl<'a> Checker<'a> {
                     self.compound_locals.enums.insert(name, info);
                     return true;
                 }
-                let declared_hint = type_decl.as_ref().and_then(ScalarTy::from_type_decl);
-                // If both the annotation and the RHS are PtrRead-shaped, record
-                // the expected return type before recursing so check_expr can
-                // accept the otherwise type-polymorphic builtin.
-                if let Some(t) = declared_hint {
-                    self.register_ptr_read_hint(&value, t);
-                }
                 let val_ty = match self.check_expr(&value) {
                     Some(t) => t,
                     None => return false,
@@ -1517,9 +1494,6 @@ impl<'a> Checker<'a> {
                     (None, None) => return false,
                 };
                 if let Some(v) = value {
-                    if type_decl.is_some() {
-                        self.register_ptr_read_hint(&v, declared);
-                    }
                     let val_ty = match self.check_expr(&v) {
                         Some(t) => t,
                         None => return false,
@@ -1591,24 +1565,9 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// If `value_ref` is a direct `__builtin_ptr_read(...)` call, register
-    /// `expected` as the read's return type so check_expr can accept it. The
-    /// JIT only supports PtrRead in positions where the expected type is
-    /// statically known (val/var with annotation, assignment to a typed
-    /// identifier).
-    fn register_ptr_read_hint(&mut self, value_ref: &ExprRef, expected: ScalarTy) {
-        if let Some(Expr::BuiltinCall(BuiltinFunction::PtrRead, _)) =
-            self.program.expression.get(value_ref)
-        {
-            self.ptr_read_hints.insert(*value_ref, expected);
-        }
-    }
-
     /// Returns the type produced by the expression, or `None` if the expression
     /// uses an unsupported construct. As a side effect, populates `callees` with
-    /// names of user-defined functions invoked by this expression and
-    /// `ptr_read_hints` with PtrRead expected return types where statically
-    /// derivable from context.
+    /// names of user-defined functions invoked by this expression.
     pub(crate) fn check_expr(&mut self, expr_ref: &ExprRef) -> Option<ScalarTy> {
         let expr = self.program.expression.get(expr_ref)?;
         match expr {
@@ -2102,7 +2061,7 @@ impl<'a> Checker<'a> {
     }
 
     /// The `__builtin_*` surface.
-    fn check_builtins(&mut self, expr: Expr, expr_ref: &ExprRef) -> Option<ScalarTy> {
+    fn check_builtins(&mut self, expr: Expr, _expr_ref: &ExprRef) -> Option<ScalarTy> {
         match expr {
             Expr::BuiltinCall(func, args) => {
                 match func {
@@ -2339,23 +2298,10 @@ impl<'a> Checker<'a> {
                         }
                         Some(ScalarTy::Unit)
                     }
+                    // The untyped read is a parse error (MEMORY-ACCESS).
                     BuiltinFunction::PtrRead => {
-                        // Args must be (ptr, u64). Return type is decided at the
-                        // call site context — we look it up in the hint map. If
-                        // the read appears in a position where eligibility never
-                        // got to register a hint, fail.
-                        if !self.check_builtin_args(&[ScalarTy::Ptr, ScalarTy::U64], &args) {
-                            return None;
-                        }
-                        let resolved = self.ptr_read_hints.get(expr_ref).copied();
-                        if resolved.is_none() {
-                            self.reject(|| {
-                                "ptr_read used outside a typed val/var/assign — JIT \
-                                 needs the result type to be statically known"
-                                    .to_string()
-                            });
-                        }
-                        resolved
+                        self.reject(|| "an untyped `__builtin_ptr_read` is not a program".to_string());
+                        None
                     }
                     // MEMORY-ACCESS M1: the width is written at the
                     // call, so there is no hint to look up and no
@@ -3551,13 +3497,6 @@ fn infer_struct_type_args(
     Some(out)
 }
 
-/// Quick syntactic walk to detect any PtrRead within a function body.
-fn body_has_ptr_read(program: &File, stmt_ref: &StmtRef) -> bool {
-    let mut found = false;
-    walk_stmt_for_ptr_read(program, stmt_ref, &mut found);
-    found
-}
-
 /// Returns true if `name` matches any top-level `enum` declaration
 /// in the program. Used by the AssociatedFunctionCall reject path so
 /// it can distinguish enum constructors (`Option::Some(...)`) from
@@ -3574,75 +3513,5 @@ fn enum_decl_lookup_by_name(
         }
     }
     None
-}
-
-fn walk_stmt_for_ptr_read(program: &File, stmt_ref: &StmtRef, found: &mut bool) {
-    if *found {
-        return;
-    }
-    let Some(stmt) = program.statement.get(stmt_ref) else {
-        return;
-    };
-    match stmt {
-        Stmt::Expression(e) => walk_expr_for_ptr_read(program, &e, found),
-        Stmt::Val(_, _, e) => walk_expr_for_ptr_read(program, &e, found),
-        Stmt::Var(_, _, Some(e)) => walk_expr_for_ptr_read(program, &e, found),
-        Stmt::Return(Some(e)) => walk_expr_for_ptr_read(program, &e, found),
-        Stmt::For(_, _, s, e, body) => {
-            walk_expr_for_ptr_read(program, &s, found);
-            walk_expr_for_ptr_read(program, &e, found);
-            walk_expr_for_ptr_read(program, &body, found);
-        }
-        Stmt::While(_, c, body) => {
-            walk_expr_for_ptr_read(program, &c, found);
-            walk_expr_for_ptr_read(program, &body, found);
-        }
-        _ => {}
-    }
-}
-
-fn walk_expr_for_ptr_read(program: &File, expr_ref: &ExprRef, found: &mut bool) {
-    if *found {
-        return;
-    }
-    let Some(expr) = program.expression.get(expr_ref) else {
-        return;
-    };
-    match expr {
-        Expr::BuiltinCall(BuiltinFunction::PtrRead, _) => *found = true,
-        Expr::Block(stmts) => {
-            for s in &stmts {
-                walk_stmt_for_ptr_read(program, s, found);
-            }
-        }
-        Expr::Binary(_, l, r) | Expr::Assign(l, r) | Expr::Range(l, r) => {
-            walk_expr_for_ptr_read(program, &l, found);
-            walk_expr_for_ptr_read(program, &r, found);
-        }
-        Expr::Unary(_, e) | Expr::Cast(e, _) => {
-            walk_expr_for_ptr_read(program, &e, found);
-        }
-        Expr::IfElifElse(c, t, elifs, el) => {
-            walk_expr_for_ptr_read(program, &c, found);
-            walk_expr_for_ptr_read(program, &t, found);
-            for (ec, eb) in &elifs {
-                walk_expr_for_ptr_read(program, ec, found);
-                walk_expr_for_ptr_read(program, eb, found);
-            }
-            walk_expr_for_ptr_read(program, &el, found);
-        }
-        Expr::Call(_, args) => walk_expr_for_ptr_read(program, &args, found),
-        Expr::ExprList(es) | Expr::ArrayLiteral(es) | Expr::TupleLiteral(es) => {
-            for e in &es {
-                walk_expr_for_ptr_read(program, e, found);
-            }
-        }
-        Expr::BuiltinCall(_, args) => {
-            for a in &args {
-                walk_expr_for_ptr_read(program, a, found);
-            }
-        }
-        _ => {}
-    }
 }
 

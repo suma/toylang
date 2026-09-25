@@ -2090,8 +2090,8 @@ form costs nothing.
 
 **`__simd_load(p, i)` addresses by *element*.** Lane `k` reads the
 bytes at `(i + k) * lane_bytes`. Note the contrast with
-`__builtin_ptr_read(p, off)`, whose `off` is a byte count — so the
-`Vec<T>` idiom `__builtin_ptr_read(self.data, i * self.elem_size)`
+`__builtin_ptr_read::<T>(p, off)`, whose `off` is a byte count — so the
+`Vec<T>` idiom `__builtin_ptr_read::<T>(self.data, i * self.elem_size)`
 becomes `__simd_load(self.data, i)` when `T` is the lane type.
 
 A lane index (`__simd_extract` / `__simd_insert`) must be a literal in
@@ -2819,7 +2819,7 @@ its declaration:
 
 ```rust
 unsafe fn load(p: ptr) -> u64 {
-    val v: u64 = __builtin_ptr_read(p, 0u64)
+    val v: u64 = __builtin_ptr_read::<u64>(p, 0u64)
     v
 }
 ```
@@ -4513,7 +4513,6 @@ These always go through the active allocator:
 | `__builtin_heap_free(p: ptr)` | `-> ()` |
 | `__builtin_heap_realloc(p: ptr, new_size: u64)` | `-> ptr` |
 | `__builtin_ptr_read::<T>(p: ptr, offset: u64)` | `-> T` (the written type) |
-| `__builtin_ptr_read(p: ptr, offset: u64)` | `-> T` (return type from context; legacy) |
 | `__builtin_ptr_write(p: ptr, offset: u64, v: T)` | `-> ()` |
 | `__builtin_ptr_is_null(p: ptr)` | `-> bool` |
 | `__builtin_mem_copy(src: ptr, dst: ptr, size: u64)` | `-> ()` |
@@ -4523,6 +4522,12 @@ These always go through the active allocator:
 | `__builtin_mem_find(p: ptr, len: u64, byte: u8)` | `-> u64` (index, or `len` when absent) |
 | `__builtin_mem_find_seq(hay: ptr, hay_len: u64, needle: ptr, needle_len: u64)` | `-> u64` (index, or `hay_len` when absent) |
 | `__builtin_ptr_offset(p: ptr, bytes: u64)` | `-> ptr` (address arithmetic; no allocation) |
+
+The read names its element type: `__builtin_ptr_read::<T>(p, off)`.
+The untyped `__builtin_ptr_read(p, off)`, which took its width from the
+annotation of the `val` it was bound by, is a parse error — it made the
+read a statement rather than an expression, and the engines disagreed
+on what a mismatched width returned.
 | `__builtin_ptr_eq(a: ptr, b: ptr)` | `-> bool` (address equality) |
 | `__builtin_null_ptr()` | `-> ptr` (address 0; `__builtin_heap_alloc(0u64)` may return non-null, so use this when you need a portable null) |
 
@@ -6455,7 +6460,7 @@ struct Node { v: i64, next: ptr, has_next: bool }
 
 val p: ptr = __builtin_heap_alloc(__builtin_sizeof(rest))
 __builtin_ptr_write(p, 0u64, rest)
-val rest: Node = __builtin_ptr_read(n.next, 0u64)
+val rest: Node = __builtin_ptr_read::<Node>(n.next, 0u64)
 ```
 
 or — with the stdlib's typed window — make the edge an

@@ -239,7 +239,7 @@ method は `unsafe` が外れる (156 → 20 前後の見込み)。
 | # | やること | 規模 | 効果 |
 |---|---|---|---|
 | M0 | `mem_move` / `mem_set` を compiled レーンで lowering、`mem_set` の署名を doc に合わせる (実測 4) ✅ (2026-09-05) | 小 | 4 レーン一致。以降の土台 |
-| M1 | `__builtin_ptr_read::<T>(p, off)` (A) と旧形の deprecation ✅ (2026-09-05、deprecation は文書のみ) | 中 | 実測 1・2 の解消。側路 3 種の削除は M2 |
+| M1 | `__builtin_ptr_read::<T>(p, off)` (A) と旧形の deprecation ✅ (2026-09-05、deprecation は文書のみ)。**旧形は 2026-09-25 に削除** — パースエラーで `::<T>` 形を案内する。旧形専用の分岐 (lowering の `val` / 代入の特例、tree-walker の注釈読み、interpreter JIT の `ptr_read_hints`) も消した。注釈の側路 (`pending_annotation`) は `__builtin_soa_read` が使うので残る | 中 | 実測 1・2 の解消 |
 | M2 | stdlib 213 箇所を `::<T>` 形へ機械移行 ✅ (2026-09-05) + `Vec::elem_size` 撤去 ❌ (下記) | 中 (stdlib) | 単位と幅が層で固定される |
 | M3 | `Span<T>` の範囲演算 (C の表) を `copy_from` / `fill` / `eq` / `find` / `find_seq` から ✅ (2026-09-05) | 中 | 実測 3・5 の解消。string.t の 5 重複が 1 に |
 | M4 | `chunks::<N>()` と `read_uNN_le/be` | 中 | hex / base64 / sha256 の手書き SIMD と桁合わせが runtime に移る |

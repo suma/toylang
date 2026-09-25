@@ -77,8 +77,8 @@ const AOT_UNSUPPORTED: &[&str] = &[
     // (`allocator_bounded.t` left in MEMORY-ACCESS M2: its bare
     // `__builtin_ptr_read(p, 0u64)` in tail position had no
     // annotation for the AOT lane to take a width from, and
-    // `__builtin_ptr_read::<u64>` does not need one.)
-    "allocator_list.t",
+    // `__builtin_ptr_read::<u64>` does not need one. `allocator_list.t`
+    // left when the untyped read was removed, for the same reason.)
     "array_type_only.t",
     "const_decls.t",
     "extern_generic_identity.t",

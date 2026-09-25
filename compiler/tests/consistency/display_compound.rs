@@ -957,7 +957,7 @@ fn matching_through_a_borrow_does_not_free_the_payload() {
                 Cell { p: p }
             }
             unsafe fn get(&self) -> i64 {
-                val v: i64 = __builtin_ptr_read(self.p, 0u64)
+                val v: i64 = __builtin_ptr_read::<i64>(self.p, 0u64)
                 v
             }
         }

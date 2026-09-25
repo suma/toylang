@@ -373,7 +373,9 @@ impl EvaluationContext<'_> {
         let from_ptr_read = matches!(
             self.expr_pool.get(expr),
             Some(Expr::BuiltinCall(
-                frontend::ast::BuiltinFunction::PtrRead | frontend::ast::BuiltinFunction::SoaRead,
+                frontend::ast::BuiltinFunction::PtrReadTyped(_)
+                    | frontend::ast::BuiltinFunction::PtrRefTyped(_)
+                    | frontend::ast::BuiltinFunction::SoaRead,
                 _
             ))
         );
@@ -414,7 +416,8 @@ impl EvaluationContext<'_> {
             matches!(
                 self.expr_pool.get(&e),
                 Some(Expr::BuiltinCall(
-                    frontend::ast::BuiltinFunction::PtrRead
+                    frontend::ast::BuiltinFunction::PtrReadTyped(_)
+                        | frontend::ast::BuiltinFunction::PtrRefTyped(_)
                         | frontend::ast::BuiltinFunction::SoaRead,
                     _
                 ))

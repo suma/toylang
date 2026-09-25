@@ -2808,21 +2808,11 @@ impl<'a> FunctionLower<'a> {
                     Some(Type::U64),
                 ))
             }
-            BuiltinFunction::PtrRead => {
-                // The legacy context-typed form: the return type comes
-                // from the surrounding `val` / `var` annotation, so it
-                // can only appear as that binding's rhs -- which
-                // `let_lowering.rs::lower_let` intercepts before this
-                // arm. Reaching here means there was no annotation to
-                // read a width from (MEMORY-ACCESS M1/M2).
-                Err(
-                    "`__builtin_ptr_read(p, off)` takes its width from the annotation of the \
-                     `val NAME: TYPE = ...` it is bound by, so it cannot be used here; write \
-                     `__builtin_ptr_read::<TYPE>(p, off)`, which carries its own width and \
-                     works in any position"
-                        .to_string(),
-                )
-            }
+            // The untyped read is a parse error (MEMORY-ACCESS); the
+            // variant only names the builtin for the parser.
+            BuiltinFunction::PtrRead => Err(
+                "internal error: an untyped `__builtin_ptr_read` reached lowering".to_string(),
+            ),
             // ELEMENT-BORROW E1: a borrow lowers exactly like the read
             // it borrows from — references erase here. The difference
             // lives in the type checker, which keeps drop glue off the

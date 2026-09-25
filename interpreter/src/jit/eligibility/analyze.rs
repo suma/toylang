@@ -31,15 +31,6 @@ pub struct EligibleSet {
     /// the same generic function with different arg types get different
     /// MonoKeys here.
     pub call_targets: HashMap<ExprRef, MonoKey>,
-    /// `__builtin_ptr_read(...)` is type-polymorphic at the language level —
-    /// the interpreter picks the return type from the typed-slot store at
-    /// runtime. The JIT instead requires the expected scalar at compile
-    /// time, so eligibility records the type for every supported PtrRead
-    /// position (Val/Var/Assign with a typed identifier on the LHS).
-    /// Codegen reads back from this map to pick the right helper.
-    /// Generic functions cannot use PtrRead: the same ExprRef would need
-    /// distinct types per monomorph.
-    pub ptr_read_hints: HashMap<ExprRef, ScalarTy>,
     /// Layout of every struct type the JIT understands. Built in a
     /// pre-pass over top-level `Stmt::StructDecl` declarations.
     pub struct_layouts: HashMap<DefaultSymbol, StructLayout>,
@@ -176,7 +167,6 @@ pub fn analyze(
     let mut signatures: HashMap<MonoKey, FuncSignature> = HashMap::new();
     let mut monomorphs: HashMap<MonoKey, MonomorphSource> = HashMap::new();
     let mut call_targets: HashMap<ExprRef, MonoKey> = HashMap::new();
-    let mut ptr_read_hints: HashMap<ExprRef, ScalarTy> = HashMap::new();
     // Work item: (source, target, substitution-vec ordered by source.generic_params).
     let mut stack: Vec<(MonomorphSource, MonoTarget, Vec<ScalarTy>)> =
         vec![(MonomorphSource::Function(main.clone()), MonoTarget::Function(main.name), Vec::new())];
@@ -269,7 +259,6 @@ pub fn analyze(
             &substitutions,
             &struct_layouts,
             &mut callees,
-            &mut ptr_read_hints,
             &mut body_reason,
         ) {
             let detail = body_reason.unwrap_or_else(|| "unsupported feature".into());
@@ -320,7 +309,6 @@ pub fn analyze(
         monomorphs,
         signatures,
         call_targets,
-        ptr_read_hints,
         struct_layouts,
         enum_layouts,
     })

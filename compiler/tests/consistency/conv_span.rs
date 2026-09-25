@@ -182,17 +182,13 @@ fn a_string_lends_its_bytes_as_a_span() {
 }
 
 
-// PTR-READ-ASSIGN: `b = __builtin_ptr_read(p, i)`.
+// PTR-READ-ASSIGN: `b = __builtin_ptr_read::<u8>(p, i)`.
 //
-// The read's width comes from the annotation on a `val`, and an
-// assignment has nowhere to put one -- so the same read had to be
-// spelled as a fresh binding inside the loop. Worse, the type checker
-// did not say so: it fell back to `u64`, and the mismatch was
-// reported against whichever statement the recovery anchored on,
-// naming a type from somewhere else entirely.
-//
-// The binding being written to already has a width, which is the same
-// answer the annotation would have given.
+// The untyped read took its width from the annotation on a `val`, and
+// an assignment had nowhere to put one. The read now names its type
+// (the untyped form is gone), so an assignment is an ordinary one; the
+// test keeps both widths so a read that came back the wrong width
+// shows up as the wrong sum.
 
 #[test]
 fn a_pointer_read_can_be_assigned_to_an_existing_binding() {
@@ -202,7 +198,7 @@ fn a_pointer_read_can_be_assigned_to_an_existing_binding() {
             var b: u8 = 0u8
             var i: u64 = 0u64
             while i < n {
-                b = __builtin_ptr_read(p, i)
+                b = __builtin_ptr_read::<u8>(p, i)
                 total = total + (b as u64)
                 i = i + 1u64
             }
@@ -211,7 +207,7 @@ fn a_pointer_read_can_be_assigned_to_an_existing_binding() {
 
         unsafe fn wide(p: ptr) -> u64 {
             var w: u64 = 0u64
-            w = __builtin_ptr_read(p, 0u64)
+            w = __builtin_ptr_read::<u64>(p, 0u64)
             w
         }
 

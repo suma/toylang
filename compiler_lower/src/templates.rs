@@ -929,6 +929,24 @@ pub(super) fn substitute_self(
     }
 }
 
+/// CONST-ARRAY: a parameter's IR type. A by-value array of scalars
+/// travels as the address of the caller's copy, which the callee copies
+/// into its own slot on entry -- the callee owns a copy, as the
+/// tree-walker gives it one, without an N-leaf signature. Only for
+/// parameters: a returned array is still refused.
+pub(super) fn lower_param_type(
+    ty: &TypeDecl,
+    struct_defs: &StructDefs,
+    enum_defs: &EnumDefs,
+    module: &mut Module,
+    interner: &DefaultStringInterner,
+) -> Option<Type> {
+    if scalar_array_ref(ty).is_some() {
+        return Some(Type::U64);
+    }
+    lower_param_or_return_type(ty, struct_defs, enum_defs, module, interner)
+}
+
 /// CONST-ARRAY: the element type and length of a borrowed fixed-size
 /// array of scalars (`&[u32; 64]`'s pointee), the shape that crosses a
 /// call as one address.

@@ -501,3 +501,44 @@ fn a_borrowed_array_index_is_bounds_checked() {
     "#;
     assert_diagnostic_consistent(src, "array_ref_out_of_bounds");
 }
+
+/// CONST-ARRAY: an array passed *by value* is the callee's own copy --
+/// what the tree-walker gives it. The compiled lanes pass the caller's
+/// address and the callee copies it into a slot of its own on entry,
+/// so a write in the callee leaves the caller's array (and a `const`
+/// table) as it was. An array literal argument is materialised first.
+#[test]
+fn an_array_passed_by_value_is_the_callees_copy() {
+    let src = r#"
+const K: [u64; 3] = [1u64, 2u64, 3u64]
+fn bump(a: [u64; 3]) -> u64 {
+    a[0] = 100u64
+    a[0] + a[1]
+}
+fn mutate(a: [u64; 3]) -> u64 {
+    a[2] = 50u64
+    a[2]
+}
+fn narrow(a: [u8; 4], i: u64) -> u64 {
+    a[i] = a[i] + 1u8
+    (a[0] as u64) + (a[3] as u64)
+}
+struct S { k: u64 }
+impl S {
+    fn scale(&self, a: [i32; 2]) -> i64 { ((a[0] + a[1]) as i64) * (self.k as i64) }
+}
+fn main() -> u64 {
+    var l: [u64; 3] = [7u64, 8u64, 9u64]
+    val x = bump(l)
+    val y = mutate(l)
+    val z = bump(K)
+    val b: [u8; 4] = [10u8, 20u8, 30u8, 40u8]
+    val w = narrow(b, 3u64)
+    val s = S { k: 3u64 }
+    val v = s.scale([-4i32, 9i32])
+    println("{x} {y} {z} {l[0]} {l[2]} {w} {b[3]} {K[0]} {v}")
+    0u64
+}
+"#;
+    assert_renders(src, "array_by_value", "108 50 102 7 9 51 40 1 15\n");
+}

@@ -1517,6 +1517,33 @@ impl<'a> FunctionLower<'a> {
             Some(Expr::Unary(UnaryOp::Borrow | UnaryOp::BorrowMut, inner)) => inner,
             _ => *arg,
         };
+        // An array literal argument (`f([1u8, 2u8])`) is written into a
+        // slot of its own first, and that slot's address is passed.
+        if let Some(Expr::ArrayLiteral(elems)) = self.program.expression.get(&inner) {
+            let Some(first) = elems.first() else {
+                return Ok(None);
+            };
+            let Some(element_ty) = self.value_scalar(first) else {
+                return Ok(None);
+            };
+            if !element_ty.is_scalar() {
+                return Ok(None);
+            }
+            let storage = self.allocate_array_storage(element_ty, elems.len(), false);
+            for (i, e) in elems.iter().enumerate() {
+                let v = self
+                    .lower_expr(e)?
+                    .ok_or_else(|| "array literal element produced no value".to_string())?;
+                self.emit_array_leaf_store(&storage, 1, i, 0, v, element_ty);
+            }
+            let zero = self
+                .emit(InstKind::Const(Const::U64(0)), Some(Type::U64))
+                .expect("Const returns a value");
+            return Ok(self.emit(
+                InstKind::ArrayElemAddr { slot: storage.scalar_slot(), index: zero, elem_ty: element_ty },
+                Some(Type::U64),
+            ));
+        }
         let Some(Expr::Identifier(sym)) = self.program.expression.get(&inner) else {
             return Ok(None);
         };

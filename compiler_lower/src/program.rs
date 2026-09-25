@@ -603,7 +603,7 @@ fn declare_plain_functions(
         }
         let mut params: Vec<Type> = Vec::with_capacity(func.parameter.len());
         for (name, ty) in &func.parameter {
-            let lowered = lower_param_or_return_type(ty, struct_defs, enum_defs, module, interner).ok_or_else(|| {
+            let lowered = crate::templates::lower_param_type(ty, struct_defs, enum_defs, module, interner).ok_or_else(|| {
                 unlowerable_type_message(|| {
                     format!(
                         "compiler MVP cannot lower parameter `{}: {}` yet{}",
@@ -912,7 +912,7 @@ fn declare_methods(
             // `self: Self` / `other: &Self` — substitute Self for the
             // impl's target, at any depth (`substitute_self`).
             let resolved = substitute_self(pty, &self_decl, interner);
-            let lowered = lower_param_or_return_type(
+            let lowered = crate::templates::lower_param_type(
                 &resolved,
                 struct_defs,
                 enum_defs,
@@ -2189,6 +2189,7 @@ impl<'a> FunctionLower<'a> {
         // caller, so its leaves must not be redirected into a slot of
         // our own while they are being bound.
         self.binding_params = true;
+        let mut by_value_arrays: Vec<(DefaultSymbol, LocalId, Type, usize)> = Vec::new();
         for (i, (name, decl_ty)) in func.parameter.iter().enumerate() {
             // REF-Stage-2 (b)+(c)+(g): `&T` / `&mut T` scalar parameter
             // binds as `Binding::RefScalar` so reads / assignments
@@ -2240,6 +2241,14 @@ impl<'a> FunctionLower<'a> {
                 let start = self.module.function_mut(self.func_id).add_local(ty);
                 let end = self.module.function_mut(self.func_id).add_local(ty);
                 self.bindings.insert(*name, Binding::Range { start, end, ty });
+                continue;
+            }
+            // CONST-ARRAY: `a: [u32; 4]` by value arrives as the address
+            // of the caller's array; the copy into a slot of its own is
+            // emitted once every parameter local exists (below).
+            if let Some((element_ty, length)) = crate::templates::scalar_array_ref(decl_ty) {
+                let ptr = self.module.function_mut(self.func_id).add_local(Type::U64);
+                by_value_arrays.push((*name, ptr, element_ty, length));
                 continue;
             }
             // CONST-ARRAY: `t: &[u32; 64]` arrives as the address of
@@ -2387,6 +2396,32 @@ impl<'a> FunctionLower<'a> {
         // codegen layer extends the cranelift signature's return
         // shape from `self_writeback_types`.
         self.binding_params = false;
+
+        // CONST-ARRAY: each by-value array parameter becomes the
+        // callee's own array -- a slot of its own, filled from the
+        // caller's address with one copy -- so writes to it stay here.
+        for (name, ptr, element_ty, length) in by_value_arrays {
+            let storage = self.allocate_array_storage(element_ty, length, false);
+            let src = self
+                .emit(InstKind::LoadLocal(ptr), Some(Type::U64))
+                .expect("LoadLocal returns a value");
+            let zero = self
+                .emit(InstKind::Const(crate::ir::Const::U64(0)), Some(Type::U64))
+                .expect("Const returns a value");
+            let dest = self
+                .emit(
+                    InstKind::ArrayElemAddr { slot: storage.scalar_slot(), index: zero, elem_ty: element_ty },
+                    Some(Type::U64),
+                )
+                .expect("ArrayElemAddr returns a value");
+            let bytes = super::array_layout::elem_stride_bytes(element_ty, self.module) as u64
+                * length as u64;
+            let size = self
+                .emit(InstKind::Const(crate::ir::Const::U64(bytes)), Some(Type::U64))
+                .expect("Const returns a value");
+            self.emit(InstKind::MemCopy { src, dest, size }, None);
+            self.bindings.insert(name, Binding::Array { element_ty, length, storage });
+        }
 
         // CODE-SIZE-SELF-ABI: decide whether the receiver travels as a
         // pointer before the writeback shape is built, because a

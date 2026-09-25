@@ -2307,8 +2307,12 @@ fn pick(i: u64) -> u32 { K[i] }
   a shared `&[T; N]` cannot be written through (`t[i] = v` is a type
   error naming `&mut [T; N]`). A `var` stack array passed to
   `&mut [T; N]` is written in place. The length is part of the type,
-  and the elements are scalars; an array cannot yet be passed *by
-  value* on the compiled lanes -- pass `&[T; N]` instead.
+  and the elements are scalars.
+- An array passed **by value** (`a: [u64; 3]`) is the callee's own
+  copy: writing `a[i]` leaves the caller's array, or the table, as it
+  was. The compiled lanes pass the address and copy on entry, so it
+  costs one copy of the elements. An array literal may be passed
+  directly (`f([1u8, 2u8])`) to either form.
 
 Today the JIT silently falls back to the tree-walking interpreter for
 any function that references a `const` — see [`JIT.md`](../design-docs/JIT.md).

@@ -186,7 +186,19 @@ toy api <module>                  # 既存の --api を根つきで
 toy effects [FILE]                # 既存の --effects を根つきで (穴 3 の解消)
 toy explain <CODE>
 toy version [-v]                  # 何のビルドが、どこに在るか
+toy new <DIR> / toy init [DIR]    # 規約どおりの雛形 (2026-09-25)
 ```
+
+**2026-09-25 追加**: `toy new` / `toy init` (規約 — `main.t` / `src/` /
+`tests/` — を知る手段が無かったので、そのまま `run` / `test` / `check`
+/ `test --check` が通る雛形を書く。既存ファイルは上書きしない)、
+`toy run --backend all` (`compiler --all-backends` にパッケージの根を
+渡す。プログラム引数は全レーンに渡せないので拒否)、`toy test --check
+[--seed=N]` (上の D3 にあった予定。`interpreter --check` の報告を
+`interpreter::property::report` に移して共有)。`toy test --backend all`
+は未実装で、`test` / `check` / `build` に `all` を渡すと理由つきで拒否する。
+見送り: `fmt` (フォーマッタが無い)、`bench` (言語側に構文が無い)、
+`watch` (D4 で常駐を捨てた)、`doc` (`api` と重なる)。
 
 - **`toy run` の `--` 以降はプログラムの引数**。今は `RunOptions.args`
   への注入が CLI から見えにくく、`compiler` 側には無い

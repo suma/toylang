@@ -511,6 +511,43 @@ fn a_generic_method_is_checked() {
 }
 
 #[test]
+fn an_associated_function_of_a_generic_type_is_skipped() {
+    // No receiver means nothing fixes `T`, and a body that sizes `T`
+    // failed every trial on the unbound parameter -- reported as a
+    // broken contract. The stdlib's own `Vec::with_capacity` is this
+    // shape, so every `--check` of a program using `String` failed.
+    let report = check(
+        "struct Buf<T> {
+            n: u64,
+        }
+        impl<T> Buf<T> {
+            fn bytes_for(n: u64) -> u64
+                ensures result == n * __builtin_sizeof::<T>()
+            {
+                n * __builtin_sizeof::<T>()
+            }
+        }
+        fn main() -> u64 {
+            val s: String = String::from_str(\"x\")
+            s.len()
+        }",
+        0x1234,
+    );
+    for name in ["Buf::bytes_for", "Vec::with_capacity"] {
+        assert!(
+            matches!(outcome_for(&report, name), CheckOutcome::Skipped { .. }),
+            "{name}: {:?}",
+            outcome_for(&report, name)
+        );
+    }
+    assert!(
+        !report.checks.iter().any(|c| matches!(c.outcome, CheckOutcome::Failed { .. })),
+        "{:?}",
+        report.checks
+    );
+}
+
+#[test]
 fn methods_without_contracts_are_skipped() {
     let report = check(
         "struct Point {

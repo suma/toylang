@@ -155,8 +155,12 @@ cargo run -q -p compiler -- --core-modules core --core-modules mypkg/src mypkg/m
 
 # 同じことを規約でやる `toy`。root は「main.t か src/ を持つ最寄りの祖先」
 # から組み立てる。マニフェストは無い
+cargo run -q -p toy -- new   mypkg                    # 雛形 (main.t / src/greet.t / tests/basic.t)。そのまま run / test / check が通る
+cargo run -q -p toy -- init  [DIR]                    # 既存ディレクトリに同じ雛形。どちらも既存ファイルを上書きしない
 cargo run -q -p toy -- build mypkg [--release] [-o PATH] [--format=text|json]
 cargo run -q -p toy -- run   mypkg [--backend aot|jit|vm] [--format=text|json] [-- ARGS...]
+cargo run -q -p toy -- run   mypkg --backend all      # 3 レーン突き合わせ (compiler --all-backends をパッケージで)
+cargo run -q -p toy -- test  mypkg --check [--seed=N] # 契約のプロパティテスト (interpreter --check をパッケージで)
 cargo run -q -p toy -- check mypkg [--format=text|json]
 cargo run -q -p toy -- clean mypkg [--all] [--format=text|json]   # 出力を消す (--all は build/ ごと)
 cargo run -q -p toy -- version [-v] [--format=text|json]         # 各部の version / git rev / パス

@@ -25,13 +25,6 @@ use interpreter::{RunOptions, RunOutcome};
 ///
 /// Returns an empty list when nothing resolves and the env var didn't
 /// explicitly opt out — auto-loading then becomes a no-op.
-/// DBC-CHECK-CASES: report a pass as thin when the precondition
-/// discarded more than this many inputs per accepted one. A narrow
-/// `requires` is legitimate — the point is that the reader should
-/// know the pass rests on a handful of cases rather than on the full
-/// budget.
-const THIN_PASS_RATIO: usize = 10;
-
 fn resolve_core_modules_dirs(cli_roots: Vec<PathBuf>) -> Vec<PathBuf> {
     if !cli_roots.is_empty() {
         return cli_roots;
@@ -498,98 +491,13 @@ fn report_tests(source: &str, filename: &str, options: &interpreter::RunOptions<
     i32::from(!failed.is_empty())
 }
 
-/// Property-check the file's contracts and print a report.
-///
-/// LLM-LOOP P5: the seed is always printed, because a property that
-/// fails one run in fifty is useless if it cannot be replayed.
+/// Property-check the file's contracts and print a report
+/// (`interpreter::property::report`, shared with `toy test --check`).
 fn report_contract_check(
     source: &str,
     filename: &str,
     options: &interpreter::RunOptions<'_>,
     seed: Option<u64>,
 ) -> i32 {
-    use interpreter::property::CheckOutcome;
-
-    let seed = seed.unwrap_or_else(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0x5EED)
-    });
-    let report = match interpreter::property::check_source(source, filename, options, seed, None) {
-        Ok(report) => report,
-        // Parse / type errors were already reported.
-        Err(_) => return 1,
-    };
-
-    let mut checked = 0usize;
-    let mut failures = 0usize;
-    let mut total_cases = 0usize;
-    for check in &report.checks {
-        match &check.outcome {
-            CheckOutcome::Passed { cases, discarded } => {
-                checked += 1;
-                total_cases += cases;
-                // DBC-CHECK-CASES: a pass says nothing about how much
-                // was actually tried. `requires n == 42u64` turns away
-                // almost every generated input, and one lucky case
-                // used to print exactly what a thorough run prints.
-                // Reported when the precondition swallowed most of the
-                // budget, which is the case worth a second look.
-                if *cases * THIN_PASS_RATIO < *discarded {
-                    eprintln!(
-                        "THIN  {} — only {cases} input(s) satisfied `requires` ({discarded} discarded)",
-                        check.function
-                    );
-                }
-            }
-            // CHECK-NONTERMINATION: printed as loudly as a failure
-            // without counting as one. The contract was not broken —
-            // the checker never got an answer — and the fix is
-            // almost always a `requires` that says which inputs the
-            // function was written for, so the message names it.
-            CheckOutcome::Exhausted { cases, discarded, budget } => {
-                checked += 1;
-                total_cases += cases;
-                eprintln!(
-                    "EXHAUSTED  {} — an input ran past the {budget}-iteration budget \
-                     ({cases} case(s) completed, {discarded} discarded before it)",
-                    check.function
-                );
-                eprintln!(
-                    "    bound the inputs with a `requires` clause so the check can finish"
-                );
-            }
-            CheckOutcome::Inconclusive { discarded } => {
-                checked += 1;
-                eprintln!(
-                    "INCONCLUSIVE  {} — `requires` rejected all {discarded} generated inputs",
-                    check.function
-                );
-            }
-            CheckOutcome::Failed { counterexample, detail } => {
-                checked += 1;
-                failures += 1;
-                let args = counterexample
-                    .iter()
-                    .map(|(name, value)| format!("{name} = {value}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                eprintln!("FAILED  {}", check.function);
-                eprintln!("    minimal counterexample: {args}");
-                for line in detail.lines() {
-                    eprintln!("    {line}");
-                }
-            }
-            // Uncontracted functions are the common case; saying so for
-            // each one would bury the findings.
-            CheckOutcome::Skipped { .. } => {}
-        }
-    }
-
-    println!(
-        "{checked} contracted function(s)/method(s) checked, {total_cases} case(s), {failures} failed  \
-         (seed: 0x{seed:x}; replay with --check --seed=0x{seed:x})"
-    );
-    i32::from(failures > 0)
+    interpreter::property::report(source, filename, options, seed, "--check")
 }

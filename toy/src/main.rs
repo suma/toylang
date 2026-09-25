@@ -19,6 +19,7 @@
 mod clean;
 mod collide;
 mod package;
+mod scaffold;
 mod test_runner;
 mod version;
 
@@ -33,10 +34,13 @@ toy — build and run toylang programs
 
 usage:
   toy build [PATH] [--release] [--backend aot|jit] [-o OUT] [--profile=compile] [--format=text|json] [-v]
-  toy run   [PATH] [--release] [--backend aot|jit|vm|tree] [--format=text|json] [-v] [-- ARGS...]
+  toy run   [PATH] [--release] [--backend aot|jit|vm|tree|all] [--format=text|json] [-v] [-- ARGS...]
   toy check [PATH] [--format=text|json] [-v]
   toy clean [PATH] [--all] [--format=text|json] [-v]
+  toy new   <DIR> [--format=text|json] [-v]
+  toy init  [DIR] [--format=text|json] [-v]
   toy test  [FILTER] [PATH] [-j N] [--list] [--bless] [--format=text|json] [-v]
+  toy test  [PATH] --check [--seed=N] [-v]
   toy api <MODULE.t> [PATH] [--format=text|json]
   toy effects [PATH] [--format=text|json] [-v]
   toy explain [CODE] [--format=text|json]
@@ -50,12 +54,16 @@ shadow a stdlib module of the same name.
 options:
   --release            compile contracts out
   --backend <B>        aot (default for build/run) | jit | vm | tree
+                       | all (run only: every lane, report a disagreement)
   -o, --output PATH    executable path (build only)
   --core-modules DIR   add a module root; repeatable, later wins
   -v, --verbose        print the equivalent compiler/interpreter call
   -j, --jobs N         test: run N jobs at once (default: cores; 1 = serial)
   --list               list the tests instead of running them
   --bless              test: record the golden files instead of checking
+  --check              test: property-check the contracts (requires /
+                       ensures) instead of running the test blocks
+  --seed=N             test --check: replay a run (decimal or 0x hex)
   --format=text|json   json: the result as one JSON document on stdout,
                        and parse / type / runtime errors as a JSON array
                        on stderr. `run` leaves the program's own output
@@ -75,6 +83,10 @@ enum Backend {
     /// The tree-walker. Slow, and the oracle when two lanes disagree
     /// (CLAUDE.md says the same thing about `execute_program`).
     Tree,
+    /// `toy run --backend all`: interpreter, JIT and AOT side by side,
+    /// reporting only a disagreement -- `compiler --all-backends` with
+    /// the package's module roots.
+    All,
 }
 
 impl Backend {
@@ -84,8 +96,9 @@ impl Backend {
             "jit" => Ok(Backend::Jit),
             "vm" => Ok(Backend::Vm),
             "tree" => Ok(Backend::Tree),
+            "all" => Ok(Backend::All),
             other => Err(format!(
-                "unknown backend `{other}` (expected aot, jit, vm or tree)"
+                "unknown backend `{other}` (expected aot, jit, vm, tree or all)"
             )),
         }
     }
@@ -116,6 +129,11 @@ struct Args {
     jobs: Option<usize>,
     /// `toy build --profile=compile` (COMPILE-PROFILE).
     compile_profile: bool,
+    /// `toy test --check`: property-check the contracts instead of
+    /// running the `test` blocks (LLM-LOOP P5, `interpreter --check`).
+    check_contracts: bool,
+    /// `--seed=N` for `--check`; `None` picks one from the clock.
+    seed: Option<u64>,
 }
 
 fn main() {
@@ -127,7 +145,7 @@ fn main() {
     let command = argv[0].clone();
     let rest = &argv[1..];
 
-    let takes_subject = matches!(command.as_str(), "api" | "explain" | "test");
+    let takes_subject = matches!(command.as_str(), "api" | "explain" | "test" | "new");
     let args = match parse_args(rest, takes_subject) {
         Ok(a) => a,
         Err(e) => fail(&e),
@@ -136,12 +154,20 @@ fn main() {
     if args.compile_profile && command != "build" {
         fail("--profile=compile times an AOT build; only `toy build` takes it");
     }
+    if (args.check_contracts || args.seed.is_some()) && command != "test" {
+        fail("--check / --seed property-check contracts; only `toy test` takes them");
+    }
+    if args.seed.is_some() && !args.check_contracts {
+        fail("--seed picks the inputs `--check` generates; add --check");
+    }
     let result = match command.as_str() {
         "build" => cmd_build(&args),
         "run" => cmd_run(&args),
         "check" => cmd_check(&args),
         "test" => cmd_test(&args),
         "clean" => cmd_clean(&args),
+        "new" => cmd_new(&args),
+        "init" => cmd_init(&args),
         "api" => cmd_api(&args),
         "effects" => cmd_effects(&args),
         "explain" => cmd_explain(&args),
@@ -175,6 +201,8 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
         all: false,
         jobs: None,
         compile_profile: false,
+        check_contracts: false,
+        seed: None,
     };
     let mut i = 0usize;
     while i < argv.len() {
@@ -193,6 +221,17 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
             "--no-warn-collisions" => a.warn_collisions = false,
             "--all" => a.all = true,
             "--profile=compile" => a.compile_profile = true,
+            "--check" => a.check_contracts = true,
+            // Decimal or `0x` hex, as `interpreter --check --seed=` takes
+            // it -- the report prints the seed in hex to be pasted back.
+            _ if arg.starts_with("--seed=") => {
+                let raw = &arg["--seed=".len()..];
+                let parsed = raw
+                    .strip_prefix("0x")
+                    .map(|hex| u64::from_str_radix(hex, 16))
+                    .unwrap_or_else(|| raw.parse::<u64>());
+                a.seed = Some(parsed.map_err(|_| format!("--seed expects a number, got `{raw}`"))?);
+            }
             "--format" => {
                 i += 1;
                 let v = argv.get(i).ok_or("--format needs a value (text or json)")?;
@@ -393,7 +432,45 @@ fn cmd_run(args: &Args) -> Result<(), String> {
     match backend {
         Backend::Aot => run_aot(args, &pkg),
         Backend::Jit | Backend::Vm | Backend::Tree => run_in_process(args, &pkg, backend),
+        Backend::All => run_all_backends(args, &pkg),
     }
+}
+
+/// `toy run --backend all`: the three lanes on one program, and only a
+/// disagreement reported (one line on stderr when they agree). The
+/// cross-lane check this repository leans on, for a program with its
+/// own modules -- `compiler --all-backends` alone takes a single file.
+fn run_all_backends(args: &Args, pkg: &package::Package) -> Result<(), String> {
+    if !args.program_args.is_empty() {
+        return Err(
+            "`--backend all` runs the program with no arguments on every lane; \
+             drop the ones after `--`, or pick one backend"
+                .to_string(),
+        );
+    }
+    let source = read_entry(pkg)?;
+    let filename = pkg.entry.to_string_lossy().into_owned();
+    let mut options = CompilerOptions::new(pkg.entry.clone());
+    options.release = args.release;
+    options.core_modules_dirs = pkg.module_roots.clone();
+    options.link_cache_dir = Some(pkg.link_cache_dir());
+    options.diagnostics_json = args.json;
+    if args.verbose {
+        eprintln!(
+            "toy: compiler {} {}{} --all-backends",
+            show_roots(pkg),
+            show_format(args),
+            filename
+        );
+    }
+    let code = compiler::all_backends::run(
+        &options,
+        &source,
+        &filename,
+        compiler::all_backends::ProfileMode::Off,
+        args.json,
+    );
+    process::exit(code);
 }
 
 fn run_aot(args: &Args, pkg: &package::Package) -> Result<(), String> {
@@ -473,6 +550,13 @@ fn run_in_process(
 }
 
 fn cmd_check(args: &Args) -> Result<(), String> {
+    if args.backend == Some(Backend::All) {
+        return Err(
+            "`toy check` answers for one lane (aot lowers too, vm stops at the type \
+             checker); `--backend all` is for `toy run`"
+                .to_string(),
+        );
+    }
     let pkg = locate(args)?;
     let source = read_entry(&pkg)?;
     let name = pkg.entry.to_string_lossy().into_owned();
@@ -554,6 +638,64 @@ fn cmd_check(args: &Args) -> Result<(), String> {
     Ok(())
 }
 
+/// `toy test --check [--seed=N]`: property-check every contracted
+/// function the entry reaches -- its own and its modules' -- by
+/// generating inputs that satisfy `requires` and checking `ensures`,
+/// and report the minimal counterexample of any that fails. The same
+/// report `interpreter --check` prints, against the package's roots.
+fn check_contracts(args: &Args) -> Result<(), String> {
+    if args.json {
+        return Err("`toy test --check` reports as text only (no --format=json yet)".to_string());
+    }
+    if args.subject.is_some() || args.list_only || args.bless {
+        return Err("`toy test --check` takes no filter, --list or --bless".to_string());
+    }
+    if matches!(args.backend, Some(b) if b != Backend::Vm) {
+        return Err("`toy test --check` runs on the IR VM; drop --backend".to_string());
+    }
+    let pkg = locate(args)?;
+    let source = read_entry(&pkg)?;
+    let filename = pkg.entry.to_string_lossy().into_owned();
+    if args.verbose {
+        let seed = args.seed.map(|s| format!(" --seed=0x{s:x}")).unwrap_or_default();
+        eprintln!("toy: interpreter {} --check{seed} {}", show_roots(&pkg), filename);
+    }
+    let mut options = RunOptions::default();
+    options.core_modules_dirs = &pkg.module_roots;
+    let code = interpreter::property::report(
+        &source,
+        &filename,
+        &options,
+        args.seed,
+        "toy test --check",
+    );
+    process::exit(code);
+}
+
+/// `toy new <DIR>`: a package in a directory that does not exist yet.
+fn cmd_new(args: &Args) -> Result<(), String> {
+    // The directory does not exist, so the argument parser files it
+    // as the subject rather than the path.
+    let dir = match &args.subject {
+        Some(d) => PathBuf::from(d),
+        None if args.path != Path::new(".") => args.path.clone(),
+        None => return Err("`toy new` needs a directory to create: toy new <DIR>".to_string()),
+    };
+    scaffold::run(
+        &dir,
+        &scaffold::Options { in_place: false, verbose: args.verbose, json: args.json },
+    )
+}
+
+/// `toy init [DIR]`: the same package, laid into an existing directory
+/// (the current one by default).
+fn cmd_init(args: &Args) -> Result<(), String> {
+    scaffold::run(
+        &args.path,
+        &scaffold::Options { in_place: true, verbose: args.verbose, json: args.json },
+    )
+}
+
 fn cmd_clean(args: &Args) -> Result<(), String> {
     // No collision pre-check: removing output does not depend on what
     // the program means, and a warning here would be noise on the one
@@ -567,6 +709,16 @@ fn cmd_clean(args: &Args) -> Result<(), String> {
 }
 
 fn cmd_test(args: &Args) -> Result<(), String> {
+    if args.check_contracts {
+        return check_contracts(args);
+    }
+    if args.backend == Some(Backend::All) {
+        return Err(
+            "`toy test` runs on one lane (aot, or vm with --backend vm); \
+             `--backend all` is for `toy run`"
+                .to_string(),
+        );
+    }
     let pkg = locate(args)?;
     // TEST-PARALLEL X4: the IR VM lane runs inside this process, so
     // `assert_golden` reads this variable from *here*. Rust makes

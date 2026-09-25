@@ -1828,3 +1828,152 @@ test "a serial test may also panic" serial panics "boom" { panic("boom") }
         "and leaves the others alone: {stdout}"
     );
 }
+
+/// A path under the temp dir that does not exist yet, for `toy new`.
+fn fresh_dir(stem: &str) -> Pkg {
+    let pkg = scratch(stem);
+    let _ = std::fs::remove_dir_all(&pkg.0);
+    pkg
+}
+
+fn text(out: &std::process::Output) -> String {
+    format!(
+        "status {:?}\nstdout: {}\nstderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+}
+
+#[test]
+fn a_new_package_runs_tests_and_checks_as_written() {
+    // The scaffold is the convention's only documentation a person
+    // meets by doing, so it has to be right: every command passes on
+    // it untouched.
+    let pkg = fresh_dir("new_pkg");
+    let dir = pkg.0.to_str().unwrap();
+    let out = run(&pkg, &["new", dir]);
+    assert!(out.status.success(), "{}", text(&out));
+    for rel in ["main.t", "src/greet.t", "tests/basic.t"] {
+        assert!(pkg.0.join(rel).is_file(), "missing {rel}");
+    }
+    let out = run(&pkg, &["run", dir]);
+    assert!(
+        out.status.success() && String::from_utf8_lossy(&out.stdout).contains("hello, world"),
+        "{}",
+        text(&out)
+    );
+    let out = run(&pkg, &["test", dir]);
+    assert!(
+        out.status.success() && String::from_utf8_lossy(&out.stdout).contains("2 passed, 0 failed"),
+        "{}",
+        text(&out)
+    );
+    let out = run(&pkg, &["check", dir]);
+    assert!(out.status.success(), "{}", text(&out));
+    let out = run(&pkg, &["test", dir, "--check", "--seed=7"]);
+    assert!(
+        out.status.success() && String::from_utf8_lossy(&out.stdout).contains("0 failed"),
+        "{}",
+        text(&out)
+    );
+}
+
+#[test]
+fn new_and_init_never_write_over_a_package() {
+    let pkg = fresh_dir("new_twice");
+    let dir = pkg.0.to_str().unwrap();
+    assert!(run(&pkg, &["new", dir]).status.success());
+    std::fs::write(pkg.0.join("main.t"), "fn main() -> u64 { 7u64 }\n").unwrap();
+
+    // `new` wants a directory that does not exist...
+    let out = run(&pkg, &["new", dir]);
+    assert!(!out.status.success(), "{}", text(&out));
+    // ...and `init` refuses one that is already a package.
+    let out = run(&pkg, &["init", dir]);
+    assert!(
+        !out.status.success() && String::from_utf8_lossy(&out.stderr).contains("already a package"),
+        "{}",
+        text(&out)
+    );
+    let main = std::fs::read_to_string(pkg.0.join("main.t")).unwrap();
+    assert_eq!(main, "fn main() -> u64 { 7u64 }\n", "main.t was overwritten");
+}
+
+#[test]
+fn init_fills_an_existing_directory() {
+    let pkg = scratch("init_dir");
+    // `scratch` makes `src/`, which would make this a package already.
+    std::fs::remove_dir_all(pkg.0.join("src")).unwrap();
+    std::fs::write(pkg.0.join("README"), "kept\n").unwrap();
+    let out = run(&pkg, &["init", pkg.0.to_str().unwrap(), "--format=json"]);
+    assert!(out.status.success(), "{}", text(&out));
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(doc["created"].as_array().map(|a| a.len()), Some(3), "{doc}");
+    assert_eq!(std::fs::read_to_string(pkg.0.join("README")).unwrap(), "kept\n");
+}
+
+#[test]
+fn run_on_every_backend_reports_agreement() {
+    // `compiler --all-backends` takes one file; the package's modules
+    // are what `toy` adds.
+    let pkg = scratch("all_backends");
+    write(&pkg, "src/greet.t", greeter());
+    write(
+        &pkg,
+        "main.t",
+        r#"
+fn main() -> u64 {
+    val g: String = greet::hello("lanes")
+    println(g)
+    3u64
+}
+"#,
+    );
+    let dir = pkg.0.to_str().unwrap();
+    let out = run(&pkg, &["run", dir, "--backend", "all"]);
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("all 3 backends agree (exit=3)"),
+        "{}",
+        text(&out)
+    );
+    // Program arguments cannot reach every lane, so they are refused
+    // rather than silently dropped.
+    let out = run(&pkg, &["run", dir, "--backend=all", "--", "x"]);
+    assert!(!out.status.success(), "{}", text(&out));
+    let out = run(&pkg, &["test", dir, "--backend", "all"]);
+    assert!(!out.status.success(), "{}", text(&out));
+}
+
+#[test]
+fn test_check_finds_a_broken_contract_and_replays_by_seed() {
+    let pkg = scratch("check");
+    write(
+        &pkg,
+        "src/mathx.t",
+        r#"
+pub fn half(n: u64) -> u64
+    ensures result + result == n
+{
+    n / 2u64
+}
+"#,
+    );
+    write(&pkg, "main.t", "fn main() -> u64 { mathx::half(4u64) }\n");
+    let dir = pkg.0.to_str().unwrap();
+    let out = run(&pkg, &["test", dir, "--check", "--seed=0x2a"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !out.status.success() && stderr.contains("FAILED  half") && stderr.contains("counterexample"),
+        "{}",
+        text(&out)
+    );
+    assert!(stdout.contains("replay with toy test --check --seed=0x2a"), "{}", text(&out));
+    // The same seed gives the same report.
+    let again = run(&pkg, &["test", dir, "--check", "--seed=42"]);
+    assert_eq!(String::from_utf8_lossy(&again.stderr), stderr);
+    // `--seed` means nothing without `--check`.
+    let out = run(&pkg, &["test", dir, "--seed=1"]);
+    assert!(!out.status.success(), "{}", text(&out));
+}

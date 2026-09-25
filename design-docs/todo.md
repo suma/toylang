@@ -12,6 +12,15 @@
 
 ### 2026-09-25
 
+- **`toy new` / `toy init` / `run --backend all` / `test --check`** —
+  規約どおりの雛形 (上書きしない)、パッケージ単位の 3 レーン突き合わせ、
+  契約のプロパティテスト ([`BUILD_TOOL.md`](BUILD_TOOL.md) D3)。途中で
+  2 つ直した: 並列 `toy test` の初回で出ていた「module cache の保存に
+  失敗」の警告 (同一プロセスのスレッドが同じ一時ファイル名を使っていた。
+  リンクキャッシュも同じ)、`--check` が generic 型の関連関数
+  (`Vec::with_capacity`) を型引数なしで走らせて誤って FAILED にしていた件
+  (`String` を使う全プログラムで出ていた)。
+
 - **MEMORY-ACCESS M5: `Vec` / `String` / `Dict` / `Box` が生 builtin を
   直接叩かない** — 要素の読み書きと借用は `Ptr<T>` (`get` / `set` /
   `borrow` は全レーンで intrinsic、呼び出しにならない)、範囲操作は

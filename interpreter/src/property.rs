@@ -655,6 +655,23 @@ fn check_method(
         .unwrap_or(false);
     let has_receiver = method.has_self_param || first_param_is_self;
 
+    // An associated function of a generic impl (`Vec::with_capacity`)
+    // has no receiver to fix the impl's type parameters, and its body
+    // can depend on them (`__builtin_sizeof::<T>()`): run as is, every
+    // trial failed on the unbound `T` and was reported as a broken
+    // contract. There is nothing to choose `T` from, so it is skipped.
+    let target_is_generic = shared
+        .struct_definitions
+        .get(&target_symbol)
+        .is_some_and(|entry| !entry.generic_params.is_empty());
+    if !has_receiver && target_is_generic {
+        return CheckOutcome::Skipped {
+            reason: format!(
+                "associated function of generic `{target_name}`: no receiver fixes its type parameters"
+            ),
+        };
+    }
+
     // Parameters excluding the receiver, for both instantiation
     // probing and sampling below.
     let params: Vec<(DefaultSymbol, TypeDecl)> = if first_param_is_self {
@@ -911,4 +928,110 @@ pub fn check_source(
         seed,
         cases.unwrap_or(DEFAULT_CASES),
     ))
+}
+
+/// DBC-CHECK-CASES: report a pass as thin when the precondition
+/// discarded more than this many inputs per accepted one. A narrow
+/// `requires` is legitimate — the point is that the reader should
+/// know the pass rests on a handful of cases rather than on the full
+/// budget.
+const THIN_PASS_RATIO: usize = 10;
+
+/// Property-check the file's contracts and print a report; the exit
+/// code a command should end with (1 when a contract failed or the
+/// program did not check). `replay` is how the reader re-runs it with
+/// the same seed (`--check` / `toy test --check`).
+///
+/// LLM-LOOP P5: the seed is always printed, because a property that
+/// fails one run in fifty is useless if it cannot be replayed.
+pub fn report(
+    source: &str,
+    filename: &str,
+    options: &crate::RunOptions<'_>,
+    seed: Option<u64>,
+    replay: &str,
+) -> i32 {
+
+    let seed = seed.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0x5EED)
+    });
+    let report = match check_source(source, filename, options, seed, None) {
+        Ok(report) => report,
+        // Parse / type errors were already reported.
+        Err(_) => return 1,
+    };
+
+    let mut checked = 0usize;
+    let mut failures = 0usize;
+    let mut total_cases = 0usize;
+    for check in &report.checks {
+        match &check.outcome {
+            CheckOutcome::Passed { cases, discarded } => {
+                checked += 1;
+                total_cases += cases;
+                // DBC-CHECK-CASES: a pass says nothing about how much
+                // was actually tried. `requires n == 42u64` turns away
+                // almost every generated input, and one lucky case
+                // used to print exactly what a thorough run prints.
+                // Reported when the precondition swallowed most of the
+                // budget, which is the case worth a second look.
+                if *cases * THIN_PASS_RATIO < *discarded {
+                    eprintln!(
+                        "THIN  {} — only {cases} input(s) satisfied `requires` ({discarded} discarded)",
+                        check.function
+                    );
+                }
+            }
+            // CHECK-NONTERMINATION: printed as loudly as a failure
+            // without counting as one. The contract was not broken —
+            // the checker never got an answer — and the fix is
+            // almost always a `requires` that says which inputs the
+            // function was written for, so the message names it.
+            CheckOutcome::Exhausted { cases, discarded, budget } => {
+                checked += 1;
+                total_cases += cases;
+                eprintln!(
+                    "EXHAUSTED  {} — an input ran past the {budget}-iteration budget \
+                     ({cases} case(s) completed, {discarded} discarded before it)",
+                    check.function
+                );
+                eprintln!(
+                    "    bound the inputs with a `requires` clause so the check can finish"
+                );
+            }
+            CheckOutcome::Inconclusive { discarded } => {
+                checked += 1;
+                eprintln!(
+                    "INCONCLUSIVE  {} — `requires` rejected all {discarded} generated inputs",
+                    check.function
+                );
+            }
+            CheckOutcome::Failed { counterexample, detail } => {
+                checked += 1;
+                failures += 1;
+                let args = counterexample
+                    .iter()
+                    .map(|(name, value)| format!("{name} = {value}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                eprintln!("FAILED  {}", check.function);
+                eprintln!("    minimal counterexample: {args}");
+                for line in detail.lines() {
+                    eprintln!("    {line}");
+                }
+            }
+            // Uncontracted functions are the common case; saying so for
+            // each one would bury the findings.
+            CheckOutcome::Skipped { .. } => {}
+        }
+    }
+
+    println!(
+        "{checked} contracted function(s)/method(s) checked, {total_cases} case(s), {failures} failed  \
+         (seed: 0x{seed:x}; replay with {replay} --seed=0x{seed:x})"
+    );
+    i32::from(failures > 0)
 }

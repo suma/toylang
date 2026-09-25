@@ -78,6 +78,41 @@ fn primitive_target_symbol(
 /// vector when no generic parameter binding can be derived (e.g.
 /// non-generic struct, or generic param appearing only in nested
 /// positions we don't drill into).
+/// `ty` with each of `params` (as a parameter or a bare name) replaced.
+fn substitute_params(ty: &TypeDecl, params: &HashMapStd<DefaultSymbol, TypeDecl>) -> TypeDecl {
+    match ty {
+        TypeDecl::Generic(s) | TypeDecl::Identifier(s) => {
+            params.get(s).cloned().unwrap_or_else(|| ty.clone())
+        }
+        TypeDecl::Struct(n, args) => {
+            TypeDecl::Struct(*n, args.iter().map(|a| substitute_params(a, params)).collect())
+        }
+        TypeDecl::Enum(n, args) => {
+            TypeDecl::Enum(*n, args.iter().map(|a| substitute_params(a, params)).collect())
+        }
+        TypeDecl::Tuple(args) => {
+            TypeDecl::Tuple(args.iter().map(|a| substitute_params(a, params)).collect())
+        }
+        TypeDecl::Ref { is_mut, inner } => {
+            TypeDecl::Ref { is_mut: *is_mut, inner: Box::new(substitute_params(inner, params)) }
+        }
+        other => other.clone(),
+    }
+}
+
+/// Whether `ty` names any of `params` (as a parameter or a bare name).
+fn mentions_any(ty: &TypeDecl, params: &[DefaultSymbol]) -> bool {
+    match ty {
+        TypeDecl::Generic(s) | TypeDecl::Identifier(s) => params.contains(s),
+        TypeDecl::Struct(_, args) | TypeDecl::Enum(_, args) | TypeDecl::Tuple(args) => {
+            args.iter().any(|a| mentions_any(a, params))
+        }
+        TypeDecl::Ref { inner, .. } => mentions_any(inner, params),
+        TypeDecl::Array(elems, _, _) => elems.iter().any(|a| mentions_any(a, params)),
+        _ => false,
+    }
+}
+
 fn derive_struct_type_args(
     entry: &StructRegistryEntry,
     field_values: &std::collections::HashMap<DefaultSymbol, RcObject>,
@@ -1883,6 +1918,54 @@ impl EvaluationContext<'_> {
             };
 
             field_values.insert(*field_name, field_value);
+        }
+
+        // MEMORY-ACCESS M5: a field's declared type is its value's
+        // annotation. `H { nodes: Vec::new() }` built the `Vec` with no
+        // type to learn `T` from, so the value carried `T` unbound and
+        // anything later asking `sizeof::<T>()` of it failed -- which
+        // `val v: Vec<u64> = Vec::new()` never did, because a `val`
+        // stamps its annotation onto its value. The struct's own
+        // parameters in a declared type (`v: Vec<T>` in a `Bag<T>`) are
+        // what the literal is being built as: the `val` annotation it
+        // is bound by (`var b: Bag<Key> = Bag { v: Vec::new() }`), else
+        // the generic scope it is evaluated in (`impl<T> Bag<T>`). A
+        // declared type still naming an unknown parameter is not
+        // stamped -- it says nothing about the value yet.
+        if let Some(entry) = self.struct_definitions.get(struct_name).cloned() {
+            let mut params: HashMapStd<DefaultSymbol, TypeDecl> = HashMapStd::new();
+            if let Some(TypeDecl::Struct(name, args) | TypeDecl::Enum(name, args)) =
+                self.pending_annotation.as_ref()
+            {
+                if name == struct_name && args.len() == entry.generic_params.len() {
+                    for (p, a) in entry.generic_params.iter().zip(args) {
+                        params.insert(*p, a.clone());
+                    }
+                }
+            }
+            let scope = self.merged_generic_scope();
+            for p in &entry.generic_params {
+                if params.contains_key(p) {
+                    continue;
+                }
+                if let Some(bound) = scope.get(p) {
+                    if !mentions_any(bound, &entry.generic_params) && !matches!(bound, TypeDecl::Unknown) {
+                        params.insert(*p, bound.clone());
+                    }
+                }
+            }
+            for (name, declared) in &entry.fields {
+                let declared = substitute_params(declared, &params);
+                if mentions_any(&declared, &entry.generic_params) {
+                    continue;
+                }
+                if let Some(value) = field_values.get(name) {
+                    let _ = super::statement::apply_annotation_type_args(
+                        crate::value::Value::from(value.clone()),
+                        Some(&declared),
+                    );
+                }
+            }
         }
 
         let active_scope = self.merged_generic_scope();

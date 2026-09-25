@@ -108,3 +108,47 @@ fn a_closures_signature_binds_the_parameter_it_names() {
     "#;
     assert_eq!(interpreter_value(src), 110);
 }
+
+/// A struct literal's field takes its declared type as its annotation,
+/// the way a `val` does. `H { v: V::new() }` built the container with
+/// nothing to learn `T` from, so on the tree-walker the value carried
+/// `T` unbound, and a `Ptr<T>` made inside it could not size its
+/// elements ("unbound generic parameter") -- where
+/// `val v: V<u64> = V::new()` worked. A declared type naming the
+/// struct's own parameter (`v: V<T>` in a `Bag<T>`) takes the argument
+/// from the literal's own annotation. This is what kept `Vec` from
+/// reading through `Ptr<T>` (MEMORY-ACCESS M5): `json.t` builds
+/// `Json { nodes: Vec::new() }`.
+#[test]
+fn a_struct_field_types_the_value_put_in_it() {
+    let src = r#"
+        struct V<T> { data: ptr, len: u64 }
+        impl<T> V<T> {
+            fn new() -> Self { V { data: __builtin_heap_alloc(64u64), len: 0u64 } }
+            fn push(&mut self, x: T) {
+                val p: Ptr<T> = Ptr { addr: self.data }
+                p.set(self.len, x)
+                self.len = self.len + 1u64
+            }
+            fn get(&self, i: u64) -> T {
+                val p: Ptr<T> = Ptr { addr: self.data }
+                val v: T = p.get(i)
+                v
+            }
+        }
+        struct H { v: V<u16> }
+        struct Bag<T> { v: V<T> }
+        fn main() -> u64 {
+            var h = H { v: V::new() }
+            h.v.push(7u16)
+            var b: Bag<u64> = Bag { v: V::new() }
+            b.v.push(9u64)
+            b.v.push(11u64)
+            val a = h.v.get(0u64)
+            val c = b.v.get(1u64)
+            println("{a} {c}")
+            0u64
+        }
+    "#;
+    assert_renders(src, "struct_field_types_value", "7 11\n");
+}

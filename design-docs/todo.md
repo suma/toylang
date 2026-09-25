@@ -2260,6 +2260,18 @@
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
 
+- **TREE-WALKER-DYNAMIC-GENERIC-SCOPE — 呼び出し先が呼び出し元の型引数を
+  見る** — tree-walker の `merged_generic_scope` は**実行中の全呼び出し**の
+  scope を合わせたもの (動的スコープ) なので、generic でない関数の中でも
+  呼び出し元の `T` が見える。phantom パラメータ (`Ptr<T>` の `T`) は
+  struct リテラルが scope から取るため、`Vec<String>::clone` →
+  `String::push` の中の `Ptr { addr: .. }` が `Ptr<String>` になって
+  いた (M5 の `String` 移行で発覚)。**`val` の注釈があれば注釈を優先する**
+  ところまでは直した (2026-09-25)。注釈の無い phantom リテラルは
+  まだ呼び出し元の `T` を拾う。直すなら関数・メソッドの呼び出しで
+  scope を**積むのではなく差し替える** (closure の本体だけは書かれた
+  関数の scope を持ち込む)。
+
 - **RANGE-TYPE-ANNOTATION — `Range<u64>` と書いた型が範囲値の型と
   一致しない** ★ — `fn f(r: Range<u64>)` に `0u64..3u64` を渡すと
   ``expected Range<u64>, but got Range<u64>``。注釈は generic な
@@ -2319,9 +2331,18 @@
   (イテレータの 8-return 予算に 1 leaf 空いた)。`unsafe fn` は各 1 本
   (`borrow`) だけ残り、stdlib 全体で 151 → 138。`poc/logsearch` の出力
   一致、archive は AOT で ~1.5% 速く、IR VM の Dict ベンチは差なし。
-  残り: `String` と `Vec<u8>` の文字列処理、`borrow` (`Vec` / `Box` /
-  `Dict`、`Ptr` に借用が要る)、`elem_size` フィールドの撤去 (drop glue
-  が読んでいる)。
+  続いて `String` も移した: バイト単位のループは `Ptr<u8>`、
+  `from_str` / `find_from` の範囲操作は `Span<u8>` の `copy_from` /
+  `find_seq`。`string.t` の `unsafe fn` は 37 → 7、stdlib 全体で
+  138 → 108。**`eq` だけは生の `mem_eq` に戻した** — `Span::bytes_eq`
+  経由 (窓 2 つ + 呼び出し) は `Dict<String, _>` のキー比較に乗り、
+  `poc/logsearch` の archive が ~9% 遅くなった。`Span` の範囲演算を
+  `Ptr` の get/set と同じく intrinsic にすれば戻せる。残る `unsafe` は
+  SIMD (`contains` / `split` / `fold_ascii_case`)、`to_str`
+  (`str_from_bytes`)、`extend_bytes` (生の `ptr` を受ける)。
+  残り: `Vec<u8>` の文字列処理、`borrow` (`Vec` / `Box` / `Dict`、
+  `Ptr` に借用が要る)、`elem_size` フィールドの撤去 (drop glue が
+  読んでいる)。
 
 - **ZIP-ITER-GENERIC-SCOPE: method-level の型引数が turbofish から
   見えない** — `VecIter<T>::zip<U>(other: VecIter<U>)` の中で

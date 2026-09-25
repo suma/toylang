@@ -111,7 +111,7 @@ impl String {
     # block alone when it fails and writing the null in first would
     # lose it. A zero-byte request legitimately answers null
     # (`core/std/ptr.t`), so only a non-zero one can have failed.
-    unsafe fn grow_to(&mut self, new_cap: u64) {
+    fn grow_to(&mut self, new_cap: u64) {
         val grown: ptr = __builtin_heap_realloc(self.data, new_cap)
         if new_cap > 0u64 && __builtin_ptr_is_null(grown) {
             panic("String::grow: allocation failed ({new_cap} bytes)")
@@ -123,7 +123,7 @@ impl String {
     # Make room for `n` more bytes than `size()`, or say why not.
     # The point is to fail once, before a loop of `push`es that then
     # stay within capacity -- see `core/std/alloc.t`.
-    unsafe fn try_reserve(&mut self, n: u64) -> Result<(), AllocError> {
+    fn try_reserve(&mut self, n: u64) -> Result<(), AllocError> {
         val used: u64 = self.len
         val want: Option<u64> = used.checked_add(n)
         val need: u64 = match want {
@@ -140,14 +140,21 @@ impl String {
         Result::Ok(())
     }
 
-    unsafe fn from_str(s: str) -> Self {
+    fn from_str(s: str) -> Self {
         val n: u64 = s.len()
         val raw: ptr = __builtin_heap_alloc(0u64)
         val data: ptr = __builtin_heap_realloc(raw, n)
         if n > 0u64 && __builtin_ptr_is_null(data) {
             panic("String::from_str: allocation failed ({n} bytes)")
         }
-        __builtin_mem_copy(s.as_ptr(), data, n)
+        # Only a non-empty copy has two non-null ends to window.
+        if n > 0u64 {
+            val dest: Ptr<u8> = Ptr { addr: data }
+            val origin: Ptr<u8> = Ptr { addr: s.as_ptr() }
+            val dst: Span<u8> = Span::from_parts(dest, n)
+            val text: Span<u8> = Span::from_parts(origin, n)
+            dst.copy_from(text)
+        }
         String {
             data: data,
             len: n,
@@ -158,38 +165,42 @@ impl String {
 
     # Append. Geometric grow: 0 -> 4 -> 8 -> 16 -> ... amortised
     # O(1) per call.
-    unsafe fn push(&mut self, b: u8) {
+    fn push(&mut self, b: u8) {
         if self.cap == 0u64 {
             self.grow_to(4u64)
         } elif self.len >= self.cap {
             self.grow_to(self.cap * 2u64)
         }
-        __builtin_ptr_write(self.data, self.len, b)
+        val bytes: Ptr<u8> = Ptr { addr: self.data }
+        bytes.set(self.len, b)
         self.len = self.len + 1u64
     }
 
     # Remove and return the last byte. Pre: `self.len > 0u64`
     # (caller's responsibility).
-    unsafe fn pop(&mut self) -> u8 {
+    fn pop(&mut self) -> u8 {
         if self.len == 0u64 { panic("String::pop on an empty String") }
         self.len = self.len - 1u64
-        val b: u8 = __builtin_ptr_read::<u8>(self.data, self.len)
+        val bytes: Ptr<u8> = Ptr { addr: self.data }
+        val b: u8 = bytes.get(self.len)
         b
     }
 
     # Random read, bounds-checked (DEBUG-OBS D6). Reading past the end
     # used to reach the host rather than fail as a toylang program.
-    unsafe fn get(&self, i: u64) -> u8 {
+    fn get(&self, i: u64) -> u8 {
         if i >= self.len { panic("String::get index out of bounds") }
-        val b: u8 = __builtin_ptr_read::<u8>(self.data, i)
+        val bytes: Ptr<u8> = Ptr { addr: self.data }
+        val b: u8 = bytes.get(i)
         b
     }
 
     # Random write, bounds-checked. `push` writes through the raw
     # pointer, so appending is not affected by this.
-    unsafe fn set(&mut self, i: u64, b: u8) {
+    fn set(&mut self, i: u64, b: u8) {
         if i >= self.len { panic("String::set index out of bounds") }
-        __builtin_ptr_write(self.data, i, b)
+        val bytes: Ptr<u8> = Ptr { addr: self.data }
+        bytes.set(i, b)
     }
 
     # A window over the bytes (CONV-SPAN), for code that takes a
@@ -261,7 +272,7 @@ impl String {
     # type-checked and then died at run time with `Cannot access
     # field on non-struct object: ConstString`. The names now say
     # which type they take (STDLIB-TEXT §8).
-    unsafe fn push_str(&mut self, other: str) {
+    fn push_str(&mut self, other: str) {
         self.extend_bytes(other.as_ptr(), other.len())
     }
 
@@ -309,6 +320,11 @@ impl String {
     # stdlib source, where every backend had to agree on both. The
     # vectorised version still exists; it is inside the runtime's
     # `toy_mem_eq` now, in one place, for every caller.
+    #
+    # Raw rather than through `Span::bytes_eq` (MEMORY-ACCESS M5):
+    # building two windows and making the call cost ~9% of
+    # `poc/logsearch`'s archive run, where this is the key comparison
+    # of every `Dict<String, _>` probe.
     unsafe fn eq(&self, other: &String) -> bool {
         val n: u64 = self.len
         if n != other.len {
@@ -352,13 +368,14 @@ impl String {
             __simd_store(data, i, __simd_select(in_range, folded, v))
             i = i + 16u64
         }
+        val db: Ptr<u8> = Ptr { addr: data }
         while i < n {
-            val b: u8 = __builtin_ptr_read::<u8>(data, i)
+            val b: u8 = db.get(i)
             if b >= lo && b <= hi {
                 if up {
-                    __builtin_ptr_write(data, i, b - 0x20u8)
+                    db.set(i, b - 0x20u8)
                 } else {
-                    __builtin_ptr_write(data, i, b + 0x20u8)
+                    db.set(i, b + 0x20u8)
                 }
             }
             i = i + 1u64
@@ -390,10 +407,11 @@ impl String {
     #
     # RFC 3629: no over-long encodings, no surrogates (U+D800..U+DFFF),
     # nothing above U+10FFFF.
-    unsafe fn is_utf8(&self) -> bool {
+    fn is_utf8(&self) -> bool {
         var i: u64 = 0u64
+        val bytes: Ptr<u8> = Ptr { addr: self.data }
         while i < self.len {
-            val b: u8 = __builtin_ptr_read::<u8>(self.data, i)
+            val b: u8 = bytes.get(i)
             var need: u64 = 0u64
             var lo: u32 = 0u32
             var hi: u32 = 0u32
@@ -424,7 +442,7 @@ impl String {
             if i + need >= self.len + 1u64 { return false }
             var k: u64 = 1u64
             while k <= need {
-                val c: u8 = __builtin_ptr_read::<u8>(self.data, i + k)
+                val c: u8 = bytes.get(i + k)
                 if c < 128u8 || c > 191u8 { return false }
                 cp = cp * 64u32 + ((c as u32) - 128u32)
                 k = k + 1u64
@@ -437,11 +455,12 @@ impl String {
         true
     }
 
-    unsafe fn to_string(&self) -> String {
+    fn to_string(&self) -> String {
         var result: String = String::new()
         var i: u64 = 0u64
+        val bytes: Ptr<u8> = Ptr { addr: self.data }
         while i < self.len {
-            val b: u8 = __builtin_ptr_read::<u8>(self.data, i)
+            val b: u8 = bytes.get(i)
             result.push(b)
             i = i + 1u64
         }
@@ -480,7 +499,7 @@ impl Drop for String {
 }
 
 impl Clone for String {
-    unsafe fn clone(&self) -> Self {
+    fn clone(&self) -> Self {
         # Bound rather than returned directly: the compiled lanes
         # refuse a compound-returning method in expression position.
         val copy: String = self.to_string()
@@ -498,13 +517,14 @@ impl Display for String {
 # Both indices are byte offsets, not codepoint counts. Out-of-range
 # / inverted ranges panic via `assert(...)`.
 impl Substring for String {
-    unsafe fn substring(&self, start: u64, end: u64) -> String {
+    fn substring(&self, start: u64, end: u64) -> String {
         assert(start <= end, "substring: start must be <= end")
         assert(end <= self.len, "substring: end out of range")
         var result: String = String::new()
         var i: u64 = start
+        val bytes: Ptr<u8> = Ptr { addr: self.data }
         while i < end {
-            val b: u8 = __builtin_ptr_read::<u8>(self.data, i)
+            val b: u8 = bytes.get(i)
             result.push(b)
             i = i + 1u64
         }
@@ -519,11 +539,12 @@ impl Substring for String {
 # sidesteps the AOT MVP limitation where compound-returning
 # instance methods can't sit in expression position.
 impl Trim for String {
-    unsafe fn trim(&self) -> String {
+    fn trim(&self) -> String {
         val n: u64 = self.len
         var start: u64 = 0u64
+        val bytes: Ptr<u8> = Ptr { addr: self.data }
         while start < n {
-            val b: u8 = __builtin_ptr_read::<u8>(self.data, start)
+            val b: u8 = bytes.get(start)
             if b == 0x20u8 || b == 0x09u8 || b == 0x0Au8 || b == 0x0Du8 {
                 start = start + 1u64
             } else {
@@ -532,7 +553,7 @@ impl Trim for String {
         }
         var end: u64 = n
         while end > start {
-            val b: u8 = __builtin_ptr_read::<u8>(self.data, end - 1u64)
+            val b: u8 = bytes.get(end - 1u64)
             if b == 0x20u8 || b == 0x09u8 || b == 0x0Au8 || b == 0x0Du8 {
                 end = end - 1u64
             } else {
@@ -575,17 +596,19 @@ impl CaseConvert for String {
 # accesses — a combination the AOT lower can't round-trip
 # cleanly today.
 impl Concat<String> for String {
-    unsafe fn concat(&self, other: &String) -> String {
+    fn concat(&self, other: &String) -> String {
         var result: String = String::new()
         var i: u64 = 0u64
+        val bytes: Ptr<u8> = Ptr { addr: self.data }
         while i < self.len {
-            val a: u8 = __builtin_ptr_read::<u8>(self.data, i)
+            val a: u8 = bytes.get(i)
             result.push(a)
             i = i + 1u64
         }
         var j: u64 = 0u64
+        val ob: Ptr<u8> = Ptr { addr: other.data }
         while j < other.len {
-            val b: u8 = __builtin_ptr_read::<u8>(other.data, j)
+            val b: u8 = ob.get(j)
             result.push(b)
             j = j + 1u64
         }
@@ -611,9 +634,11 @@ impl Contains<String> for String {
         if m > n {
             return false
         }
-        val first: u8 = __builtin_ptr_read::<u8>(needle.data, 0u64)
+        val nb: Ptr<u8> = Ptr { addr: needle.data }
+        val first: u8 = nb.get(0u64)
         val first_v: u8x16 = __simd_splat(first)
         var i: u64 = 0u64
+        val bytes: Ptr<u8> = Ptr { addr: self.data }
         while i + m <= n {
             # Only when a whole chunk fits: a vector load reads all
             # 16 bytes, so a chunk straddling the end of the buffer
@@ -644,8 +669,8 @@ impl Contains<String> for String {
             var matched: bool = true
             var j: u64 = 0u64
             while j < m {
-                val a: u8 = __builtin_ptr_read::<u8>(self.data, i + j)
-                val b: u8 = __builtin_ptr_read::<u8>(needle.data, j)
+                val a: u8 = bytes.get(i + j)
+                val b: u8 = nb.get(j)
                 if a != b {
                     matched = false
                     break
@@ -673,10 +698,12 @@ impl Split<String, Vec<String>> for String {
         var result: Vec<String> = Vec::new()
         val n: u64 = self.len
         val m: u64 = sep.len
-        val first: u8 = __builtin_ptr_read::<u8>(sep.data, 0u64)
+        val sb: Ptr<u8> = Ptr { addr: sep.data }
+        val first: u8 = sb.get(0u64)
         val first_v: u8x16 = __simd_splat(first)
         var start: u64 = 0u64
         var i: u64 = 0u64
+        val bytes: Ptr<u8> = Ptr { addr: self.data }
         while i + m <= n {
             # Same memchr-style skip `contains` uses: a match must
             # begin with the separator's first byte, so a 16-byte
@@ -703,8 +730,8 @@ impl Split<String, Vec<String>> for String {
             var matched: bool = true
             var j: u64 = 0u64
             while j < m {
-                val a: u8 = __builtin_ptr_read::<u8>(self.data, i + j)
-                val b: u8 = __builtin_ptr_read::<u8>(sep.data, j)
+                val a: u8 = bytes.get(i + j)
+                val b: u8 = sb.get(j)
                 if a != b {
                     matched = false
                     break
@@ -747,13 +774,14 @@ impl String {
 impl Iterator<u8> for StringIter {
     # Advance by one byte. Returns `None` once `index` has walked
     # past `len`.
-    unsafe fn next(&mut self) -> Option<u8> {
+    fn next(&mut self) -> Option<u8> {
+        val bytes: Ptr<u8> = Ptr { addr: self.data }
         if self.index >= self.len {
             Option::None
         } else {
             val i = self.index
             self.index = self.index + 1u64
-            val b: u8 = __builtin_ptr_read::<u8>(self.data, i)
+            val b: u8 = bytes.get(i)
             Option::Some(b)
         }
     }
@@ -782,40 +810,47 @@ impl String {
     # replaced -- walk `i`, compare `m` bytes, back up -- was written
     # out five times across this file; `toy_mem_find_seq` is the one
     # copy left, and it is the same one on every backend.
-    unsafe fn find_from(&self, needle: &String, start: u64) -> Option<u64> {
+    fn find_from(&self, needle: &String, start: u64) -> Option<u64> {
         val n: u64 = self.len
         val m: u64 = needle.len
         if start > n { return Option::None }
         if m == 0u64 { return Option::Some(start) }
         if m > n - start { return Option::None }
-        val from: ptr = __builtin_ptr_offset(self.data, start)
-        val at: u64 = __builtin_mem_find_seq(from, n - start, needle.data, m)
-        if at >= n - start {
-            Option::None
-        } else {
-            Option::Some(start + at)
+        # Both buffers are non-empty here (`0 < m <= n - start`), so
+        # neither address is null.
+        val hay: Ptr<u8> = Ptr { addr: self.data }
+        val tail: Ptr<u8> = hay.offset(start)
+        val pat: Ptr<u8> = Ptr { addr: needle.data }
+        val rest: Span<u8> = Span::from_parts(tail, n - start)
+        val pattern: Span<u8> = Span::from_parts(pat, m)
+        val found: Option<u64> = rest.find_seq(pattern)
+        match found {
+            Option::Some(at) => Option::Some(start + at),
+            Option::None => Option::None,
         }
     }
 
-    unsafe fn find(&self, needle: &String) -> Option<u64> {
+    fn find(&self, needle: &String) -> Option<u64> {
         self.find_from(needle, 0u64)
     }
 
     # Byte offset of the **last** occurrence, or `None`. An empty
     # needle is found at `size()`, mirroring `find`'s answer of 0.
-    unsafe fn rfind(&self, needle: &String) -> Option<u64> {
+    fn rfind(&self, needle: &String) -> Option<u64> {
         val n: u64 = self.len
         val m: u64 = needle.len
         if m == 0u64 { return Option::Some(n) }
         if m > n { return Option::None }
         var i: u64 = n - m + 1u64
+        val bytes: Ptr<u8> = Ptr { addr: self.data }
+        val nb: Ptr<u8> = Ptr { addr: needle.data }
         while i > 0u64 {
             val at: u64 = i - 1u64
             var matched: bool = true
             var j: u64 = 0u64
             while j < m {
-                val a: u8 = __builtin_ptr_read::<u8>(self.data, at + j)
-                val b: u8 = __builtin_ptr_read::<u8>(needle.data, j)
+                val a: u8 = bytes.get(at + j)
+                val b: u8 = nb.get(j)
                 if a != b {
                     matched = false
                     break
@@ -828,28 +863,32 @@ impl String {
         Option::None
     }
 
-    unsafe fn starts_with(&self, prefix: &String) -> bool {
+    fn starts_with(&self, prefix: &String) -> bool {
         val m: u64 = prefix.len
         if m > self.len { return false }
         var j: u64 = 0u64
+        val bytes: Ptr<u8> = Ptr { addr: self.data }
+        val pb: Ptr<u8> = Ptr { addr: prefix.data }
         while j < m {
-            val a: u8 = __builtin_ptr_read::<u8>(self.data, j)
-            val b: u8 = __builtin_ptr_read::<u8>(prefix.data, j)
+            val a: u8 = bytes.get(j)
+            val b: u8 = pb.get(j)
             if a != b { return false }
             j = j + 1u64
         }
         true
     }
 
-    unsafe fn ends_with(&self, suffix: &String) -> bool {
+    fn ends_with(&self, suffix: &String) -> bool {
         val m: u64 = suffix.len
         val n: u64 = self.len
         if m > n { return false }
         val at: u64 = n - m
         var j: u64 = 0u64
+        val bytes: Ptr<u8> = Ptr { addr: self.data }
+        val xb: Ptr<u8> = Ptr { addr: suffix.data }
         while j < m {
-            val a: u8 = __builtin_ptr_read::<u8>(self.data, at + j)
-            val b: u8 = __builtin_ptr_read::<u8>(suffix.data, j)
+            val a: u8 = bytes.get(at + j)
+            val b: u8 = xb.get(j)
             if a != b { return false }
             j = j + 1u64
         }
@@ -859,14 +898,16 @@ impl String {
     # Compare against a borrowed `str` without allocating a `String`
     # to hold it. `s == t` needs two `String`s; this is the version
     # for the far more common `s == "literal"`.
-    unsafe fn eq_str(&self, other: str) -> bool {
+    fn eq_str(&self, other: str) -> bool {
         val n: u64 = other.len()
         if n != self.len { return false }
         val p: ptr = other.as_ptr()
         var i: u64 = 0u64
+        val bytes: Ptr<u8> = Ptr { addr: self.data }
+        val op: Ptr<u8> = Ptr { addr: p }
         while i < n {
-            val a: u8 = __builtin_ptr_read::<u8>(self.data, i)
-            val b: u8 = __builtin_ptr_read::<u8>(p, i)
+            val a: u8 = bytes.get(i)
+            val b: u8 = op.get(i)
             if a != b { return false }
             i = i + 1u64
         }
@@ -881,20 +922,22 @@ impl String {
     # (`from` and `to` would read better and are both keywords -- one
     # names an `extern fn`'s library, the other is the range form of a
     # `for` loop.)
-    unsafe fn replace(&self, pattern: &String, replacement: &String) -> String {
+    fn replace(&self, pattern: &String, replacement: &String) -> String {
         assert(pattern.len > 0u64, "String::replace: the pattern must not be empty")
         var out: String = String::new()
         var i: u64 = 0u64
         val n: u64 = self.len
         val m: u64 = pattern.len
+        val bytes: Ptr<u8> = Ptr { addr: self.data }
+        val pb: Ptr<u8> = Ptr { addr: pattern.data }
         while i < n {
             var matched: bool = false
             if i + m <= n {
                 matched = true
                 var j: u64 = 0u64
                 while j < m {
-                    val a: u8 = __builtin_ptr_read::<u8>(self.data, i + j)
-                    val b: u8 = __builtin_ptr_read::<u8>(pattern.data, j)
+                    val a: u8 = bytes.get(i + j)
+                    val b: u8 = pb.get(j)
                     if a != b {
                         matched = false
                         break
@@ -906,7 +949,7 @@ impl String {
                 out.push_string(replacement)
                 i = i + m
             } else {
-                val c: u8 = __builtin_ptr_read::<u8>(self.data, i)
+                val c: u8 = bytes.get(i)
                 out.push(c)
                 i = i + 1u64
             }
@@ -915,7 +958,7 @@ impl String {
     }
 
     # `self` repeated `n` times. `n == 0` is the empty string.
-    unsafe fn repeat(&self, n: u64) -> String {
+    fn repeat(&self, n: u64) -> String {
         var out: String = String::new()
         var k: u64 = 0u64
         while k < n {
@@ -929,17 +972,18 @@ impl String {
     # so a CRLF file reads the same as an LF one. A trailing newline
     # does **not** produce a final empty line -- the convention every
     # line-oriented tool uses.
-    unsafe fn lines(&self) -> Vec<String> {
+    fn lines(&self) -> Vec<String> {
         var out: Vec<String> = Vec::new()
         val n: u64 = self.len
         var start: u64 = 0u64
         var i: u64 = 0u64
+        val bytes: Ptr<u8> = Ptr { addr: self.data }
         while i < n {
-            val c: u8 = __builtin_ptr_read::<u8>(self.data, i)
+            val c: u8 = bytes.get(i)
             if c == '\n' {
                 var end: u64 = i
                 if end > start {
-                    val prev: u8 = __builtin_ptr_read::<u8>(self.data, end - 1u64)
+                    val prev: u8 = bytes.get(end - 1u64)
                     if prev == '\r' { end = end - 1u64 }
                 }
                 val line: String = self.substring(start, end)
@@ -958,19 +1002,20 @@ impl String {
     # Split on runs of ASCII whitespace, dropping empty parts. Unlike
     # `split(sep)` this treats a run as one separator, which is what
     # makes it useful for reading columns out of a line.
-    unsafe fn split_whitespace(&self) -> Vec<String> {
+    fn split_whitespace(&self) -> Vec<String> {
         var out: Vec<String> = Vec::new()
         val n: u64 = self.len
         var i: u64 = 0u64
+        val bytes: Ptr<u8> = Ptr { addr: self.data }
         while i < n {
-            val c: u8 = __builtin_ptr_read::<u8>(self.data, i)
+            val c: u8 = bytes.get(i)
             if c.is_ascii_space() {
                 i = i + 1u64
                 continue
             }
             val start: u64 = i
             while i < n {
-                val b: u8 = __builtin_ptr_read::<u8>(self.data, i)
+                val b: u8 = bytes.get(i)
                 if b.is_ascii_space() { break }
                 i = i + 1u64
             }
@@ -987,7 +1032,7 @@ impl String {
     # rather than a method on `Vec`: `Vec<T>` is generic over anything,
     # and a container should not grow a method that only exists for
     # one element type.
-    unsafe fn join(parts: &Vec<String>, sep: &String) -> String {
+    fn join(parts: &Vec<String>, sep: &String) -> String {
         var out: String = String::new()
         var i: u64 = 0u64
         val n: u64 = parts.size()
@@ -1043,11 +1088,12 @@ impl Iterator<char> for CharsIter {
     #
     # On a `str`, whose bytes are valid UTF-8 by construction, U+FFFD
     # can only come back if it was actually written.
-    unsafe fn next(&mut self) -> Option<char> {
+    fn next(&mut self) -> Option<char> {
         if self.index >= self.len {
             return Option::None
         }
-        val b: u8 = __builtin_ptr_read::<u8>(self.data, self.index)
+        val bytes: Ptr<u8> = Ptr { addr: self.data }
+        val b: u8 = bytes.get(self.index)
         if b < 128u8 {
             self.index = self.index + 1u64
             return Option::Some(b as u32)
@@ -1077,7 +1123,7 @@ impl Iterator<char> for CharsIter {
         }
         var k: u64 = 1u64
         while k <= need {
-            val c: u8 = __builtin_ptr_read::<u8>(self.data, self.index + k)
+            val c: u8 = bytes.get(self.index + k)
             if c < 128u8 || c > 191u8 {
                 self.index = self.index + 1u64
                 return Option::Some(65533u32)
@@ -1126,7 +1172,7 @@ impl<U> StringMapIter<U> {
 
 impl<U> Iterator<U> for StringMapIter<U> {
     # Apply `f` to each byte on the way out.
-    unsafe fn next(&mut self) -> Option<U> {
+    fn next(&mut self) -> Option<U> {
         match self.source.next() {
             Option::Some(b) => Option::Some(self.f(b)),
             Option::None => Option::None,
@@ -1165,7 +1211,7 @@ impl StringFilterIter {
 
 impl Iterator<u8> for StringFilterIter {
     # Yield only the bytes for which `pred` returns true.
-    unsafe fn next(&mut self) -> Option<u8> {
+    fn next(&mut self) -> Option<u8> {
         loop {
             match self.source.next() {
                 Option::Some(b) => {
@@ -1204,7 +1250,7 @@ struct StringEnumerateIter {
 
 impl Iterator<(u64, u8)> for StringEnumerateIter {
     # Yield `(index, byte)` pairs, starting at 0.
-    unsafe fn next(&mut self) -> Option<(u64, u8)> {
+    fn next(&mut self) -> Option<(u64, u8)> {
         match self.source.next() {
             Option::Some(b) => {
                 val i = self.index

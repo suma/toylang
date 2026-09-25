@@ -7,7 +7,7 @@
 # on top of the language's pointer primitives: the buffers come from
 # `__builtin_heap_alloc` / `__builtin_heap_realloc` and are read and
 # written through `Ptr<K>` / `Ptr<V>` / `Ptr<u32>` windows
-# (MEMORY-ACCESS M5), so only `borrow` still touches raw memory. No
+# (MEMORY-ACCESS M5), so no method touches raw memory itself. No
 # special-casing in the parser, the type checker, or any backend.
 #
 # Layout (COLLECTIONS C1, `design-docs/COLLECTIONS.md`): the entries
@@ -230,14 +230,14 @@ impl<K: Hash, V> Dict<K, V> {
     # shape Rust's `HashMap::get` has. A hit names the value the table
     # holds instead of copying it out, so an owning `V` keeps its
     # single owner.
-    unsafe fn borrow(&self, key: K) -> Option<&V> {
+    fn borrow(&self, key: K) -> Option<&V> {
         val scap: u64 = self.caps & 0xFFFFFFFFu64
         if scap == 0u64 {
             return Option::None
         }
         val sp: Ptr<u32> = Ptr { addr: self.slots }
         val kp: Ptr<K> = Ptr { addr: self.keys }
-        val vs: u64 = __builtin_sizeof::<V>()
+        val vp: Ptr<V> = Ptr { addr: self.vals }
         val mask: u64 = scap - 1u64
         var j: u64 = hash_mix(key.hash()) & mask
         loop {
@@ -248,7 +248,7 @@ impl<K: Hash, V> Dict<K, V> {
             val idx: u64 = s as u64
             val existing: K = kp.get(idx)
             if existing == key {
-                val v: &V = __builtin_ptr_ref::<V>(self.vals, idx * vs)
+                val v: &V = vp.borrow(idx)
                 return Option::Some(v)
             }
             j = (j + 1u64) & mask

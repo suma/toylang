@@ -178,3 +178,28 @@ fn main() -> u64 { first() }
 fn the_stdlib_opens_no_escaping_windows() {
     assert_accepted(r#"fn main() -> u64 { 0u64 }"#);
 }
+
+/// A borrow taken off a *view* (`Ptr` / `Span` / `Column`) names what
+/// the view names, not the view's own binding -- dropping a `Ptr`
+/// frees nothing. So a `Ptr` window over a buffer the caller owns can
+/// hand a borrow out, which is the shape `Vec::borrow` itself has
+/// (MEMORY-ACCESS M5). What the view came from is still carried on
+/// its own taint.
+#[test]
+fn a_borrow_off_a_ptr_over_a_callers_buffer_is_accepted() {
+    assert_accepted(
+        r#"
+fn first(v: &Vec<u64>) -> &u64 {
+    val p: Ptr<u64> = Ptr { addr: v.as_ptr() }
+    val e: &u64 = p.borrow(0u64)
+    e
+}
+fn main() -> u64 {
+    var v: Vec<u64> = Vec::new()
+    v.push(3u64)
+    val e: &u64 = first(v)
+    *e
+}
+"#,
+    );
+}

@@ -88,6 +88,16 @@ impl<T> Ptr<T> {
         __builtin_ptr_write(self.addr, i * __builtin_sizeof::<T>(), value)
     }
 
+    # Name element `i` without taking it (ELEMENT-BORROW) -- the
+    # reference form of `get`, for an owning `T` whose copy would share
+    # the element's resource. The reference points into the
+    # allocation, not at this window, so it may outlive the `Ptr`
+    # value it came from; it must not outlive the allocation.
+    unsafe fn borrow(&self, i: u64) -> &T {
+        val e: &T = __builtin_ptr_ref::<T>(self.addr, i * __builtin_sizeof::<T>())
+        e
+    }
+
     # A window `count` elements forward. The result shares the
     # allocation with `self`; neither frees anything.
     fn offset(self: Self, count: u64) -> Self {

@@ -12,6 +12,17 @@
 
 ### 2026-09-25
 
+- **MEMORY-ACCESS M5: `Vec` / `String` / `Dict` / `Box` が生 builtin を
+  直接叩かない** — 要素の読み書きと借用は `Ptr<T>` (`get` / `set` /
+  `borrow` は全レーンで intrinsic、呼び出しにならない)、範囲操作は
+  `Span<T>`。`Vec` / `VecIter` / `String` の `elem_size`、`Dict` の
+  `sizes`、`ZipIter` の `elems` を撤去し、Vec は 3 leaf に。stdlib の
+  `unsafe fn` は 172 → 104、`poc/logsearch` は出力一致のまま `__text`
+  −8.2%・archive ~6% 速い。途中で tree-walker の型引数の穴を 3 つ直した
+  (struct リテラルのフィールド型、`Ptr` 注釈と呼び出し元の `T`、
+  enum 値の型引数)。残りは未実装節の UNSAFE-REST / SPAN-RANGE-INTRINSIC /
+  WINDOW-ESCAPE-UNWRAP。
+
 - **TREE-WALKER-GENERIC-SCOPE: closure の型がメソッドの型引数を決める** —
   `map<U>(&self, f: fn (T) -> U)` の `U` を tree-walker が束縛して
   いなかった (引数の値から型引数を拾う `collect_generic_bindings` が
@@ -2304,52 +2315,30 @@
   書き手は 1 回で済み、`s.read_u32_le(i)` は endianness を型の側に
   置ける。
 
-- **MEMORY-ACCESS M5: `Vec` / `String` / `Dict` / `Box` の
-  `data: ptr` → `Ptr<T>` / `Span<T>`** — 設計は
-  [`MEMORY_ACCESS.md`](MEMORY_ACCESS.md)。生 builtin を直接叩く場所を
-  `ptr.t` / `span.t` / `allocator.t` と extern 境界に集約すると、
-  stdlib の `unsafe fn` が **156 本 → 20 本前後**になる。
-  **2026-09-25 に下地を入れた**: stdlib の `Ptr<T>` の `get` / `set` /
-  添字は compiled レーンでも tree-walker でも**呼び出しにならない**
-  (intrinsic、compound の `T` も)。`Ptr` を 1 段挟むと要素ループが
-  2 倍遅く、IR VM / tree-walker では再帰の深い JSON がスタックを使い
-  切ったため。TREE-WALKER-GENERIC-SCOPE (closure の型) も直した。
-  **残る前提条件**: tree-walker が実行時の値に型引数を**名前のまま**
-  持つ経路がある — `Json { nodes: Vec::new() }` のように注釈なしの
-  `Vec::new()` を struct フィールドに置くと、その `Vec` の型引数は
-  `T` のままで、`Ptr<T>` 経由の `Vec::get` が `sizeof::<T>()` を
-  解けない (`json::parse` で再現)。今の `Vec` が要素幅を最初の `push`
-  で学ぶのはこの回避。関数の戻り値と struct リテラルのフィールドで
-  型引数を具体化してから、`Vec` を `Ptr<T>` に移す。
-  **2026-09-25 続き**: struct リテラルのフィールドに宣言型を当てる修正で
-  前提が揃い、**`Vec` を移した** (`data: ptr` のまま、メソッド内で
-  `Ptr { addr: self.data }` を作って読み書き)。`vec.t` の `unsafe fn` は
-  27 → 6、stdlib 全体で 172 → 151。AOT は `poc/logsearch` の出力一致の
-  まま 2〜3% 速く、IR VM は `Vec` の要素ループで ~5% 遅い (局所変数 1 組)。
-  同日 `Box` と `Dict` も移した。`Dict` は要素幅を `__builtin_sizeof::<K>()`
-  で得るので `sizes` フィールドを Dict とイテレータ 3 種から外した
-  (イテレータの 8-return 予算に 1 leaf 空いた)。`unsafe fn` は各 1 本
-  (`borrow`) だけ残り、stdlib 全体で 151 → 138。`poc/logsearch` の出力
-  一致、archive は AOT で ~1.5% 速く、IR VM の Dict ベンチは差なし。
-  続いて `String` も移した: バイト単位のループは `Ptr<u8>`、
-  `from_str` / `find_from` の範囲操作は `Span<u8>` の `copy_from` /
-  `find_seq`。`string.t` の `unsafe fn` は 37 → 7、stdlib 全体で
-  138 → 108。**`eq` だけは生の `mem_eq` に戻した** — `Span::bytes_eq`
-  経由 (窓 2 つ + 呼び出し) は `Dict<String, _>` のキー比較に乗り、
-  `poc/logsearch` の archive が ~9% 遅くなった。`Span` の範囲演算を
-  `Ptr` の get/set と同じく intrinsic にすれば戻せる。残る `unsafe` は
-  SIMD (`contains` / `split` / `fold_ascii_case`)、`to_str`
-  (`str_from_bytes`)、`extend_bytes` (生の `ptr` を受ける)。
-  `Vec<u8>::from_str` も `Span::copy_from` に、`ZipIter::next` は
-  `Ptr<A>` / `Ptr<B>` にして `elems` フィールドを外した (stdlib 全体で
-  108 → 106)。`Vec<u8>::eq` は SIMD、`extend_bytes` は生の `ptr` を
-  受けるので `unsafe` のまま。
-  **`Vec` / `VecIter` / `String` の `elem_size` も外した**: body は
-  `__builtin_sizeof::<T>()`、drop glue は compiled レーンが要素型の
-  幅を定数で、tree-walker が先頭要素の値の幅を使う。Vec が 3 leaf に
-  なり `poc/logsearch` の `__text` −8.2%、archive は AOT・IR VM とも
-  ~6% 速い。
-  残り: `borrow` (`Vec` / `Box` / `Dict`、`Ptr` に借用が要る)。
+- **UNSAFE-REST: M5 の外に残る `unsafe fn` (104 本)** — M5 は
+  `Vec` / `String` / `Dict` / `Box` を `Ptr<T>` / `Span<T>` 経由にした
+  (完了済み節)。[`MEMORY_ACCESS.md`](MEMORY_ACCESS.md) の目標
+  「20 本前後」までの残りは `allocator.t` 30 / `span.t` 11 / `path.t` 10 /
+  `deque.t` 8 / `string.t` 7 / `ptr.t` 5 / `soa_vec.t` 5 / `set.t` 5 ほか。
+  `ptr.t` / `span.t` / `allocator.t` は生 builtin の置き場なので残る側。
+  `Deque` / `Set` / `PriorityQueue` は `Vec` と同じ手順で移せる (要素幅の
+  フィールドも外せる)。`SoaVec` は列ごとの番地を `__builtin_soa_*` で
+  作るので別扱い。
+
+- **SPAN-RANGE-INTRINSIC: `Span` の範囲演算を呼び出しにしない** —
+  `String::eq` を `Span::bytes_eq` で書くと `poc/logsearch` の archive が
+  ~9% 遅くなった (窓 2 つ + 呼び出し、`Dict<String, _>` のキー比較に
+  乗る) ので、`eq` は生の `__builtin_mem_eq` のまま `unsafe fn` で残した。
+  `Ptr` の `get` / `set` / `borrow` と同じく、stdlib の `Span` の
+  `copy_from` / `bytes_eq` / `find_seq` を lowering と tree-walker で
+  builtin に直結すれば戻せる。
+
+- **WINDOW-ESCAPE-UNWRAP: `Option` から出した窓の脱出を見逃す** —
+  `[E0026]` は `v.as_span()` (`Option<Span<T>>`) をそのまま返すのは
+  拒否するが、`val s: Span<u64> = w ?? panic(..)` や match の payload で
+  取り出してから返すと通る (taint が unwrap で途切れる)。M5 の
+  `Ptr::borrow` を足すときに見つけた (2026-09-25)。`??` / match の
+  payload 束縛が scrutinee の taint を引き継げばよい。
 
 - **ZIP-ITER-GENERIC-SCOPE: method-level の型引数が turbofish から
   見えない** — `VecIter<T>::zip<U>(other: VecIter<U>)` の中で

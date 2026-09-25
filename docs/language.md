@@ -2859,9 +2859,9 @@ fn main() -> u64 {          # safe: the raw write is not in this body
 ```
 
 That is what lets the stdlib concentrate the raw builtins:
-`Vec<T>::push`, `String::push`, `Ptr<T>::get` and
-`Span<T>::set` carry the declaration inside `core/std/*.t`, and code
-built on them needs none of its own.
+`Ptr<T>::get`, `Span<T>::set` and `String::to_str` carry the
+declaration inside `core/std/*.t`, and code built on them --
+`Vec<T>::push` and `String::push` among it -- needs none of its own.
 
 The modifier applies to free functions, `impl` methods, and trait
 method **default bodies** (a signature without a body has nothing to
@@ -4595,13 +4595,21 @@ hand-annotated at every access:
 val p: Ptr<u64> = Ptr::alloc(4u64)   # 4 * sizeof::<u64>() bytes
 p.set(0u64, 7u64)                    # or p[0u64] = 7u64
 val v: u64 = p.get(1u64)             # or p[1u64]
+val r: &u64 = p.borrow(1u64)         # names the element, owns nothing
 val q: Ptr<u64> = p.offset(2u64)     # window 2 elements forward
 val raw: ptr = p.as_raw()            # the bare address
 ```
 
 It is an ordinary struct + impl (`addr: ptr` is its only field;
-`T` appears in no field, the same rule that makes `Box<T>` legal),
-with no compiler special-casing and no backend differences.
+`T` appears in no field, the same rule that makes `Box<T>` legal).
+One thing is special: the stdlib's `get` / `set` / `borrow` and the
+bracket forms are never a call. Every lane lowers them to the read or
+write their body performs, so building a window over an address costs
+nothing over the raw builtin -- which is what lets `Vec` / `String` /
+`Dict` / `Box` go through `Ptr<T>` instead of the builtins. A user type
+that is merely named `Ptr` is not affected. `borrow` answers a `&T`
+for an owning `T` whose copy would share the element's resource
+(ELEMENT-BORROW).
 `Ptr<T>` is a **window, not an owner**: `alloc` sizes a buffer the
 caller owns (free it with `__builtin_heap_free(p.as_raw())`), the
 indexes are unchecked, and `offset` shares the allocation with the

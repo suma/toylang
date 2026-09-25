@@ -1349,8 +1349,11 @@ impl<'a> FunctionLower<'a> {
         if self.interner.resolve(target_sym) != Some("Ptr") {
             return None;
         }
+        // `borrow` is `get` here: references erase in the compiled
+        // lanes (ELEMENT-BORROW E1), and the type checker is what keeps
+        // drop glue off the binding that catches it.
         let access = match self.interner.resolve(method) {
-            Some("get" | "__getitem__") => PtrAccess::Get,
+            Some("get" | "__getitem__" | "borrow") => PtrAccess::Get,
             Some("set" | "__setitem__") => PtrAccess::Set,
             _ => return None,
         };
@@ -1512,7 +1515,7 @@ impl<'a> FunctionLower<'a> {
         if args.len() != 1 {
             return Ok(None);
         }
-        if !matches!(self.interner.resolve(method), Some("get" | "__getitem__")) {
+        if !matches!(self.interner.resolve(method), Some("get" | "__getitem__" | "borrow")) {
             return Ok(None);
         }
         let Ok(binding) = self.resolve_method_receiver_binding(recv) else {

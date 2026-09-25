@@ -531,8 +531,11 @@ impl EvaluationContext<'_> {
         if !from_std_ptr {
             return Ok(None);
         }
+        // `borrow` reads the same slot: `__builtin_ptr_ref` and
+        // `__builtin_ptr_read` evaluate alike here, and the binding
+        // that catches a borrow is kept off the drop list by its type.
         let is_set = match self.string_interner.resolve(method.name) {
-            Some("get" | "__getitem__") => false,
+            Some("get" | "__getitem__" | "borrow") => false,
             Some("set" | "__setitem__") => true,
             _ => return Ok(None),
         };

@@ -279,14 +279,15 @@ impl<T> Vec<T> {
     # `push` / `pop` / `clear` may move the buffer, and a reference
     # taken before that names memory the vector no longer uses. That is
     # not checked (design-docs/ELEMENT_BORROW.md section 2-e).
-    unsafe fn borrow(&self, index: u64) -> &T
+    fn borrow(&self, index: u64) -> &T
         requires index < self.len
     {
         if index >= self.len { panic("Vec::borrow index out of bounds") }
         # Bound first: a compound `T` expands into one load per leaf,
         # and the compiled lanes want the destination binding for that
         # (the same reason `get` is written this way).
-        val e: &T = __builtin_ptr_ref::<T>(self.data, index * __builtin_sizeof::<T>())
+        val p: Ptr<T> = Ptr { addr: self.data }
+        val e: &T = p.borrow(index)
         e
     }
 

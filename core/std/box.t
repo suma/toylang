@@ -87,8 +87,9 @@ impl<T> Box<T> {
     # Name the boxed value without taking it (ELEMENT-BORROW). `get`
     # answers a value that shares the box's resource when `T` owns one,
     # so a binding of it would free what the box still holds.
-    unsafe fn borrow(&self) -> &T {
-        val v: &T = __builtin_ptr_ref::<T>(self.data, 0u64)
+    fn borrow(&self) -> &T {
+        val cell: Ptr<T> = Ptr { addr: self.data }
+        val v: &T = cell.borrow(0u64)
         v
     }
 

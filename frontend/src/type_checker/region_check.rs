@@ -121,6 +121,21 @@ enum RegionKind {
 /// says "this is a view of somebody else's memory".
 const WINDOW_TYPES: &[&str] = &["Span", "Column"];
 
+/// Types that view memory without owning any. A window taken *off*
+/// one of these (`p.borrow(i)` on a `Ptr<T>`, `s.borrow(i)` on a
+/// `Span<T>`) views what the receiver views, not the receiver
+/// binding: dropping the `Ptr` frees nothing. Whatever region the
+/// receiver itself came from still reaches the result through the
+/// receiver's own taint.
+const VIEW_TYPES: &[&str] = &["Ptr", "Span", "Column"];
+
+/// The written name of a stdlib type. A stdlib body is integrated
+/// under `__std_Ptr` / `__std_Span` when the user program declares a
+/// type of the same name, and the lists above are in written names.
+fn stdlib_name(name: &str) -> &str {
+    name.strip_prefix("__std_").unwrap_or(name)
+}
+
 /// Which region a value came from, if any. The index is into
 /// `RegionCheck::regions`, which only ever grows, so it stays valid
 /// after the region's block has been left.
@@ -555,6 +570,9 @@ impl RegionCheck<'_> {
         if self.params.contains(&name) {
             return None;
         }
+        if self.is_view_type(owner) {
+            return None;
+        }
         let depth = self.depth_of(name)?;
         let text = self.interner.resolve(name).unwrap_or("?").to_string();
         self.regions.push(Region {
@@ -575,14 +593,26 @@ impl RegionCheck<'_> {
         }
     }
 
+    /// Is this expression a view that owns nothing (`VIEW_TYPES`, or a
+    /// reference)?
+    fn is_view_type(&self, expr_ref: &ExprRef) -> bool {
+        match self.expr_types.get(expr_ref) {
+            Some(TypeDecl::Struct(name, _)) | Some(TypeDecl::Identifier(name)) => {
+                VIEW_TYPES.contains(&stdlib_name(self.interner.resolve(*name).unwrap_or("")))
+            }
+            Some(TypeDecl::Ref { .. }) => true,
+            _ => false,
+        }
+    }
+
     fn names_window(&self, ty: &TypeDecl) -> bool {
         match ty {
             TypeDecl::Struct(name, args) | TypeDecl::Enum(name, args) => {
-                let head = self.interner.resolve(*name).unwrap_or("");
+                let head = stdlib_name(self.interner.resolve(*name).unwrap_or(""));
                 WINDOW_TYPES.contains(&head) || args.iter().any(|a| self.names_window(a))
             }
             TypeDecl::Identifier(name) => {
-                WINDOW_TYPES.contains(&self.interner.resolve(*name).unwrap_or(""))
+                WINDOW_TYPES.contains(&stdlib_name(self.interner.resolve(*name).unwrap_or("")))
             }
             TypeDecl::Array(elements, _, _) | TypeDecl::Tuple(elements) => {
                 elements.iter().any(|e| self.names_window(e))

@@ -548,6 +548,121 @@ fn a_mutating_callee_leaks_nothing() {
     assert_renders(src, "mutating_lent_param_freed", "12 0\n");
 }
 
+/// MOVE-CONDITIONAL: a value handed over on some paths only -- in an
+/// `if`, before an early `return`, in a loop body that then `break`s,
+/// in one `match` arm -- is dropped behind a run-time flag: closed once
+/// by whoever holds it, on every path and every lane.
+#[test]
+fn a_value_moved_on_some_paths_is_dropped_once() {
+    let src = r#"
+struct H { id: u64 }
+impl Drop for H {
+    fn drop(&mut self) { println("close {self.id}") }
+}
+fn keep(h: H, v: Vec<H>) -> Vec<H> {
+    v.push(h)
+    v
+}
+fn sink(h: H) -> u64 {
+    var v: Vec<H> = Vec::with_capacity(1u64)
+    v.push(h)
+    println("sunk")
+    v.size()
+}
+fn pick(c: bool) -> u64 {
+    val a = H { id: 1u64 }
+    if c {
+        sink(a)
+    } else {
+        println("kept")
+        0u64
+    }
+}
+fn early(c: bool) -> u64 {
+    val a = H { id: 2u64 }
+    if c {
+        sink(a)
+        return 9u64
+    }
+    println("still own {a.id}")
+    0u64
+}
+fn looped(n: u64) -> u64 {
+    val a = H { id: 3u64 }
+    var i = 0u64
+    while i < n {
+        if i == 2u64 {
+            sink(a)
+            break
+        }
+        i = i + 1u64
+    }
+    i
+}
+fn arms(k: u64) -> u64 {
+    val a = H { id: 4u64 }
+    match k {
+        0u64 => sink(a),
+        _ => 7u64,
+    }
+}
+fn main() -> u64 {
+    println(pick(true))
+    println(pick(false))
+    println(early(true))
+    println(early(false))
+    println(looped(5u64))
+    println(looped(1u64))
+    println(arms(0u64))
+    println(arms(1u64))
+    0u64
+}
+    "#;
+    assert_renders(
+        src,
+        "conditional_move_drop_flag",
+        "sunk\nclose 1\n1\nkept\nclose 1\n0\nsunk\nclose 2\n9\nstill own 2\nclose 2\n0\n\
+         sunk\nclose 3\n2\nclose 3\n1\nsunk\nclose 4\n1\nclose 4\n7\n",
+    );
+}
+
+/// MOVE-CONDITIONAL: the flag lives in the binding's frame, so it is
+/// set afresh each time the binding is made -- a binding declared in a
+/// loop body and handed over on some rounds is freed on the others --
+/// and a `match` arm clears it on its own path only. `live_bytes` comes
+/// back to where it started.
+#[test]
+fn a_conditional_move_frees_everything_it_did_not_hand_over() {
+    let src = r#"
+        struct Pair { a: String, n: u64 }
+        fn run() -> u64 {
+            var kept: Vec<Pair> = Vec::with_capacity(4u64)
+            for i in 0u64..6u64 {
+                val p = Pair { a: String::from_str("abc"), n: i }
+                if i % 2u64 == 0u64 {
+                    kept.push(p)
+                }
+            }
+            val q = Pair { a: String::from_str("xyz"), n: 9u64 }
+            val m: u64 = match kept.size() {
+                3u64 => {
+                    kept.push(q)
+                    kept.size()
+                }
+                _ => 0u64,
+            }
+            m * 10u64 + kept.size()
+        }
+        fn main() -> u64 {
+            val before = __builtin_live_bytes()
+            val r = run()
+            println("{r} {__builtin_live_bytes() - before}")
+            0u64
+        }
+    "#;
+    assert_renders(src, "conditional_move_frees_rest", "44 0\n");
+}
+
 /// #121: a program that never pushes an allocator heap-allocates
 /// through the default one at every operation, so the lowering names
 /// it (`alloc=static(0)`) and codegen skips asking the runtime stack.

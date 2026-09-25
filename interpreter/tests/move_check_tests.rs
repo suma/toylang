@@ -145,11 +145,24 @@ fn main() -> i64 {
     );
 }
 
-/// A transfer inside a branch would leave the drop conditional, which
-/// needs a run-time flag no backend has. Refused with its own wording
-/// rather than accepted and silently mis-dropped.
+/// MOVE-CONDITIONAL: a transfer inside a branch leaves the drop
+/// conditional, which a run-time flag now carries. The value is freed
+/// once whichever way the branch goes, and reading it after the branch
+/// is still a use after a (possible) move.
 #[test]
-fn a_transfer_inside_a_branch_is_refused() {
+fn a_transfer_inside_a_branch_is_flagged() {
+    assert_eq!(
+        run("fn main() -> i64 {
+    var store: Vec<Cell<i64>> = Vec::new()
+    val c: Cell<i64> = Cell::new(7i64)
+    if store.is_empty() {
+        store.push(c)
+    }
+    val back: &Cell<i64> = store.borrow(0u64)
+    back.get()
+}"),
+        7i64
+    );
     let diagnostic = move_diagnostic(
         "fn main() -> i64 {
     var store: Vec<Cell<i64>> = Vec::new()
@@ -157,11 +170,99 @@ fn a_transfer_inside_a_branch_is_refused() {
     if store.is_empty() {
         store.push(c)
     }
+    c.get()
+}",
+    );
+    assert!(
+        diagnostic.message.contains("`c` was moved"),
+        "a read after the branch is a use after move: {}",
+        diagnostic.message
+    );
+}
+
+/// Each path of a branch starts from what was moved before it: the
+/// `else` may read what the `then` hands over, and a path that returns
+/// takes its move with it.
+#[test]
+fn a_move_on_one_path_leaves_the_others_alone() {
+    assert_eq!(
+        run("fn pick(flag: bool) -> i64 {
+    var store: Vec<Cell<i64>> = Vec::new()
+    val c: Cell<i64> = Cell::new(7i64)
+    if flag {
+        store.push(c)
+        return 1i64
+    }
+    c.get()
+}
+fn main() -> i64 {
+    pick(true) * 100i64 + pick(false)
+}"),
+        107i64
+    );
+}
+
+/// A loop body may come round to the binding again, so a transfer there
+/// is refused -- unless the block goes on to `break` or `return`.
+#[test]
+fn a_transfer_inside_a_loop_needs_a_way_out() {
+    let diagnostic = move_diagnostic(
+        "fn main() -> i64 {
+    var store: Vec<Cell<i64>> = Vec::new()
+    val c: Cell<i64> = Cell::new(7i64)
+    var i = 0u64
+    while i < 3u64 {
+        if i == 1u64 {
+            store.push(c)
+        }
+        i = i + 1u64
+    }
     0i64
 }",
     );
     assert!(
-        diagnostic.message.contains("branch or a loop body"),
+        diagnostic.message.contains("may go round again"),
+        "the refusal should say why: {}",
+        diagnostic.message
+    );
+    assert_eq!(
+        run("fn main() -> i64 {
+    var store: Vec<Cell<i64>> = Vec::new()
+    val c: Cell<i64> = Cell::new(7i64)
+    var i = 0u64
+    while i < 3u64 {
+        if i == 1u64 {
+            store.push(c)
+            break
+        }
+        i = i + 1u64
+    }
+    val back: &Cell<i64> = store.borrow(0u64)
+    back.get()
+}"),
+        7i64
+    );
+}
+
+/// `break` leaves one loop; a binding two loops out would be handed
+/// over again on the outer loop's next round.
+#[test]
+fn a_break_does_not_leave_an_outer_loop() {
+    let diagnostic = move_diagnostic(
+        "fn main() -> i64 {
+    var store: Vec<Cell<i64>> = Vec::new()
+    val c: Cell<i64> = Cell::new(7i64)
+    for i in 0u64..2u64 {
+        for j in 0u64..2u64 {
+            store.push(c)
+            break
+        }
+    }
+    0i64
+}",
+    );
+    assert!(
+        diagnostic.message.contains("may go round again"),
         "the refusal should say why: {}",
         diagnostic.message
     );
@@ -520,11 +621,11 @@ fn main() -> i64 {
 }
 
 #[test]
-fn an_arm_may_not_hand_over_a_payload_when_another_variant_owns_one() {
-    // The `B` path would still have to drop its `Cell` while the `A` path
-    // must not drop at all: a runtime drop flag this language lacks.
-    let diagnostic = move_diagnostic(
-        "enum Two { A(Cell<i64>), B(Cell<i64>) }
+fn an_arm_may_hand_over_a_payload_when_another_variant_owns_one() {
+    // MOVE-CONDITIONAL: the `B` path still drops its `Cell` while the
+    // `A` path does not drop at all -- the scrutinee's drop is flagged.
+    assert_eq!(
+        run("enum Two { A(Cell<i64>), B(Cell<i64>) }
 fn consume(c: Cell<i64>) -> Cell<i64> { c }
 
 fn main() -> i64 {
@@ -537,12 +638,8 @@ fn main() -> i64 {
         Two::B(w) => 0i64,
     }
     n
-}",
-    );
-    assert!(
-        diagnostic.message.contains("branch or a loop body"),
-        "the refusal should say why: {}",
-        diagnostic.message
+}"),
+        7i64
     );
 }
 

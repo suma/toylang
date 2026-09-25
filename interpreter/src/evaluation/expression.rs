@@ -229,6 +229,7 @@ impl EvaluationContext<'_> {
                         let entry = super::DropEntry {
                             name,
                             value: allocator_val.clone(),
+                            decl: None,
                         };
                         self.glue_drop(&entry)?;
                     }
@@ -920,6 +921,12 @@ impl EvaluationContext<'_> {
                     true
                 };
                 if guard_passed {
+                    if !self.drop_flags.is_empty() {
+                        let flags = self.drop_flags.clone();
+                        if let Some(decls) = flags.clear_before_expr.get(&arm.body) {
+                            self.disarm_drops(decls);
+                        }
+                    }
                     let result = self.evaluate(&arm.body);
                     self.environment.exit_block();
                     return result;

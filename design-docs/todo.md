@@ -12,6 +12,13 @@
 
 ### 2026-09-25
 
+- **MOVE-CONDITIONAL: 分岐の中の移動を実行時 drop flag で追う** — 移動を
+  含む最も内側の文 (か腕の本体) の直前で flag を落とし、drop は flag を
+  見る (compiled レーンは Bool ローカル、tree-walker は drop エントリを
+  外す)。各腕は分岐前の状態から始め、抜ける腕の移動は後ろに残さない。
+  ループ本体の外側の束縛は、直後に `return` か 1 重の `break` があるとき
+  だけ移動できる (`break s` もこれで通る)。closure の中は従来どおり拒否。
+
 - **LEND-MUTATING-CALLEE: 何も所有しない場所だけを書き換える受け手も貸し出し** —
   `b.n = ..` / それしかしない `&mut self` メソッド / 受け手内の
   `var c = b` 経由の受け手に渡した値を、呼び出し側が drop する (以前は
@@ -176,8 +183,8 @@
   `Option<T>` を書き戻す (バックエンド無変更)。`val x = loop {..}` /
   関数末尾 / `@label: loop` からの `break @label v`。`while` / `for` は
   値を持たない、値つきと値なしの `break` の混在は不可、値は `break` と
-  同じ行。**ループの外の所有束縛を `break s` で出すのは MOVE-CONDITIONAL
-  の E0014 のまま**。
+  同じ行。ループの外の所有束縛を `break s` で出すのは 2026-09-25 の
+  MOVE-CONDITIONAL で通るようになった。
 - **STRUCT-SUGAR-GAP: struct の省略形と分割束縛** — `P { x, y }` と
   `val P { x, y: b, .. } = e` (入れ子・tuple の中・`var` 可)。分割束縛は
   一時束縛 + 1 腕の `match` による検査 + フィールド読みに desugar する
@@ -2666,8 +2673,11 @@
 
 ### 型システム (NEW-TYPE-SYSTEM)
 
-- **MOVE-CONDITIONAL: 分岐 / ループからの移動** ★ — 現状は E0014 で拒否。
-  許すには実行時 drop flag (Rust と同じ) が要る。実プログラムで踏んだら着手。
+- **MOVE-REINIT: 移動した名前への代入し直し** ★ — `kept = keep(p, kept)`
+  のように渡した直後に同じ名前へ新しい値を入れる形は E0014 (`moved` から
+  外れない)。代入で束縛を所有し直し、ループ本体でも「次の周回は所有
+  している」と言えるようにする。旧値の drop (移動していないときの上書き)
+  をどのレーンもしていない点と合わせて決める。
 - **LEND-FREEING-CALLEE: 解放・再確保するがしまわない受け手に渡した値が漏れる** ★ —
   受け手は値渡しの仮引数を drop しないので、`fn grow(s: String) -> u64
   { s.push(100u8)  s.len() }` のように所有物を触る (realloc する) だけで

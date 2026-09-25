@@ -2740,9 +2740,10 @@ val s = @outer: loop {
 - The value is the expression **on the `break`'s line**; `break` with
   a statement on the next line breaks without one.
 - Breaking out a value created in the `break` (`break String::new()`)
-  is fine. Breaking out an owned **binding declared outside the loop**
-  (`break s`) is a move inside a loop body and is rejected (`[E0014]`),
-  as any such move is today.
+  is fine, and so is breaking out an owned **binding declared outside
+  the loop** (`break s`): the move is followed by the `break`, so the
+  loop does not come round to `s` again, and `s`'s drop is kept behind
+  a run-time flag for the paths that do not break with it.
 - The type is the first value's that names a type. A suffix-less
   literal takes the type the loop's position names
   (`val x: i64 = loop { break -5 }`), else `u64`. A value that names
@@ -6672,14 +6673,34 @@ An arm may hand its own scrutinee's payload over — `match made {
 Option::Some(c) => keep(c), Option::None => 0u64 }` — when the other
 variants own nothing (`Result<File, IoError>`, `Option<T>`): then
 `made` is not dropped on any path. When another variant does own
-something, that is a transfer inside a branch and is refused like one.
+something, that is a transfer inside a branch like any other (below).
 
-Two limits worth knowing:
+A transfer **inside a branch** — an `if` arm, a `match` arm, the code
+before an early `return` — leaves the binding owning its value on some
+paths and not on others. Its drop is then kept behind a **run-time
+flag** (as in Rust): set when the binding is made, cleared on the path
+that hands the value over, read at scope exit. Each path of the branch
+starts from what was moved before it, so the `else` may still use what
+the `then` hands over, and a path that leaves (`return`, `break`,
+`continue`, `panic`) takes its move with it:
 
-- A transfer inside a branch or a loop body is refused rather than
-  tracked, because whether the binding still owns anything at scope
-  exit would depend on the path taken. Build the value inside the
-  branch instead.
+    val c = open_it()
+    if done {
+        store.push(c)
+        return 0u64
+    }
+    c.read(buf)            # fine: the path that moved `c` returned
+
+After a branch that carries on, reading the binding is `[E0014]` — it
+may have moved. A transfer inside a **loop body** of a binding declared
+outside the loop is refused unless the block holding it goes on to
+leave the loop: `return` always does, `break` does when that one loop
+is all the binding outlives. Otherwise the next round would hand the
+value over again. A transfer inside a closure is refused too.
+(Before 2026-09-25 every transfer inside a branch or a loop body was
+refused.)
+
+A limit worth knowing:
 - Ownership is transitive (DROP-GLUE): a `Vec`, a struct field or an
   enum payload that received a transferred value frees it when the
   container dies. `Vec<T>` frees each element and its buffer, a

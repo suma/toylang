@@ -290,6 +290,10 @@ pub struct EvaluationContext<'a> {
     /// register a drop — the receiver owns the resource now. Copied
     /// from `File::transferred_bindings` at startup.
     pub(crate) transferred_bindings: std::rc::Rc<std::collections::HashSet<frontend::ast::StmtRef>>,
+    /// MOVE-CONDITIONAL: where a binding handed over on some paths only
+    /// leaves. The tree-walker needs no flag: taking the binding's entry
+    /// out of `drop_scopes` on the path that hands it over is the flag.
+    pub(crate) drop_flags: std::rc::Rc<frontend::ast::DropFlags>,
     /// Per-`match` nesting: whether the value being matched lives in
     /// storage that outlives the arm (see `bind_pattern_name`).
     pub(crate) match_scrutinee_is_place: Vec<bool>,
@@ -335,6 +339,9 @@ pub struct EvaluationContext<'a> {
 pub(super) struct DropEntry {
     pub(super) name: DefaultSymbol,
     pub(super) value: RcObject,
+    /// The `val` / `var` that registered it, so a conditional
+    /// hand-over can take it back out (MOVE-CONDITIONAL).
+    pub(super) decl: Option<frontend::ast::StmtRef>,
 }
 
 impl<'a> EvaluationContext<'a> {
@@ -470,6 +477,7 @@ impl<'a> EvaluationContext<'a> {
             },
             drop_trait_structs: Rc::new(std::collections::HashSet::new()),
             transferred_bindings: Rc::new(std::collections::HashSet::new()),
+            drop_flags: Rc::new(frontend::ast::DropFlags::default()),
             match_scrutinee_is_place: Vec::new(),
             drop_scopes: vec![Vec::new()],
             generic_type_scopes: Vec::new(),
@@ -533,6 +541,7 @@ impl<'a> EvaluationContext<'a> {
             },
             drop_trait_structs: shared.drop_trait_structs.clone(),
             transferred_bindings: shared.transferred_bindings.clone(),
+            drop_flags: shared.drop_flags.clone(),
             match_scrutinee_is_place: Vec::new(),
             drop_scopes: vec![Vec::new()],
             generic_type_scopes: Vec::new(),
@@ -1101,7 +1110,15 @@ impl<'a> EvaluationContext<'a> {
             return;
         }
         if let Some(scope) = self.drop_scopes.last_mut() {
-            scope.push(DropEntry { name, value: rc });
+            scope.push(DropEntry { name, value: rc, decl: Some(stmt_ref) });
+        }
+    }
+
+    /// MOVE-CONDITIONAL: the value of each binding in `decls` is being
+    /// handed over on this path, so its drop entry comes out.
+    pub(super) fn disarm_drops(&mut self, decls: &[frontend::ast::StmtRef]) {
+        for scope in self.drop_scopes.iter_mut() {
+            scope.retain(|entry| !entry.decl.is_some_and(|d| decls.contains(&d)));
         }
     }
 

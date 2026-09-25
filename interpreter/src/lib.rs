@@ -955,6 +955,7 @@ fn check_typing_collecting(
     // Recorded on the program so every backend's auto-drop
     // registration can skip a binding that no longer owns its value.
     program.transferred_bindings = analysis.transferred;
+    program.drop_flags = analysis.drop_flags;
     fn_errors.append(&mut analysis.errors);
     fn_errors.sort_by_key(|e| {
         e.location
@@ -1118,6 +1119,7 @@ pub struct SharedRunData<'a> {
     pub(crate) struct_definitions:
         Rc<HashMap<DefaultSymbol, crate::evaluation::StructRegistryEntry>>,
     pub(crate) transferred_bindings: Rc<HashSet<StmtRef>>,
+    pub(crate) drop_flags: Rc<frontend::ast::DropFlags>,
 }
 
 impl<'a> SharedRunData<'a> {
@@ -1215,6 +1217,7 @@ impl<'a> SharedRunData<'a> {
             enum_definitions: Rc::new(enum_definitions),
             struct_definitions: Rc::new(struct_definitions),
             transferred_bindings: Rc::new(program.transferred_bindings.clone()),
+            drop_flags: Rc::new(program.drop_flags.clone()),
         })
     }
 }

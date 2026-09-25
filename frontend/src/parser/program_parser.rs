@@ -342,6 +342,7 @@ impl<'a> Parser<'a> {
             consts: out.consts,
             tests: out.tests,
             transferred_bindings: std::collections::HashSet::new(),
+            drop_flags: Default::default(),
             parallel_loops: std::mem::take(&mut self.parallel_loops),
             call_paths: std::mem::take(&mut self.call_paths),
             statement: stmt,

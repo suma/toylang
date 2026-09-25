@@ -139,7 +139,7 @@ pub enum TypeCheckErrorKind {
     /// BOX-T: a binding read after its value was handed to something
     /// that outlives it, or a transfer this pass will not model.
     UseAfterMove { name: String, moved_at_line: u32 },
-    ConditionalMove { name: String },
+    ConditionalMove { name: String, reason: String },
     /// TYPECHECK-LIES: a literal the grammar accepts but no backend
     /// implements. `null` is the only one — it used to type-check as
     /// "whatever the context wants" and then stop the program when
@@ -643,11 +643,12 @@ impl TypeCheckError {
         }
     }
 
-    /// BOX-T: a transfer whose drop would have to be decided at run
-    /// time. Refused rather than tracked, for now.
-    pub fn conditional_move(name: String) -> Self {
+    /// BOX-T / MOVE-CONDITIONAL: a hand-over inside a branch is tracked
+    /// with a run-time drop flag; one that could happen again (a loop
+    /// body that goes round, a closure) is refused.
+    pub fn conditional_move(name: String, reason: &str) -> Self {
         Self {
-            kind: Box::new(TypeCheckErrorKind::ConditionalMove { name }),
+            kind: Box::new(TypeCheckErrorKind::ConditionalMove { name, reason: reason.to_string() }),
             context: None,
             location: None,
             origin_module: None,
@@ -725,12 +726,8 @@ impl TypeCheckError {
                     name, moved_at_line
                 )
             }
-            TypeCheckErrorKind::ConditionalMove { name } => {
-                format!(
-                    "`{}` cannot be moved inside a branch or a loop body: whether it \
-                     still owns its value would only be known at run time",
-                    name
-                )
+            TypeCheckErrorKind::ConditionalMove { name, reason } => {
+                format!("`{}` cannot be moved {}", name, reason)
             }
             TypeCheckErrorKind::NeverAllocates { function, path, opaque } => match opaque {
                 Some(what) => format!(

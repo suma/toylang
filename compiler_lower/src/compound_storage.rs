@@ -458,6 +458,10 @@ impl<'a> FunctionLower<'a> {
         expr_ref: &ExprRef,
         target: &CompoundTarget,
     ) -> Result<(), String> {
+        if let Some(decls) = self.program.drop_flags.clear_before_expr.get(expr_ref) {
+            let decls = decls.clone();
+            self.clear_drop_flags(&decls);
+        }
         match target {
             CompoundTarget::Enum(storage) => self.lower_into_enum_storage(expr_ref, storage),
             CompoundTarget::Struct { struct_id, fields } => {

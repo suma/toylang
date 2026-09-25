@@ -497,14 +497,18 @@ payload, and the right-hand side of an assignment. `val b = a` is
 **not** one of them: compound bindings alias in this language, so `a`
 and `b` name one value with one owner.
 
-The same code also reports a hand-over this compiler will not model:
+A hand-over inside a branch is fine -- the drop of `c` is kept behind
+a run-time flag -- but reading `c` after the branch is E0014, since it
+may have moved. The same code also reports a hand-over that could
+happen twice:
 
-    if cond { store.push(c) }  # E0014: cannot be moved inside a branch
+    while more() {
+        store.push(c)          # E0014: the loop may go round again
+    }
 
-Whether `c` still owns its value at the end of the scope would depend
-on `cond`, and deciding that needs a run-time flag the backends do not
-have. Lift the transfer out of the branch, or build the value inside
-it.";
+Follow it with `break` or `return` (`store.push(c)  break`), build the
+value inside the loop, or move it out of the loop. A hand-over inside
+a closure is refused for the same reason.";
 
 const E0015: &str = "\
 E0015: a reserved literal that no backend implements

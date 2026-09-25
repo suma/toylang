@@ -239,8 +239,9 @@ doc コメント) が**すべて束縛形**だから。`Poller::register(fd, ...
    `match io::write_file(...)` は書けず `val w = ...` を挟む
    (F3 の再現でも踏んだ)。エラーを返す API の使用例はすべてこの形で書く。
 5. **`Drop` を持つ値の move は検査される** (`[E0014]`)。エラー payload に
-   `String` を入れると所有権が移るので、`Err` を返す経路で drop flag の
-   要る分岐 (ループ内 move 等) が書けなくなる。
+   `String` を入れると所有権が移る。分岐の中の move は drop flag で追う
+   (MOVE-CONDITIONAL) が、ループ内の move は直後に `return` / `break` が
+   要る。
 6. **status コードは OS 非依存の語彙**であることが `net` の設計の核
    (`lib.rs:261` のコメント)。errno はプラットフォーム側の表で畳む。
 

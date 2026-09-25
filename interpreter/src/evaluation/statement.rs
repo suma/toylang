@@ -238,6 +238,12 @@ impl EvaluationContext<'_> {
         let mut last: Option<EvaluationResult> = None;
 
         for (stmt_ref, stmt) in statements {
+            if !self.drop_flags.is_empty() {
+                let flags = self.drop_flags.clone();
+                if let Some(decls) = flags.clear_before_stmt.get(&stmt_ref) {
+                    self.disarm_drops(decls);
+                }
+            }
             match stmt {
                 Stmt::Val(name, annotation, e) => {
                     // val/var declarations don't themselves produce a value, but

@@ -288,6 +288,7 @@ impl<'a> FunctionLower<'a> {
                     self.arm_drop_targets.push(DropTarget {
                         ty: crate::ir::Type::Enum(copy.enum_id),
                         field_locals: leaves,
+                        flag: None,
                     });
                 }
             }
@@ -493,6 +494,7 @@ impl<'a> FunctionLower<'a> {
                         self.arm_drop_targets.push(DropTarget {
                             ty: crate::ir::Type::Enum(enum_id),
                             field_locals: leaves,
+                            flag: None,
                         });
                     }
                 }
@@ -514,6 +516,7 @@ impl<'a> FunctionLower<'a> {
                         self.arm_drop_targets.push(DropTarget {
                             ty: crate::ir::Type::Struct(struct_id),
                             field_locals: leaves,
+                            flag: None,
                         });
                     }
                 }

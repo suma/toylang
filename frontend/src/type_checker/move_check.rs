@@ -62,9 +62,14 @@
 //!
 //! ## Known gaps
 //!
-//! Transferring out of a branch or a loop body is otherwise refused
-//! rather than tracked, since a conditionally-owned binding needs a
-//! runtime drop flag to know whether to fire. Handing over one owning
+//! MOVE-CONDITIONAL: transferring out of a branch is tracked with a
+//! run-time drop flag (`DropFlags`): the binding is flagged, and the
+//! flag is cleared just before the innermost statement or arm body
+//! holding the hand-over. Each path of a branch starts from what was
+//! moved before it, and a path that leaves takes its moves with it. A
+//! transfer inside a loop body, of a binding the loop does not declare,
+//! needs the block to leave the loop right after (`loop_refusal`); one
+//! inside a closure is refused. Handing over one owning
 //! field of a payload that holds several stops the root dropping the
 //! others too (a leak, not a double drop). A *parameter* is never
 //! dropped by the callee -- parameters register no drop. A value whose
@@ -83,7 +88,7 @@ use std::collections::{HashMap, HashSet};
 
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
-use crate::ast::{EnumVariantDef, Expr, ExprRef, File, MatchArm, Pattern, Stmt, StmtRef};
+use crate::ast::{DropFlags, EnumVariantDef, Expr, ExprRef, File, MatchArm, Pattern, Stmt, StmtRef};
 use crate::type_checker::error::SourceLocation;
 use crate::type_checker::{contains_drop::DropAnalysis, TypeCheckError};
 use crate::type_decl::TypeDecl;
@@ -98,6 +103,8 @@ pub struct MoveAnalysis {
     /// backends must not drop these — whatever received the value owns
     /// it now.
     pub transferred: HashSet<StmtRef>,
+    /// MOVE-CONDITIONAL: bindings handed over on some paths only.
+    pub drop_flags: DropFlags,
 }
 
 /// Analyse ownership transfer across every function body.
@@ -115,6 +122,7 @@ pub fn check_moves(
         return MoveAnalysis {
             errors: Vec::new(),
             transferred: HashSet::new(),
+            drop_flags: DropFlags::default(),
         };
     }
     let signatures = Signatures::collect(program, interner);
@@ -136,6 +144,11 @@ pub fn check_moves(
         cond_level: 0,
         consuming_arms: Vec::new(),
         lend,
+        drop_flags: DropFlags::default(),
+        anchors: Vec::new(),
+        loops: Vec::new(),
+        exits: Vec::new(),
+        closure_level: 0,
     };
     for function in &program.function {
         if function.is_extern {
@@ -178,6 +191,7 @@ pub fn check_moves(
     MoveAnalysis {
         errors,
         transferred: checker.transferred,
+        drop_flags: checker.drop_flags,
     }
 }
 
@@ -542,6 +556,40 @@ struct MoveCheck<'a> {
     /// BY-VALUE-PARAM-NO-DROP: per function body, which by-value
     /// parameters it only lends (`compute_lend`).
     lend: HashMap<StmtRef, Vec<bool>>,
+    /// MOVE-CONDITIONAL: what the backends are told.
+    drop_flags: DropFlags,
+    /// The statements and arm bodies the walk is inside, innermost
+    /// last. A conditional hand-over clears its flag before the
+    /// innermost one (see `DropFlags`).
+    anchors: Vec<Anchor>,
+    /// Scope depth at each enclosing loop's entry, innermost last. A
+    /// binding at or above it lives across iterations.
+    loops: Vec<usize>,
+    /// Per enclosing block statement: how the rest of that block leaves,
+    /// and how many loops enclosed it. See `loop_refusal`.
+    exits: Vec<(usize, Exit)>,
+    /// Closure bodies the walk is inside.
+    closure_level: usize,
+}
+
+/// Where a conditional hand-over clears its flag (`DropFlags`).
+#[derive(Clone, Copy)]
+enum Anchor {
+    /// A statement; for an expression statement, its expression too.
+    Stmt(StmtRef, Option<ExprRef>),
+    /// A `match` arm's body.
+    Expr(ExprRef),
+}
+
+/// How the statements from here to the end of a block leave it.
+#[derive(Clone, Copy, PartialEq)]
+enum Exit {
+    /// They fall through (or `continue`).
+    Through,
+    /// A `break` comes first.
+    Break,
+    /// A `return` comes first.
+    Return,
 }
 
 impl MoveCheck<'_> {
@@ -894,6 +942,16 @@ impl MoveCheck<'_> {
     // ---- statements ----
 
     fn walk_stmt(&mut self, stmt_ref: StmtRef, conditional: bool) {
+        let anchor = match self.program.statement.get(&stmt_ref) {
+            Some(Stmt::Expression(e)) => Anchor::Stmt(stmt_ref, Some(e)),
+            _ => Anchor::Stmt(stmt_ref, None),
+        };
+        self.anchors.push(anchor);
+        self.walk_stmt_inner(stmt_ref, conditional);
+        self.anchors.pop();
+    }
+
+    fn walk_stmt_inner(&mut self, stmt_ref: StmtRef, conditional: bool) {
         let Some(stmt) = self.program.statement.get(&stmt_ref) else {
             return;
         };
@@ -940,21 +998,25 @@ impl MoveCheck<'_> {
             }
             Stmt::While(_, cond, body) => {
                 self.walk_expr(cond, Use::Read, conditional);
+                self.loops.push(self.depth());
                 self.enter_scope();
                 self.cond_level += 1;
                 self.walk_expr(body, Use::Read, true);
                 self.cond_level -= 1;
                 self.exit_scope();
+                self.loops.pop();
             }
             Stmt::For(_, var, start, end, body) => {
                 self.walk_expr(start, Use::Read, conditional);
                 self.walk_expr(end, Use::Read, conditional);
+                self.loops.push(self.depth());
                 self.enter_scope();
                 let _ = var;
                 self.cond_level += 1;
                 self.walk_expr(body, Use::Read, true);
                 self.cond_level -= 1;
                 self.exit_scope();
+                self.loops.pop();
             }
             Stmt::Break(_) | Stmt::Continue(_) => {}
             Stmt::StructDecl { .. }
@@ -976,23 +1038,35 @@ impl MoveCheck<'_> {
 
             Expr::Block(stmts) => {
                 self.enter_scope();
-                for s in &stmts {
+                for (i, s) in stmts.iter().enumerate() {
+                    let exit = self.exit_of(&stmts[i..]);
+                    self.exits.push((self.loops.len(), exit));
                     self.walk_stmt(*s, conditional);
+                    self.exits.pop();
                 }
                 self.exit_scope();
             }
 
             // Every arm is a separate path, so a transfer inside one is
             // conditional even when the enclosing statement is not.
+            // MOVE-CONDITIONAL: each path starts from what was moved
+            // before the branch, and what is moved after it is what any
+            // path that carries on moved.
             Expr::IfElifElse(cond, then_block, elifs, else_block) => {
                 self.walk_expr(cond, Use::Read, conditional);
                 self.cond_level += 1;
+                let before = self.moved.clone();
+                let mut after = before.clone();
                 self.walk_expr(then_block, Use::Read, true);
+                self.merge_path(then_block, &before, &mut after);
                 for (c, b) in &elifs {
                     self.walk_expr(*c, Use::Read, true);
                     self.walk_expr(*b, Use::Read, true);
+                    self.merge_path(*b, &before, &mut after);
                 }
                 self.walk_expr(else_block, Use::Read, true);
+                self.merge_path(else_block, &before, &mut after);
+                self.moved = after;
                 self.cond_level -= 1;
             }
             Expr::Match(scrutinee, arms) => {
@@ -1007,6 +1081,8 @@ impl MoveCheck<'_> {
                     .owned_place(scrutinee)
                     .map(|s| self.root_of(s))
                     .filter(|root| !self.moved.contains_key(root));
+                let before = self.moved.clone();
+                let mut after = before.clone();
                 for arm in &arms {
                     self.cond_level += 1;
                     self.enter_scope();
@@ -1025,13 +1101,17 @@ impl MoveCheck<'_> {
                     if let Some(guard) = arm.guard {
                         self.walk_expr(guard, Use::Read, true);
                     }
+                    self.anchors.push(Anchor::Expr(arm.body));
                     self.walk_expr(arm.body, Use::Read, true);
+                    self.anchors.pop();
                     if consuming {
                         self.consuming_arms.pop();
                     }
                     self.exit_scope();
+                    self.merge_path(arm.body, &before, &mut after);
                     self.cond_level -= 1;
                 }
+                self.moved = after;
             }
 
             // Storing into a place that outlives the statement.
@@ -1168,7 +1248,9 @@ impl MoveCheck<'_> {
             // read rather than handed over.
             Expr::Closure { body, .. } => {
                 self.cond_level += 1;
+                self.closure_level += 1;
                 self.walk_expr(body, Use::Read, true);
+                self.closure_level -= 1;
                 self.cond_level -= 1;
             }
 
@@ -1299,11 +1381,35 @@ impl MoveCheck<'_> {
                 .last()
                 .is_some_and(|(root, level)| *root == owner && *level == self.cond_level);
             if !consumed_here {
-                let mut error = TypeCheckError::conditional_move(self.name_of(name));
-                if let Some(loc) = self.location(expr_ref) {
-                    error = error.with_location(loc);
+                // MOVE-CONDITIONAL: the binding owns its value on some
+                // paths only, so its drop goes behind a flag -- unless
+                // the path could come round to the binding again.
+                let anchor = self.anchors.last().copied();
+                let refusal = if self.closure_level > 0 {
+                    Some("inside a closure, which may run any number of times")
+                } else if anchor.is_none() {
+                    Some("here")
+                } else {
+                    self.loop_refusal(owner_depth)
+                };
+                if let Some(reason) = refusal {
+                    let mut error = TypeCheckError::conditional_move(self.name_of(name), reason);
+                    if let Some(loc) = self.location(expr_ref) {
+                        error = error.with_location(loc);
+                    }
+                    self.errors.push(error);
+                    return;
                 }
-                self.errors.push(error);
+                if let Some(anchor) = anchor {
+                    for decl in [owner_decl, alias_decl].into_iter().flatten() {
+                        self.flag(decl, anchor);
+                    }
+                }
+                let at = self
+                    .location(expr_ref)
+                    .unwrap_or_else(|| SourceLocation::new(0, 0, 0, 0));
+                self.moved.insert(name, at);
+                self.moved.insert(owner, at);
                 return;
             }
         }
@@ -1319,6 +1425,81 @@ impl MoveCheck<'_> {
             .unwrap_or_else(|| SourceLocation::new(0, 0, 0, 0));
         self.moved.insert(name, at);
         self.moved.insert(owner, at);
+    }
+
+    /// MOVE-CONDITIONAL: put `decl`'s drop behind a flag, cleared
+    /// before `anchor`.
+    fn flag(&mut self, decl: StmtRef, anchor: Anchor) {
+        self.drop_flags.bindings.insert(decl);
+        let (stmt, expr) = match anchor {
+            Anchor::Stmt(s, e) => (Some(s), e),
+            Anchor::Expr(e) => (None, Some(e)),
+        };
+        if let Some(s) = stmt {
+            let list = self.drop_flags.clear_before_stmt.entry(s).or_default();
+            if !list.contains(&decl) {
+                list.push(decl);
+            }
+        }
+        if let Some(e) = expr {
+            let list = self.drop_flags.clear_before_expr.entry(e).or_default();
+            if !list.contains(&decl) {
+                list.push(decl);
+            }
+        }
+    }
+
+    /// Why a hand-over of a binding declared at `owner_depth` cannot be
+    /// flagged: it is inside a loop the binding outlives, and the
+    /// iteration may come round and hand it over again. It may not when
+    /// the block holding the hand-over, inside the innermost loop, goes
+    /// on to `return` -- or to `break`, when that one loop is all the
+    /// binding outlives.
+    fn loop_refusal(&self, owner_depth: usize) -> Option<&'static str> {
+        let outlived = self.loops.iter().filter(|entry| owner_depth <= **entry).count();
+        if outlived == 0 {
+            return None;
+        }
+        let innermost = self.loops.len();
+        let leaves = self.exits.iter().any(|(loops, exit)| {
+            *loops == innermost && (*exit == Exit::Return || (*exit == Exit::Break && outlived == 1))
+        });
+        if leaves {
+            None
+        } else {
+            Some("in a loop body that may go round again; `break` or `return` right after it")
+        }
+    }
+
+    /// How `rest` (a block from some statement on) leaves: the first
+    /// `return` / `break` / `continue` decides.
+    fn exit_of(&self, rest: &[StmtRef]) -> Exit {
+        for s in rest {
+            match self.program.statement.get(s) {
+                Some(Stmt::Return(_)) => return Exit::Return,
+                Some(Stmt::Break(_)) => return Exit::Break,
+                Some(Stmt::Continue(_)) => return Exit::Through,
+                _ => {}
+            }
+        }
+        Exit::Through
+    }
+
+    /// Fold one path of a branch into `after`: what it moved, unless it
+    /// never reaches the end of the branch. Then start the next path
+    /// from `before`.
+    fn merge_path(
+        &mut self,
+        body: ExprRef,
+        before: &HashMap<DefaultSymbol, SourceLocation>,
+        after: &mut HashMap<DefaultSymbol, SourceLocation>,
+    ) {
+        let moved = std::mem::replace(&mut self.moved, before.clone());
+        if !self.diverges(body) {
+            for (name, at) in moved {
+                after.entry(name).or_insert(at);
+            }
+        }
     }
 
     /// Scope depth at which the innermost conditional context began.

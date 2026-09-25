@@ -1992,6 +1992,10 @@ impl<'a> FunctionLower<'a> {
     /// last-writer-wins field: without it, `a - b`'s underflow guard
     /// would be attributed to `b`.
     pub(super) fn lower_expr(&mut self, expr_ref: &ExprRef) -> Result<Option<ValueId>, String> {
+        if let Some(decls) = self.program.drop_flags.clear_before_expr.get(expr_ref) {
+            let decls = decls.clone();
+            self.clear_drop_flags(&decls);
+        }
         let previous = self.current_expr.replace(*expr_ref);
         let result = self.lower_expr_here(expr_ref);
         self.current_expr = previous;

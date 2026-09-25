@@ -206,6 +206,9 @@ mod parallel;
 pub(crate) struct DropTarget {
     pub(crate) ty: crate::ir::Type,
     pub(crate) field_locals: Vec<(crate::ir::LocalId, crate::ir::Type)>,
+    /// MOVE-CONDITIONAL: a `Bool` local that is true while the binding
+    /// still owns its value. `None` for a drop that always runs.
+    pub(crate) flag: Option<crate::ir::LocalId>,
 }
 
 /// Per-`with` scope marker. The runtime arena / fixed_buffer
@@ -390,6 +393,9 @@ struct FunctionLower<'a> {
     /// payload read through `v.borrow(i)` closed the container's
     /// descriptor while the container still listed it.
     not_owned_locals: std::collections::HashSet<crate::ir::LocalId>,
+    /// MOVE-CONDITIONAL: the drop flag of each flagged `val` / `var`
+    /// lowered so far (`File::drop_flags`).
+    drop_flag_locals: HashMap<frontend::ast::StmtRef, crate::ir::LocalId>,
     /// The `val` / `var` statement currently being lowered, so
     /// `register_drop_for_struct_binding` can ask whether this binding
     /// transferred its value away (BOX-T). Parked here because that
@@ -2100,12 +2106,15 @@ impl<'a> FunctionLower<'a> {
             return;
         }
         let leaves = bindings::flatten_struct_locals(fields);
+        let start = self.drop_scope_len();
         if let Some(scope) = self.drop_scopes.last_mut() {
             scope.push(DropTarget {
                 ty: crate::ir::Type::Struct(struct_id),
                 field_locals: leaves,
+                flag: None,
             });
         }
+        self.attach_drop_flag(start);
     }
 
     /// Remember that these locals hold something this scope does not
@@ -2137,12 +2146,15 @@ impl<'a> FunctionLower<'a> {
             return;
         }
         let leaves = bindings::flatten_enum_storage_locals(storage);
+        let start = self.drop_scope_len();
         if let Some(scope) = self.drop_scopes.last_mut() {
             scope.push(DropTarget {
                 ty: crate::ir::Type::Enum(enum_id),
                 field_locals: leaves,
+                flag: None,
             });
         }
+        self.attach_drop_flag(start);
     }
 
     /// DROP-GLUE: register a tuple binding whose elements carry
@@ -2164,7 +2176,61 @@ impl<'a> FunctionLower<'a> {
             self.mark_not_owned(&bindings::flatten_tuple_element_locals(elements));
             return;
         }
+        let start = self.drop_scope_len();
         self.push_tuple_element_drops(elements);
+        self.attach_drop_flag(start);
+    }
+
+    fn drop_scope_len(&self) -> usize {
+        self.drop_scopes.last().map_or(0, Vec::len)
+    }
+
+    /// MOVE-CONDITIONAL: when the binding being lowered is handed over
+    /// on some paths only, give the drop targets it just registered
+    /// (from `start` in the top scope) a flag, set now.
+    fn attach_drop_flag(&mut self, start: usize) {
+        let Some(stmt) = self.current_let_stmt else {
+            return;
+        };
+        if !self.program.drop_flags.bindings.contains(&stmt) || self.drop_scope_len() == start {
+            return;
+        }
+        let flag = match self.drop_flag_locals.get(&stmt) {
+            Some(flag) => *flag,
+            None => {
+                let flag = self.module.function_mut(self.func_id).add_local(crate::ir::Type::Bool);
+                self.drop_flag_locals.insert(stmt, flag);
+                flag
+            }
+        };
+        self.store_drop_flag(flag, true);
+        if let Some(scope) = self.drop_scopes.last_mut() {
+            for target in &mut scope[start..] {
+                target.flag = Some(flag);
+            }
+        }
+    }
+
+    fn store_drop_flag(&mut self, flag: crate::ir::LocalId, value: bool) {
+        if self.is_unreachable() {
+            return;
+        }
+        if let Some(v) = self.emit(
+            crate::ir::InstKind::Const(crate::ir::Const::Bool(value)),
+            Some(crate::ir::Type::Bool),
+        ) {
+            self.emit(crate::ir::InstKind::StoreLocal { dst: flag, src: v }, None);
+        }
+    }
+
+    /// MOVE-CONDITIONAL: the bindings in `decls` hand their value over
+    /// on this path; clear their flags.
+    pub(crate) fn clear_drop_flags(&mut self, decls: &[frontend::ast::StmtRef]) {
+        for decl in decls {
+            if let Some(flag) = self.drop_flag_locals.get(decl).copied() {
+                self.store_drop_flag(flag, false);
+            }
+        }
     }
 
     /// Push one `DropTarget` per owning element of a tuple shape,
@@ -2179,6 +2245,7 @@ impl<'a> FunctionLower<'a> {
                         scope.push(DropTarget {
                             ty: *ty,
                             field_locals: vec![(*local, *ty)],
+                            flag: None,
                         });
                     }
                 }
@@ -2189,6 +2256,7 @@ impl<'a> FunctionLower<'a> {
                             scope.push(DropTarget {
                                 ty: crate::ir::Type::Struct(*struct_id),
                                 field_locals: leaves,
+                                flag: None,
                             });
                         }
                     }
@@ -2207,6 +2275,24 @@ impl<'a> FunctionLower<'a> {
     /// body, which is why `Box::drop` freed its slot but nothing
     /// freed what the slot held).
     fn emit_drop_call(&mut self, target: &DropTarget) -> Result<(), String> {
+        let Some(flag) = target.flag else {
+            return self.emit_drop_call_unflagged(target);
+        };
+        // MOVE-CONDITIONAL: drop only while the binding still owns.
+        let owns = self
+            .emit(crate::ir::InstKind::LoadLocal(flag), Some(crate::ir::Type::Bool))
+            .ok_or_else(|| "auto-drop: flag load returned no value".to_string())?;
+        let drop_blk = self.fresh_block();
+        let cont = self.fresh_block();
+        self.terminate(crate::ir::Terminator::Branch { cond: owns, then_blk: drop_blk, else_blk: cont });
+        self.switch_to(drop_blk);
+        self.emit_drop_call_unflagged(target)?;
+        self.terminate(crate::ir::Terminator::Jump(cont));
+        self.switch_to(cont);
+        Ok(())
+    }
+
+    fn emit_drop_call_unflagged(&mut self, target: &DropTarget) -> Result<(), String> {
         let glue_id = self.ensure_drop_glue(target.ty)?;
         let mut args: Vec<crate::ir::ValueId> = Vec::new();
         for (local, ty) in &target.field_locals {

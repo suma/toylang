@@ -41,6 +41,10 @@ impl<'a> FunctionLower<'a> {
             // interpreter and JIT behave.
             return Ok(None);
         }
+        if let Some(decls) = self.program.drop_flags.clear_before_stmt.get(stmt_ref) {
+            let decls = decls.clone();
+            self.clear_drop_flags(&decls);
+        }
         match stmt {
             Stmt::Expression(e) => self.lower_expr(&e),
             Stmt::Val(name, ty, e) | Stmt::Var(name, ty, Some(e)) => {

@@ -7,6 +7,38 @@ use crate::type_checker::SourceLocation;
 use crate::ast::MemStat;
 use super::{StmtRef, ExprRef, StmtPool, ExprPool, LocationPool, Expr};
 
+/// MOVE-CONDITIONAL: a binding handed over inside a branch, or inside a
+/// loop body that is left right after, owns its value on some paths
+/// and not on others. Its drop is kept behind a run-time flag: set
+/// when the binding is made, cleared where the value leaves, read at
+/// the drop.
+///
+/// Where it leaves is named by an *anchor*: the innermost statement
+/// holding the hand-over, or a `match` arm's body when the arm has no
+/// braces. Clearing just before the anchor is the same as clearing at
+/// the hand-over itself -- nothing between the two can leave the scope
+/// (a nested block or arm would be the anchor instead) -- and anchors
+/// are points every backend already visits one by one.
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DropFlags {
+    /// The `val` / `var` statements whose drop is behind a flag.
+    pub bindings: std::collections::HashSet<StmtRef>,
+    /// Before this statement runs, clear these bindings' flags.
+    pub clear_before_stmt: HashMap<StmtRef, Vec<StmtRef>>,
+    /// Before this expression is evaluated, clear these bindings'
+    /// flags: an arm body, and the expression of an expression
+    /// statement (a block's tail is lowered from its expression
+    /// alone in places).
+    pub clear_before_expr: HashMap<ExprRef, Vec<StmtRef>>,
+}
+
+impl DropFlags {
+    pub fn is_empty(&self) -> bool {
+        self.bindings.is_empty()
+    }
+}
+
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct File {
@@ -78,6 +110,10 @@ pub struct File {
     /// Empty until the checker runs, which is the right default — an
     /// empty set is exactly the pre-ownership behaviour.
     pub transferred_bindings: std::collections::HashSet<StmtRef>,
+    /// MOVE-CONDITIONAL: bindings handed over on some paths only, and
+    /// where each path does it. Filled by `check_moves` like
+    /// `transferred_bindings`.
+    pub drop_flags: DropFlags,
     /// CONCURRENCY A1: the `for` statements written `parallel for`.
     ///
     /// A parallel loop *is* a `Stmt::For` — the modifier says the

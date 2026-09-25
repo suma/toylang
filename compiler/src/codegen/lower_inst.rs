@@ -15,6 +15,21 @@ use crate::ir::{BinOp, Const, InstKind, Type as IrType, UnaryOp};
 use super::{flatten_struct_to_cranelift_tys, ir_to_cranelift_ty, LowerCtx};
 
 impl<'a, 'b> LowerCtx<'a, 'b> {
+    /// The allocator handle a heap operation passes to the runtime: the
+    /// compile-time id of a `Static` binding, or the top of the
+    /// runtime's allocator stack for anything else (#121).
+    fn allocator_handle(&mut self, binding: &crate::ir::AllocatorBinding) -> cranelift_codegen::ir::Value {
+        match binding {
+            crate::ir::AllocatorBinding::Static(id) => {
+                self.builder.ins().iconst(types::I64, *id as i64)
+            }
+            _ => {
+                let call = self.builder.ins().call(self.runtime.alloc_current, &[]);
+                self.builder.inst_results(call)[0]
+            }
+        }
+    }
+
     /// DEBUG-OBS D4: keep the shadow stack around this instruction.
     ///
     /// Wrapping here rather than in each of the call arms is the point:
@@ -1234,15 +1249,14 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             // current handle (sentinel 0 = default global / libc
             // direct path) and pass it as the first arg to
             // `toy_dispatched_*` which handles the dispatch.
-            // Phase 5: `binding` is informational today — codegen
-            // routes every variant through the active-stack
-            // dispatch. A future devirt pass can branch on
-            // `Static` to emit a direct libc malloc / free without
-            // reading `toy_alloc_current`.
-            InstKind::HeapAlloc { size, binding: _, site } => {
+            // #121: a `Static` binding names its allocator at compile
+            // time (`alloc_devirt` marks every heap operation of a
+            // program that never pushes one), so the handle is a
+            // constant and `toy_alloc_current` is not called.
+            // Anything else asks the runtime stack.
+            InstKind::HeapAlloc { size, binding, site } => {
                 let size_v = self.value(*size);
-                let handle_call = self.builder.ins().call(self.runtime.alloc_current, &[]);
-                let handle_v = self.builder.inst_results(handle_call)[0];
+                let handle_v = self.allocator_handle(binding);
                 // MEMORY_PROFILING M2: the packed source position rides
                 // along as a constant. An extra register argument is
                 // cheaper than a separate call to set it, and codegen
@@ -1266,11 +1280,10 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.values.insert(vid.0, result);
                 }
             }
-            InstKind::HeapRealloc { ptr, new_size, binding: _, site } => {
+            InstKind::HeapRealloc { ptr, new_size, binding, site } => {
                 let ptr_v = self.value(*ptr);
                 let size_v = self.value(*new_size);
-                let handle_call = self.builder.ins().call(self.runtime.alloc_current, &[]);
-                let handle_v = self.builder.inst_results(handle_call)[0];
+                let handle_v = self.allocator_handle(binding);
                 // The site rides along as a constant, used only when
                 // the runtime sees a null `ptr` (M2 + D2) — the file
                 // name as a `.rodata` pointer, like `HeapAlloc`'s.
@@ -1289,10 +1302,9 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.values.insert(vid.0, result);
                 }
             }
-            InstKind::HeapFree { ptr, binding: _ } => {
+            InstKind::HeapFree { ptr, binding } => {
                 let ptr_v = self.value(*ptr);
-                let handle_call = self.builder.ins().call(self.runtime.alloc_current, &[]);
-                let handle_v = self.builder.inst_results(handle_call)[0];
+                let handle_v = self.allocator_handle(binding);
                 self.builder
                     .ins()
                     .call(self.runtime.dispatched_free, &[handle_v, ptr_v]);

@@ -114,6 +114,7 @@ mod writeback_prune;
 /// CODE-SIZE-SELF-ABI: post-lowering arity check for pointer-passed
 /// receivers.
 mod ptr_self_verify;
+mod alloc_devirt;
 
 mod array_layout;
 
@@ -2216,11 +2217,11 @@ impl<'a> FunctionLower<'a> {
     /// Phase 5 (AllocatorBinding wiring): classify the allocator
     /// the next `__builtin_heap_alloc` / `_realloc` / `_free`
     /// call will route through. The classification is encoded
-    /// onto each `Heap*` `InstKind` so a future devirt pass can
-    /// turn `Static` calls into direct libc malloc / free emits
-    /// instead of going through `toy_alloc_current` +
-    /// `toy_dispatched_*`. Codegen today still uses the active-
-    /// stack dispatch unconditionally — the tag is informational.
+    /// onto each `Heap*` `InstKind`; codegen passes a `Static`
+    /// binding's handle as a constant instead of calling
+    /// `toy_alloc_current`. Per function everything is `Ambient`;
+    /// `alloc_devirt` turns it into `Static(0)` after lowering when
+    /// the whole program never pushes an allocator.
     ///
     /// Today the dispatch is conservative: any open `with` scope
     /// reports `Ambient` regardless of how the handle was

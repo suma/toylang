@@ -1686,6 +1686,9 @@ pub fn lower_program(
     // CODE-SIZE-SELF-ABI: a call shape nobody taught about the pointer
     // receiver must stop here, not reach codegen.
     crate::ptr_self_verify::verify_call_arity(&module)?;
+    // #121: a program that never pushes an allocator heap-allocates
+    // through the default one everywhere; say so on each operation.
+    crate::alloc_devirt::devirtualize_heap_bindings(&mut module);
     Ok(module)
 }
 

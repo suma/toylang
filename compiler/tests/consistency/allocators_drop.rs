@@ -464,3 +464,41 @@ fn a_value_lent_to_a_reading_callee_is_dropped_by_the_caller() {
         "after reads 2\nclose 2\nafter keeps 1\nclose 3\nafter closes 0\nafter passes_on 8\nclose 4\nclose 1\n",
     );
 }
+
+/// #121: a program that never pushes an allocator heap-allocates
+/// through the default one at every operation, so the lowering names
+/// it (`alloc=static(0)`) and codegen skips asking the runtime stack.
+/// One `with` anywhere keeps every operation on the stack
+/// (`alloc=ambient`) -- a function cannot see the `with` its caller is
+/// inside. Both programs answer the same on every lane.
+#[test]
+fn heap_operations_name_the_default_allocator_when_nothing_pushes_one() {
+    let plain = r#"
+        fn main() -> u64 {
+            val b: Box<u64> = Box::new(3u64)
+            b.get()
+        }
+    "#;
+    let ir = lowered_ir(plain);
+    assert!(ir.contains("alloc=static(0)"), "{ir}");
+    assert!(!ir.contains("alloc=ambient"), "{ir}");
+    assert_consistent(plain, "alloc_static_default");
+
+    let scoped = r#"
+        fn make() -> u64 {
+            val b: Box<u64> = Box::new(4u64)
+            b.get()
+        }
+        fn main() -> u64 {
+            var r = 0u64
+            with allocator = Arena::new() {
+                r = make()
+            }
+            r
+        }
+    "#;
+    let ir = lowered_ir(scoped);
+    assert!(ir.contains("alloc=ambient"), "{ir}");
+    assert!(!ir.contains("alloc=static"), "{ir}");
+    assert_consistent(scoped, "alloc_ambient_with");
+}

@@ -454,9 +454,17 @@ Static/Local 化や devirt pass の hook ポイント。
 - [ ] `AllocatorBinding::Static(id)` / `Local(local)` / `Generic(sym)` への
       refinement — `with` scope の expr が `__builtin_default_allocator()`
       や named local binding の場合に classifier がそれを認識する。
-- [ ] devirt pass — refined binding を使って alloc site を libc malloc
-      直接呼び出しに fold。const-prop / inlining が入る前は perf 改善は
-      限定的。
+- [x] devirt pass (2026-09-25、`compiler_lower/src/alloc_devirt.rs`) —
+      **モジュール全体に `AllocPush` が無い**ときだけ全 `Heap*` を
+      `Static(0)` にし、codegen は `toy_alloc_current()` を呼ばずに定数を
+      渡す。関数単位の `Static` / `Local` 化は**できない**: `with` は
+      呼び出し先の確保にも効く (動的) ので、関数は自分の外の `with` を
+      見られない。runtime は handle を見ずに bump region から出すので、
+      libc malloc への直接呼び出しに fold する余地は無い (省けるのは
+      stack の読み出しだけ)。確保と解放 300 万回で 0.06 → 0.05 s。
+- `__builtin_default_allocator()` を `u64` にして生の比較を許す案は
+  **採らない** (2026-09-25)。同一性の表現がレーンで違う (interpreter は
+  `Rc::ptr_eq`、compiled は handle の数) ので、数として見せると差が漏れる。
 
 ## 設計上の注意点
 

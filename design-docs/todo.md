@@ -12,6 +12,17 @@
 
 ### 2026-09-25
 
+- **121-Phase-B の残り: allocator を決められる確保は runtime に聞かない** —
+  `AllocPush` が 1 つも無いプログラムでは、lowering の後
+  (`alloc_devirt`) に全 `Heap*` の binding を `Static(0)` にし、codegen は
+  `toy_alloc_current()` を呼ばずに定数を渡す (`with` が 1 つでもあれば
+  全部 `Ambient` のまま — 関数は呼び出し側の `with` を見られない)。
+  確保と解放 300 万回のループで 0.06 → 0.05 s。
+  **`__builtin_default_allocator()` を `u64` にする案は採らない**:
+  `Allocator` の同一性は interpreter では `Rc::ptr_eq`、compiled レーンでは
+  handle の数で、数として見せるとレーンごとに違う表現が漏れる。比較は
+  `==` / `!=` で足りている。
+
 - **NUM-W-AOT-pack Phase 3: compound 要素の AoS 配列を pack** — 要素内の
   leaf を実幅・自然アラインメントで置き、slot はバイト単位で添字を取る
   (stride 1、`要素番号 × size + offsets[j]`)。codegen / IR VM は無変更、
@@ -2424,7 +2435,6 @@
   を増やせば direct にできる。(c) **`f32` の `min` / `max` 演算子**は
   f64 同様 AOT 未対応 (cranelift の fmin / fmax で入れられる)。
 - **195b. `extern fn` の monomorph 化** ★ — generic extern は現状 interpreter の type-erased registry でのみ動く。JIT / AOT には mangled symbol の emit と Rust 側実装の登録が要る。実需要なし。
-- **121-Phase-B-rest-leftover** ★ — `AllocatorBinding::Generic/Local/Ambient` の lower 配線 (perf のみ、観察可能な振る舞い変化なし)、`__builtin_default_allocator()` の戻り型を `u64` にして生比較を許すかの API 判断。
 - **PTR-ABI-LOW-THRESHOLD: 閾値を下げると lane 間で確保の集計が割れる** ★ —
   `PTR_SELF_LEAF_THRESHOLD` (既定 8) を下げて小さな struct もポインタで
   渡すと、閾値 4 では全テストが通り `poc/logsearch` の `__text` が

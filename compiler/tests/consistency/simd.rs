@@ -651,3 +651,32 @@ fn a_method_takes_and_returns_a_vector() {
     "#;
     assert_simd(src, "simd_vector_method", 377u64);
 }
+
+// `Ptr<u8>::load16` / `store16` are the unchecked 16-byte accesses the
+// codecs run on, lowered to the vector load / store itself on every
+// lane (never a call). Element `i` is byte `i`, so an unaligned
+// window works too.
+#[test]
+fn a_byte_ptr_loads_and_stores_sixteen_bytes() {
+    let src = r#"
+        fn main() -> u64 {
+            val p: Ptr<u8> = Ptr::alloc(40u64)
+            var i: u64 = 0u64
+            while i < 40u64 {
+                p.set(i, i as u8)
+                i = i + 1u64
+            }
+            val v: u8x16 = p.load16(3u64)
+            val one: u8x16 = __simd_splat(100u8)
+            val w: u8x16 = v + one
+            p.store16(21u64, w)
+            val a: u64 = p.get(20u64) as u64
+            val b: u64 = p.get(21u64) as u64
+            val c: u64 = p.get(36u64) as u64
+            val d: u64 = p.get(37u64) as u64
+            __builtin_heap_free(p.as_raw())
+            a + b * 1000u64 + c * 1000000u64 + d * 1000000000u64
+        }
+    "#;
+    assert_simd(src, "simd_ptr_load16", 37_118_103_020u64);
+}

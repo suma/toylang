@@ -1357,9 +1357,16 @@ impl<'a> FunctionLower<'a> {
         let access = match self.interner.resolve(method) {
             Some("get" | "__getitem__" | "borrow") => PtrAccess::Get,
             Some("set" | "__setitem__") => PtrAccess::Set,
+            Some("load16") => PtrAccess::Load16,
+            Some("store16") => PtrAccess::Store16,
             _ => return None,
         };
-        let from_std_ptr = self.generic_methods.get(&(target_sym, method)).is_some_and(|specs| {
+        // The generic impl's methods are templates in `generic_methods`;
+        // a concrete one (`impl Ptr<u8> { fn load16 .. }`) is in
+        // `method_registry`. Either way every spec has to come from the
+        // stdlib's `ptr` module -- a user type that is merely named
+        // `Ptr` keeps its own methods.
+        let all_from_std_ptr = |specs: &Vec<super::method_registry::MethodTemplateSpec>| {
             !specs.is_empty()
                 && specs.iter().all(|spec| {
                     spec.method.module_path.as_deref().is_some_and(|path| {
@@ -1368,7 +1375,16 @@ impl<'a> FunctionLower<'a> {
                         names == ["std", "ptr"]
                     })
                 })
-        });
+        };
+        let from_std_ptr = self
+            .generic_methods
+            .get(&(target_sym, method))
+            .is_some_and(all_from_std_ptr)
+            || (!self.generic_methods.contains_key(&(target_sym, method))
+                && self
+                    .method_registry
+                    .get(&(target_sym, method))
+                    .is_some_and(all_from_std_ptr));
         if !from_std_ptr {
             return None;
         }
@@ -1478,6 +1494,38 @@ impl<'a> FunctionLower<'a> {
             return Ok(None);
         };
         match access {
+            PtrAccess::Load16 | PtrAccess::Store16 => {
+                // Byte windows only: the vector's lane is the element,
+                // so element `i` is byte offset `i`.
+                let PtrWindow::Interleaved { addr } = window else {
+                    return Ok(None);
+                };
+                if elem_ty != Type::U8 {
+                    return Ok(None);
+                }
+                let ty = crate::ir::VecTy::U8x16;
+                let want = if matches!(access, PtrAccess::Load16) { 1 } else { 2 };
+                if args.len() != want {
+                    return Ok(None);
+                }
+                let ptr = self
+                    .emit(InstKind::LoadLocal(addr), Some(Type::U64))
+                    .expect("LoadLocal returns a value");
+                let offset = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "Ptr::load16 index produced no value".to_string())?;
+                if matches!(access, PtrAccess::Load16) {
+                    return Ok(Some(self.emit(
+                        InstKind::SimdLoad { ptr, offset, ty },
+                        Some(Type::Vector(ty)),
+                    )));
+                }
+                let value = self
+                    .lower_expr(&args[1])?
+                    .ok_or_else(|| "Ptr::store16 value produced no value".to_string())?;
+                self.emit(InstKind::SimdStore { ptr, offset, value, ty }, None);
+                Ok(Some(None))
+            }
             PtrAccess::Get => {
                 if args.len() != 1 || !elem_ty.is_scalar() {
                     return Ok(None);
@@ -2230,6 +2278,9 @@ impl<'a> FunctionLower<'a> {
 pub(super) enum PtrAccess {
     Get,
     Set,
+    /// `Ptr<u8>::load16` / `store16`: one `u8x16` at element `i`.
+    Load16,
+    Store16,
 }
 
 /// Which stdlib window a `get` / `set` goes through, with the locals

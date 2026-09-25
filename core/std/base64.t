@@ -89,7 +89,7 @@ fn value(b: u8) -> u64 {
 # The stores land exactly: a pass needs `i + 16 <= n` (it loads 16
 # bytes and consumes 12), and its 16 output characters go at
 # `4i/3`, which stays inside the `ceil(n/3) * 4` the output needs.
-pub unsafe fn encode(bytes: &Vec<u8>) -> String {
+pub fn encode(bytes: &Vec<u8>) -> String {
     val n: u64 = bytes.size()
     if n == 0u64 {
         val empty: String = String::new()
@@ -98,8 +98,8 @@ pub unsafe fn encode(bytes: &Vec<u8>) -> String {
     val groups: u64 = (n + 2u64) / 3u64
     val out_len: u64 = groups * 4u64
     var out: String = String::with_capacity(out_len)
-    val dst: ptr = out.as_ptr()
-    val src: ptr = bytes.as_ptr()
+    val dst: Ptr<u8> = Ptr { addr: out.as_ptr() }
+    val src: Ptr<u8> = Ptr { addr: bytes.as_ptr() }
     val zero: u8x16 = __simd_splat(0u8)
     val m63: i32x4 = __simd_splat(63i32)
     val lim25: u8x16 = __simd_splat(25u8)
@@ -115,7 +115,7 @@ pub unsafe fn encode(bytes: &Vec<u8>) -> String {
     var i: u64 = 0u64
     var j: u64 = 0u64
     while i + 16u64 <= n {
-        val v: u8x16 = __simd_load(src, i)
+        val v: u8x16 = src.load16(i)
         val spread = __simd_shuffle(v, zero,
             [2u64, 1u64, 0u64, 16u64, 5u64, 4u64, 3u64, 16u64,
              8u64, 7u64, 6u64, 16u64, 11u64, 10u64, 9u64, 16u64])
@@ -143,43 +143,40 @@ pub unsafe fn encode(bytes: &Vec<u8>) -> String {
         ch = __simd_select(idx > lim51, idx - off_digit, ch)
         ch = __simd_select(idx == lim62, plus, ch)
         ch = __simd_select(idx > lim62, slash, ch)
-        __simd_store(dst, j, ch)
+        dst.store16(j, ch)
         i = i + 12u64
         j = j + 16u64
     }
     while i + 3u64 <= n {
-        val b0: u8 = __builtin_ptr_read::<u8>(src, i)
-        val b1: u8 = __builtin_ptr_read::<u8>(src, i + 1u64)
-        val b2: u8 = __builtin_ptr_read::<u8>(src, i + 2u64)
+        val b0: u8 = src.get(i)
+        val b1: u8 = src.get(i + 1u64)
+        val b2: u8 = src.get(i + 2u64)
         val group: u64 = (b0 as u64) * 65536u64 + (b1 as u64) * 256u64 + (b2 as u64)
-        __builtin_ptr_write(dst, j, base64::symbol(group / 262144u64))
-        __builtin_ptr_write(dst, j + 1u64, base64::symbol((group / 4096u64) % 64u64))
-        __builtin_ptr_write(dst, j + 2u64, base64::symbol((group / 64u64) % 64u64))
-        __builtin_ptr_write(dst, j + 3u64, base64::symbol(group % 64u64))
+        dst.set(j, base64::symbol(group / 262144u64))
+        dst.set(j + 1u64, base64::symbol((group / 4096u64) % 64u64))
+        dst.set(j + 2u64, base64::symbol((group / 64u64) % 64u64))
+        dst.set(j + 3u64, base64::symbol(group % 64u64))
         i = i + 3u64
         j = j + 4u64
     }
     val rest: u64 = n - i
-    # Bound rather than written inline: a raw pointer write takes the
-    # slot's width from the value it is handed, and a bare `'='` is a
-    # `u32` there — four bytes where one belongs.
     val pad: u8 = '='
     if rest == 1u64 {
-        val b0: u8 = __builtin_ptr_read::<u8>(src, i)
+        val b0: u8 = src.get(i)
         val a: u64 = b0 as u64
-        __builtin_ptr_write(dst, j, base64::symbol(a / 4u64))
-        __builtin_ptr_write(dst, j + 1u64, base64::symbol((a % 4u64) * 16u64))
-        __builtin_ptr_write(dst, j + 2u64, pad)
-        __builtin_ptr_write(dst, j + 3u64, pad)
+        dst.set(j, base64::symbol(a / 4u64))
+        dst.set(j + 1u64, base64::symbol((a % 4u64) * 16u64))
+        dst.set(j + 2u64, pad)
+        dst.set(j + 3u64, pad)
     } elif rest == 2u64 {
-        val b0: u8 = __builtin_ptr_read::<u8>(src, i)
-        val b1: u8 = __builtin_ptr_read::<u8>(src, i + 1u64)
+        val b0: u8 = src.get(i)
+        val b1: u8 = src.get(i + 1u64)
         val a: u64 = b0 as u64
         val b: u64 = b1 as u64
-        __builtin_ptr_write(dst, j, base64::symbol(a / 4u64))
-        __builtin_ptr_write(dst, j + 1u64, base64::symbol((a % 4u64) * 16u64 + b / 16u64))
-        __builtin_ptr_write(dst, j + 2u64, base64::symbol((b % 16u64) * 4u64))
-        __builtin_ptr_write(dst, j + 3u64, pad)
+        dst.set(j, base64::symbol(a / 4u64))
+        dst.set(j + 1u64, base64::symbol((a % 4u64) * 16u64 + b / 16u64))
+        dst.set(j + 2u64, base64::symbol((b % 16u64) * 4u64))
+        dst.set(j + 3u64, pad)
     }
     out.set_size(out_len)
     out
@@ -190,7 +187,7 @@ pub unsafe fn encode(bytes: &Vec<u8>) -> String {
 # An empty string decodes to an empty `Vec`. Any other length that is
 # not a multiple of four is `BadLength` -- see the header on why
 # unpadded input is not accepted.
-pub unsafe fn decode(s: str) -> Result<Vec<u8>, CodecError> {
+pub fn decode(s: str) -> Result<Vec<u8>, CodecError> {
     val text: String = String::from_str(s)
     val n: u64 = text.size()
     if n % 4u64 != 0u64 {
@@ -213,8 +210,8 @@ pub unsafe fn decode(s: str) -> Result<Vec<u8>, CodecError> {
         # anything: the scalar loop below re-reads from the same `i`
         # and is the one that knows which of the four positions was
         # wrong, which is what `CodecError::Invalid` carries.
-        val src: ptr = text.as_ptr()
-        val dst: ptr = out.as_ptr()
+        val src: Ptr<u8> = Ptr { addr: text.as_ptr() }
+        val dst: Ptr<u8> = Ptr { addr: out.as_ptr() }
         val ca: u8x16 = __simd_splat('A')
         val cz: u8x16 = __simd_splat('Z')
         val la: u8x16 = __simd_splat('a')
@@ -231,7 +228,7 @@ pub unsafe fn decode(s: str) -> Result<Vec<u8>, CodecError> {
         var j: u64 = 0u64
         var scanning: bool = true
         while scanning && i + 24u64 <= n {
-            val c: u8x16 = __simd_load(src, i)
+            val c: u8x16 = src.load16(i)
             val up = (c >= ca) & (c <= cz)
             val lw = (c >= la) & (c <= lz)
             val dg = (c >= d0) & (c <= d9)
@@ -267,7 +264,7 @@ pub unsafe fn decode(s: str) -> Result<Vec<u8>, CodecError> {
                 val bytes = __simd_shuffle(pair, b2,
                     [0u64, 1u64, 16u64, 2u64, 3u64, 17u64, 4u64, 5u64,
                      18u64, 6u64, 7u64, 19u64, 0u64, 0u64, 0u64, 0u64])
-                __simd_store(dst, j, bytes)
+                dst.store16(j, bytes)
                 i = i + 16u64
                 j = j + 12u64
             } else {

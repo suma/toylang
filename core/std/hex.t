@@ -64,7 +64,7 @@ fn digit(b: u8) -> u64 {
 # The stores land exactly: `i + 16 <= n` gives `2i + 32 <= 2n`, so
 # neither 16-byte store can reach past the output buffer, and the
 # tail below writes the remaining bytes one at a time.
-pub unsafe fn encode(bytes: &Vec<u8>) -> String {
+pub fn encode(bytes: &Vec<u8>) -> String {
     val n: u64 = bytes.size()
     if n == 0u64 {
         # Bound first: the compiled lanes only `return` a struct
@@ -74,31 +74,33 @@ pub unsafe fn encode(bytes: &Vec<u8>) -> String {
     }
     val out_len: u64 = n * 2u64
     var out: String = String::with_capacity(out_len)
-    val dst: ptr = out.as_ptr()
-    val src: ptr = bytes.as_ptr()
-    val digits: ptr = __builtin_str_to_ptr("0123456789abcdef")
-    val table: u8x16 = __simd_load(digits, 0u64)
+    val dst: Ptr<u8> = Ptr { addr: out.as_ptr() }
+    val src: Ptr<u8> = Ptr { addr: bytes.as_ptr() }
+    val digits: Ptr<u8> = Ptr { addr: __builtin_str_to_ptr("0123456789abcdef") }
+    val table: u8x16 = digits.load16(0u64)
     val low: u8x16 = __simd_splat(0x0Fu8)
     var i: u64 = 0u64
     while i + 16u64 <= n {
-        val v: u8x16 = __simd_load(src, i)
+        val v: u8x16 = src.load16(i)
         val hi_ch = __simd_swizzle(table, v >> 4u64)
         val lo_ch = __simd_swizzle(table, v & low)
-        __simd_store(dst, i * 2u64, __simd_shuffle(hi_ch, lo_ch,
+        val first: u8x16 = __simd_shuffle(hi_ch, lo_ch,
             [0u64, 16u64, 1u64, 17u64, 2u64, 18u64, 3u64, 19u64,
-             4u64, 20u64, 5u64, 21u64, 6u64, 22u64, 7u64, 23u64]))
-        __simd_store(dst, i * 2u64 + 16u64, __simd_shuffle(hi_ch, lo_ch,
+             4u64, 20u64, 5u64, 21u64, 6u64, 22u64, 7u64, 23u64])
+        val second: u8x16 = __simd_shuffle(hi_ch, lo_ch,
             [8u64, 24u64, 9u64, 25u64, 10u64, 26u64, 11u64, 27u64,
-             12u64, 28u64, 13u64, 29u64, 14u64, 30u64, 15u64, 31u64]))
+             12u64, 28u64, 13u64, 29u64, 14u64, 30u64, 15u64, 31u64])
+        dst.store16(i * 2u64, first)
+        dst.store16(i * 2u64 + 16u64, second)
         i = i + 16u64
     }
     while i < n {
-        # The annotation on the read is the only thing that says how
-        # wide the value is, so it cannot be folded into the cast.
-        val byte: u8 = __builtin_ptr_read::<u8>(src, i)
+        val byte: u8 = src.get(i)
         val b: u64 = byte as u64
-        __builtin_ptr_write(dst, i * 2u64, hex::nibble(b / 16u64))
-        __builtin_ptr_write(dst, i * 2u64 + 1u64, hex::nibble(b % 16u64))
+        val hi_digit: u8 = hex::nibble(b / 16u64)
+        val lo_digit: u8 = hex::nibble(b % 16u64)
+        dst.set(i * 2u64, hi_digit)
+        dst.set(i * 2u64 + 1u64, lo_digit)
         i = i + 1u64
     }
     out.set_size(out_len)
@@ -111,7 +113,7 @@ pub unsafe fn encode(bytes: &Vec<u8>) -> String {
 # zero bytes, not a failure. An odd number of digits is `BadLength`:
 # the last digit is half of a byte and there is no way to know which
 # half is missing.
-pub unsafe fn decode(s: str) -> Result<Vec<u8>, CodecError> {
+pub fn decode(s: str) -> Result<Vec<u8>, CodecError> {
     val text: String = String::from_str(s)
     val n: u64 = text.size()
     if n % 2u64 != 0u64 {
@@ -134,8 +136,8 @@ pub unsafe fn decode(s: str) -> Result<Vec<u8>, CodecError> {
         # digit the vector loop simply stops and the scalar loop below
         # re-reads from the same `i` -- it is the one that knows *which*
         # digit was wrong, and reporting that index is the contract.
-        val src: ptr = text.as_ptr()
-        val dst: ptr = out.as_ptr()
+        val src: Ptr<u8> = Ptr { addr: text.as_ptr() }
+        val dst: Ptr<u8> = Ptr { addr: out.as_ptr() }
         val case_bit: u8x16 = __simd_splat(0x20u8)
         val d0: u8x16 = __simd_splat('0')
         val d9: u8x16 = __simd_splat('9')
@@ -144,8 +146,8 @@ pub unsafe fn decode(s: str) -> Result<Vec<u8>, CodecError> {
         val ten: u8x16 = __simd_splat(10u8)
         var scanning: bool = true
         while scanning && i + 32u64 <= n {
-            val c0: u8x16 = __simd_load(src, i)
-            val c1: u8x16 = __simd_load(src, i + 16u64)
+            val c0: u8x16 = src.load16(i)
+            val c1: u8x16 = src.load16(i + 16u64)
             val low0 = c0 | case_bit
             val low1 = c1 | case_bit
             val ok0 = ((c0 >= d0) & (c0 <= d9)) | ((low0 >= la) & (low0 <= lf))
@@ -160,7 +162,8 @@ pub unsafe fn decode(s: str) -> Result<Vec<u8>, CodecError> {
                 val lo = __simd_shuffle(n0, n1,
                     [1u64, 3u64, 5u64, 7u64, 9u64, 11u64, 13u64, 15u64,
                      17u64, 19u64, 21u64, 23u64, 25u64, 27u64, 29u64, 31u64])
-                __simd_store(dst, i / 2u64, (hi << 4u64) | lo)
+                val packed: u8x16 = (hi << 4u64) | lo
+                dst.store16(i / 2u64, packed)
                 i = i + 32u64
             } else {
                 scanning = false

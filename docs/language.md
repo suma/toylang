@@ -4611,6 +4611,12 @@ that is merely named `Ptr` is not affected. `borrow` answers a `&T`
 for an owning `T` whose copy would share the element's resource
 (ELEMENT-BORROW).
 
+A `Ptr<u8>` also moves 16 bytes at a time: `p.load16(i)` answers the
+`u8x16` at element (= byte) `i` and `p.store16(i, v)` writes one --
+`__simd_load` / `__simd_store` through the window, unchecked like every
+`Ptr` access and never a call. The vectorised codecs (`hex`, `base64`)
+are written on them; `Span<u8>` has the bounds-checked form.
+
 `SoaPtr<T>` (same file) is the column-split sibling: `addr` plus the
 buffer's `cap`, with leaf `j` of element `i` at
 `prefix_j * cap + i * stride_j`. Its `get` / `set` are the same kind of

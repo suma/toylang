@@ -531,6 +531,47 @@ impl EvaluationContext<'_> {
         if !from_std_ptr {
             return Ok(None);
         }
+        // `Ptr<u8>::load16` / `store16`: the vector load or store at
+        // element (= byte) `i`, exactly as `__simd_load` / `__simd_store`.
+        let vector_access = match self.string_interner.resolve(method.name) {
+            Some("load16") => Some(false),
+            Some("store16") => Some(true),
+            _ => None,
+        };
+        if let Some(store) = vector_access {
+            if args.len() != if store { 2 } else { 1 } {
+                return Ok(None);
+            }
+            let Some(addr_sym) = self.string_interner.get("addr") else {
+                return Ok(None);
+            };
+            let addr = match &*self_obj.borrow() {
+                Object::Struct { fields, .. } => {
+                    match fields.get(&addr_sym).and_then(|v| v.borrow().try_unwrap_pointer().ok()) {
+                        Some(a) => a,
+                        None => return Ok(None),
+                    }
+                }
+                _ => return Ok(None),
+            };
+            let index = args[0].borrow().try_unwrap_uint64().map_err(|_| {
+                InterpreterError::InternalError("Ptr::load16 index is not a u64".to_string())
+            })?;
+            if store {
+                let vector = match &*args[1].borrow() {
+                    Object::Simd(v) => *v,
+                    _ => {
+                        return Err(InterpreterError::InternalError(
+                            "Ptr::store16 value is not a vector".to_string(),
+                        ))
+                    }
+                };
+                self.simd_write(vector, addr, index);
+                return Ok(Some(EvaluationResult::Value(crate::object::Object::Unit.into())));
+            }
+            let v = self.simd_read(frontend::type_decl::VectorType::U8x16, addr, index);
+            return Ok(Some(EvaluationResult::Value(crate::object::Object::Simd(v).into())));
+        }
         // `borrow` reads the same slot: `__builtin_ptr_ref` and
         // `__builtin_ptr_read` evaluate alike here, and the binding
         // that catches a borrow is kept off the drop list by its type.

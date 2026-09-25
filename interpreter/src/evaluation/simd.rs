@@ -301,7 +301,7 @@ impl<'a> EvaluationContext<'a> {
     /// otherwise. Consulting both is what makes a vector read back
     /// what `Vec<T>::push` wrote — the same two-sided rule
     /// `HeapManager::read_byte_at` documents.
-    fn simd_read(&self, ty: VectorType, addr: usize, index: u64) -> SimdValue {
+    pub(super) fn simd_read(&self, ty: VectorType, addr: usize, index: u64) -> SimdValue {
         let stride = ty.lane_bytes();
         // Fast path: every lane has a typed slot of the lane's own
         // type, which is what `Vec<T>::push` and an earlier
@@ -335,7 +335,7 @@ impl<'a> EvaluationContext<'a> {
 
     /// Write one vector into the heap, lane by lane, updating both the
     /// typed slots and the raw bytes so either kind of reader sees it.
-    fn simd_write(&mut self, vector: SimdValue, addr: usize, index: u64) {
+    pub(super) fn simd_write(&mut self, vector: SimdValue, addr: usize, index: u64) {
         let ty = vector.vector_type();
         let stride = ty.lane_bytes();
         let bytes = vector.to_bytes();

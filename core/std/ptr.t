@@ -143,6 +143,24 @@ impl<T> Ptr<T> {
     }
 }
 
+# 16 bytes at a time through a byte window: `__simd_load` /
+# `__simd_store` at element `i`. Unchecked like every `Ptr` access --
+# the caller has already made sure `i + 16` is inside the allocation,
+# the way a vectorised loop's `while i + 16 <= n` does. Like `get` /
+# `set` they are never a call: every lane lowers them to the vector
+# load or store itself. `Span<u8>::load16` / `store16` are the checked
+# form.
+impl Ptr<u8> {
+    unsafe fn load16(&self, i: u64) -> u8x16 {
+        val v: u8x16 = __simd_load(self.addr, i)
+        v
+    }
+
+    unsafe fn store16(&self, i: u64, v: u8x16) {
+        __simd_store(self.addr, i, v)
+    }
+}
+
 # `Ptr<T>`'s column-split sibling (DATA-ORIENTED Phase 2): a window
 # over a buffer where leaf `j` of element `i` lives at
 # `prefix_j * cap + i * stride_j` rather than side by side. `cap` is

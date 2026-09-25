@@ -27,8 +27,9 @@
   `Set` / `PriorityQueue` / `SoaVec` と String の SIMD 走査が `Ptr<T>` /
   新設の `SoaPtr<T>` (列分割の窓、intrinsic) / `Span<u8>` の範囲演算・
   `load16` / `store16` を通る。`Deque` / `Set` の `elem_size` も撤去。
-  impl メソッドがベクトル型を受け渡せるようにした。stdlib の
-  `unsafe fn` は 102 → 61、`poc/logsearch` は出力・速度とも不変。
+  impl メソッドがベクトル型を受け渡せるようにした。続けて `hex` /
+  `base64` も `Ptr<u8>::load16` / `store16` (intrinsic) で書き直した。
+  stdlib の `unsafe fn` は 102 → 59、`poc/logsearch` と codec の速度は不変。
 
 - **TREE-WALKER-GENERIC-SCOPE: closure の型がメソッドの型引数を決める** —
   `map<U>(&self, f: fn (T) -> U)` の `U` を tree-walker が束縛して
@@ -2322,18 +2323,17 @@
   書き手は 1 回で済み、`s.read_u32_le(i)` は endianness を型の側に
   置ける。
 
-- **UNSAFE-REST: 残る `unsafe fn` (61 本)** — 2026-09-25 にコレクション
-  (`Deque` / `Set` / `PriorityQueue` / `SoaVec`) と String の SIMD・`to_str`、
-  `path` / `fs` / `time` / `testing` / `io` の名残 (生アクセスの無い
-  `unsafe`) を外し、102 → 61。**生 builtin の置き場** (`allocator.t` 30 /
-  `span.t` 14 / `ptr.t` 7 / `column.t` 3) が 54 で、これは残る側。
-  それ以外は 7: `hex.t` / `base64.t` の encode・decode (手書き SIMD の
-  符号化カーネル。`Span<u8>::load16` / `store16` は呼び出しになるので
-  16 バイトごとに 1 call 増える — 移すなら `Ptr` と同じく intrinsic に
-  する)、`String::eq` (SPAN-RANGE-INTRINSIC)、`Vec<u8>::extend_bytes` /
-  `String::extend_bytes` (生の `ptr` を受ける — 呼ぶ側に義務がある API
-  なので `unsafe` が正しい)。`unsafe` の意味を「呼ぶ側に義務がある」に
-  変える案 (呼び出しに `unsafe { }` を要求) はユーザ判断待ち。
+- **UNSAFE-REST: 残る `unsafe fn` (59 本)** — 2026-09-25 にコレクション
+  (`Deque` / `Set` / `PriorityQueue` / `SoaVec`)、String の SIMD・`to_str`、
+  `hex` / `base64` の encode・decode (`Ptr<u8>::load16` / `store16` を
+  intrinsic にして速度は不変)、`path` / `fs` / `time` / `testing` / `io`
+  の名残を外し、102 → 59。**生 builtin の置き場** (`allocator.t` 30 /
+  `span.t` 14 / `ptr.t` 9 / `column.t` 3) が 56 で、これは残る側。
+  それ以外は `String::eq` (SPAN-RANGE-INTRINSIC) だけ、加えて
+  `Vec<u8>::extend_bytes` / `String::extend_bytes` (生の `ptr` を受ける —
+  呼ぶ側に義務がある API なので `unsafe` が正しい)。`unsafe` の意味を
+  「呼ぶ側に義務がある」に変える案 (呼び出しに `unsafe { }` を要求) は
+  ユーザ判断待ち。
 
 - **SPAN-RANGE-INTRINSIC: `Span` の範囲演算を呼び出しにしない** —
   `String::eq` を `Span::bytes_eq` で書くと `poc/logsearch` の archive が

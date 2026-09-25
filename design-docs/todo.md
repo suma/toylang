@@ -12,6 +12,15 @@
 
 ### 2026-09-25
 
+- **AOT 実行ファイルの非再現性** — 「run ごとに変わる」のではなく
+  **出力先のディレクトリで変わる**のだった。ld64 が runtime の各 object に
+  `N_OSO` の stab を書き、その archive を絶対パスで名指す — archive は
+  出力の隣の一時ファイル `.toy_compile_<名前>.rt.a` (リンク後に消える)。
+  macOS のリンクに `-Wl,-S` を足し、同じ名前ならどのディレクトリでも
+  バイト一致 (`reproducible_build.rs` が pin)。**ファイル名は残る** —
+  ad-hoc 署名がそれを識別子にする (変えるには `codesign` の再実行が要る
+  ので見送り)。確認したのは macOS のみ。
+
 - **MEMORY-ACCESS: 旧形 `__builtin_ptr_read(p, off)` を削除** — 型引数の無い
   読み出しはパースエラーで `::<T>` 形を案内する (警告期間は置かなかった —
   stdlib は M2 で移行済み、残る使用者はテストと例 1 本だった)。旧形専用の
@@ -2763,11 +2772,6 @@
   `evaluate_builtin_call` は `expect_args` に寄せたが、str メソッド側は
   文言が別系統 (`"concat(str) takes exactly one string argument"`)。
   揃えるとユーザ向けメッセージが変わるので手を付けていない。
-
-- **AOT 実行ファイルの非再現性** ★ — オブジェクトと CLIF は再現的
-  (`reproducible_build.rs` が両方 pin)。実行ファイルだけ run ごとに
-  変わる。macOS リンカの LC_UUID あたりと踏んでいるが未調査。
-  リンクキャッシュは content-addressed なので実害は出ていない。
 
 > リファクタ時の等価性の確かめ方は
 > [`COMPILER_DEV_LOOP.md`](COMPILER_DEV_LOOP.md) の D8 にある。

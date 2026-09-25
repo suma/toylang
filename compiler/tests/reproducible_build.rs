@@ -257,3 +257,51 @@ fn a_cached_link_produces_a_working_binary() {
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(codes, vec![Some(7), Some(7)], "the cached binary did not run");
 }
+
+/// The executable, not only the object, is a function of the program:
+/// two fresh links (no cache) written to the same file name in two
+/// directories are byte-identical.
+///
+/// They were not. ld64 wrote an `N_OSO` debug-map stab per runtime
+/// object naming the archive it came from by absolute path, and that
+/// archive is the temporary copy beside the output -- so every build
+/// directory produced a different executable. The driver now links with
+/// `-Wl,-S`. The file *name* still matters on macOS: the ad-hoc code
+/// signature uses it as the identifier.
+#[test]
+fn the_same_program_links_to_the_same_executable_in_any_directory() {
+    if skip_e2e() {
+        return;
+    }
+    let root = unique_dir("exe");
+    let src = root.join("p.t");
+    std::fs::write(&src, "fn main() -> u64 { 7u64 }\n").expect("write source");
+    let mut bytes = Vec::new();
+    for sub in ["one", "two"] {
+        let dir = root.join(sub);
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let out = dir.join("prog");
+        let built = Command::new(BIN)
+            .arg(&src)
+            .arg("-o")
+            .arg(&out)
+            .arg("--core-modules")
+            .arg(core_modules_dir())
+            // A cached link would hand both directories one file's
+            // copy; the question is what a fresh link produces.
+            .env("TOY_LINK_CACHE_DIR", "")
+            .output()
+            .expect("spawn compiler");
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        bytes.push(std::fs::read(&out).expect("read executable"));
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    let differing = bytes[0].iter().zip(&bytes[1]).filter(|(a, b)| a != b).count();
+    assert!(
+        bytes[0].len() == bytes[1].len() && differing == 0,
+        "two links of one program differ by the directory they were written to \
+         ({differing} byte(s), lengths {} / {})",
+        bytes[0].len(),
+        bytes[1].len()
+    );
+}

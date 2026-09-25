@@ -226,12 +226,22 @@ fn link_executable_uncached(
     // old C object did too, but the Rust archive carries the f64
     // formatting machinery with it); stripping keeps the binaries at
     // the size of the pre-port era.
+    //
+    // `-Wl,-S` keeps the debug map out of the executable. ld64 writes
+    // an `N_OSO` stab per runtime object, naming the archive it came
+    // from by absolute path -- and that archive is the temporary
+    // `.toy_compile_<name>.rt.a` beside the output, deleted right after
+    // the link. So the stabs pointed at nothing, and they made the
+    // executable depend on the directory it was built in: two builds
+    // of one program were byte-identical only when written to the same
+    // path.
     let mut cmd = Command::new(cc);
     cmd.arg(&tmp_obj).arg(&tmp_rt_archive);
     #[cfg(target_os = "macos")]
     {
         cmd.arg("-mmacosx-version-min=11.0");
         cmd.arg("-Wl,-dead_strip");
+        cmd.arg("-Wl,-S");
     }
     // FFI_PLAN P1: `-l<lib>` per `extern fn ... from "lib"`
     // declaration, plus `-L` for every TOYLANG_LINK_PATHS entry.
@@ -258,7 +268,7 @@ fn link_executable_uncached(
             tmp_obj.display(),
             tmp_rt_archive.display(),
             if cfg!(target_os = "macos") {
-                " -mmacosx-version-min=11.0 -Wl,-dead_strip"
+                " -mmacosx-version-min=11.0 -Wl,-dead_strip -Wl,-S"
             } else {
                 ""
             },

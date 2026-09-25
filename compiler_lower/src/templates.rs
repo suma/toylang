@@ -352,32 +352,13 @@ fn instantiate_enum_inner(
 }
 
 pub(super) fn is_supported_enum_payload(t: Type) -> bool {
-    matches!(
-        t,
-        Type::I64
-            | Type::U64
-            | Type::F64
-            | Type::Bool
-            | Type::Str
-            // NUM-W: narrow ints land in enum payloads too
-            // (STDLIB-ITER: `StringIter::next -> Option<u8>`).
-            | Type::I8
-            | Type::U8
-            | Type::I16
-            | Type::U16
-            | Type::I32
-            | Type::U32
-            | Type::Enum(_)
-            | Type::Struct(_)
-            | Type::Tuple(_)
-            // UNIT-TYPE-ARG: `Result<(), E>`'s `Ok` payload. A `()`
-            // occupies nothing — `flatten_compound_leaf_types` gives
-            // it zero leaves — so it needs no representation, only
-            // permission. Refusing it here is what made
-            // `Result<(), E>` unwritable in a compiled lane, in a
-            // free function as much as in a method.
-            | Type::Unit
-    )
+    // NUM-W-ENUMERATION: every scalar (the list this replaced had
+    // every width but `f32`) and every compound.
+    //
+    // UNIT-TYPE-ARG: and `()`, for `Result<(), E>`'s `Ok` payload. It
+    // occupies nothing (`flatten_compound_leaf_types` gives it zero
+    // leaves), so it needs no representation, only permission.
+    t.is_scalar() || matches!(t, Type::Enum(_) | Type::Struct(_) | Type::Tuple(_) | Type::Unit)
 }
 
 /// Lower an enum payload `TypeDecl`, applying any active generic
@@ -503,7 +484,10 @@ pub(super) fn substitute_payload_type(
                     struct_templates,
                     interner,
                 )?;
-                if !matches!(t, Type::I64 | Type::U64 | Type::F64 | Type::Bool) {
+                // NUM-W-ENUMERATION: any scalar element. The list this
+                // replaced had four, so `Pair<(u8, u64)>` asked for the
+                // annotation it already had.
+                if !t.is_scalar() {
                     return None;
                 }
                 lowered.push(t);
@@ -901,12 +885,8 @@ pub(super) fn param_ref_pointee_ty(ty: &TypeDecl) -> Option<Type> {
 /// type argument, where there is no `TypeDecl` left to hand
 /// [`param_ref_pointee_ty`].
 pub(super) fn is_scalar_pointee(scalar: Type) -> bool {
-    matches!(
-        scalar,
-        Type::I64 | Type::U64 | Type::F64 | Type::F32 | Type::Bool
-            | Type::I8 | Type::U8 | Type::I16 | Type::U16
-            | Type::I32 | Type::U32
-    )
+    // Every scalar but `str`, whose value is already an address.
+    scalar.is_scalar() && scalar != Type::Str
 }
 
 /// Replace every `Self` inside `ty` with the impl target's type.

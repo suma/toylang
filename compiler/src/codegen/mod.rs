@@ -1834,15 +1834,15 @@ struct RuntimeRefs {
 /// taken (today: `&mut <var>` borrow expressions, which only
 /// work against scalar bindings).
 fn ir_type_byte_size(t: IrType) -> u32 {
+    if let Some(size) = t.scalar_byte_size() {
+        return size as u32;
+    }
     match t {
-        IrType::I64 | IrType::U64 | IrType::F64 | IrType::Str => 8,
         // SIMD: 128 bits, whatever the lane type.
         IrType::Vector(_) => 16,
-        // SIMD-F32: native single-precision width.
-        IrType::F32 => 4,
-        IrType::I32 | IrType::U32 => 4,
-        IrType::I16 | IrType::U16 => 2,
-        IrType::I8 | IrType::U8 | IrType::Bool => 1,
+        IrType::I64 | IrType::U64 | IrType::F64 | IrType::F32 | IrType::Str
+        | IrType::I32 | IrType::U32 | IrType::I16 | IrType::U16
+        | IrType::I8 | IrType::U8 | IrType::Bool => unreachable!("sized by scalar_byte_size"),
         IrType::Unit | IrType::Struct(_) | IrType::Tuple(_) | IrType::Enum(_) => {
             panic!("ir_type_byte_size: compound type {:?} cannot back an address-taken local (REF-Stage-2 scalar-only)", t)
         }

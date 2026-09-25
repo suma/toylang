@@ -113,10 +113,7 @@ impl FunctionLower<'_> {
         body: &ExprRef,
     ) -> Result<Option<ValueId>, String> {
         let var_ty = self.value_scalar(start).unwrap_or(Type::U64);
-        if !matches!(
-            var_ty,
-            Type::U64 | Type::I64 | Type::U32 | Type::I32 | Type::U16 | Type::I16 | Type::U8 | Type::I8
-        ) {
+        if !var_ty.is_integer() {
             return Err(format!(
                 "compiler MVP: a `parallel for` counts over an integer range; this one counts \
                  over `{}`",
@@ -708,19 +705,5 @@ pub(crate) fn reject_capture_writes(
 
 /// Whether one 8-byte env slot can carry a value of this type.
 fn fits_a_slot(ty: Type) -> bool {
-    matches!(
-        ty,
-        Type::I64
-            | Type::U64
-            | Type::F64
-            | Type::F32
-            | Type::Bool
-            | Type::Str
-            | Type::I8
-            | Type::U8
-            | Type::I16
-            | Type::U16
-            | Type::I32
-            | Type::U32
-    )
+    ty.is_scalar()
 }

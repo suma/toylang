@@ -1495,6 +1495,44 @@ impl Type {
         )
     }
 
+    /// NUM-W-ENUMERATION: an unsigned integer width.
+    pub fn is_unsigned(self) -> bool {
+        matches!(self, Type::U64 | Type::U8 | Type::U16 | Type::U32)
+    }
+
+    /// NUM-W-ENUMERATION: one of the six narrow integer widths.
+    pub fn is_narrow_int(self) -> bool {
+        self.is_integer() && !matches!(self, Type::I64 | Type::U64)
+    }
+
+    /// NUM-W-ENUMERATION: a primitive the backends hold in one value --
+    /// every integer width, both floats, `bool` and `str`. Not a SIMD
+    /// vector (one value, but 16 bytes and no leaf of a compound), not
+    /// `Unit`, not a compound.
+    ///
+    /// Lists that meant this set and spelled it out went stale: a tuple
+    /// type argument accepted only `i64` / `u64` / `f64` / `bool`, so
+    /// `Pair<(u8, u64)>` asked for the annotation it already had.
+    pub fn is_scalar(self) -> bool {
+        self.is_integer() || self.is_float() || matches!(self, Type::Bool | Type::Str)
+    }
+
+    /// NUM-W-ENUMERATION: the byte width of a scalar (`is_scalar`), and
+    /// `None` for anything else. The one table of widths; callers that
+    /// also size a vector (16) or `Unit` (0) add their own arm.
+    ///
+    /// Six copies of this table existed, and one had no `f32` arm, so a
+    /// struct with an `f32` field could not become a `&dyn Trait`.
+    pub fn scalar_byte_size(self) -> Option<u64> {
+        match self {
+            Type::Bool | Type::I8 | Type::U8 => Some(1),
+            Type::I16 | Type::U16 => Some(2),
+            Type::I32 | Type::U32 | Type::F32 => Some(4),
+            Type::I64 | Type::U64 | Type::F64 | Type::Str => Some(8),
+            Type::Unit | Type::Vector(_) | Type::Struct(_) | Type::Tuple(_) | Type::Enum(_) => None,
+        }
+    }
+
     pub fn produces_value(self) -> bool {
         !matches!(self, Type::Unit)
     }

@@ -91,13 +91,14 @@ pub(super) fn leaf_scalar_count(module: &Module, ty: Type) -> usize {
 /// slot is byte-addressed with per-leaf offsets (`PackedElement`),
 /// and this answers `ARRAY_LEAF_STRIDE` only as a placeholder.
 pub(super) fn elem_stride_bytes(ty: Type, _module: &Module) -> u32 {
+    if let Some(size) = ty.scalar_byte_size() {
+        return size as u32;
+    }
     match ty {
-        Type::I8 | Type::U8 | Type::Bool => 1,
-        Type::I16 | Type::U16 => 2,
-        Type::I32 | Type::U32 => 4,
-        // SIMD-F32: native 4-byte stride for f32 element arrays.
-        Type::F32 => 4,
-        Type::I64 | Type::U64 | Type::F64 | Type::Str => 8,
+        Type::I8 | Type::U8 | Type::Bool | Type::I16 | Type::U16 | Type::I32 | Type::U32
+        | Type::F32 | Type::I64 | Type::U64 | Type::F64 | Type::Str => {
+            unreachable!("sized by scalar_byte_size")
+        }
         // Compound elements are byte-addressed (`PackedElement`);
         // this is never a slot's stride.
         Type::Struct(_) | Type::Tuple(_) => ARRAY_LEAF_STRIDE,

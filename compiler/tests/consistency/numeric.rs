@@ -538,3 +538,30 @@ fn clamp_f32_holds_the_bounds() {
     "#;
     assert_stdout_consistent(src, "clamp_f32");
 }
+
+/// NUM-W-ENUMERATION: two lists that meant "any scalar" and had
+/// forgotten widths. A tuple type argument accepted only `i64` / `u64` /
+/// `f64` / `bool`, so `Pair<(u8, u64)>` asked for the annotation it
+/// already had; the `&dyn` leaf-width table had no `f32`, so a struct
+/// with an `f32` field could not become a trait object. Both now ask
+/// `Type::is_scalar` / `Type::scalar_byte_size`.
+#[test]
+fn every_scalar_width_is_a_tuple_type_argument_and_a_dyn_leaf() {
+    let src = r#"
+        struct Pair<T> { v: T }
+        trait Area { fn area(&self) -> f32 }
+        struct Sq { side: f32 }
+        impl Area for Sq { fn area(&self) -> f32 { self.side * self.side } }
+        fn show(a: &dyn Area) -> f32 { a.area() }
+        fn main() -> u64 {
+            val a: Pair<(u8, u64)> = Pair { v: (1u8, 9u64) }
+            val b: Pair<(f32, i16)> = Pair { v: (1.5f32, -2i16) }
+            val c: Pair<(u64, str)> = Pair { v: (3u64, "s") }
+            val s = Sq { side: 3f32 }
+            val r = show(&s)
+            println("{a.v.0} {a.v.1} {b.v.0} {b.v.1} {c.v.1} {r}")
+            0u64
+        }
+    "#;
+    assert_renders(src, "scalar_tuple_type_args", "1 9 1.5 -2 s 9.0\n");
+}

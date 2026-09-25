@@ -115,3 +115,39 @@ pub(super) fn intern_tuple(module: &mut Module, elements: Vec<Type>) -> TupleId 
     module.tuple_defs.push(elements);
     id
 }
+
+#[cfg(test)]
+mod scalar_table_tests {
+    use super::*;
+
+    /// NUM-W-ENUMERATION: every primitive the language names and the IR
+    /// represents as a scalar is one to the shared predicates, and has a
+    /// width. A width added to `TypeDecl::PRIMITIVE_IMPL_TARGETS` and to
+    /// `lower_scalar` but not to `Type::is_scalar` /
+    /// `Type::scalar_byte_size` fails here, instead of in whichever list
+    /// happened to meet it first (six bugs so far came from a list that
+    /// had not been told about a width).
+    #[test]
+    fn every_lowered_primitive_is_a_sized_scalar() {
+        for (decl, name) in TypeDecl::PRIMITIVE_IMPL_TARGETS {
+            let Some(ty) = lower_scalar(decl) else { continue };
+            assert!(ty.is_scalar(), "`{name}` lowers to a type `is_scalar` does not know");
+            assert!(ty.scalar_byte_size().is_some(), "`{name}` has no width in `scalar_byte_size`");
+            // `ptr` lowers to `u64` on purpose: an address is an
+            // integer to the IR, and a type to the language.
+            if *name == "ptr" {
+                continue;
+            }
+            assert_eq!(
+                decl.is_integer(),
+                ty.is_integer(),
+                "`{name}` is an integer on one side of the lowering only"
+            );
+            assert_eq!(
+                decl.is_signed_integer(),
+                ty.is_signed(),
+                "`{name}` is signed on one side of the lowering only"
+            );
+        }
+    }
+}

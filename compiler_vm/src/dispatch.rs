@@ -819,7 +819,7 @@ fn const_to_slot(c: Const) -> RawSlot {
 /// Whether `ty` is an unsigned integer (drives Div/Rem signedness and
 /// comparison interpretation).
 fn is_unsigned(ty: Type) -> bool {
-    matches!(ty, Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::Bool)
+    ty.is_unsigned() || ty == Type::Bool
 }
 
 /// NUM-W: a narrow integer slot always holds its value normalised —

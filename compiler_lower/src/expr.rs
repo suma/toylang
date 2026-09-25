@@ -61,13 +61,14 @@ impl<'a> FunctionLower<'a> {
     /// body uses the result (`self.cap * self.elem_size` for raw
     /// heap-alloc bookkeeping).
     pub(super) fn compute_byte_size(&self, ty: Type) -> Option<u64> {
+        if let Some(size) = ty.scalar_byte_size() {
+            return Some(size);
+        }
         match ty {
-            Type::Bool | Type::I8 | Type::U8 => Some(1),
-            Type::I16 | Type::U16 => Some(2),
-            Type::I32 | Type::U32 => Some(4),
-            // SIMD-F32: native single-precision width.
-            Type::F32 => Some(4),
-            Type::I64 | Type::U64 | Type::F64 | Type::Str => Some(8),
+            Type::Bool | Type::I8 | Type::U8 | Type::I16 | Type::U16 | Type::I32 | Type::U32
+            | Type::F32 | Type::I64 | Type::U64 | Type::F64 | Type::Str => {
+                unreachable!("sized by scalar_byte_size")
+            }
             // SIMD: 128 bits, whatever the lane type.
             Type::Vector(_) => Some(16),
             Type::Unit => Some(0),
@@ -1417,12 +1418,7 @@ impl<'a> FunctionLower<'a> {
                 if let Some(Expr::Identifier(sym)) = self.program.expression.get(&inner) {
                     if let Some(Binding::Scalar { local, ty }) =
                         self.bindings.get(&sym).cloned()
-                        && matches!(
-                            ty,
-                            Type::I64 | Type::U64 | Type::F64 | Type::Bool
-                                | Type::I8 | Type::U8 | Type::I16 | Type::U16
-                                | Type::I32 | Type::U32
-                        ) {
+                        && super::templates::is_scalar_pointee(ty) {
                             self.module
                                 .function_mut(self.func_id)
                                 .address_taken_locals
@@ -1460,12 +1456,7 @@ impl<'a> FunctionLower<'a> {
                 )
                     && let Ok(super::bindings::FieldChainResult::Scalar { local, ty }) =
                         self.resolve_field_chain(&inner)
-                        && matches!(
-                            ty,
-                            Type::I64 | Type::U64 | Type::F64 | Type::Bool
-                                | Type::I8 | Type::U8 | Type::I16 | Type::U16
-                                | Type::I32 | Type::U32
-                        ) {
+                        && super::templates::is_scalar_pointee(ty) {
                             self.module
                                 .function_mut(self.func_id)
                                 .address_taken_locals
@@ -1489,12 +1480,7 @@ impl<'a> FunctionLower<'a> {
                                 self.program.expression.get(&arr_expr)
                                     && let Some(Binding::Array { element_ty, storage, .. }) =
                                         self.bindings.get(&arr_sym).cloned()
-                                        && matches!(
-                                            element_ty,
-                                            Type::I64 | Type::U64 | Type::F64 | Type::Bool
-                                                | Type::I8 | Type::U8 | Type::I16 | Type::U16
-                                                | Type::I32 | Type::U32
-                                        )
+                                        && super::templates::is_scalar_pointee(element_ty)
                                             && let Some(idx_ref) = info.start {
                                                 let idx_v = self
                                                     .lower_expr(&idx_ref)?
@@ -1650,17 +1636,14 @@ impl<'a> FunctionLower<'a> {
                     let mut writeback_dests: Vec<crate::ir::LocalId> =
                         Vec::with_capacity(struct_leaves.len());
                     for (local, leaf_ty) in &struct_leaves {
-                        let leaf_size = match leaf_ty {
-                            Type::Bool | Type::I8 | Type::U8 => 1u64,
-                            Type::I16 | Type::U16 => 2,
-                            Type::I32 | Type::U32 => 4,
-                            Type::I64 | Type::U64 | Type::F64 | Type::Str => 8,
-                            other => {
-                                return Err(format!(
-                                    "A5-P2-MVP-B: unsupported leaf type {} in &dyn coercion",
-                                    crate::spelling::spell_type(self.module, self.interner, *other)
-                                ));
-                            }
+                        // NUM-W-ENUMERATION: the shared width table. This
+                        // one had no `f32` arm, so a struct with an `f32`
+                        // field could not become a `&dyn Trait`.
+                        let Some(leaf_size) = leaf_ty.scalar_byte_size() else {
+                            return Err(format!(
+                                "A5-P2-MVP-B: unsupported leaf type {} in &dyn coercion",
+                                crate::spelling::spell_type(self.module, self.interner, *leaf_ty)
+                            ));
                         };
                         let leaf_val = self
                             .emit(InstKind::LoadLocal(*local), Some(*leaf_ty))

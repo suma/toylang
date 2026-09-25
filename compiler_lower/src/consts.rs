@@ -128,14 +128,8 @@ fn eval_const_array(
 /// takes a uniform 8 bytes per leaf. A `const` table is bytes in
 /// `.rodata` and only holds scalars.
 fn scalar_byte_width(ty: crate::ir::Type) -> Option<u64> {
-    use crate::ir::Type;
-    match ty {
-        Type::I8 | Type::U8 | Type::Bool => Some(1),
-        Type::I16 | Type::U16 => Some(2),
-        Type::I32 | Type::U32 | Type::F32 => Some(4),
-        Type::I64 | Type::U64 | Type::F64 => Some(8),
-        _ => None,
-    }
+    // A `str` is a pointer, not bytes a table can be laid out in.
+    ty.scalar_byte_size().filter(|_| ty != crate::ir::Type::Str)
 }
 
 /// One element's bytes, little-endian, in its own width.

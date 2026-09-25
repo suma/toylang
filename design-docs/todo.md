@@ -12,6 +12,17 @@
 
 ### 2026-09-25
 
+- **NUM-W-ENUMERATION: 「全スカラー」を名指すリストを述語に寄せた** — IR
+  `Type` に `is_scalar` / `is_unsigned` / `is_narrow_int` /
+  `scalar_byte_size` を置き、幅の表 6 コピーを 1 つに、`matches!` で
+  集合を書き下していた 12 か所を述語にした。**寄せる途中で列挙漏れの
+  バグを 2 件直した** (通算 8 件目・9 件目): タプルの型引数が
+  `i64` / `u64` / `f64` / `bool` しか受けず `Pair<(u8, u64)>` が注釈を
+  要求した、`&dyn` の leaf 幅の表に `f32` が無く `f32` フィールドの
+  struct を trait object にできなかった。残る幅ごとの `match` の腕は
+  幅で処理が違う正当なもの。`PRIMITIVE_IMPL_TARGETS` の各型が述語と
+  幅の表に載っていることを `compiler_lower` の単体テストが見張る。
+
 - **CODE-SIZE-DIAG-STRINGS: 診断文の共有部分を 1 度だけ持つ** — panic
   サイトごとの描画済み blob (`poc/logsearch` で 551 個・64 KB) を 1 つの
   `toy_diag_pool` にまとめ、サイトは見出し・ファイル名・メッセージを
@@ -2514,21 +2525,6 @@
   2026-09-03 に `core/std/base64.t` の `symbol()` で踏んで、
   `'+' as u8` / `'/' as u8` で回避した (隣の 3 arm が元から `as u8`
   なので実害は小さい)。
-
-- **NUM-W-ENUMERATION の残り** ★ — 整数型の列挙が
-  **42 ファイル 625 箇所**に散っている。型を 1 つ足すコストがそのまま
-  42 ファイル。`TypeDecl::is_numeric` / `is_integer` /
-  `is_signed_integer` と `ScalarTy` の同名メソッドが「再列挙しない」
-  入口なので、残りの match arm もそこへ寄せられる。
-  **「primitive レシーバ → 対象型名」の 6 コピーは 2026-09-01 に決着**
-  (`TypeDecl::PRIMITIVE_IMPL_TARGETS` が正本、各層は射影)。
-  残っているのは (a) 演算・キャスト・codegen 側の幅ごとの match arm、
-  (b) `TypeDecl` と `ScalarTy` と IR `Type` の相互変換 3 組。
-  **この列挙が産んだバグは通算 6 件** — 単項 `-` / `~` が narrow を
-  拒否 (2026-08-25)、レシーバ表の narrow 欠落と `f32` 欠落
-  (2026-08-31)、tree-walker のビット演算 (2026-09-01)、
-  interpreter JIT の符号判定 3 箇所と `MIN / -1` guard の即値
-  (2026-09-01)。次に踏んだら (a) から着手する
 
 - **NARROW-UNSIGNED-SUB: `u8` / `u16` / `u32` の減算は
   アンダーフローで trap せず wrap する** ★ — RUNTIME-TRAP-NARROW の

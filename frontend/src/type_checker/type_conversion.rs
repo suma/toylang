@@ -643,17 +643,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// allowed to land in? `Number` itself is excluded — it is the
     /// placeholder, not a destination.
     pub fn is_integer_target(ty: &TypeDecl) -> bool {
-        matches!(
-            ty,
-            TypeDecl::UInt64
-                | TypeDecl::Int64
-                | TypeDecl::UInt8
-                | TypeDecl::UInt16
-                | TypeDecl::UInt32
-                | TypeDecl::Int8
-                | TypeDecl::Int16
-                | TypeDecl::Int32
-        )
+        ty.is_integer()
     }
 
     /// NUMBER-HINT: claim an expression that type-checked to the

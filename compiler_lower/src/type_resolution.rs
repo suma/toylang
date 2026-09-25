@@ -371,10 +371,9 @@ impl<'a> FunctionLower<'a> {
                 let mut lowered: Vec<Type> = Vec::with_capacity(elements.len());
                 for e in elements {
                     let t = self.lower_type_arg(e)?;
-                    if !matches!(
-                        t,
-                        Type::I64 | Type::U64 | Type::F64 | Type::Bool
-                    ) {
+                    // NUM-W-ENUMERATION: any scalar element (see
+                    // `templates.rs`'s twin of this check).
+                    if !t.is_scalar() {
                         return None;
                     }
                     lowered.push(t);

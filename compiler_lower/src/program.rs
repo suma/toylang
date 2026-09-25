@@ -403,15 +403,7 @@ pub(super) fn populate_method_writeback_types(
 /// (struct / tuple / enum) — the caller is expected to pre-flatten
 /// via `flatten_compound_leaf_types`.
 pub(super) fn scalar_byte_size(ty: Type) -> Option<u64> {
-    match ty {
-        Type::Bool | Type::I8 | Type::U8 => Some(1),
-        Type::I16 | Type::U16 => Some(2),
-        Type::I32 | Type::U32 => Some(4),
-        // SIMD-F32: native 4-byte width.
-        Type::F32 => Some(4),
-        Type::I64 | Type::U64 | Type::F64 | Type::Str => Some(8),
-        _ => None,
-    }
+    ty.scalar_byte_size()
 }
 
 /// A5-P2-MVP-B: compute the leaf layout (byte_offset, leaf_ty) for

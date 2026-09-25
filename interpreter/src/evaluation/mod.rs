@@ -652,6 +652,27 @@ impl<'a> EvaluationContext<'a> {
         self.generic_type_scopes.pop();
     }
 
+    /// Whether a type read off a value is missing part of itself: a
+    /// generic struct or enum with fewer type arguments than it
+    /// declares (an enum value built with no annotation around it
+    /// carries none), or `Unknown` anywhere inside.
+    pub(super) fn type_is_incomplete(&self, ty: &TypeDecl) -> bool {
+        match ty {
+            TypeDecl::Unknown => true,
+            TypeDecl::Struct(name, args) | TypeDecl::Enum(name, args) => {
+                let declared = self
+                    .struct_definitions
+                    .get(name)
+                    .map(|e| e.generic_params.len())
+                    .or_else(|| self.enum_definitions.get(name).map(|e| e.generic_params.len()))
+                    .unwrap_or(0);
+                args.len() < declared || args.iter().any(|a| self.type_is_incomplete(a))
+            }
+            TypeDecl::Tuple(elems) => elems.iter().any(|e| self.type_is_incomplete(e)),
+            _ => false,
+        }
+    }
+
     /// Merged view of every active scope, innermost winning. The
     /// per-frame maps are small (one entry per generic parameter),
     /// so a fresh merge per `sizeof::<T>()` is cheaper than keeping

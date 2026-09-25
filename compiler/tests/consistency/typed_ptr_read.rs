@@ -275,3 +275,31 @@ fn a_ptr_window_ignores_its_callers_type_parameter() {
     "#;
     assert_consistent(src, "ptr_window_callers_param");
 }
+
+// `Box::new` binds `T` from its argument. An enum built in argument
+// position has no annotation of its own, and the tree-walker used to
+// read it as `Option` with no type arguments, which nothing can size:
+// once `Box<T>` wrote through `Ptr<T>`, its `sizeof::<T>()` failed.
+// The value's own arguments now bind `T`, and where the value cannot
+// say (`Option::None`) the `val` annotation does.
+#[test]
+fn a_box_of_a_generic_enum_sizes_its_contents() {
+    let src = r#"
+        fn main() -> u64 {
+            val b: Box<Option<String>> = Box::new(Option::Some(String::from_str("gamma")))
+            val n: Box<Option<String>> = Box::new(Option::None)
+            val r: &Option<String> = b.borrow()
+            val m: &Option<String> = n.borrow()
+            val x = match r {
+                Option::Some(s) => s.len(),
+                Option::None => 0u64,
+            }
+            val y = match m {
+                Option::Some(s) => s.len(),
+                Option::None => 100u64,
+            }
+            x + y
+        }
+    "#;
+    assert_consistent(src, "box_generic_enum");
+}

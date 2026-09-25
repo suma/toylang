@@ -201,7 +201,20 @@ fn collect_generic_bindings(
 ) {
     match declared {
         TypeDecl::Generic(sym) => {
-            let runtime_ty = value.get_type();
+            // `get_type` answers a generic struct or enum with no type
+            // arguments (`Option`, not `Option<String>`), which binds
+            // `T` to a type nothing can size -- `Box::new(Option::Some(s))`
+            // then failed at its first `sizeof::<T>()`. The value
+            // carries its own arguments; use them.
+            let runtime_ty = match value {
+                Object::Struct { type_name, type_args, .. } => {
+                    TypeDecl::Struct(*type_name, type_args.clone())
+                }
+                Object::EnumVariant { enum_name, type_args, .. } => {
+                    TypeDecl::Enum(*enum_name, type_args.clone())
+                }
+                _ => value.get_type(),
+            };
             bindings.entry(*sym).or_insert(runtime_ty);
         }
         TypeDecl::Struct(_, args) | TypeDecl::Enum(_, args) => {
@@ -1012,7 +1025,18 @@ impl EvaluationContext<'_> {
                 let anno_scope =
                     self.annotation_generic_scope(owner, self.pending_annotation.as_ref());
                 for (param, ty) in anno_scope {
-                    generic_scope.entry(param).or_insert(ty);
+                    // An argument's value can only say so much: an
+                    // `Option::Some(String::from_str(..))` built in
+                    // argument position carries no type arguments of
+                    // its own, so `Box::new` read `T = Option` and its
+                    // body could not size it. The annotation names the
+                    // whole type; it wins over an argument that did not.
+                    match generic_scope.get(&param) {
+                        Some(from_arg) if !self.type_is_incomplete(from_arg) => {}
+                        _ => {
+                            generic_scope.insert(param, ty);
+                        }
+                    }
                 }
             }
             self.fill_scope_from_caller(&mut generic_scope, &method.generic_params);

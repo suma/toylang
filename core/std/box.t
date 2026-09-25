@@ -62,7 +62,7 @@ impl<T: Clone> Clone for Box<T> {
 
 impl<T> Box<T> {
     fn new(value: T) -> Self {
-        val bytes: u64 = __builtin_sizeof(value)
+        val bytes: u64 = __builtin_sizeof::<T>()
         val p: ptr = __builtin_heap_alloc(bytes)
         # ERROR_MODEL D5: notice the failure rather than writing the
         # value through address 0. A zero-size `T` legitimately gets

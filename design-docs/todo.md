@@ -12,6 +12,13 @@
 
 ### 2026-09-25
 
+- **CODE-SIZE-DIAG-STRINGS: 診断文の共有部分を 1 度だけ持つ** — panic
+  サイトごとの描画済み blob (`poc/logsearch` で 551 個・64 KB) を 1 つの
+  `toy_diag_pool` にまとめ、サイトは見出し・ファイル名・メッセージを
+  自分からの相対 offset で指す記録にした。runtime (`write_diag_fd`) が
+  連結すると以前と同じバイト列。`poc/logsearch` のバイナリは
+  570,096 → 548,504 B。[`CODE_SIZE.md`](CODE_SIZE.md)。
+
 - **121-Phase-B の残り: allocator を決められる確保は runtime に聞かない** —
   `AllocPush` が 1 つも無いプログラムでは、lowering の後
   (`alloc_devirt`) に全 `Heap*` の binding を `Static(0)` にし、codegen は
@@ -2236,15 +2243,6 @@
     絞ったときだけ**なので優先度は低い
 
   設計と測定は [`TEST_PARALLEL.md`](TEST_PARALLEL.md)。
-
-- **CODE-SIZE-DIAG-STRINGS: panic サイトごとに文面を丸ごと持つ** ★ —
-  DEBUG-OBS D3 の `declare_frame_strings` が panic サイトごとに
-  レンダリング済みの文字列を `.rodata` に置く。`poc/logsearch` で
-  `toy_panic_msg_*` 102 個 (17 KB) + `toy_frame_pre_*` 89 個 (15 KB)
-  = **バイナリの 12%**。1 個あたり 166 バイトで、行番号とソース断片が
-  そのまま入っている。詰めるなら共通接頭辞の共有か、サイトを ID にして
-  表を 1 つにする。CODE-SIZE-SELF-ABI を直すまでは優先度が低い。
-  [`CODE_SIZE.md`](CODE_SIZE.md)。
 
 - **MEMORY-ACCESS M4: `chunks::<N>()` と `read_uNN_le/be`** —
   設計は [`MEMORY_ACCESS.md`](MEMORY_ACCESS.md)。M3 で範囲を答える

@@ -43,12 +43,13 @@ impl<M: Module> CodegenSession<M> {
         ir_module: &IrModule,
         func_id: FuncId,
         func: &mut cranelift_codegen::ir::Function,
-    ) -> HashMap<(DefaultSymbol, Option<compiler_ir::SiteId>), cranelift_codegen::ir::GlobalValue>
+    ) -> HashMap<(DefaultSymbol, Option<compiler_ir::SiteId>), (cranelift_codegen::ir::GlobalValue, i64)>
     {
         let mut imports: HashMap<
             (DefaultSymbol, Option<compiler_ir::SiteId>),
-            cranelift_codegen::ir::GlobalValue,
+            (cranelift_codegen::ir::GlobalValue, i64),
         > = HashMap::new();
+        let mut pool: Option<cranelift_codegen::ir::GlobalValue> = None;
         let ir_func = ir_module.function(func_id);
         for blk in &ir_func.blocks {
             if let Some(Terminator::Panic { message, site }) = &blk.terminator {
@@ -56,15 +57,30 @@ impl<M: Module> CodegenSession<M> {
                 if imports.contains_key(&key) {
                     continue;
                 }
-                let data_id = match self.panic_strings.get(&key).copied() {
-                    Some(id) => id,
+                let offset = match self.panic_strings.get(&key).copied() {
+                    Some(at) => at,
                     None => continue,
                 };
-                let gv = self.declare_data_in_func_readonly(data_id, func);
-                imports.insert(key, gv);
+                let Some(gv) = self.diag_pool_global(&mut pool, func) else {
+                    continue;
+                };
+                imports.insert(key, (gv, offset as i64));
             }
         }
         imports
+    }
+
+    /// CODE-SIZE-DIAG-STRINGS: this function's one reference to the
+    /// diagnostic pool, made the first time a site needs it.
+    fn diag_pool_global(
+        &self,
+        slot: &mut Option<cranelift_codegen::ir::GlobalValue>,
+        func: &mut cranelift_codegen::ir::Function,
+    ) -> Option<cranelift_codegen::ir::GlobalValue> {
+        if slot.is_none() {
+            *slot = Some(self.declare_data_in_func_readonly(self.diag_pool_id?, func));
+        }
+        *slot
     }
 
     /// DEBUG-OBS D3 per-function GV map for the frame halves a budget
@@ -77,9 +93,10 @@ impl<M: Module> CodegenSession<M> {
         func: &mut cranelift_codegen::ir::Function,
     ) -> HashMap<
         (Option<compiler_ir::SiteId>, Option<String>),
-        (cranelift_codegen::ir::GlobalValue, cranelift_codegen::ir::GlobalValue),
+        ((cranelift_codegen::ir::GlobalValue, i64), (cranelift_codegen::ir::GlobalValue, i64)),
     > {
         let mut imports = HashMap::new();
+        let mut pool: Option<cranelift_codegen::ir::GlobalValue> = None;
         let ir_func = ir_module.function(func_id);
         for blk in &ir_func.blocks {
             let key = match &blk.terminator {
@@ -94,9 +111,10 @@ impl<M: Module> CodegenSession<M> {
             let Some((prefix, suffix)) = self.frame_strings.get(&key).copied() else {
                 continue;
             };
-            let prefix_gv = self.declare_data_in_func_readonly(prefix, func);
-            let suffix_gv = self.declare_data_in_func_readonly(suffix, func);
-            imports.insert(key, (prefix_gv, suffix_gv));
+            let Some(gv) = self.diag_pool_global(&mut pool, func) else {
+                continue;
+            };
+            imports.insert(key, ((gv, prefix as i64), (gv, suffix as i64)));
         }
         imports
     }

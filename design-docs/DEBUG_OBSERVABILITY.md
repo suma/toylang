@@ -513,6 +513,9 @@ Error at core/std/option.t:57:29:
   持たせるより小さく、速く、そして「コンパイル済みバイナリが実行時に
   ソースを読みに行かない」という論点 3 の要求をそのまま満たす。
   `Site::snippet` が運ぶのはそのためのソース行。
+  (2026-09-25: 描画済みテキストのうち見出し・ファイル名・メッセージは
+  サイト間で共有する形に畳んだ — `CODE_SIZE.md` の CODE-SIZE-DIAG-STRINGS。
+  runtime は連結するだけで、描画は今もコンパイル時。)
 - **例外は `PanicAllocBudget` だけ** — 数値が実行時にしか分からない。
   フレームを **prefix / suffix の 2 つの静的ブロブ**に割り、
   `toy_panic_alloc_budget(..., prefix, suffix)` が間に計算した文を書く。

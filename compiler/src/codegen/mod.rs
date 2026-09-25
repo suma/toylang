@@ -19,6 +19,7 @@
 mod lower_inst;
 // Import / `RuntimeRefs` setup. Adds back to `CodegenSession`.
 mod imports;
+mod diag_pool;
 mod simd;
 
 use std::collections::HashMap;
@@ -437,11 +438,18 @@ pub(crate) struct CodegenSession<M: Module> {
     /// The blob is the whole diagnostic — header, position, excerpt,
     /// caret, message — so the same sentence panicked from two lines
     /// needs two blobs.
-    panic_strings: HashMap<(DefaultSymbol, Option<compiler_ir::SiteId>), DataId>,
+    /// CODE-SIZE-DIAG-STRINGS: the value is the blob's offset in
+    /// `diag_pool`, the one `.rodata` object every static diagnostic
+    /// lives in.
+    panic_strings: HashMap<(DefaultSymbol, Option<compiler_ir::SiteId>), u32>,
     /// DEBUG-OBS D3: the two static halves of a diagnostic frame,
     /// per site, for the one diverging terminator whose message is
     /// computed at run time (a violated allocation budget).
-    frame_strings: HashMap<(Option<compiler_ir::SiteId>, Option<String>), (DataId, DataId)>,
+    frame_strings: HashMap<(Option<compiler_ir::SiteId>, Option<String>), (u32, u32)>,
+    /// CODE-SIZE-DIAG-STRINGS: the diagnostics above, laid out while
+    /// the module is scanned, and the data object they become.
+    diag_pool: diag_pool::DiagPool,
+    diag_pool_id: Option<DataId>,
     /// DEBUG-OBS D4: one `.rodata` record per backtrace frame —
     /// `{ u64 line; name bytes; 0 }`. The generated code pushes the
     /// record's address onto the shadow stack around each call.
@@ -932,6 +940,8 @@ impl<M: Module> CodegenSession<M> {
             rt_format_str,
             panic_strings: HashMap::new(),
             frame_strings: HashMap::new(),
+            diag_pool: diag_pool::DiagPool::default(),
+            diag_pool_id: None,
             frame_blobs: HashMap::new(),
             alloc_file_blobs: HashMap::new(),
             entry_frame_blob: None,
@@ -1065,6 +1075,7 @@ impl<M: Module> CodegenSession<M> {
         for (site, head) in budget_sites {
             self.declare_frame_strings(site, head.as_deref(), ir_module)?;
         }
+        self.define_diag_pool()?;
         self.declare_shadow_frames(ir_module)?;
         self.declare_alloc_files(ir_module)?;
         for sym in print_needed {
@@ -1422,21 +1433,37 @@ impl<M: Module> CodegenSession<M> {
         if self.frame_strings.contains_key(&key) {
             return Ok(());
         }
-        let tag = site.map(|s| s.0).unwrap_or(u32::MAX);
-        let suffix_id = self.frame_strings.len();
-        let mut prefix_bytes = ir_module.render_stderr_prefix(site).into_bytes();
+        let mut prefix_text = ir_module.render_stderr_prefix(site);
         // The static head of a budget violation's sentence rides in
         // front of the readings the helper formats.
-        prefix_bytes.extend_from_slice(head.unwrap_or("").as_bytes());
-        let prefix = self.declare_blob(
-            &format!("toy_frame_pre_{tag}_{suffix_id}"),
-            prefix_bytes,
-        )?;
-        let suffix = self.declare_blob(
-            &format!("toy_frame_suf_{tag}_{suffix_id}"),
-            ir_module.render_stderr_suffix(site).into_bytes(),
-        )?;
+        prefix_text.push_str(head.unwrap_or(""));
+        let file = site.and_then(|s| ir_module.site(s)).map(|_| ir_module.site_file(site));
+        let prefix = match file {
+            Some(file) => self.diag_pool.site(&prefix_text, file, head, None),
+            None => self.diag_pool.plain(prefix_text.as_bytes()),
+        };
+        let suffix = self.diag_pool.plain(ir_module.render_stderr_suffix(site).as_bytes());
         self.frame_strings.insert(key, (prefix, suffix));
+        Ok(())
+    }
+
+    /// CODE-SIZE-DIAG-STRINGS: turn the pool the scan filled into its
+    /// one `.rodata` object. Nothing is declared when no site needs it.
+    fn define_diag_pool(&mut self) -> Result<(), String> {
+        if self.diag_pool.is_empty() || self.diag_pool_id.is_some() {
+            return Ok(());
+        }
+        let bytes = std::mem::take(&mut self.diag_pool).into_bytes();
+        let data_id = self
+            .module
+            .declare_data("toy_diag_pool", CLinkage::Local, false /* writable */, false /* tls */)
+            .map_err(|e| format!("declare data toy_diag_pool: {e}"))?;
+        let mut desc = DataDescription::new();
+        desc.define(bytes.into_boxed_slice());
+        self.module
+            .define_data(data_id, &desc)
+            .map_err(|e| format!("define data toy_diag_pool: {e}"))?;
+        self.diag_pool_id = Some(data_id);
         Ok(())
     }
 
@@ -1474,27 +1501,20 @@ impl<M: Module> CodegenSession<M> {
             return Ok(());
         }
         let msg = interner.resolve(sym).unwrap_or("<unknown>");
-        let text = ir_module.render_stderr_text(site, &format!("panic: {msg}"));
-        let mut bytes = text.into_bytes();
-        bytes.push(0);
-        // Local linkage keeps the symbol from leaking to other objects;
-        // the message is private to this compilation. Naming embeds the
-        // symbol id and the site so the linker doesn't see duplicate
-        // symbols when multiple panic sites share a message.
-        let name = format!(
-            "toy_panic_msg_{}_{}",
-            sym.to_usize(),
-            site.map(|s| s.0).unwrap_or(u32::MAX)
-        );
-        let data_id = self
-            .module
-            .declare_data(&name, CLinkage::Local, false /* writable */, false /* tls */)
-            .map_err(|e| format!("declare data {name}: {e}"))?;
-        let mut desc = DataDescription::new();
-        desc.define(bytes.into_boxed_slice());
-        self.module
-            .define_data(data_id, &desc)
-            .map_err(|e| format!("define data {name}: {e}"))?;
+        let message = format!("panic: {msg}");
+        let text = ir_module.render_stderr_text(site, &message);
+        // CODE-SIZE-DIAG-STRINGS: the header, the file name and the
+        // message are shared with every other site that has them.
+        let file = site.and_then(|s| ir_module.site(s)).map(|_| ir_module.site_file(site));
+        let data_id = match file {
+            Some(file) => self.diag_pool.site(
+                &text,
+                file,
+                Some(&message),
+                Some(compiler_ir::FRAME_SUFFIX),
+            ),
+            None => self.diag_pool.plain(text.as_bytes()),
+        };
         self.panic_strings.insert((sym, site), data_id);
         Ok(())
     }
@@ -1929,13 +1949,13 @@ struct LowerCtx<'a, 'b> {
     /// `declare_panic_imports`.
     panic_imports: &'a HashMap<
         (DefaultSymbol, Option<compiler_ir::SiteId>),
-        cranelift_codegen::ir::GlobalValue,
+        (cranelift_codegen::ir::GlobalValue, i64),
     >,
     /// Same idea for the frame halves around a budget violation's
     /// computed message (DEBUG-OBS D3).
     frame_imports: &'a HashMap<
         (Option<compiler_ir::SiteId>, Option<String>),
-        (cranelift_codegen::ir::GlobalValue, cranelift_codegen::ir::GlobalValue),
+        ((cranelift_codegen::ir::GlobalValue, i64), (cranelift_codegen::ir::GlobalValue, i64)),
     >,
     /// DEBUG-OBS D4: shadow-stack globals and frame records, or `None`
     /// when this build records no backtrace.
@@ -2032,11 +2052,11 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
         imports: &'a HashMap<FuncId, cranelift_codegen::ir::FuncRef>,
         panic_imports: &'a HashMap<
             (DefaultSymbol, Option<compiler_ir::SiteId>),
-            cranelift_codegen::ir::GlobalValue,
+            (cranelift_codegen::ir::GlobalValue, i64),
         >,
         frame_imports: &'a HashMap<
             (Option<compiler_ir::SiteId>, Option<String>),
-            (cranelift_codegen::ir::GlobalValue, cranelift_codegen::ir::GlobalValue),
+            ((cranelift_codegen::ir::GlobalValue, i64), (cranelift_codegen::ir::GlobalValue, i64)),
         >,
         shadow: &'a Option<ShadowImports>,
         alloc_file_imports: &'a HashMap<String, cranelift_codegen::ir::GlobalValue>,
@@ -2340,8 +2360,8 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     .frame_imports
                     .get(&(*site, None))
                     .ok_or_else(|| "missing frame import for a dynamic panic".to_string())?;
-                let pre = self.builder.ins().symbol_value(types::I64, pre_gv);
-                let suf = self.builder.ins().symbol_value(types::I64, suf_gv);
+                let pre = self.diag_addr(pre_gv);
+                let suf = self.diag_addr(suf_gv);
                 self.builder
                     .ins()
                     .call(self.runtime.panic_dynamic, &[msg, pre, suf]);
@@ -2357,8 +2377,8 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     .frame_imports
                     .get(&(*site, None))
                     .ok_or_else(|| "missing frame import for a value trap".to_string())?;
-                let pre = self.builder.ins().symbol_value(types::I64, pre_gv);
-                let suf = self.builder.ins().symbol_value(types::I64, suf_gv);
+                let pre = self.diag_addr(pre_gv);
+                let suf = self.diag_addr(suf_gv);
                 self.builder
                     .ins()
                     .call(self.runtime.panic_values, &[kind_v, a_v, b_v, pre, suf]);
@@ -2382,8 +2402,8 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     .frame_imports
                     .get(&(*site, head.clone()))
                     .ok_or_else(|| "missing frame import for a budget site".to_string())?;
-                let pre = self.builder.ins().symbol_value(types::I64, pre_gv);
-                let suf = self.builder.ins().symbol_value(types::I64, suf_gv);
+                let pre = self.diag_addr(pre_gv);
+                let suf = self.diag_addr(suf_gv);
                 self.builder.ins().call(
                     self.runtime.panic_alloc_budget,
                     &[which, entry_v, current_v, limit_v, pre, suf],
@@ -2409,7 +2429,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     .panic_imports
                     .get(&key)
                     .ok_or_else(|| format!("missing panic import for #{}", message.to_usize()))?;
-                let addr = self.builder.ins().symbol_value(types::I64, gv);
+                let addr = self.diag_addr(gv);
                 self.builder.ins().call(self.runtime.panic_at, &[addr]);
                 self.builder
                     .ins()
@@ -2422,6 +2442,19 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             }
         }
         Ok(())
+    }
+
+    /// CODE-SIZE-DIAG-STRINGS: the address of a diagnostic `offset`
+    /// bytes into the pool. An explicit add: carrying the offset as the
+    /// relocation's addend instead made `poc/logsearch`'s text ~1.3 KB
+    /// larger, not smaller.
+    fn diag_addr(&mut self, (gv, offset): (cranelift_codegen::ir::GlobalValue, i64)) -> Value {
+        let base = self.builder.ins().symbol_value(types::I64, gv);
+        if offset == 0 {
+            base
+        } else {
+            self.builder.ins().iadd_imm(base, offset)
+        }
     }
 
     fn value(&self, v: ValueId) -> Value {

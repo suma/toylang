@@ -1507,13 +1507,13 @@ pub unsafe extern "C" fn toy_panic_dynamic(
     prefix: *const u8,
     suffix: *const u8,
 ) -> ! {
-    unsafe { write_cstr_fd(2, prefix) };
+    unsafe { write_diag_fd(2, prefix) };
     if !msg.is_null() {
         let len = unsafe { (msg as *const u64).read_unaligned() } as usize;
         let bytes = unsafe { core::slice::from_raw_parts(msg.sub(len + 1), len) };
         write_fd(2, bytes);
     }
-    unsafe { write_cstr_fd(2, suffix) };
+    unsafe { write_diag_fd(2, suffix) };
     write_backtrace();
     err_write("\n");
     unsafe { exit(1) };
@@ -1542,7 +1542,7 @@ pub unsafe extern "C" fn toy_panic_values(
     prefix: *const u8,
     suffix: *const u8,
 ) -> ! {
-    unsafe { write_cstr_fd(2, prefix) };
+    unsafe { write_diag_fd(2, prefix) };
     let mut buf = StackBuf::<128>::new();
     let written = match kind {
         // panic_kind::U64_UNDERFLOW
@@ -1565,7 +1565,7 @@ pub unsafe extern "C" fn toy_panic_values(
     } else {
         err_write("panic: trap");
     }
-    unsafe { write_cstr_fd(2, suffix) };
+    unsafe { write_diag_fd(2, suffix) };
     write_backtrace();
     err_write("\n");
     unsafe { exit(1) };
@@ -1691,10 +1691,49 @@ impl BacktraceSink for BufWriter {
 /// call. Codegen only ever passes the address of a `.rodata` blob.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn toy_panic_at(text: *const u8) -> ! {
-    unsafe { write_cstr_fd(2, text) };
+    unsafe { write_diag_fd(2, text) };
     write_backtrace();
     err_write("\n");
     unsafe { exit(1) };
+}
+
+/// CODE-SIZE-DIAG-STRINGS: write a static diagnostic from the pool
+/// codegen lays down (`compiler/src/codegen/diag_pool.rs`).
+///
+/// Either a plain NUL-terminated string, or a record that shares its
+/// header, file name, message and closing rule with every other site:
+///
+/// ```text
+/// 0x02 | rel_file: i32 | rel_msg: i32 | flags: u8 | middle bytes | 0
+/// ```
+///
+/// Written out, a record is `DIAG_HEADER + file + middle + message +
+/// (FRAME_SUFFIX if flags & 1)` -- the text a whole-site blob used to
+/// hold. The two constants are spelled in codegen too; the consistency
+/// tests compare stderr across engines, which pins them.
+///
+/// # Safety
+/// `p` is null, a NUL-terminated string, or a record whose offsets
+/// point at NUL-terminated strings in the same object.
+unsafe fn write_diag_fd(fd: i32, p: *const u8) {
+    const RECORD_TAG: u8 = 0x02;
+    const DIAG_HEADER: &str = "Runtime error occurred:\nError at ";
+    const FRAME_SUFFIX: &str = "\n   |";
+    if p.is_null() || unsafe { *p } != RECORD_TAG {
+        unsafe { write_cstr_fd(fd, p) };
+        return;
+    }
+    let rel = |at: usize| unsafe { (p.add(at) as *const i32).read_unaligned() } as isize;
+    write_fd(fd, DIAG_HEADER.as_bytes());
+    unsafe { write_cstr_fd(fd, p.offset(rel(1))) };
+    unsafe { write_cstr_fd(fd, p.add(10)) };
+    let rel_msg = rel(5);
+    if rel_msg != 0 {
+        unsafe { write_cstr_fd(fd, p.offset(rel_msg)) };
+    }
+    if unsafe { *p.add(9) } & 1 == 1 {
+        write_fd(fd, FRAME_SUFFIX.as_bytes());
+    }
 }
 
 /// Write a NUL-terminated string to `fd`.
@@ -1748,7 +1787,7 @@ pub unsafe extern "C" fn toy_panic_alloc_budget(
 ) -> ! {
     let used = current.saturating_sub(entry);
     let budget = limit.saturating_sub(entry);
-    unsafe { write_cstr_fd(2, prefix) };
+    unsafe { write_diag_fd(2, prefix) };
     let mut buf = StackBuf::<128>::new();
     let written = match stat {
         // MemStat::CumulativeBytes
@@ -1776,7 +1815,7 @@ pub unsafe extern "C" fn toy_panic_alloc_budget(
     } else {
         err_write("allocation budget exceeded");
     }
-    unsafe { write_cstr_fd(2, suffix) };
+    unsafe { write_diag_fd(2, suffix) };
     write_backtrace();
     err_write("\n");
     unsafe { exit(1) };

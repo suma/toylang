@@ -1507,6 +1507,43 @@ impl<'a> FunctionLower<'a> {
     /// call sites (`Expr::ExprList` args) and the let-lowering
     /// compound intercepts whose `Vec<ExprRef>` args never live in
     /// the expression pool (module-qualified calls, RUNTIME-IO).
+    /// CONST-ARRAY: the address a `&[T; N]` parameter receives, when
+    /// `arg` names an array: a `const` table (its bytes in the
+    /// read-only section), a stack array of scalars (element 0 of its
+    /// slot), or a borrowed array being passed on. An explicit `&` /
+    /// `&mut` is peeled; the borrow is what the parameter says anyway.
+    pub(super) fn array_ref_arg(&mut self, arg: &ExprRef) -> Result<Option<ValueId>, String> {
+        let inner = match self.program.expression.get(arg) {
+            Some(Expr::Unary(UnaryOp::Borrow | UnaryOp::BorrowMut, inner)) => inner,
+            _ => *arg,
+        };
+        let Some(Expr::Identifier(sym)) = self.program.expression.get(&inner) else {
+            return Ok(None);
+        };
+        match self.bindings.get(&sym).cloned() {
+            Some(Binding::ArrayRef { ptr, .. }) => {
+                Ok(self.emit(InstKind::LoadLocal(ptr), Some(Type::U64)))
+            }
+            Some(Binding::Array { element_ty, storage, .. }) if element_ty.is_scalar() => {
+                let zero = self
+                    .emit(InstKind::Const(Const::U64(0)), Some(Type::U64))
+                    .expect("Const returns a value");
+                Ok(self.emit(
+                    InstKind::ArrayElemAddr { slot: storage.scalar_slot(), index: zero, elem_ty: element_ty },
+                    Some(Type::U64),
+                ))
+            }
+            Some(_) => Ok(None),
+            None => match self.const_arrays.get(&sym) {
+                Some(array) => {
+                    let bytes = array.bytes.clone();
+                    Ok(self.emit(InstKind::ConstBytesAddr { bytes }, Some(Type::U64)))
+                }
+                None => Ok(None),
+            },
+        }
+    }
+
     /// A range value's two bounds, when `expr` is one: a literal
     /// `a..b` or a name bound to a range. `Ok(None)` for anything
     /// else, which the caller lowers the ordinary way.
@@ -1590,6 +1627,14 @@ impl<'a> FunctionLower<'a> {
         // after emitting the call.
         let mut ptr_arg_reloads: Vec<ReceiverReload> = Vec::new();
         for (arg_idx, a) in items.iter().enumerate() {
+            // CONST-ARRAY: an array argument to a `&[T; N]` parameter
+            // is its address.
+            if param_tys.get(arg_idx) == Some(&Type::U64)
+                && let Some(addr) = self.array_ref_arg(a)?
+            {
+                values.push(addr);
+                continue;
+            }
             // RANGE-TYPE-ANNOTATION: a range argument crosses as the
             // `(start, end)` pair the callee's signature expects.
             if matches!(param_tys.get(arg_idx), Some(Type::Tuple(_)))
@@ -2193,6 +2238,11 @@ impl<'a> FunctionLower<'a> {
                 let e = self.emit(InstKind::LoadLocal(end), Some(ty)).expect("LoadLocal returns a value");
                 self.stage_range_pair(s, e)
             }
+            Some(Binding::ArrayRef { .. }) => Err(format!(
+                "compiler MVP cannot use the borrowed array `{}` as a value here \
+                 (index it, or pass it on to another `&[T; N]` parameter)",
+                self.interner.resolve(sym).unwrap_or("?")
+            )),
             Some(Binding::Range { .. }) => Err(format!(
                 "compiler MVP cannot use range `{}` as a value here (read `.start` / `.end`, \
                  iterate it with `for`, or print it)",

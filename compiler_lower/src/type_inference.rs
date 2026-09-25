@@ -660,7 +660,8 @@ impl<'a> FunctionLower<'a> {
                     return Some(array.elem_ty);
                 }
                 match self.bindings.get(&arr_sym)? {
-                    Binding::Array { element_ty, .. } => Some(*element_ty),
+                    Binding::Array { element_ty, .. }
+                    | Binding::ArrayRef { element_ty, .. } => Some(*element_ty),
                     // POINTER P2: `p[i]` on a struct / enum binding
                     // lowers as a `__getitem__` call, so its scalar
                     // type is that call's return type — needed by

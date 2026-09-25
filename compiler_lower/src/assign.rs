@@ -324,6 +324,14 @@ impl<'a> FunctionLower<'a> {
                             self.interner.resolve(sym).unwrap_or("?")
                         ));
                     }
+                    Some(Binding::ArrayRef { .. }) => {
+                        return Err(format!(
+                            "compiler MVP cannot reassign a borrowed array `{}` whole \
+                             (assign individual elements via `{}[i] = ...` instead)",
+                            self.interner.resolve(sym).unwrap_or("?"),
+                            self.interner.resolve(sym).unwrap_or("?")
+                        ));
+                    }
                     Some(Binding::DynTraitObj { .. }) => {
                         return Err(format!(
                             "compiler MVP cannot reassign a `&dyn Trait` binding `{}`",

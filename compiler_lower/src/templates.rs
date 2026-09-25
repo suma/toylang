@@ -929,6 +929,19 @@ pub(super) fn substitute_self(
     }
 }
 
+/// CONST-ARRAY: the element type and length of a borrowed fixed-size
+/// array of scalars (`&[u32; 64]`'s pointee), the shape that crosses a
+/// call as one address.
+pub(super) fn scalar_array_ref(pointee: &TypeDecl) -> Option<(Type, usize)> {
+    match pointee {
+        TypeDecl::Array(elems, frontend::type_decl::ArraySize::Literal(n), false) => {
+            let element = lower_scalar(elems.first()?)?;
+            element.is_scalar().then_some((element, *n))
+        }
+        _ => None,
+    }
+}
+
 pub(super) fn lower_param_or_return_type(
     ty: &TypeDecl,
     struct_defs: &StructDefs,
@@ -947,6 +960,11 @@ pub(super) fn lower_param_or_return_type(
         if let Some(scalar) = lower_scalar(inner)
             && is_scalar_pointee(scalar)
         {
+            return Some(Type::U64);
+        }
+        // CONST-ARRAY: `&[T; N]` of scalars travels as the address of
+        // element 0 (`Binding::ArrayRef`).
+        if let Some((_, _)) = scalar_array_ref(inner) {
             return Some(Type::U64);
         }
         // A5-P2: `&dyn Trait` is the trait-object form. Lower to a

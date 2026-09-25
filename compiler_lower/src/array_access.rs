@@ -99,6 +99,35 @@ impl<'a> FunctionLower<'a> {
             None,
         );
     }
+    /// CONST-ARRAY: the address and byte offset of element `index` of
+    /// a borrowed array -- the bounds check an owned array gets, then
+    /// `index * stride` from the address the caller passed. The stride
+    /// is the packed scalar width both a stack array's slot and a
+    /// `const` table use.
+    pub(super) fn array_ref_element(
+        &mut self,
+        ptr: crate::ir::LocalId,
+        element_ty: Type,
+        length: usize,
+        index_ref: &ExprRef,
+    ) -> Result<(ValueId, ValueId), String> {
+        let idx = self.lower_element_index(index_ref, length)?;
+        let base = self
+            .emit(InstKind::LoadLocal(ptr), Some(Type::U64))
+            .expect("LoadLocal returns a value");
+        let stride = super::array_layout::elem_stride_bytes(element_ty, self.module) as u64;
+        let stride_v = self
+            .emit(InstKind::Const(Const::U64(stride)), Some(Type::U64))
+            .expect("Const returns a value");
+        let offset = self
+            .emit(
+                InstKind::BinOp { op: crate::ir::BinOp::Mul, lhs: idx, rhs: stride_v },
+                Some(Type::U64),
+            )
+            .expect("BinOp returns a value");
+        Ok((base, offset))
+    }
+
     /// The guarded element index for an array access, constant-folded
     /// when it can be.
     pub(super) fn lower_element_index(
@@ -516,6 +545,15 @@ impl<'a> FunctionLower<'a> {
         // it is bytes in the read-only section, and an index is one
         // load from them. Ahead of the `__getitem__` detour because a
         // const array has no methods to dispatch to.
+        if let Some(Binding::ArrayRef { ptr, element_ty, length, .. }) =
+            self.bindings.get(&arr_sym).cloned()
+        {
+            let (base, offset) = self.array_ref_element(ptr, element_ty, length, index_ref)?;
+            return Ok(self.emit(
+                InstKind::PtrRead { ptr: base, offset, elem_ty: element_ty },
+                Some(element_ty),
+            ));
+        }
         if !matches!(self.bindings.get(&arr_sym), Some(Binding::Array { .. }))
             && let Some(array) = self.const_arrays.get(&arr_sym)
         {
@@ -726,6 +764,25 @@ impl<'a> FunctionLower<'a> {
                 );
             }
         };
+        if let Some(Binding::ArrayRef { ptr, element_ty, length, is_mut }) =
+            self.bindings.get(&arr_sym).cloned()
+        {
+            if !is_mut {
+                return Err(format!(
+                    "`{}` is a shared borrow (`&[T; N]`); writing an element needs `&mut [T; N]`",
+                    self.interner.resolve(arr_sym).unwrap_or("?")
+                ));
+            }
+            let (base, offset) = self.array_ref_element(ptr, element_ty, length, index_ref)?;
+            let v = self
+                .lower_expr(value)?
+                .ok_or_else(|| "array element value produced no value".to_string())?;
+            self.emit(
+                InstKind::PtrWrite { ptr: base, offset, value: v, value_ty: element_ty },
+                None,
+            );
+            return Ok(None);
+        }
         // POINTER P2: `p[i] = v` on a struct / enum binding is a
         // `__setitem__` call — route through the regular method-call
         // machinery (`&mut self` writeback included), exactly like

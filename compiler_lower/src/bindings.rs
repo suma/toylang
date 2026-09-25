@@ -121,6 +121,19 @@ pub(super) enum Binding {    Scalar {
         data_ptr_local: LocalId,
         vtable_ptr_local: LocalId,
     },
+    /// CONST-ARRAY: a borrowed array, `t: &[u32; 64]` -- the address
+    /// of the first element, which is a stack array's slot, a `const`
+    /// table in the read-only section, or another borrow passed on.
+    /// Elements are scalars packed at their own width (the layout both
+    /// a scalar stack array and a `const` table have), so element `i`
+    /// is one `PtrRead` / `PtrWrite` at `i * stride` after the bounds
+    /// check an owned array gets.
+    ArrayRef {
+        ptr: LocalId,
+        element_ty: Type,
+        length: usize,
+        is_mut: bool,
+    },
     /// RANGE-FOR: a range value, `val r = a..b`. Its two bounds are
     /// two scalar locals of the element type. What a range can do in
     /// the compiled lanes is read its bounds (`r.start` / `r.end`,

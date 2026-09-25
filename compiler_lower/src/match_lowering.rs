@@ -972,6 +972,7 @@ impl<'a> FunctionLower<'a> {
                         return Ok(MatchScrutinee::Tuple { elements });
                     }
                     Binding::Array { .. }
+                    | Binding::ArrayRef { .. }
                     | Binding::FunctionPtr { .. }
                     | Binding::DynTraitObj { .. }
                     | Binding::Range { .. } => {

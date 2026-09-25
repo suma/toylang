@@ -394,3 +394,110 @@ fn a_const_table_does_not_stop_the_fold_of_its_neighbours() {
     "#;
     assert_renders(src, "const_table_beside_fold", "-10 2\n");
 }
+
+// CONST-ARRAY: a table travels by reference. `&[T; N]` of scalars is
+// one address at the boundary -- a `const` table's bytes in the
+// read-only section, or element 0 of a stack array -- and the callee
+// indexes it with the bounds check an owned array has. Before, the
+// compiled lanes refused the parameter outright ("cannot lower
+// parameter `t: &[u32; 4]` yet"), so a table could only be indexed
+// where it was declared.
+#[test]
+fn a_const_table_and_a_stack_array_pass_by_reference() {
+    let src = r#"
+const K: [u32; 4] = [10u32, 20u32, 30u32, 40u32]
+fn pick(t: &[u32; 4], i: u64) -> u32 {
+    t[i]
+}
+fn total(t: &[u32; 4]) -> u64 {
+    var s: u64 = 0u64
+    var i: u64 = 0u64
+    while i < 4u64 {
+        s = s + (t[i] as u64)
+        i = i + 1u64
+    }
+    s
+}
+fn main() -> u64 {
+    val local: [u32; 4] = [1u32, 2u32, 3u32, 4u32]
+    (pick(K, 2u64) as u64) + total(K) * 10u64 + total(local) * 1000u64
+}
+"#;
+    assert_consistent(src, "const_array_by_ref");
+    if !skip_e2e() {
+        assert_eq!(interpreter_value(src), 11_030);
+    }
+}
+
+/// Every element width a table can have, `&mut` writing through to the
+/// caller's stack array, a borrow passed on to another function, and a
+/// method taking one.
+#[test]
+fn a_borrowed_array_reads_every_width_and_writes_through_mut() {
+    let src = r#"
+const B: [u8; 5] = [1u8, 2u8, 250u8, 4u8, 5u8]
+const S: [i16; 3] = [-300i16, 7i16, 300i16]
+const F: [f64; 2] = [1.5f64, -2.25f64]
+const FLAGS: [bool; 3] = [true, false, true]
+struct Acc { k: u64 }
+impl Acc {
+    fn weigh(&self, t: &[u8; 5]) -> u64 {
+        var s: u64 = 0u64
+        var i: u64 = 0u64
+        while i < 5u64 {
+            s = s + (t[i] as u64) * self.k
+            i = i + 1u64
+        }
+        s
+    }
+}
+fn inner(t: &[u8; 5], i: u64) -> u8 { t[i] }
+fn outer(t: &[u8; 5]) -> u64 { (inner(t, 2u64) as u64) + (inner(t, 4u64) as u64) }
+fn fill(t: &mut [u64; 3], v: u64) {
+    var i: u64 = 0u64
+    while i < 3u64 {
+        t[i] = v + i
+        i = i + 1u64
+    }
+}
+fn ssum(t: &[i16; 3]) -> i64 { (t[0] as i64) + (t[1] as i64) + (t[2] as i64) }
+fn fsum(t: &[f64; 2]) -> f64 { t[0] + t[1] }
+fn count(t: &[bool; 3]) -> u64 {
+    var n: u64 = 0u64
+    if t[0] { n = n + 1u64 }
+    if t[1] { n = n + 10u64 }
+    if t[2] { n = n + 100u64 }
+    n
+}
+fn main() -> u64 {
+    var local: [u64; 3] = [0u64, 0u64, 0u64]
+    fill(&mut local, 40u64)
+    val a = Acc { k: 2u64 }
+    val loc8: [u8; 5] = [9u8, 8u8, 7u8, 6u8, 5u8]
+    println("{local[0]} {local[1]} {local[2]}")
+    println(fsum(F))
+    println(ssum(S))
+    println(count(FLAGS))
+    a.weigh(B) + outer(B) * 1000u64 + outer(loc8) * 100000u64 + local[2] * 10000000u64
+}
+"#;
+    assert_consistent(src, "array_ref_widths");
+    if !skip_e2e() {
+        assert_eq!(interpreter_value(src), 421_455_524);
+    }
+}
+
+#[test]
+fn a_borrowed_array_index_is_bounds_checked() {
+    let src = r#"
+        const K: [u32; 2] = [1u32, 2u32]
+
+        fn at(t: &[u32; 2], i: u64) -> u32 { t[i] }
+
+        fn main() -> u64 {
+            println(at(K, 5u64))
+            0u64
+        }
+    "#;
+    assert_diagnostic_consistent(src, "array_ref_out_of_bounds");
+}

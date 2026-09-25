@@ -318,7 +318,8 @@ pub(super) fn populate_method_writeback_types(
             continue;
         }
         if let TypeDecl::Ref { inner, .. } = decl_ty
-            && super::types::lower_scalar(inner).is_some() {
+            && (super::types::lower_scalar(inner).is_some()
+                || crate::templates::scalar_array_ref(inner).is_some()) {
                 continue;
             }
         let ir_param_idx = if receiver_idx == 0 {
@@ -349,6 +350,7 @@ pub(super) fn populate_method_writeback_types(
         }
         if let TypeDecl::Ref { inner, .. } = decl_ty
             && (super::types::lower_scalar(inner).is_some()
+                || crate::templates::scalar_array_ref(inner).is_some()
                 || matches!(inner.as_ref(), TypeDecl::Dyn(_)))
         {
             continue;
@@ -604,9 +606,15 @@ fn declare_plain_functions(
             let lowered = lower_param_or_return_type(ty, struct_defs, enum_defs, module, interner).ok_or_else(|| {
                 unlowerable_type_message(|| {
                     format!(
-                        "compiler MVP cannot lower parameter `{}: {}` yet",
+                        "compiler MVP cannot lower parameter `{}: {}` yet{}",
                         interner.resolve(*name).unwrap_or("?"),
-                        crate::spelling::spell_type_decl(interner, ty)
+                        crate::spelling::spell_type_decl(interner, ty),
+                        // CONST-ARRAY: a borrowed array does travel.
+                        if matches!(ty, TypeDecl::Array(..)) {
+                            " (pass it by reference instead: `&[T; N]`, or `&mut [T; N]` to write it)"
+                        } else {
+                            ""
+                        }
                     )
                 })
             })?;
@@ -721,7 +729,8 @@ fn declare_plain_functions(
             }
             // Skip scalar — scalar Ref already handled by AddressOf.
             if let TypeDecl::Ref { inner, .. } = decl_ty
-                && super::types::lower_scalar(inner).is_some() {
+                && (super::types::lower_scalar(inner).is_some()
+                || crate::templates::scalar_array_ref(inner).is_some()) {
                     continue;
                 }
             // A5-P2-MVP-C: `&mut dyn Trait` params don't flow their
@@ -759,6 +768,7 @@ fn declare_plain_functions(
             }
             if let TypeDecl::Ref { inner, .. } = decl_ty
                 && (super::types::lower_scalar(inner).is_some()
+                    || crate::templates::scalar_array_ref(inner).is_some()
                     || matches!(inner.as_ref(), TypeDecl::Dyn(_)))
             {
                 continue;
@@ -2230,6 +2240,18 @@ impl<'a> FunctionLower<'a> {
                 let start = self.module.function_mut(self.func_id).add_local(ty);
                 let end = self.module.function_mut(self.func_id).add_local(ty);
                 self.bindings.insert(*name, Binding::Range { start, end, ty });
+                continue;
+            }
+            // CONST-ARRAY: `t: &[u32; 64]` arrives as the address of
+            // element 0.
+            if let frontend::type_decl::TypeDecl::Ref { is_mut, inner } = decl_ty
+                && let Some((element_ty, length)) = crate::templates::scalar_array_ref(inner)
+            {
+                let ptr = self.module.function_mut(self.func_id).add_local(Type::U64);
+                self.bindings.insert(
+                    *name,
+                    Binding::ArrayRef { ptr, element_ty, length, is_mut: *is_mut },
+                );
                 continue;
             }
             // GENERIC-SCALAR-REF: `lower_scalar_with_subst`, not

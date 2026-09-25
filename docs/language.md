@@ -2283,9 +2283,23 @@ fn pick(i: u64) -> u32 { K[i] }
   a function that only indexes tables can be `never_allocates`.
 - An index is checked like any other array index — out of range is the
   same panic, with the same message.
-- What a table cannot do yet is travel: `K` names no value, so it
-  cannot be passed to a function. Index it, or build a `Span<T>` over
-  a copy.
+- A table travels **by reference**: a parameter `t: &[u32; 4]`
+  accepts `K` (and any `[u32; 4]` stack array), and `t[i]` inside the
+  callee is the same bounds-checked read. On every lane the callee gets
+  one address -- nothing is copied -- so a 256-entry table costs the
+  same to pass as a 4-entry one:
+
+  ```rust
+  fn crc_step(table: &[u32; 256], c: u64, b: u8) -> u64 { ... }
+  crc_step(CRC_TABLE, c, b)
+  ```
+
+  A `const` cannot be passed to `&mut [T; N]` (it is not a `var`), and
+  a shared `&[T; N]` cannot be written through (`t[i] = v` is a type
+  error naming `&mut [T; N]`). A `var` stack array passed to
+  `&mut [T; N]` is written in place. The length is part of the type,
+  and the elements are scalars; an array cannot yet be passed *by
+  value* on the compiled lanes -- pass `&[T; N]` instead.
 
 Today the JIT silently falls back to the tree-walking interpreter for
 any function that references a `const` — see [`JIT.md`](../design-docs/JIT.md).

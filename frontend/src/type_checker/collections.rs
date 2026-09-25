@@ -165,6 +165,23 @@ impl<'a> TypeCheckerVisitor<'a> {
             let anchor = start.filter(|s| self.get_expr_location(s).is_some());
             return Err(self.error_with_location(err, anchor.as_ref().unwrap_or(object)));
         }
+        // CONST-ARRAY: `t[i] = v` through `t: &[T; N]` writes into the
+        // caller's array (or a `const` table in the read-only section)
+        // through a borrow that promised not to. The identifier's type
+        // reads back as the array itself, so the declaration is asked.
+        if let Some(Expr::Identifier(sym)) = self.core.expr_pool.get(object)
+            && let Some(TypeDecl::Ref { is_mut: false, inner }) = self.context.get_var(sym)
+            && matches!(inner.as_ref(), TypeDecl::Array(..))
+        {
+            let name = self.core.string_interner.resolve(sym).unwrap_or("?").to_string();
+            let err = TypeCheckError::generic_error(&format!(
+                "cannot assign to an element of `{name}`: it is a shared borrow (`&[T; N]`); \
+                 declare the parameter `&mut [T; N]` to write through it"
+            ));
+            // As above: the index carries a position, the identifier not.
+            let anchor = start.filter(|s| self.get_expr_location(s).is_some());
+            return Err(self.error_with_location(err, anchor.as_ref().unwrap_or(object)));
+        }
         let object_type = self.visit_expr(object)?;
         let value_type = self.visit_expr(value)?;
 

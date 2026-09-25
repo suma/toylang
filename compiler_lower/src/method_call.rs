@@ -1105,6 +1105,13 @@ impl<'a> FunctionLower<'a> {
             .ok_or_else(|| "primitive method receiver produced no value".to_string())?;
         let mut values: Vec<ValueId> = vec![receiver_value];
         for (arg_idx, a) in args.iter().enumerate() {
+            // CONST-ARRAY: an array argument is its address.
+            if self.module.function(func_id).params.get(1 + arg_idx) == Some(&Type::U64)
+                && let Some(addr) = self.array_ref_arg(a)?
+            {
+                values.push(addr);
+                continue;
+            }
             // RANGE-TYPE-ANNOTATION: a range argument is its bounds.
             if matches!(
                 self.module.function(func_id).params.get(1 + arg_idx),
@@ -1751,6 +1758,13 @@ impl<'a> FunctionLower<'a> {
             _ => unreachable!("receiver shape already validated"),
         }
         for (arg_idx, a) in args.iter().enumerate() {
+            // CONST-ARRAY: an array argument is its address.
+            if param_tys.get(1 + arg_idx) == Some(&Type::U64)
+                && let Some(addr) = self.array_ref_arg(a)?
+            {
+                values.push(addr);
+                continue;
+            }
             // RANGE-TYPE-ANNOTATION: a range argument is its bounds.
             if matches!(param_tys.get(1 + arg_idx), Some(Type::Tuple(_)))
                 && let Some([start, end]) = self.range_value_pair(a)?

@@ -12,6 +12,12 @@
 
 ### 2026-09-25
 
+- **CONST-ARRAY: 表を名前で渡せる** — `&[T; N]` / `&mut [T; N]` (スカラー
+  要素) の引数が compiled レーンで番地 1 つとして通る (`const` は
+  `.rodata`、スタック配列は先頭要素の番地)。境界検査は所有する配列と同じ。
+  共有の借用を通した書き込みは型エラー。値渡しの配列引数のエラーに
+  `&[T; N]` を案内。
+
 - **RANGE-TYPE-ANNOTATION: 範囲が関数の境界を越える** — パーサが
   型引数 1 つの `Range<T>` を組み込みの範囲型に読む (以前は generic
   struct として読まれ、`expected Range<u64>, but got Range<u64>`)。
@@ -2305,6 +2311,13 @@
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
 
+- **SHARED-BORROW-WRITE: 共有の借用を通した書き込みを型検査が拒否しない** —
+  `fn f(p: &P) { p.x = 5u64 }` が型検査を通る (tree-walker は書き込み、
+  compiled レーンは写しに書く可能性がある)。配列の添字代入
+  (`t[i] = v` with `t: &[T; N]`) だけは 2026-09-25 の CONST-ARRAY で型エラーに
+  した。フィールド代入 / 複合代入 / `&self` メソッド内の `self.x = ..` も
+  同じ規則の対象になるか検討する (現状の扱いは未確認)。
+
 - **TREE-WALKER-DYNAMIC-GENERIC-SCOPE — 呼び出し先が呼び出し元の型引数を
   見る** — tree-walker の `merged_generic_scope` は**実行中の全呼び出し**の
   scope を合わせたもの (動的スコープ) なので、generic でない関数の中でも
@@ -2376,16 +2389,13 @@
   いたのはこれの回避だったが、M5 で `Ptr<A>` / `Ptr<B>` 経由の読みに
   なり、stride 自体を持たなくなった (2026-09-25)。
 
-- **CONST-ARRAY の残り: 名前で渡せない / 要素はスカラーだけ** ★ —
-  2026-09-21 に `const K: [u32; 64] = [...]` は読めるようになった
-  (完了済み節) が、渡せるのは**添字の結果だけ**で `K` そのものを
-  引数にはできない (`Span<T>` を作って渡す形が要る)。要素も
-  スカラーのみ — struct / tuple の表は `.rodata` のレイアウトを
-  leaf 単位で決める必要がある。**配列型のパラメータ自体が compiled
-  レーンで lower できない** (``compiler MVP cannot lower parameter
-  `a: [u64; 3]` yet``) のが、名前で渡せないことの下にある制約。
-  `poc/logsearch` の CRC 表 (256 エントリ) が起動時構築のままなのは
-  これが理由で、`src/crc.t` はその旨をコメントに書いている。
+- **CONST-ARRAY の残り: 要素はスカラーだけ / 値渡しの配列** —
+  2026-09-25 に**名前で渡せるようになった** (`&[T; N]` / `&mut [T; N]`
+  の引数、完了済み節)。残り: 要素がスカラーのみ — struct / tuple の表は
+  `.rodata` のレイアウトを leaf 単位で決める必要がある。値渡しの配列引数
+  (`a: [u64; 3]`) は compiled レーンで未対応のまま (`&[T; N]` を案内する)。
+  `poc/logsearch` の CRC 表 (`src/crc.t`) が起動時構築なのは CTFE が配列を
+  作れないため (256 要素を書き下せば `const` にできる)。
 
 - **STDLIB-CRYPTO C2〜C4: SHA-512 族 / HMAC / SHA-1・MD5** —
   設計と優先順位は [`STDLIB_CRYPTO.md`](STDLIB_CRYPTO.md)。C2 (SHA-512 /

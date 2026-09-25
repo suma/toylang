@@ -349,3 +349,58 @@ mod slice_tests {
         ");
     }
 }
+
+// CONST-ARRAY: what a borrowed array refuses, at type checking -- so
+// every lane refuses it the same way instead of the tree-walker
+// writing through while the compiled lanes stop.
+#[cfg(test)]
+mod array_borrow_tests {
+    use crate::common::test_program;
+
+    fn type_error(source: &str) -> String {
+        match test_program(source) {
+            Ok(v) => panic!("expected a type error, got {v:?}"),
+            Err(e) => e,
+        }
+    }
+
+    #[test]
+    fn a_shared_array_borrow_cannot_be_written_through() {
+        let err = type_error(
+            "fn f(t: &[u32; 2]) -> u32 {
+                t[0] = 5u32
+                t[0]
+            }
+            fn main() -> u64 {
+                val l: [u32; 2] = [1u32, 2u32]
+                f(l) as u64
+            }",
+        );
+        assert!(err.contains("shared borrow") && err.contains("&mut [T; N]"), "{err}");
+    }
+
+    #[test]
+    fn a_const_table_is_not_a_mutable_borrow() {
+        // The table lives in the read-only section; writing it would
+        // fault in the compiled lanes.
+        let err = type_error(
+            "const K: [u32; 2] = [1u32, 2u32]
+            fn f(t: &mut [u32; 2]) { t[0] = 1u32 }
+            fn main() -> u64 {
+                f(K)
+                0u64
+            }",
+        );
+        assert!(err.contains("&mut [u32; 2]"), "{err}");
+    }
+
+    #[test]
+    fn the_length_is_part_of_the_type() {
+        let err = type_error(
+            "const K: [u32; 2] = [1u32, 2u32]
+            fn f(t: &[u32; 3]) -> u32 { t[0] }
+            fn main() -> u64 { f(K) as u64 }",
+        );
+        assert!(err.contains("[u32; 3]"), "{err}");
+    }
+}

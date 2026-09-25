@@ -809,6 +809,7 @@ impl<'a> FunctionLower<'a> {
                 // RANGE-FOR: a range is not a tuple element the
                 // compiled lanes can hold; `None` reports it.
                 Some(Binding::Range { .. }) => None,
+                Some(Binding::ArrayRef { .. }) => None,
                 None => self.const_values.get(&sym).map(|c| c.ty()),
             },
             _ => self.value_scalar(expr_ref),

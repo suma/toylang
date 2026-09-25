@@ -116,6 +116,13 @@ impl<'a> FunctionLower<'a> {
                         }
                         return Ok(None);
                     }
+                    Binding::ArrayRef { .. } => {
+                        return Err(
+                            "compiler MVP: print of a borrowed array is not supported; \
+                             print its elements"
+                                .to_string(),
+                        );
+                    }
                     Binding::DynTraitObj { .. } => {
                         // A5-P2: printing an opaque trait object is
                         // not meaningful (no canonical user-visible

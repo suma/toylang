@@ -295,6 +295,11 @@ impl<'a> FunctionLower<'a> {
                 Some(Binding::DynTraitObj { .. }) => {
                     Err(self.not_a_chain_root(sym, "dyn-trait", ""))
                 }
+                Some(Binding::ArrayRef { .. }) => Err(self.not_a_chain_root(
+                    sym,
+                    "borrowed array",
+                    ": index it (`t[i]`)",
+                )),
                 Some(Binding::Range { .. }) => Err(self.not_a_chain_root(
                     sym,
                     "range",

@@ -3049,6 +3049,15 @@ Closures are first-class values: assignable to `val` / `var`,
 passable to higher-order functions through a function-type
 annotation, and returnable from functions.
 
+A top-level function's **name** is a value too, wherever a value is
+read: `apply(twice, 21u64)`, `val f = twice`, `v.sort_by(cmp_desc)`, an
+`if` arm beside a closure literal. It stands for the closure that calls
+the function (`fn(x: u64) -> u64 { twice(x) }`) and has the function's
+type, `fn (u64) -> u64`. A local of the same name wins, as it does for
+a call. A generic function is refused (`[E0010]`), since it has no
+single type to hand out — write the closure literal that names the
+types. Methods and module-qualified names (`m::f`) are not values yet.
+
 ### Function type syntax
 
 A function value's type is written as either:

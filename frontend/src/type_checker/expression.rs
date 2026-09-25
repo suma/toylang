@@ -119,6 +119,9 @@ impl<'a> TypeCheckerVisitor<'a> {
         if let Some(result) = self.intercept_struct_update(expr)? {
             return Ok(result);
         }
+        if let Some(result) = self.intercept_fn_name_value(expr)? {
+            return Ok(result);
+        }
 
         // SIMD: `__simd_splat` / `__simd_load` carry no lane-type
         // suffix, so the vector type has to come from context. Same
@@ -2671,6 +2674,52 @@ impl<'a> TypeCheckerVisitor<'a> {
             };
             self.core.expr_pool.update(&expr_ref, body);
         }
+    }
+
+    /// FN-NAME-AS-VALUE: a top-level function's name where a value is
+    /// read (`apply(twice, 21u64)`, `val f = twice`) becomes the closure
+    /// literal that calls it -- `fn(x: u64) -> u64 { twice(x) }` -- in
+    /// the pool, so every backend sees a closure it already runs, with
+    /// nothing captured. A local of the same name wins, as it does for
+    /// a call. The closure's parameters reuse the function's own names
+    /// (the checker cannot intern new ones), which shadow nothing the
+    /// body reads. A generic function has no one type to hand out.
+    pub fn intercept_fn_name_value(&mut self, expr: &ExprRef) -> Result<Option<TypeDecl>, TypeCheckError> {
+        let Some(Expr::Identifier(name)) = self.core.expr_pool.get(expr) else {
+            return Ok(None);
+        };
+        if self.context.get_var(name).is_some() {
+            return Ok(None);
+        }
+        let Some(fun) = self.context.get_fn(name) else {
+            return Ok(None);
+        };
+        if !fun.generic_params.is_empty() {
+            return Err(TypeCheckError::generic_error(&format!(
+                "generic function `{}` cannot be passed as a value: it has no single type; \
+                 wrap the call in a closure literal that names the types",
+                self.resolve_symbol_name(name)
+            )));
+        }
+        let args: Vec<ExprRef> = fun
+            .parameter
+            .iter()
+            .map(|(p, _)| self.core.expr_pool.add(Expr::Identifier(*p)))
+            .collect();
+        let arg_list = self.core.expr_pool.add(Expr::ExprList(args));
+        let call = self.core.expr_pool.add(Expr::Call(name, arg_list));
+        let stmt = self.core.stmt_pool.add(Stmt::Expression(call));
+        let body = self.core.expr_pool.add(Expr::Block(vec![stmt]));
+        self.core.expr_pool.update(
+            expr,
+            Expr::Closure {
+                params: fun.parameter.clone(),
+                return_type: Some(fun.return_type.clone().unwrap_or(TypeDecl::Unit)),
+                body,
+                captures_by_ref: false,
+            },
+        );
+        self.visit_expr(expr).map(Some)
     }
 
     /// TRY-OPERAND-GAP: the `?` node whose operand is `inner`.

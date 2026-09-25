@@ -294,6 +294,9 @@ impl<'a> FunctionLower<'a> {
             // body for type inference. This lets `val x = with ... { e }`
             // bind to the right scalar type.
             Expr::With(_, body) => self.value_scalar(&body),
+            // A closure is its environment's address (FN-NAME-AS-VALUE:
+            // `if c { twice } else { fn(x: u64) -> u64 { x } }`).
+            Expr::Closure { .. } => Some(Type::U64),
             Expr::Cast(_, target_ty) => lower_scalar(&target_ty),
             Expr::Identifier(sym) => match self.bindings.get(&sym) {
                 Some(Binding::Scalar { ty, .. }) => Some(*ty),

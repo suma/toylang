@@ -251,6 +251,12 @@ impl<'a> TypeCheckerVisitor<'a> {
         if let Some(ty) = self.intercept_struct_update(expr_ref)? {
             return Ok(ty);
         }
+        // FN-NAME-AS-VALUE: a function's name as a tail -- `fn pick() ->
+        // fn (u64) -> u64 { twice }` -- is a value too.
+        if let Some(ty) = self.intercept_fn_name_value(expr_ref)? {
+            self.type_inference.set_expr_type(*expr_ref, ty.clone());
+            return Ok(ty);
+        }
         let expr_obj = self.core.expr_pool.get(expr_ref)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference"))?;
         // ERROR_MODEL E2: `?` in statement position. This route --

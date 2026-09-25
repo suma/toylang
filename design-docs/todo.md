@@ -12,6 +12,14 @@
 
 ### 2026-09-26
 
+- **FN-NAME-AS-VALUE / HOF-RETURN-UNKNOWN: 関数名を値として渡せる** —
+  値の位置の関数名を型検査器が closure リテラル
+  (`fn(x: u64) -> u64 { twice(x) }`) に書き換えるので、バックエンドは
+  既存の closure をそのまま走らせる。compiled レーンは `if` の腕で
+  closure を選ぶ形も通るようにした。closure を受け取る呼び出しの戻り型が
+  `Unknown` になる件は既に解消していた。generic 関数・メソッド・`m::f`
+  は未対応。
+
 - **TRY-OPERAND-GAP: `?` を演算子の項・条件・引数に置ける** — 型検査器が
   直接 dispatch で辿る位置 (項・比較・`if` / `while` の条件・引数・単項・
   補間) の `?` は `Unknown` を返して `Expr::Try` を残し、実行時に
@@ -2477,29 +2485,6 @@
   で、collection に `--check` を効かせる唯一の道
   ([`VEC_CONTRACTS.md`](VEC_CONTRACTS.md) §5-3)。
 
-- **FN-NAME-AS-VALUE: トップレベル関数の名前を `fn` 値として渡せない**
-  ★★ — `fn twice(x: u64) -> u64` があっても `apply(twice, 21u64)` は
-  `[E0001] expected fn (u64) -> u64, but got u64`。closure literal を
-  `val` に束縛すれば通るので回避はできるが、`Vec::sort_by(cmp)` の
-  ような comparator API は毎回これを踏む。2026-09-03 に COLLECTIONS C3
-  で発見。
-  **型検査の 1 行ではない** (2026-09-21 に測った): 値の位置の関数名は
-  `visit_identifier` が**戻り型**を返しているので、そこを
-  `TypeDecl::Function(params, ret)` に変えるのは 1 箇所で、全テストも
-  通る。**通らないのはその先**で、
-  * tree-walker: 識別子が呼べる値に評価されない
-    (`Undefined variable`)。`Object::Closure` の `body` は `ExprRef`
-    なので、関数の `code` (`StmtRef`) から中の block を取り出せば
-    作れそう
-  * compiled lane: **`fn` 引数は env つきの closure ABI**
-    (`CallIndirect` は callee を env とみなし、`env+0` の fn_ptr を
-    読んで env を前置する)。生の `FuncAddr` はそのままでは渡せず、
-    `(env, args...) -> R` の**thunk を新造**して `MakeClosure` で
-    包む必要がある (dyn の `PendingThunkBody` と同じ手口)
-
-  やるなら 3 レーン通しで。半分だけ入れると型検査がどのレーンでも
-  走らないプログラムを受理する。
-
 
 - **tuple 要素の `Vec` / `SoaVec` が AOT 不可** ★ —
   `Vec<(i64, u64)>` は `push` の `__builtin_sizeof(value)` が
@@ -2613,15 +2598,6 @@
 > **ファイルハンドル (`open`/`seek`/`pread`/`fsync`)** と
 > **シグナル捕捉**の 2 つで、これは同節の H に分けてある。
 
-- **HOF-RETURN-UNKNOWN: 関数を値として渡す形が使えない** ★ —
-  (a) **名前つき関数を値として渡せない** — `fn run(f: fn () -> ())` に
-  `run(work)` と書くと `[E0001] expected fn () -> (), but got ()`
-  (名前が関数の**戻り型**に解決される)。(b) closure リテラルを渡すと
-  通るが、**その呼び出しの戻り型が `Unknown` になる**ので
-  `val b: Bench = bench(3u64, fn() -> () { })` の `b.iters` が
-  `field access for type Unknown`。2026-09-03 の STDLIB-TIME で
-  `bench(iters, f)` を書こうとして踏み、**`bench` を入れずに
-  `Stopwatch` だけにした**
 - **並行性 (CONCURRENCY)** は分野としては stdlib だが、本体が move /
   Drop モデルとの接合なので「検討中の機能」節に置いてある (★★★)。
   RUNTIME_LIBRARY P3 も「設計文書を別に取ってから着手」と同じ判断。

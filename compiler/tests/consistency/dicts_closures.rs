@@ -851,3 +851,65 @@ fn main() -> u64 {
 "#;
     assert_consistent(src, "closure_shared_write_shadowed_at_call");
 }
+
+/// FN-NAME-AS-VALUE: a top-level function's name where a value is read
+/// -- an argument, a `val`, a tail, an `if` arm beside a closure
+/// literal, a `sort_by` comparator -- is the closure that calls it. The
+/// type checker rewrites the name into that closure literal, so every
+/// lane runs a closure it already knew. It used to type as the
+/// function's return type (`expected fn (u64) -> u64, but got u64`).
+#[test]
+fn a_function_name_is_a_value() {
+    let src = r#"
+fn twice(x: u64) -> u64 { x * 2u64 }
+fn add(a: u64, b: u64) -> u64 { a + b }
+fn apply(f: fn (u64) -> u64, x: u64) -> u64 { f(x) }
+fn fold(f: fn (u64, u64) -> u64, xs: [u64; 3]) -> u64 {
+    var acc = 0u64
+    for i in 0u64..3u64 { acc = f(acc, xs[i]) }
+    acc
+}
+fn pick(c: bool) -> fn (u64) -> u64 {
+    if c { twice } else { fn(x: u64) -> u64 { x + 1u64 } }
+}
+fn cmp_desc(a: u64, b: u64) -> bool { a > b }
+fn main() -> u64 {
+    println(apply(twice, 21u64))
+    println(fold(add, [1u64, 2u64, 3u64]))
+    val f = twice
+    println(f(5u64))
+    val g = pick(true)
+    println(g(4u64))
+    var v: Vec<u64> = Vec::new()
+    v.push(3u64)
+    v.push(9u64)
+    v.push(1u64)
+    v.sort_by(cmp_desc)
+    println("{v.get(0u64)} {v.get(2u64)}")
+    0u64
+}
+    "#;
+    assert_stdout_consistent(src, "fn_name_as_value");
+}
+
+/// HOF-RETURN-UNKNOWN: a call that takes a closure (a literal or a
+/// function's name) keeps its own return type, so its fields read.
+#[test]
+fn a_call_taking_a_closure_keeps_its_return_type() {
+    let src = r#"
+struct Bench { iters: u64 }
+fn bench(n: u64, f: fn () -> ()) -> Bench {
+    for i in 0u64..n { f() }
+    Bench { iters: n }
+}
+fn work() -> () { print(".") }
+fn main() -> u64 {
+    val b: Bench = bench(3u64, fn() -> () { print("x") })
+    println(" {b.iters}")
+    val c = bench(2u64, work)
+    println(" {c.iters}")
+    0u64
+}
+    "#;
+    assert_stdout_consistent(src, "hof_return_type");
+}

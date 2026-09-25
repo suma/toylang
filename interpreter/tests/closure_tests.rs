@@ -282,3 +282,31 @@ fn non_function_local_does_not_shadow_a_function() {
         6,
     );
 }
+
+/// FN-NAME-AS-VALUE: a local of the same name wins over the function,
+/// as it does for a call.
+#[test]
+fn a_local_shadows_a_function_passed_as_a_value() {
+    crate::common::assert_program_result_u64(
+        "fn twice(x: u64) -> u64 { x * 2u64 }
+fn apply(f: fn (u64) -> u64, x: u64) -> u64 { f(x) }
+fn main() -> u64 {
+    val direct = apply(twice, 5u64)
+    val twice = fn(x: u64) -> u64 { x + 100u64 }
+    direct + apply(twice, 1u64)
+}",
+        111,
+    );
+}
+
+/// FN-NAME-AS-VALUE: a generic function has no single type to hand out.
+#[test]
+fn a_generic_function_is_not_a_value() {
+    let err = crate::common::test_program(
+        "fn id<T>(x: T) -> T { x }
+fn apply(f: fn (u64) -> u64, x: u64) -> u64 { f(x) }
+fn main() -> u64 { apply(id, 5u64) }",
+    )
+    .expect_err("a generic function should be refused as a value");
+    assert!(err.contains("cannot be passed as a value"), "{err}");
+}

@@ -10,6 +10,15 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-09-26
+
+- **TRY-OPERAND-GAP: `?` を演算子の項・条件・引数に置ける** — 型検査器が
+  直接 dispatch で辿る位置 (項・比較・`if` / `while` の条件・引数・単項・
+  補間) の `?` は `Unknown` を返して `Expr::Try` を残し、実行時に
+  `unexpected expr: Try` で落ちていた。`visit_try` が演算子から `?`
+  ノードを引いて、その場で desugar する。tree-walker は `bool as bool`
+  を受けるようにした (desugar の型固定の `as`)。
+
 ### 2026-09-25
 
 - **LEND-FREEING-CALLEE: 受け手が受け取った引数を drop する** — 貸し出し
@@ -2745,17 +2754,6 @@
   `fn to_str(&self, spec: str)` にするかは未決)、(b) fill 文字 / `+` /
   `#` / `$`-parameterised width、(c) interpreter JIT の
   `jit_format_<ty>` helper。いずれも踏んでから。
-- **TRY-OPERAND-GAP: `?` が binary operand / 条件 / tail 位置で
-  desugar されない** ★ — 2026-08-30 に `??` (NULL-COALESCE) の
-  実装中に実測: `(r? == 1u64)` や `if r? { .. }` は `visit_try` が
-  trait 既定 (`Unknown`) を返すため**型検査が黙って Unknown を返し**、
-  個所によっては「expected bool, but got Unknown」のような本質でない
-  エラーになる。val rhs は動く (`visit_expr` の intercept が効く)。
-  `??` が取った解決策 — direct `accept_expr` dispatch の位置では
-  型だけ付けて pool 書き換えを post-pass (`apply_null_coalesce_rewrites`)
-  に回す — を `?` にもそのまま適用できる (`check_expr_located` と
-  `visit_binary` の operand 経路に intercept を足す形)。
-
 以下は **`poc/logsearch` (18,000 行) を書いて出てきた穴**で、
 2026-09-23 に 3 レーン (`--all-backends`) で「本当に無い」ことを
 確かめてから登録した。各項目の実測値と現物の引用は同 POC の

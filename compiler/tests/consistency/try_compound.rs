@@ -279,3 +279,99 @@ fn a_generic_instance_comes_out_of_the_arm_without_an_annotation() {
     "#;
     assert_stdout_consistent(src, "generic_instance_from_arm");
 }
+
+/// TRY-OPERAND-GAP: `?` as an operand, a comparison side, a condition,
+/// a call argument, nested in another `?`'s operand, and a tail. These
+/// positions reach the type checker through direct dispatch, which used
+/// to answer `Unknown` and leave an `Expr::Try` for the backends
+/// ("unexpected expr: Try" at run time).
+#[test]
+fn try_works_as_an_operand_a_condition_and_an_argument() {
+    let src = r#"
+fn half(n: u64) -> Option<u64> {
+    if n % 2u64 == 0u64 { Option::Some(n / 2u64) } else { Option::None }
+}
+fn flag(b: bool) -> Result<bool, u64> {
+    if b { Result::Ok(true) } else { Result::Err(9u64) }
+}
+fn sum(n: u64) -> Option<u64> {
+    val x = half(n)? + half(n)?
+    Option::Some(x + 1u64)
+}
+fn cmp(n: u64) -> Option<bool> {
+    Option::Some(half(n)? == 2u64)
+}
+fn cond(b: bool) -> Result<u64, u64> {
+    if flag(b)? { Result::Ok(1u64) } else { Result::Ok(0u64) }
+}
+fn tail(n: u64) -> Option<u64> {
+    val h = half(n)
+    Option::Some(h?)
+}
+fn arg(n: u64) -> Option<u64> {
+    Option::Some(half(half(n)?)? * 10u64)
+}
+fn main() -> u64 {
+    println(sum(4u64) ?? 99u64)
+    println(sum(3u64) ?? 99u64)
+    println(cmp(4u64) ?? false)
+    println(cond(true) ?? 7u64)
+    println(cond(false) ?? 7u64)
+    println(tail(8u64) ?? 0u64)
+    println(arg(8u64) ?? 0u64)
+    println(arg(6u64) ?? 0u64)
+    0u64
+}
+    "#;
+    assert_stdout_consistent(src, "try_operand_positions");
+}
+
+/// TRY-OPERAND-GAP: the same in a `while` condition, under a unary
+/// minus, beside a method call, and inside string interpolation.
+#[test]
+fn try_works_in_a_loop_condition_a_unary_and_interpolation() {
+    let src = r#"
+struct P { x: u64 }
+impl P {
+    fn twice(&self) -> u64 { self.x * 2u64 }
+}
+fn half(n: u64) -> Option<u64> {
+    if n % 2u64 == 0u64 { Option::Some(n / 2u64) } else { Option::None }
+}
+fn mkp(n: u64) -> Option<P> {
+    if n > 0u64 { Option::Some(P { x: n }) } else { Option::None }
+}
+fn neg(n: i64) -> Result<i64, u64> {
+    if n > 0i64 { Result::Ok(n) } else { Result::Err(1u64) }
+}
+fn loopy(n: u64) -> Option<u64> {
+    var i = 0u64
+    while i < half(n)? {
+        i = i + 1u64
+    }
+    Option::Some(i)
+}
+fn unary(n: i64) -> Result<i64, u64> {
+    Result::Ok(-neg(n)?)
+}
+fn recv(n: u64) -> Option<u64> {
+    val p = mkp(n)?
+    Option::Some(p.twice() + half(n + 1u64)?)
+}
+fn interp(n: u64) -> Option<str> {
+    Option::Some("h={half(n)?}")
+}
+fn main() -> u64 {
+    println(loopy(6u64) ?? 99u64)
+    println(loopy(5u64) ?? 99u64)
+    println(unary(4i64) ?? 0i64)
+    println(unary(-4i64) ?? 0i64)
+    println(recv(3u64) ?? 0u64)
+    println(recv(0u64) ?? 0u64)
+    println(interp(4u64) ?? "none")
+    println(interp(3u64) ?? "none")
+    0u64
+}
+    "#;
+    assert_stdout_consistent(src, "try_operand_positions_more");
+}

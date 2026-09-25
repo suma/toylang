@@ -229,6 +229,21 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
         self.visit_null_coalesce(lhs, rhs)
     }
 
+    /// TRY-OPERAND-GAP: `?` reached through direct dispatch (an operand,
+    /// a condition, an argument). Desugar the node in the pool here, as
+    /// `visit_expr` does, instead of answering `Unknown` and leaving an
+    /// `Expr::Try` for the backends.
+    fn visit_try(&mut self, inner: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        match self.try_node_of(*inner) {
+            Some(try_ref) => {
+                let ty = self.desugar_try_expr(try_ref, *inner)?;
+                self.type_inference.set_expr_type(try_ref, ty.clone());
+                Ok(ty)
+            }
+            None => Err(TypeCheckError::generic_error("`?` operand has no `?` node")),
+        }
+    }
+
     fn visit_block(&mut self, statements: &Vec<StmtRef>) -> Result<TypeDecl, TypeCheckError> {
         self.visit_block(statements)
     }

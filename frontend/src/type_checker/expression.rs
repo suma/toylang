@@ -2673,6 +2673,21 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
     }
 
+    /// TRY-OPERAND-GAP: the `?` node whose operand is `inner`.
+    pub fn try_node_of(&mut self, inner: ExprRef) -> Option<ExprRef> {
+        if self.try_nodes.is_none() {
+            let mut map = std::collections::HashMap::new();
+            for index in 0..self.core.expr_pool.len() {
+                let expr_ref = ExprRef(index as u32);
+                if let Some(Expr::Try { inner, .. }) = self.core.expr_pool.get(&expr_ref) {
+                    map.insert(inner, expr_ref);
+                }
+            }
+            self.try_nodes = Some(map);
+        }
+        self.try_nodes.as_ref().and_then(|m| m.get(&inner).copied())
+    }
+
     /// `?` operator desugar. The parser emits `Expr::Try(inner)`; we
     /// rewrite the pool entry in place so backends only ever see the
     /// resulting `Match`. The desugar depends on the inner type:

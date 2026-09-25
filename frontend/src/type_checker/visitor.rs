@@ -117,6 +117,11 @@ pub struct TypeCheckerVisitor<'a> {
     /// both back from here — the checker's own type cache is
     /// per-function and gone by the time it runs.
     pub null_coalesce_lhs_types: HashMap<ExprRef, (TypeDecl, TypeDecl)>,
+    /// TRY-OPERAND-GAP: each `?` node by its operand, built on first use.
+    /// `visit_try` is handed only the operand (the operand / condition /
+    /// argument routes dispatch a clone of the node), and the desugar
+    /// rewrites the pool entry, so it needs the node's own `ExprRef`.
+    pub try_nodes: Option<HashMap<ExprRef, ExprRef>>,
 }
 
 /// NEWTYPE: the deferred half of the tuple-struct desugar.
@@ -244,6 +249,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             enum_casts: HashMap::new(),
             enum_struct_literals: HashMap::new(),
             null_coalesce_lhs_types: HashMap::new(),
+            try_nodes: None,
             transformed_exprs: HashMap::new(),
             pending_number_holes: Vec::new(),
         };
@@ -335,6 +341,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             enum_casts: HashMap::new(),
             enum_struct_literals: HashMap::new(),
             null_coalesce_lhs_types: HashMap::new(),
+            try_nodes: None,
         }
     }
 
@@ -549,6 +556,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             enum_casts: HashMap::new(),
             enum_struct_literals: HashMap::new(),
             null_coalesce_lhs_types: HashMap::new(),
+            try_nodes: None,
             transformed_exprs: HashMap::new(),
             pending_number_holes: Vec::new(),
         }

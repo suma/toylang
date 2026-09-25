@@ -725,11 +725,15 @@ impl EvaluationContext<'_> {
         // in `as T` to pin the static type for AOT inference, so
         // `val s: str = io::read_file(p)?` reaches this as a
         // String-to-String cast.
-        if matches!(target_type, TypeDecl::String) {
-            if let Object::String(_) = &*borrowed {
-                drop(borrowed);
-                return Ok(EvaluationResult::Value(value_obj.into()));
-            }
+        // `bool as bool` too: `if flag()? { .. }` puts the same pin on
+        // a boolean (TRY-OPERAND-GAP).
+        let identity = matches!(
+            (target_type, &*borrowed),
+            (TypeDecl::String, Object::String(_)) | (TypeDecl::Bool, Object::Bool(_))
+        );
+        if identity {
+            drop(borrowed);
+            return Ok(EvaluationResult::Value(value_obj.into()));
         }
         enum NumForm { Signed(i128), Unsigned(u128), Float(f64), Float32(f32) }
         let from = match &*borrowed {

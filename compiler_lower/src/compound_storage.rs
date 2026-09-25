@@ -566,6 +566,35 @@ impl<'a> FunctionLower<'a> {
         if stmts.is_empty() {
             return Err("empty block cannot produce a compound value".to_string());
         }
+        // RETURN-DROP: the block's bindings are registered in the scope
+        // open around it, and live to its end -- `val f = File::open(p)?`
+        // is `{ val t = ..  match t { Ok(v) => v, .. } }`, whose owner
+        // `t` must outlive the block. A function body lowered here (one
+        // returning an enum) has no scope around it, and used to drop
+        // nothing at all: it gets the function's scope. Anywhere else
+        // the block may sit in a branch, so what it registers goes
+        // behind a flag (`attach_drop_flag`) -- or the enclosing scope
+        // would drop it on paths that never made it.
+        let own_scope = self.drop_scopes.is_empty();
+        if own_scope {
+            self.enter_drop_scope();
+        } else {
+            self.compound_block_depth += 1;
+        }
+        let result = self.lower_block_into_compound_stmts(stmts, target);
+        if !own_scope {
+            self.compound_block_depth -= 1;
+        }
+        result
+    }
+
+    fn lower_block_into_compound_stmts(
+        &mut self,
+        stmts: &[frontend::ast::StmtRef],
+        target: &CompoundTarget,
+    ) -> Result<(), String> {
+        // Where this block's own registrations begin in the top scope.
+        let start = self.drop_scopes.last().map_or(0, Vec::len);
         for (i, stmt_ref) in stmts.iter().enumerate() {
             let is_last = i + 1 == stmts.len();
             let stmt = self
@@ -576,7 +605,11 @@ impl<'a> FunctionLower<'a> {
             if is_last
                 && let Stmt::Expression(e) = stmt
             {
-                return self.lower_into_compound_target(&e, target);
+                self.lower_into_compound_target(&e, target)?;
+                // A tail naming a binding hands that value out: the
+                // target holds it now.
+                self.forget_escaping_binding(&e, start);
+                return Ok(());
             }
             let _ = self.lower_stmt(stmt_ref)?;
             // A branch that leaves through a `return` never reaches
@@ -587,6 +620,33 @@ impl<'a> FunctionLower<'a> {
             }
         }
         Err("block has no compound-producing tail expression".to_string())
+    }
+
+    /// `expr` is a block's tail that names a binding the block made
+    /// (registered from `start` in the top scope): that binding's value
+    /// leaves the block, so it is not dropped as the block's. A binding
+    /// from further out is the move check's business -- it is handed
+    /// over, and flagged, when it is the function's value.
+    fn forget_escaping_binding(&mut self, expr: &ExprRef, start: usize) {
+        let Some(frontend::ast::Expr::Identifier(sym)) = self.program.expression.get(expr) else {
+            return;
+        };
+        let leaves = match self.bindings.get(&sym) {
+            Some(Binding::Struct { fields, .. }) => crate::bindings::flatten_struct_locals(fields),
+            Some(Binding::Enum(storage)) => crate::bindings::flatten_enum_storage_locals(storage),
+            Some(Binding::Tuple { elements }) => crate::bindings::flatten_tuple_element_locals(elements),
+            _ => return,
+        };
+        if let Some(top) = self.drop_scopes.last_mut()
+            && start <= top.len()
+        {
+            let mut i = 0;
+            top.retain(|t| {
+                let keep = i < start || !t.field_locals.iter().any(|l| leaves.contains(l));
+                i += 1;
+                keep
+            });
+        }
     }
 
     pub(super) fn allocate_enum_storage(&mut self, enum_id: EnumId) -> EnumStorage {

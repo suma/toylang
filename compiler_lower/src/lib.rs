@@ -396,6 +396,11 @@ struct FunctionLower<'a> {
     /// MOVE-CONDITIONAL: the drop flag of each flagged `val` / `var`
     /// lowered so far (`File::drop_flags`).
     drop_flag_locals: HashMap<frontend::ast::StmtRef, crate::ir::LocalId>,
+    /// RETURN-DROP: how many blocks lowered straight into a compound
+    /// value (`lower_block_into_compound`) enclose the code being
+    /// lowered. Such a block registers into the scope around it, which
+    /// it may be a branch of, so what it registers is flagged.
+    compound_block_depth: usize,
     /// The `val` / `var` statement currently being lowered, so
     /// `register_drop_for_struct_binding` can ask whether this binding
     /// transferred its value away (BOX-T). Parked here because that
@@ -2186,13 +2191,19 @@ impl<'a> FunctionLower<'a> {
     }
 
     /// MOVE-CONDITIONAL: when the binding being lowered is handed over
-    /// on some paths only, give the drop targets it just registered
-    /// (from `start` in the top scope) a flag, set now.
+    /// on some paths only -- or is made inside a block that registers
+    /// into an enclosing scope (RETURN-DROP) -- give the drop targets it
+    /// just registered (from `start` in the top scope) a flag, set now.
+    /// Locals start zeroed in every lane, so the flag reads false on a
+    /// path that never made the binding, and the drop clears it again
+    /// for a scope a loop enters afresh.
     fn attach_drop_flag(&mut self, start: usize) {
         let Some(stmt) = self.current_let_stmt else {
             return;
         };
-        if !self.program.drop_flags.bindings.contains(&stmt) || self.drop_scope_len() == start {
+        let flagged =
+            self.program.drop_flags.bindings.contains(&stmt) || self.compound_block_depth > 0;
+        if !flagged || self.drop_scope_len() == start {
             return;
         }
         let flag = match self.drop_flag_locals.get(&stmt) {
@@ -2287,6 +2298,7 @@ impl<'a> FunctionLower<'a> {
         self.terminate(crate::ir::Terminator::Branch { cond: owns, then_blk: drop_blk, else_blk: cont });
         self.switch_to(drop_blk);
         self.emit_drop_call_unflagged(target)?;
+        self.store_drop_flag(flag, false);
         self.terminate(crate::ir::Terminator::Jump(cont));
         self.switch_to(cont);
         Ok(())

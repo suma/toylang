@@ -1879,6 +1879,7 @@ impl<'a> FunctionLower<'a> {
             drop_scopes: Vec::new(),
             not_owned_locals: std::collections::HashSet::new(),
             drop_flag_locals: HashMap::new(),
+            compound_block_depth: 0,
             current_let_stmt: None,
             current_block: None,
             next_value: 0,

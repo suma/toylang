@@ -700,3 +700,115 @@ fn heap_operations_name_the_default_allocator_when_nothing_pushes_one() {
     assert!(!ir.contains("alloc=static"), "{ir}");
     assert_consistent(scoped, "alloc_ambient_with");
 }
+
+/// RETURN-DROP: a function returning an enum lowers its body straight
+/// into the return storage, and that path opened no drop scope -- so
+/// none of its locals were ever dropped in the compiled lanes (`s`
+/// below, in `a` / `b` / `e`). A binding handed out by `return h` was
+/// dropped on the way out and again by the caller. A returned binding
+/// is now a move (flagged when it is returned on some paths only), and
+/// every value closes once.
+#[test]
+fn a_returned_binding_moves_and_the_rest_are_dropped() {
+    let src = r#"
+struct H { id: u64 }
+impl Drop for H {
+    fn drop(&mut self) { println("close {self.id}") }
+}
+fn a() -> Option<H> {
+    val s = H { id: 1u64 }
+    val h = H { id: 11u64 }
+    val o = Option::Some(h)
+    o
+}
+fn b(c: bool) -> Option<H> {
+    val s = H { id: 2u64 }
+    val h = H { id: 12u64 }
+    val o = Option::Some(h)
+    if c {
+        return o
+    }
+    Option::None
+}
+fn c(c: bool) -> H {
+    val s = H { id: 3u64 }
+    val h = H { id: 13u64 }
+    if c {
+        return h
+    }
+    H { id: 23u64 }
+}
+fn e(c: bool) -> Result<u64, u64> {
+    val s = H { id: 5u64 }
+    if c {
+        return Result::Err(1u64)
+    }
+    Result::Ok(2u64)
+}
+fn g(c: bool) -> H {
+    val x = H { id: 6u64 }
+    val y = H { id: 16u64 }
+    if c { x } else { y }
+}
+fn main() -> u64 {
+    val ra = a()
+    println("a")
+    val rb = b(true)
+    println("b1")
+    val rb2 = b(false)
+    println("b2")
+    val rc = c(true)
+    println("c1")
+    val rc2 = c(false)
+    println("c2")
+    val re = e(true)
+    println("e1")
+    val re2 = e(false)
+    println("e2")
+    val rg = g(true)
+    println("g1")
+    val rg2 = g(false)
+    println("g2")
+    0u64
+}
+    "#;
+    assert_renders(
+        src,
+        "return_drop",
+        "close 1\na\nclose 2\nb1\nclose 12\nclose 2\nb2\nclose 3\nc1\nclose 13\nclose 3\nc2\n\
+         close 5\ne1\nclose 5\ne2\nclose 16\ng1\nclose 6\ng2\n\
+         close 16\nclose 6\nclose 23\nclose 13\nclose 12\nclose 11\n",
+    );
+}
+
+/// RETURN-DROP: a block lowered straight into a compound value (an
+/// `if` producing an `Option`) registers its bindings in the scope
+/// around it, which dropped them on every path out -- including the
+/// one that never made them, where the storage was still zero
+/// (`close 0`). They are flagged now. (The compiled lanes drop them at
+/// the end of that scope, the tree-walker at the end of the block; the
+/// program below does not look in between.)
+#[test]
+fn a_binding_in_a_compound_branch_is_dropped_on_its_own_path() {
+    let src = r#"
+        struct H { id: u64 }
+        impl Drop for H {
+            fn drop(&mut self) { println("close {self.id}") }
+        }
+        fn f(c: bool) -> u64 {
+            val o: Option<u64> = if c {
+                val tmp = H { id: 7u64 }
+                Option::Some(1u64)
+            } else {
+                Option::None
+            }
+            o ?? 0u64
+        }
+        fn main() -> u64 {
+            println(f(true))
+            println(f(false))
+            0u64
+        }
+    "#;
+    assert_renders(src, "compound_branch_drop", "close 7\n1\n0\n");
+}

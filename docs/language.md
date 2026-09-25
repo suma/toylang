@@ -6700,6 +6700,12 @@ value over again. A transfer inside a closure is refused too.
 (Before 2026-09-25 every transfer inside a branch or a loop body was
 refused.)
 
+A binding that is the function's value — the body's last expression,
+a `return`'s operand, or the last expression of a branch of either —
+leaves with it: it is handed over like an argument, so the function's
+scope does not drop what it returns (a flag again when it is returned
+on some paths only).
+
 A limit worth knowing:
 - Ownership is transitive (DROP-GLUE): a `Vec`, a struct field or an
   enum payload that received a transferred value frees it when the

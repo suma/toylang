@@ -12,6 +12,15 @@
 
 ### 2026-09-25
 
+- **RETURN-DROP: enum を返す関数のローカルが compiled レーンで drop されて
+  いなかった** — 本体を戻り値の storage へ直接 lower する経路が drop
+  スコープを開いていなかった (`Result` / `Option` を返す関数の中の
+  `File` も閉じていなかった)。返り値として出ていく束縛 (本体の末尾・
+  `return x`・その分岐の末尾) は移動として扱う (分岐なら flag)。以前は
+  `return h` が h を drop してから返し、呼び出し側でもう一度 drop して
+  いた。compound 値を作るブロックの束縛は外側のスコープに登録される
+  ので flag を付け、作らなかった経路でゼロの値を drop しない。
+
 - **MOVE-CONDITIONAL: 分岐の中の移動を実行時 drop flag で追う** — 移動を
   含む最も内側の文 (か腕の本体) の直前で flag を落とし、drop は flag を
   見る (compiled レーンは Bool ローカル、tree-walker は drop エントリを
@@ -2673,6 +2682,14 @@
 
 ### 型システム (NEW-TYPE-SYSTEM)
 
+- **COMPOUND-BLOCK-DROP-TIMING: compound を作るブロックの束縛の drop 時期** —
+  `val o: Option<u64> = if c { val t = H{..}  Some(1) } else { None }` の
+  `t` を tree-walker はブロックの終わりで、compiled レーンは外側の
+  スコープの終わりで drop する (回数は一致、`Drop` が出力すると順序が
+  割れる)。ブロックで drop すると `val f = File::open(p)?` の desugar
+  (`{ val t = ..  match t { Ok(v) => v, .. } }`) で持ち主 `t` がブロック
+  より先に死ぬので、「ブロックの末尾から外へ出る束縛」を move_check が
+  移動として扱う (`?` の別名規則と合わせる) のが先。
 - **MOVE-REINIT: 移動した名前への代入し直し** ★ — `kept = keep(p, kept)`
   のように渡した直後に同じ名前へ新しい値を入れる形は E0014 (`moved` から
   外れない)。代入で束縛を所有し直し、ループ本体でも「次の周回は所有

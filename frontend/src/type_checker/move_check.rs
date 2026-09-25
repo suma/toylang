@@ -69,7 +69,10 @@
 //! moved before it, and a path that leaves takes its moves with it. A
 //! transfer inside a loop body, of a binding the loop does not declare,
 //! needs the block to leave the loop right after (`loop_refusal`); one
-//! inside a closure is refused. Handing over one owning
+//! inside a closure is refused. A binding that is the function's value
+//! (the body's tail, a `return`'s operand, a branch tail of either) is
+//! handed over too: the scope must not drop what it returns
+//! (RETURN-DROP). Handing over one owning
 //! field of a payload that holds several stops the root dropping the
 //! others too (a leak, not a double drop). A *parameter* is never
 //! dropped by the callee -- parameters register no drop. A value whose
@@ -149,6 +152,7 @@ pub fn check_moves(
         loops: Vec::new(),
         exits: Vec::new(),
         closure_level: 0,
+        tail: false,
     };
     for function in &program.function {
         if function.is_extern {
@@ -570,6 +574,11 @@ struct MoveCheck<'a> {
     exits: Vec<(usize, Exit)>,
     /// Closure bodies the walk is inside.
     closure_level: usize,
+    /// The expression being walked is the function's value: the body's
+    /// tail, a `return`'s operand, or the tail of a branch of one. A
+    /// binding named there leaves with the value, so it is handed over
+    /// rather than read -- the scope must not drop what it returns.
+    tail: bool,
 }
 
 /// Where a conditional hand-over clears its flag (`DropFlags`).
@@ -603,7 +612,18 @@ impl MoveCheck<'_> {
                 self.declare(*name, None);
             }
         }
-        self.walk_stmt(body, false);
+        // The body is an expression statement holding a block; its
+        // value is the function's.
+        match self.program.statement.get(&body) {
+            Some(Stmt::Expression(e)) => {
+                self.anchors.push(Anchor::Stmt(body, Some(e)));
+                self.tail = true;
+                self.walk_expr(e, Use::Read, false);
+                self.anchors.pop();
+            }
+            _ => self.walk_stmt(body, false),
+        }
+        self.tail = false;
         self.scopes.clear();
     }
 
@@ -993,6 +1013,7 @@ impl MoveCheck<'_> {
             Stmt::Expression(e) => self.walk_expr(e, Use::Read, conditional),
             Stmt::Return(value) => {
                 if let Some(e) = value {
+                    self.tail = true;
                     self.walk_expr(e, Use::Read, conditional);
                 }
             }
@@ -1030,18 +1051,33 @@ impl MoveCheck<'_> {
     // ---- expressions ----
 
     fn walk_expr(&mut self, expr_ref: ExprRef, use_kind: Use, conditional: bool) {
+        // Only the positions below that pass the value on stay in the
+        // tail; every other child is walked outside it.
+        let tail = std::mem::replace(&mut self.tail, false);
         let Some(expr) = self.program.expression.get(&expr_ref) else {
             return;
         };
         match expr {
-            Expr::Identifier(name) => self.use_binding(name, expr_ref, use_kind, conditional),
+            Expr::Identifier(name) => {
+                let use_kind = if tail && use_kind == Use::Read { Use::Transfer } else { use_kind };
+                self.use_binding(name, expr_ref, use_kind, conditional)
+            }
 
             Expr::Block(stmts) => {
                 self.enter_scope();
                 for (i, s) in stmts.iter().enumerate() {
                     let exit = self.exit_of(&stmts[i..]);
                     self.exits.push((self.loops.len(), exit));
-                    self.walk_stmt(*s, conditional);
+                    match self.program.statement.get(s) {
+                        // The block's value is its last expression.
+                        Some(Stmt::Expression(e)) if tail && i + 1 == stmts.len() => {
+                            self.anchors.push(Anchor::Stmt(*s, Some(e)));
+                            self.tail = true;
+                            self.walk_expr(e, Use::Read, conditional);
+                            self.anchors.pop();
+                        }
+                        _ => self.walk_stmt(*s, conditional),
+                    }
                     self.exits.pop();
                 }
                 self.exit_scope();
@@ -1057,13 +1093,16 @@ impl MoveCheck<'_> {
                 self.cond_level += 1;
                 let before = self.moved.clone();
                 let mut after = before.clone();
+                self.tail = tail;
                 self.walk_expr(then_block, Use::Read, true);
                 self.merge_path(then_block, &before, &mut after);
                 for (c, b) in &elifs {
                     self.walk_expr(*c, Use::Read, true);
+                    self.tail = tail;
                     self.walk_expr(*b, Use::Read, true);
                     self.merge_path(*b, &before, &mut after);
                 }
+                self.tail = tail;
                 self.walk_expr(else_block, Use::Read, true);
                 self.merge_path(else_block, &before, &mut after);
                 self.moved = after;
@@ -1102,6 +1141,7 @@ impl MoveCheck<'_> {
                         self.walk_expr(guard, Use::Read, true);
                     }
                     self.anchors.push(Anchor::Expr(arm.body));
+                    self.tail = tail;
                     self.walk_expr(arm.body, Use::Read, true);
                     self.anchors.pop();
                     if consuming {

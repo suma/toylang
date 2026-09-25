@@ -4,11 +4,11 @@
 # "dict"]`).
 #
 # Stdlib `Dict<K, V>` — a user-space hash table implemented entirely
-# on top of the language's pointer primitives
-# (`__builtin_heap_alloc` / `__builtin_heap_realloc` /
-# `__builtin_ptr_read` / `__builtin_ptr_write` /
-# `__builtin_sizeof`). No special-casing in the parser, the type
-# checker, or any backend.
+# on top of the language's pointer primitives: the buffers come from
+# `__builtin_heap_alloc` / `__builtin_heap_realloc` and are read and
+# written through `Ptr<K>` / `Ptr<V>` / `Ptr<u32>` windows
+# (MEMORY-ACCESS M5), so only `borrow` still touches raw memory. No
+# special-casing in the parser, the type checker, or any backend.
 #
 # Layout (COLLECTIONS C1, `design-docs/COLLECTIONS.md`): the entries
 # stay where they were, in insertion order in the parallel `keys` /
@@ -18,11 +18,11 @@
 # lets `DictIter` and its adapters keep the exact fields they had,
 # which the backends' 8-return register budget leaves no room to grow.
 #
-# Field packing: `caps` and `sizes` each hold two 32-bit numbers
-# rather than taking a field apiece. A `&mut self` method returns one
-# register per receiver leaf, so `remove(&mut self) -> bool` at six
-# leaves plus its result is close to the budget; unpacked, the struct
-# would not fit. Entry counts and byte widths are far below 2^32.
+# Field packing: `caps` holds two 32-bit numbers rather than taking a
+# field apiece. A `&mut self` method returns one register per receiver
+# leaf, so the receiver's leaf count is what the 8-return budget
+# spends. Entry counts are far below 2^32. The element widths are not
+# stored: `Ptr<K>` strides by `__builtin_sizeof::<K>()`.
 #
 # `get(key) -> Option<V>` is the canonical lookup that surfaces
 # presence in the value (`Option::Some(v)` on hit, `Option::None`
@@ -62,8 +62,6 @@ struct Dict<K: Hash, V> {
     count: u64,
     # entry capacity in the high 32 bits, slot-table size in the low.
     caps: u64,
-    # key byte width in the high 32 bits, value width in the low.
-    sizes: u64,
 }
 
 impl<K: Hash, V> Dict<K, V> {
@@ -74,7 +72,6 @@ impl<K: Hash, V> Dict<K, V> {
             slots: __builtin_heap_alloc(0u64),
             count: 0u64,
             caps: 0u64,
-            sizes: 0u64,
         }
     }
 
@@ -86,12 +83,9 @@ impl<K: Hash, V> Dict<K, V> {
     # empty slot the probe stopped on at it. The early `return` from
     # inside the loop relies on the DICT-RETURN-WHILE fix to the
     # interpreter loop evaluator.
-    unsafe fn insert(&mut self, key: K, value: V) {
-        if self.sizes == 0u64 {
-            self.sizes = (__builtin_sizeof(key) << 32u64) | __builtin_sizeof(value)
-        }
-        val ks: u64 = self.sizes >> 32u64
-        val vs: u64 = self.sizes & 0xFFFFFFFFu64
+    fn insert(&mut self, key: K, value: V) {
+        val ks: u64 = __builtin_sizeof::<K>()
+        val vs: u64 = __builtin_sizeof::<V>()
         var ecap: u64 = self.caps >> 32u64
         var scap: u64 = self.caps & 0xFFFFFFFFu64
 
@@ -99,25 +93,29 @@ impl<K: Hash, V> Dict<K, V> {
         if scap == 0u64 {
             scap = 8u64
             self.slots = __builtin_heap_realloc(self.slots, scap * 4u64)
+            val fresh: Ptr<u32> = Ptr { addr: self.slots }
             var t: u64 = 0u64
             while t < scap {
-                __builtin_ptr_write(self.slots, t * 4u64, dict_slot_empty())
+                fresh.set(t, dict_slot_empty())
                 t = t + 1u64
             }
             self.caps = (ecap << 32u64) | scap
         }
 
         val mask: u64 = scap - 1u64
+        val sp: Ptr<u32> = Ptr { addr: self.slots }
+        val kp: Ptr<K> = Ptr { addr: self.keys }
+        val vp: Ptr<V> = Ptr { addr: self.vals }
         var j: u64 = hash_mix(key.hash()) & mask
         loop {
-            val s: u32 = __builtin_ptr_read::<u32>(self.slots, j * 4u64)
+            val s: u32 = sp.get(j)
             if s == dict_slot_empty() {
                 break
             }
             val idx: u64 = s as u64
-            val existing: K = __builtin_ptr_read::<K>(self.keys, idx * ks)
+            val existing: K = kp.get(idx)
             if existing == key {
-                __builtin_ptr_write(self.vals, idx * vs, value)
+                vp.set(idx, value)
                 return
             }
             j = (j + 1u64) & mask
@@ -134,9 +132,12 @@ impl<K: Hash, V> Dict<K, V> {
             self.vals = __builtin_heap_realloc(self.vals, ecap * vs)
             self.caps = (ecap << 32u64) | scap
         }
-        __builtin_ptr_write(self.keys, self.count * ks, key)
-        __builtin_ptr_write(self.vals, self.count * vs, value)
-        __builtin_ptr_write(self.slots, j * 4u64, self.count as u32)
+        # The entry buffers may have moved: address them afresh.
+        val ke: Ptr<K> = Ptr { addr: self.keys }
+        val ve: Ptr<V> = Ptr { addr: self.vals }
+        ke.set(self.count, key)
+        ve.set(self.count, value)
+        sp.set(j, self.count as u32)
         self.count = self.count + 1u64
 
         # Grow the table past a 7/8 load factor. Linear probing needs
@@ -144,24 +145,25 @@ impl<K: Hash, V> Dict<K, V> {
         if self.count * 8u64 >= scap * 7u64 {
             val ncap: u64 = scap * 2u64
             self.slots = __builtin_heap_realloc(self.slots, ncap * 4u64)
+            val grown: Ptr<u32> = Ptr { addr: self.slots }
             var t2: u64 = 0u64
             while t2 < ncap {
-                __builtin_ptr_write(self.slots, t2 * 4u64, dict_slot_empty())
+                grown.set(t2, dict_slot_empty())
                 t2 = t2 + 1u64
             }
             val nmask: u64 = ncap - 1u64
             var i: u64 = 0u64
             while i < self.count {
-                val k2: K = __builtin_ptr_read::<K>(self.keys, i * ks)
+                val k2: K = ke.get(i)
                 var p: u64 = hash_mix(k2.hash()) & nmask
                 loop {
-                    val s2: u32 = __builtin_ptr_read::<u32>(self.slots, p * 4u64)
+                    val s2: u32 = grown.get(p)
                     if s2 == dict_slot_empty() {
                         break
                     }
                     p = (p + 1u64) & nmask
                 }
-                __builtin_ptr_write(self.slots, p * 4u64, i as u32)
+                grown.set(p, i as u32)
                 i = i + 1u64
             }
             self.caps = (ecap << 32u64) | ncap
@@ -170,24 +172,25 @@ impl<K: Hash, V> Dict<K, V> {
 
     # Look up `key`; on hit return the stored value, on miss
     # return `default`.
-    unsafe fn get_or(&self, key: K, default: V) -> V {
+    fn get_or(&self, key: K, default: V) -> V {
         val scap: u64 = self.caps & 0xFFFFFFFFu64
         if scap == 0u64 {
             return default
         }
-        val ks: u64 = self.sizes >> 32u64
-        val vs: u64 = self.sizes & 0xFFFFFFFFu64
+        val sp: Ptr<u32> = Ptr { addr: self.slots }
+        val kp: Ptr<K> = Ptr { addr: self.keys }
+        val vp: Ptr<V> = Ptr { addr: self.vals }
         val mask: u64 = scap - 1u64
         var j: u64 = hash_mix(key.hash()) & mask
         loop {
-            val s: u32 = __builtin_ptr_read::<u32>(self.slots, j * 4u64)
+            val s: u32 = sp.get(j)
             if s == dict_slot_empty() {
                 break
             }
             val idx: u64 = s as u64
-            val existing: K = __builtin_ptr_read::<K>(self.keys, idx * ks)
+            val existing: K = kp.get(idx)
             if existing == key {
-                val v: V = __builtin_ptr_read::<V>(self.vals, idx * vs)
+                val v: V = vp.get(idx)
                 return v
             }
             j = (j + 1u64) & mask
@@ -197,24 +200,25 @@ impl<K: Hash, V> Dict<K, V> {
 
     # Option-returning lookup. Returns `Option::Some(v)` on hit,
     # `Option::None` on miss.
-    unsafe fn get(&self, key: K) -> Option<V> {
+    fn get(&self, key: K) -> Option<V> {
         val scap: u64 = self.caps & 0xFFFFFFFFu64
         if scap == 0u64 {
             return Option::None
         }
-        val ks: u64 = self.sizes >> 32u64
-        val vs: u64 = self.sizes & 0xFFFFFFFFu64
+        val sp: Ptr<u32> = Ptr { addr: self.slots }
+        val kp: Ptr<K> = Ptr { addr: self.keys }
+        val vp: Ptr<V> = Ptr { addr: self.vals }
         val mask: u64 = scap - 1u64
         var j: u64 = hash_mix(key.hash()) & mask
         loop {
-            val s: u32 = __builtin_ptr_read::<u32>(self.slots, j * 4u64)
+            val s: u32 = sp.get(j)
             if s == dict_slot_empty() {
                 break
             }
             val idx: u64 = s as u64
-            val existing: K = __builtin_ptr_read::<K>(self.keys, idx * ks)
+            val existing: K = kp.get(idx)
             if existing == key {
-                val v: V = __builtin_ptr_read::<V>(self.vals, idx * vs)
+                val v: V = vp.get(idx)
                 return Option::Some(v)
             }
             j = (j + 1u64) & mask
@@ -231,17 +235,18 @@ impl<K: Hash, V> Dict<K, V> {
         if scap == 0u64 {
             return Option::None
         }
-        val ks: u64 = self.sizes >> 32u64
-        val vs: u64 = self.sizes & 0xFFFFFFFFu64
+        val sp: Ptr<u32> = Ptr { addr: self.slots }
+        val kp: Ptr<K> = Ptr { addr: self.keys }
+        val vs: u64 = __builtin_sizeof::<V>()
         val mask: u64 = scap - 1u64
         var j: u64 = hash_mix(key.hash()) & mask
         loop {
-            val s: u32 = __builtin_ptr_read::<u32>(self.slots, j * 4u64)
+            val s: u32 = sp.get(j)
             if s == dict_slot_empty() {
                 break
             }
             val idx: u64 = s as u64
-            val existing: K = __builtin_ptr_read::<K>(self.keys, idx * ks)
+            val existing: K = kp.get(idx)
             if existing == key {
                 val v: &V = __builtin_ptr_ref::<V>(self.vals, idx * vs)
                 return Option::Some(v)
@@ -251,21 +256,22 @@ impl<K: Hash, V> Dict<K, V> {
         Option::None
     }
 
-    unsafe fn contains_key(&self, key: K) -> bool {
+    fn contains_key(&self, key: K) -> bool {
         val scap: u64 = self.caps & 0xFFFFFFFFu64
         if scap == 0u64 {
             return false
         }
-        val ks: u64 = self.sizes >> 32u64
+        val sp: Ptr<u32> = Ptr { addr: self.slots }
+        val kp: Ptr<K> = Ptr { addr: self.keys }
         val mask: u64 = scap - 1u64
         var j: u64 = hash_mix(key.hash()) & mask
         loop {
-            val s: u32 = __builtin_ptr_read::<u32>(self.slots, j * 4u64)
+            val s: u32 = sp.get(j)
             if s == dict_slot_empty() {
                 break
             }
             val idx: u64 = s as u64
-            val existing: K = __builtin_ptr_read::<K>(self.keys, idx * ks)
+            val existing: K = kp.get(idx)
             if existing == key {
                 return true
             }
@@ -285,23 +291,24 @@ impl<K: Hash, V> Dict<K, V> {
     # index the table holds above the hole has therefore moved, which
     # is why the table is rebuilt rather than patched — see the cost
     # note in the file header.
-    unsafe fn remove(&mut self, key: K) -> bool {
+    fn remove(&mut self, key: K) -> bool {
         val scap: u64 = self.caps & 0xFFFFFFFFu64
         if scap == 0u64 {
             return false
         }
-        val ks: u64 = self.sizes >> 32u64
-        val vs: u64 = self.sizes & 0xFFFFFFFFu64
+        val sp: Ptr<u32> = Ptr { addr: self.slots }
+        val kp: Ptr<K> = Ptr { addr: self.keys }
+        val vp: Ptr<V> = Ptr { addr: self.vals }
         val mask: u64 = scap - 1u64
         var j: u64 = hash_mix(key.hash()) & mask
         var found: u64 = self.count
         loop {
-            val s: u32 = __builtin_ptr_read::<u32>(self.slots, j * 4u64)
+            val s: u32 = sp.get(j)
             if s == dict_slot_empty() {
                 break
             }
             val idx: u64 = s as u64
-            val existing: K = __builtin_ptr_read::<K>(self.keys, idx * ks)
+            val existing: K = kp.get(idx)
             if existing == key {
                 found = idx
                 break
@@ -314,31 +321,31 @@ impl<K: Hash, V> Dict<K, V> {
 
         var i: u64 = found
         while i + 1u64 < self.count {
-            val nk: K = __builtin_ptr_read::<K>(self.keys, (i + 1u64) * ks)
-            val nv: V = __builtin_ptr_read::<V>(self.vals, (i + 1u64) * vs)
-            __builtin_ptr_write(self.keys, i * ks, nk)
-            __builtin_ptr_write(self.vals, i * vs, nv)
+            val nk: K = kp.get(i + 1u64)
+            val nv: V = vp.get(i + 1u64)
+            kp.set(i, nk)
+            vp.set(i, nv)
             i = i + 1u64
         }
         self.count = self.count - 1u64
 
         var t: u64 = 0u64
         while t < scap {
-            __builtin_ptr_write(self.slots, t * 4u64, dict_slot_empty())
+            sp.set(t, dict_slot_empty())
             t = t + 1u64
         }
         var e: u64 = 0u64
         while e < self.count {
-            val k2: K = __builtin_ptr_read::<K>(self.keys, e * ks)
+            val k2: K = kp.get(e)
             var p: u64 = hash_mix(k2.hash()) & mask
             loop {
-                val s2: u32 = __builtin_ptr_read::<u32>(self.slots, p * 4u64)
+                val s2: u32 = sp.get(p)
                 if s2 == dict_slot_empty() {
                     break
                 }
                 p = (p + 1u64) & mask
             }
-            __builtin_ptr_write(self.slots, p * 4u64, e as u32)
+            sp.set(p, e as u32)
             e = e + 1u64
         }
         true
@@ -356,18 +363,10 @@ impl<K: Hash, V> Dict<K, V> {
 # `next(&mut self) -> Option<(K, V)>` method, no `trait Iterator` impl
 # required. `K` / `V` appear in no field of the iterator (like
 # `Box<T>`), so it needs no instantiation of its own.
-#
-# The two element strides are packed into one `sizes` field (key in
-# the high 32 bits, value in the low 32): the AOT's `&mut self`
-# writeback returns one register per receiver leaf, and this iterator
-# with 6 fields + a 3-leaf enum return would exceed the 8-return
-# cranelift ABI limit. Element sizes are byte widths of realistic
-# keys / values — far below 2^32.
 struct DictIter<K, V> {
     keys: ptr,
     vals: ptr,
     count: u64,
-    sizes: u64,
     index: u64,
 }
 
@@ -383,7 +382,7 @@ impl<K: Hash, V: Default> Dict<K, V> {
     #
     #     val n = counts.get_or_default(word)
     #     counts.insert(word, n + 1u64)
-    unsafe fn get_or_default(&self, key: K) -> V {
+    fn get_or_default(&self, key: K) -> V {
         val zero: V = V::default()
         self.get_or(key, zero)
     }
@@ -399,7 +398,6 @@ impl<K: Hash, V> Dict<K, V> {
             keys: self.keys,
             vals: self.vals,
             count: self.count,
-            sizes: self.sizes,
             index: 0u64,
         }
     }
@@ -410,16 +408,16 @@ impl<K, V> Iterator<(K, V)> for DictIter<K, V> {
     # past `count`. Keys and values are read as copies out of the
     # buffers — like `Dict::get`, compound entries alias the stored
     # values.
-    unsafe fn next(&mut self) -> Option<(K, V)> {
+    fn next(&mut self) -> Option<(K, V)> {
         if self.index >= self.count {
             Option::None
         } else {
             val i = self.index
             self.index = self.index + 1u64
-            val ks: u64 = self.sizes >> 32u64
-            val vs: u64 = self.sizes & 0xFFFFFFFFu64
-            val k: K = __builtin_ptr_read::<K>(self.keys, i * ks)
-            val v: V = __builtin_ptr_read::<V>(self.vals, i * vs)
+            val kp: Ptr<K> = Ptr { addr: self.keys }
+            val vp: Ptr<V> = Ptr { addr: self.vals }
+            val k: K = kp.get(i)
+            val v: V = vp.get(i)
             Option::Some((k, v))
         }
     }
@@ -432,20 +430,17 @@ impl<K, V> Iterator<(K, V)> for DictIter<K, V> {
 # `fn next(&mut self) -> Option<T>`, type params kept out of every
 # field so no per-monomorph layout is needed.
 #
-# The adapter receiver holds a 5-leaf `DictIter` plus a 2-leaf fn
-# field — 7 receiver leaves + a 2-leaf Option return exceeds the
-# backend's 8-return register budget. The adapters therefore keep the
-# iterator state FLAT (no nested `DictIter`) and pack `count` into
-# the high 32 bits of the same field as `index` (like `sizes`):
-# 4 state leaves + 2 fn leaves + 2 return leaves = 8, exactly at the
-# budget. `collect` is not provided here: a `Vec<(K, V)>` return
+# The adapter receiver holds a 4-leaf `DictIter` plus a 2-leaf fn
+# field against the backend's 8-return register budget, so the
+# adapters keep the iterator state FLAT (no nested `DictIter`) and
+# pack `count` into the high 32 bits of the same field as `index`:
+# 3 state leaves + 2 fn leaves + 2 return leaves = 7. `collect` is not provided here: a `Vec<(K, V)>` return
 # would blow the budget, and tuple-element Vecs are not AOT-lowerable.
 
 struct DictMapIter<K, V, U> {
     keys: ptr,
     vals: ptr,
     count_index: u64,
-    sizes: u64,
     f: fn (K, V) -> U,
 }
 
@@ -454,16 +449,16 @@ impl<K, V, U> Iterator<U> for DictMapIter<K, V, U> {
     # the key and value as separate scalar args: an AOT closure cannot
     # receive a tuple parameter, so the adapter destructures the pair
     # before calling.
-    unsafe fn next(&mut self) -> Option<U> {
+    fn next(&mut self) -> Option<U> {
         val count = self.count_index >> 32u64
         val index = self.count_index & 0xFFFFFFFFu64
         if index >= count {
             Option::None
         } else {
-            val ks: u64 = self.sizes >> 32u64
-            val vs: u64 = self.sizes & 0xFFFFFFFFu64
-            val k: K = __builtin_ptr_read::<K>(self.keys, index * ks)
-            val v: V = __builtin_ptr_read::<V>(self.vals, index * vs)
+            val kp: Ptr<K> = Ptr { addr: self.keys }
+            val vp: Ptr<V> = Ptr { addr: self.vals }
+            val k: K = kp.get(index)
+            val v: V = vp.get(index)
             self.count_index = (count << 32u64) | (index + 1u64)
             Option::Some(self.f(k, v))
         }
@@ -477,7 +472,6 @@ impl<K, V> DictIter<K, V> {
             keys: self.keys,
             vals: self.vals,
             count_index: (self.count << 32u64) | self.index,
-            sizes: self.sizes,
             f: f,
         }
     }
@@ -487,23 +481,22 @@ struct DictFilterIter<K, V> {
     keys: ptr,
     vals: ptr,
     count_index: u64,
-    sizes: u64,
     pred: fn (K, V) -> bool,
 }
 
 impl<K, V> Iterator<(K, V)> for DictFilterIter<K, V> {
     # Yield only the pairs for which `pred` returns true.
-    unsafe fn next(&mut self) -> Option<(K, V)> {
+    fn next(&mut self) -> Option<(K, V)> {
         loop {
             val count = self.count_index >> 32u64
             val index = self.count_index & 0xFFFFFFFFu64
             if index >= count {
                 break
             }
-            val ks: u64 = self.sizes >> 32u64
-            val vs: u64 = self.sizes & 0xFFFFFFFFu64
-            val k: K = __builtin_ptr_read::<K>(self.keys, index * ks)
-            val v: V = __builtin_ptr_read::<V>(self.vals, index * vs)
+            val kp: Ptr<K> = Ptr { addr: self.keys }
+            val vp: Ptr<V> = Ptr { addr: self.vals }
+            val k: K = kp.get(index)
+            val v: V = vp.get(index)
             self.count_index = (count << 32u64) | (index + 1u64)
             if self.pred(k, v) {
                 val r: Option<(K, V)> = Option::Some((k, v))
@@ -522,7 +515,6 @@ impl<K, V> DictIter<K, V> {
             keys: self.keys,
             vals: self.vals,
             count_index: (self.count << 32u64) | self.index,
-            sizes: self.sizes,
             pred: pred,
         }
     }

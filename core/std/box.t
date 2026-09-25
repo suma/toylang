@@ -52,7 +52,7 @@ struct Box<T> {
 # `Clone` for a Box: a second heap cell holding a clone of the value,
 # freed independently of the first.
 impl<T: Clone> Clone for Box<T> {
-    unsafe fn clone(&self) -> Self {
+    fn clone(&self) -> Self {
         val v: &T = self.borrow()
         val c: T = v.clone()
         val b: Box<T> = Box::new(c)
@@ -61,7 +61,7 @@ impl<T: Clone> Clone for Box<T> {
 }
 
 impl<T> Box<T> {
-    unsafe fn new(value: T) -> Self {
+    fn new(value: T) -> Self {
         val bytes: u64 = __builtin_sizeof(value)
         val p: ptr = __builtin_heap_alloc(bytes)
         # ERROR_MODEL D5: notice the failure rather than writing the
@@ -71,14 +71,16 @@ impl<T> Box<T> {
         if bytes > 0u64 && __builtin_ptr_is_null(p) {
             panic("Box::new: allocation failed ({bytes} bytes)")
         }
-        __builtin_ptr_write(p, 0u64, value)
+        val cell: Ptr<T> = Ptr { addr: p }
+        cell.set(0u64, value)
         Box { data: p }
     }
 
     # A copy of the boxed value. The annotation is what gives the read
     # its shape, so it cannot be dropped.
-    unsafe fn get(&self) -> T {
-        val v: T = __builtin_ptr_read::<T>(self.data, 0u64)
+    fn get(&self) -> T {
+        val cell: Ptr<T> = Ptr { addr: self.data }
+        val v: T = cell.get(0u64)
         v
     }
 
@@ -90,8 +92,9 @@ impl<T> Box<T> {
         v
     }
 
-    unsafe fn set(&mut self, value: T) {
-        __builtin_ptr_write(self.data, 0u64, value)
+    fn set(&mut self, value: T) {
+        val cell: Ptr<T> = Ptr { addr: self.data }
+        cell.set(0u64, value)
     }
 
     fn as_ptr(&self) -> ptr {

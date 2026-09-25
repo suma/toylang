@@ -2314,9 +2314,14 @@
   `Ptr { addr: self.data }` を作って読み書き)。`vec.t` の `unsafe fn` は
   27 → 6、stdlib 全体で 172 → 151。AOT は `poc/logsearch` の出力一致の
   まま 2〜3% 速く、IR VM は `Vec` の要素ループで ~5% 遅い (局所変数 1 組)。
-  残り: `String` / `Dict` / `Box` と `Vec<u8>` の文字列処理、
-  `Vec::borrow` (`Ptr` に借用が要る)、`elem_size` フィールドの撤去
-  (drop glue が読んでいる)。
+  同日 `Box` と `Dict` も移した。`Dict` は要素幅を `__builtin_sizeof::<K>()`
+  で得るので `sizes` フィールドを Dict とイテレータ 3 種から外した
+  (イテレータの 8-return 予算に 1 leaf 空いた)。`unsafe fn` は各 1 本
+  (`borrow`) だけ残り、stdlib 全体で 151 → 138。`poc/logsearch` の出力
+  一致、archive は AOT で ~1.5% 速く、IR VM の Dict ベンチは差なし。
+  残り: `String` と `Vec<u8>` の文字列処理、`borrow` (`Vec` / `Box` /
+  `Dict`、`Ptr` に借用が要る)、`elem_size` フィールドの撤去 (drop glue
+  が読んでいる)。
 
 - **ZIP-ITER-GENERIC-SCOPE: method-level の型引数が turbofish から
   見えない** — `VecIter<T>::zip<U>(other: VecIter<U>)` の中で

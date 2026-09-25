@@ -2340,16 +2340,20 @@
   `Ptr` の get/set と同じく intrinsic にすれば戻せる。残る `unsafe` は
   SIMD (`contains` / `split` / `fold_ascii_case`)、`to_str`
   (`str_from_bytes`)、`extend_bytes` (生の `ptr` を受ける)。
-  残り: `Vec<u8>` の文字列処理、`borrow` (`Vec` / `Box` / `Dict`、
-  `Ptr` に借用が要る)、`elem_size` フィールドの撤去 (drop glue が
-  読んでいる)。
+  `Vec<u8>::from_str` も `Span::copy_from` に、`ZipIter::next` は
+  `Ptr<A>` / `Ptr<B>` にして `elems` フィールドを外した (stdlib 全体で
+  108 → 106)。`Vec<u8>::eq` は SIMD、`extend_bytes` は生の `ptr` を
+  受けるので `unsafe` のまま。
+  残り: `borrow` (`Vec` / `Box` / `Dict`、`Ptr` に借用が要る)、
+  `elem_size` フィールドの撤去 (drop glue が読んでいる)。
 
 - **ZIP-ITER-GENERIC-SCOPE: method-level の型引数が turbofish から
   見えない** — `VecIter<T>::zip<U>(other: VecIter<U>)` の中で
   `__builtin_sizeof::<U>()` が `[E0010] unknown type \`U\`` になる
   (`check_sizeof_type_arg` は impl の generic params と型推論 scope しか
-  見ない)。`ZipIter` が 2 つの stride を `elems` に 32bit ずつパックして
-  持っているのはこれの回避。
+  見ない)。`ZipIter` が 2 つの stride を `elems` にパックして持って
+  いたのはこれの回避だったが、M5 で `Ptr<A>` / `Ptr<B>` 経由の読みに
+  なり、stride 自体を持たなくなった (2026-09-25)。
 
 - **IRVM-SELF-WRITEBACK-REALLOC: by-value `self` + realloc で IR VM が
   落ちる** ★ — `unsafe fn push(self: Self, ...)` が `self.data =

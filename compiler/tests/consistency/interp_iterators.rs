@@ -472,6 +472,47 @@ fn iter_adapt_zip_round_trip() {
     assert_consistent(src, "iter_adapt_zip");
 }
 
+// The two sides of a zip stride by their own element widths. With
+// both sides `u64` the round trip above cannot tell one stride from
+// the other; `ZipIter` used to carry both widths packed into one field
+// and now reads through `Ptr<A>` / `Ptr<B>`.
+#[test]
+fn iter_adapt_zip_mixed_widths_round_trip() {
+    let src = r#"
+        struct P { x: u8, y: u64 }
+        fn main() -> u64 {
+            var a: Vec<u8> = Vec::new()
+            a.push(1u8)
+            a.push(2u8)
+            a.push(3u8)
+            var b: Vec<i64> = Vec::new()
+            b.push(-10i64)
+            b.push(200i64)
+            b.push(3000i64)
+            var c: Vec<u16> = Vec::new()
+            c.push(7u16)
+            c.push(8u16)
+            var d: Vec<P> = Vec::new()
+            d.push(P { x: 1u8, y: 100u64 })
+            d.push(P { x: 2u8, y: 5000u64 })
+            var total: i64 = 0i64
+            var ia = a.iter()
+            var ib = b.iter()
+            var z1 = ia.zip(ib)
+            for p in z1 { total = total + (p.0 as i64) * p.1 }
+            var ic = c.iter()
+            var id = d.iter()
+            var z = ic.zip(id)
+            for q in z {
+                val e: P = q.1
+                total = total + (q.0 as i64) + (e.x as i64) + (e.y as i64)
+            }
+            total as u64
+        }
+    "#;
+    assert_consistent(src, "iter_adapt_zip_mixed");
+}
+
 // STDLIB-ITER-ADAPT on `DictIter<K, V>` / `StringIter` (dict.t /
 // string.t): the Dict adapters take `f: fn (K, V) -> U` (key and
 // value as separate scalar args — an AOT closure cannot receive a

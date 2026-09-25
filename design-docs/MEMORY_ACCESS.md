@@ -312,6 +312,8 @@ example / poc と、他機能のテストに紛れていた 79 箇所も移行�
 turbofish の scope にも tree-walker の subst にも見えない)。
 撤去は tree-walker の generic scope を直してから — todo の
 TREE-WALKER-GENERIC-SCOPE / ZIP-ITER-GENERIC-SCOPE。
+(2026-09-25 追記: `ZipIter` の `elems` は外れた。`next` が
+`Ptr<A>` / `Ptr<B>` で読むので stride は `Ptr` の型から出る。)
 
 移行で 2 つ出た:
 

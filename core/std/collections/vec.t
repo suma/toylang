@@ -679,14 +679,21 @@ impl Vec<u8> {
     # The `heap_alloc(0) + heap_realloc(p, n)` pair handles
     # `n == 0` gracefully (realloc(p, 0) returns a freed/null-
     # equivalent pointer; mem_copy with size 0 is a no-op).
-    unsafe fn from_str(s: str) -> Self {
+    fn from_str(s: str) -> Self {
         val n: u64 = s.len()
         val raw: ptr = __builtin_heap_alloc(0u64)
         val data: ptr = __builtin_heap_realloc(raw, n)
         if n > 0u64 && __builtin_ptr_is_null(data) {
             panic("Vec::from_str: allocation failed ({n} bytes)")
         }
-        __builtin_mem_copy(s.as_ptr(), data, n)
+        # Only a non-empty copy has two non-null ends to window.
+        if n > 0u64 {
+            val dest: Ptr<u8> = Ptr { addr: data }
+            val origin: Ptr<u8> = Ptr { addr: s.as_ptr() }
+            val dst: Span<u8> = Span::from_parts(dest, n)
+            val text: Span<u8> = Span::from_parts(origin, n)
+            dst.copy_from(text)
+        }
         val result: Vec<u8> = Vec {
             data: data,
             len: n,
@@ -955,24 +962,21 @@ struct ZipIter<A, B> {
     a_data: ptr,
     b_data: ptr,
     min_len: u64,
-    elems: u64,
     index: u64,
 }
 
 impl<A, B> Iterator<(A, B)> for ZipIter<A, B> {
     # Yield `(a, b)` pairs, stopping at the shorter of the two
-    # sources. `elems` packs the two element strides into one field
-    # (`a_elem << 32 | b_elem`) so the struct fits in the backend's
-    # receiver-writeback register budget (the same trick `DictIter`
-    # uses for its key/value sizes).
-    unsafe fn next(&mut self) -> Option<(A, B)> {
+    # sources. The element strides are `Ptr`'s, so the iterator does
+    # not carry them.
+    fn next(&mut self) -> Option<(A, B)> {
+        val pa: Ptr<A> = Ptr { addr: self.a_data }
+        val pb: Ptr<B> = Ptr { addr: self.b_data }
         if self.index >= self.min_len {
             Option::None
         } else {
-            val a_elem = self.elems >> 32u64
-            val b_elem = self.elems & 0xFFFFFFFFu64
-            val ai: A = __builtin_ptr_read::<A>(self.a_data, self.index * a_elem)
-            val bi: B = __builtin_ptr_read::<B>(self.b_data, self.index * b_elem)
+            val ai: A = pa.get(self.index)
+            val bi: B = pb.get(self.index)
             self.index = self.index + 1u64
             Option::Some((ai, bi))
         }
@@ -987,7 +991,6 @@ impl<T> VecIter<T> {
             a_data: self.data,
             b_data: other.data,
             min_len: ml,
-            elems: (self.elem_size << 32u64) | other.elem_size,
             index: 0u64,
         }
     }

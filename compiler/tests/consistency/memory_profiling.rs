@@ -906,3 +906,33 @@ fn a_consuming_method_takes_its_receiver() {
     assert_consistent(src, "consuming_method_receiver");
     memory_profiles_agree(src, "consuming_method_receiver");
 }
+
+/// The consuming call is decided per receiver type: another type's
+/// `finish(&mut self)` does not keep `JsonWriter`-style `finish(self:
+/// Self)` from consuming its receiver. With the name-only rule the
+/// shared name made every `finish` a read, and poc/logsearch's
+/// `mount::write_meta` still freed the writer's buffer twice.
+#[test]
+fn a_consuming_method_is_found_by_the_receivers_type() {
+    let src = r#"
+        struct Writer { out: String }
+        impl Writer {
+            fn finish(self: Self) -> String { self.out }
+        }
+        struct Counter { n: u64 }
+        impl Counter {
+            fn finish(&mut self) -> u64 { self.n = self.n + 1u64  self.n }
+        }
+        fn main() -> u64 {
+            var c = Counter { n: 0u64 }
+            val w = Writer { out: String::from_str("abc") }
+            val s = w.finish()
+            val k = c.finish()
+            s.len() + k + c.finish()
+        }
+    "#;
+    assert_eq!(tree_walker_heap_check_report(src), "heap check: 0 double frees (0 distinct)\n");
+    assert_eq!(interpreter_value(src), 6);
+    assert_consistent(src, "consuming_method_by_type");
+    memory_profiles_agree(src, "consuming_method_by_type");
+}

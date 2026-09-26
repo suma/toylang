@@ -160,6 +160,7 @@ pub fn check_moves(
         stand_ins: 0,
         tail_root: None,
         consuming_methods: collect_consuming_methods(program, interner),
+        binding_types: HashMap::new(),
         probe: None,
         safe_receiver: None,
         scalar_readers: collect_scalar_readers(program, interner),
@@ -643,9 +644,13 @@ struct MoveCheck<'a> {
     /// walked, the binding `t`. A tail naming (part of) `t` hands that
     /// value into `x`; a tail naming anything else stays a read.
     tail_root: Option<DefaultSymbol>,
-    /// Methods every impl declares with a by-value receiver
-    /// (`self: Self`): the call consumes the receiver.
-    consuming_methods: HashSet<DefaultSymbol>,
+    /// Methods declared with a by-value receiver (`self: Self`), per
+    /// type and across every type (`None`): the call consumes the
+    /// receiver.
+    consuming_methods: ConsumingMethods,
+    /// The type each owning binding was declared with, where it is a
+    /// named type -- enough to tell which impl a method call reaches.
+    binding_types: HashMap<DefaultSymbol, DefaultSymbol>,
 }
 
 /// Where a conditional hand-over clears its flag (`DropFlags`).
@@ -760,6 +765,12 @@ impl MoveCheck<'_> {
         self.scopes.clear();
         self.moved.clear();
         self.borrows.clear();
+        self.binding_types.clear();
+        for (name, ty) in params {
+            if let TypeDecl::Struct(t, _) | TypeDecl::Enum(t, _) | TypeDecl::Identifier(t) = ty {
+                self.binding_types.insert(*name, *t);
+            }
+        }
         self.scopes.push(Vec::new());
         let lend = self.lend.get(&body).cloned().unwrap_or_default();
         let mut index = 0usize;
@@ -1132,11 +1143,45 @@ impl MoveCheck<'_> {
         self.interner.resolve(name).unwrap_or("?").to_string()
     }
 
-    /// Where a diagnostic about `expr` points: its own position, or --
-    /// since a bare identifier often carries none -- that of the
-    /// innermost statement or arm being walked (E0014-WRONG-FILE).
-    /// Without the fallback a move error inside a module had no
-    /// position at all, and the report fell back to the entry file.
+    /// Remember the named type `name` is declared with, for
+    /// [`Self::consumes_receiver`].
+    fn note_binding_type(&mut self, name: DefaultSymbol, annotation: &Option<TypeDecl>, rhs: ExprRef) {
+        let ty = self.binding_type(annotation, rhs).or_else(|| match self.program.expression.get(&rhs) {
+            // `Type::new(..)` / a struct literal names its type even
+            // where no type was recorded for the expression.
+            Some(Expr::AssociatedFunctionCall(t, _, _)) | Some(Expr::StructLiteral(t, _)) => {
+                Some(TypeDecl::Identifier(t))
+            }
+            _ => None,
+        });
+        match ty {
+            Some(TypeDecl::Struct(t, _) | TypeDecl::Enum(t, _) | TypeDecl::Identifier(t)) => {
+                self.binding_types.insert(name, t);
+            }
+            _ => {
+                self.binding_types.remove(&name);
+            }
+        }
+    }
+
+    /// Whether `receiver.method(..)` consumes the receiver: the
+    /// receiver's type declares `method` with `self: Self`, or -- when
+    /// the type is not known here -- every impl of the name does.
+    fn consumes_receiver(&self, receiver: ExprRef, method: DefaultSymbol) -> bool {
+        let ty = match self.program.expression.get(&receiver) {
+            Some(Expr::Identifier(r)) => self.binding_types.get(&r).copied(),
+            _ => None,
+        }
+        .or_else(|| match self.expr_types.get(&receiver) {
+            Some(TypeDecl::Struct(t, _) | TypeDecl::Enum(t, _) | TypeDecl::Identifier(t)) => Some(*t),
+            _ => None,
+        });
+        match ty {
+            Some(t) => self.consuming_methods.by_type.get(&(t, method)).copied().unwrap_or(false),
+            None => self.consuming_methods.everywhere.contains(&method),
+        }
+    }
+
     /// Walk a `val` / `var` initializer.
     ///
     /// `val v = f()?` is `{ val t = f()  match t { Ok(p) => p, Err(e) =>
@@ -1179,6 +1224,11 @@ impl MoveCheck<'_> {
         declared_here.then_some(t)
     }
 
+    /// Where a diagnostic about `expr` points: its own position, or --
+    /// since a bare identifier often carries none -- that of the
+    /// innermost statement or arm being walked (E0014-WRONG-FILE).
+    /// Without the fallback a move error inside a module had no
+    /// position at all, and the report fell back to the entry file.
     fn location(&self, expr: ExprRef) -> Option<SourceLocation> {
         if let Some(loc) = self.program.location_pool.get_expr_location(&expr) {
             return Some(*loc);
@@ -1212,6 +1262,7 @@ impl MoveCheck<'_> {
             // always has one.
             Stmt::Val(name, annotation, rhs) => {
                 self.walk_initializer(rhs, conditional);
+                self.note_binding_type(name, &annotation, rhs);
                 self.check_copy_out_of_borrow(name, &annotation, rhs);
                 self.check_owning_element_copy(stmt_ref, name, &annotation, rhs);
                 if let Some(ty) = self.binding_type(&annotation, rhs) {
@@ -1230,6 +1281,7 @@ impl MoveCheck<'_> {
             }
             Stmt::Var(name, annotation, Some(rhs)) => {
                 self.walk_initializer(rhs, conditional);
+                self.note_binding_type(name, &annotation, rhs);
                 self.check_copy_out_of_borrow(name, &annotation, rhs);
                 self.check_owning_element_copy(stmt_ref, name, &annotation, rhs);
                 if let Some(ty) = self.binding_type(&annotation, rhs) {
@@ -1459,7 +1511,7 @@ impl MoveCheck<'_> {
                 // `part` and `w` (DOUBLE-DROP-LANE-DIVERGENCE, found by
                 // HEAP-CHECK). A name some impl declares `&self` stays
                 // a read: the call site cannot tell which it reaches.
-                if self.consuming_methods.contains(&method) {
+                if self.consumes_receiver(receiver, method) {
                     let target = self.signatures.method_target(method, args.len());
                     self.walk_expr(receiver, Use::Transfer, conditional);
                     self.walk_arg_list(&args, target.as_ref(), conditional);
@@ -2365,14 +2417,22 @@ fn collect_scalar_readers(
     verdict.into_iter().filter(|(_, ok)| *ok).map(|(k, _)| k).collect()
 }
 
-/// DOUBLE-DROP-LANE-DIVERGENCE: method names every impl declares with a
-/// by-value receiver (`fn finish(self: Self)`). An implicit `&self` /
-/// `&mut self` is not in the parameter list; an explicit `self: Self`
-/// is, as the first parameter.
-fn collect_consuming_methods(program: &File, interner: &DefaultStringInterner) -> HashSet<DefaultSymbol> {
-    let mut verdict: HashMap<DefaultSymbol, bool> = HashMap::new();
+/// DOUBLE-DROP-LANE-DIVERGENCE: which methods take their receiver by
+/// value (`fn finish(self: Self)`). An implicit `&self` / `&mut self` is
+/// not in the parameter list; an explicit `self: Self` is, as the first
+/// parameter.
+struct ConsumingMethods {
+    /// (type, method) -> whether every impl of it on that type does.
+    by_type: HashMap<(DefaultSymbol, DefaultSymbol), bool>,
+    /// Method names every impl, on every type, declares so.
+    everywhere: HashSet<DefaultSymbol>,
+}
+
+fn collect_consuming_methods(program: &File, interner: &DefaultStringInterner) -> ConsumingMethods {
+    let mut by_type: HashMap<(DefaultSymbol, DefaultSymbol), bool> = HashMap::new();
+    let mut by_name: HashMap<DefaultSymbol, bool> = HashMap::new();
     for i in 0..program.statement.len() {
-        let Some(Stmt::ImplBlock { methods, .. }) = program.statement.get(&StmtRef(i as u32)) else {
+        let Some(Stmt::ImplBlock { target_type, methods, .. }) = program.statement.get(&StmtRef(i as u32)) else {
             continue;
         };
         for m in &methods {
@@ -2380,9 +2440,14 @@ fn collect_consuming_methods(program: &File, interner: &DefaultStringInterner) -
                 .parameter
                 .first()
                 .is_some_and(|(n, _)| interner.resolve(*n) == Some("self"));
-            let e = verdict.entry(m.name).or_insert(true);
+            let e = by_type.entry((target_type, m.name)).or_insert(true);
+            *e = *e && by_value;
+            let e = by_name.entry(m.name).or_insert(true);
             *e = *e && by_value;
         }
     }
-    verdict.into_iter().filter(|(_, v)| *v).map(|(k, _)| k).collect()
+    ConsumingMethods {
+        by_type,
+        everywhere: by_name.into_iter().filter(|(_, v)| *v).map(|(k, _)| k).collect(),
+    }
 }

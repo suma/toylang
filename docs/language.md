@@ -548,9 +548,10 @@ Receiver kinds are summarised in the following table:
 A `self: Self` method **consumes** a receiver that owns something: after
 `val s = w.finish()` with `fn finish(self: Self) -> String { self.out }`,
 `w` has been moved (reading it is `[E0014]`) and `s` owns the string.
-This holds when every impl of that method name takes `self: Self`; a
-name some impl declares `&self` keeps the receiver a read, since the
-call site cannot tell which one it reaches.
+Which method a call reaches is decided by the receiver's declared type
+(another type's `finish(&mut self)` does not matter); when the type is
+not known where the call is checked, the receiver is consumed only if
+every impl of that name takes `self: Self`.
 
 ### Concrete-args impl dispatch
 

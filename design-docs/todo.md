@@ -20,8 +20,9 @@
 - **`self: Self` の method がレシーバを消費する** (DOUBLE-DROP-LANE-DIVERGENCE の
   一部) — 所有権検査はレシーバを常に「読む」と扱っていたので、`val part =
   w.finish()` (`fn finish(self: Self) -> String { self.out }`) の後も `w` が
-  バッファを持ち、全レーンで二重 free していた (`json_config.t`)。同名の method が
-  すべて `self: Self` ならレシーバを手渡しにする。
+  バッファを持ち、全レーンで二重 free していた (`json_config.t`、poc/logsearch の
+  archive)。レシーバの型の method が `self: Self` ならレシーバを手渡しにする
+  (型が分からないときは、同名の method がすべて `self: Self` のとき)。
 - **`val v = f()?` の payload を 1 回だけ drop する** (DOUBLE-DROP-LANE-DIVERGENCE の
   一部) — desugar `{ val t = f()  match t { Ok(p) => p, .. } }` で payload が `v` に
   移っても `t` の drop flag が立ったままで、lowering 系が二重 free していた。
@@ -3055,8 +3056,9 @@
   `compiler -- <file> --all-backends --heap-check=report`、tree-walker は
   consistency harness の `tree_walker_heap_check_report`。`String` の二重 drop は
   `json_config.t` の分 (`self: Self` の `finish` がレシーバを消費しなかった) を
-  同日に直した。poc/logsearch の archive に 1 回残る (release ビルドなので
-  関数名が出ない)。潰すのが HEAP-CHECK H5。
+  同日に直し、poc/logsearch の archive の分 (`mount::write_meta` の同じ形 —
+  別の型に `finish(&mut self)` があったので名前だけの判定では拾えなかった) も
+  レシーバの型で判定して直した。残りは `crypto_sha256.t` だけ。
 - **TYPE-NAME-COLLISION の残り: 型の名前空間** ★ — 同じ root の 2 モジュールが
   同じ型名を宣言すると、黙って上書きせず `type \`Item\` is declared by more
   than one module: src/a.t, src/b.t` のエラーになった (2026-09-26)。残りは

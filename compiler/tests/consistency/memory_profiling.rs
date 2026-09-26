@@ -814,3 +814,33 @@ fn sorting_strings_frees_each_once_on_the_tree_walker() {
     assert_eq!(interpreter_value(src), 5);
     assert_consistent(src, "sort_strings_once");
 }
+
+/// DOUBLE-DROP-LANE-DIVERGENCE: the tree-walker's column window
+/// (`vs.mass` over a `soa Vec`) holds its source in place of an
+/// address. Dropping the window dropped the `SoaVec` it viewed, which
+/// then dropped itself again (`soa_column.t`, found by HEAP-CHECK).
+#[test]
+fn a_column_window_owns_nothing_on_the_tree_walker() {
+    let src = r#"
+        struct P { x: u64, mass: u64 }
+        fn total(ms: Column<u64>) -> u64 {
+            var t: u64 = 0u64
+            var i: u64 = 0u64
+            while i < ms.len() {
+                t = t + ms.get(i)
+                i = i + 1u64
+            }
+            t
+        }
+        fn main() -> u64 {
+            var vs: soa Vec<P> = SoaVec::new()
+            vs.push(P { x: 1u64, mass: 3u64 })
+            vs.push(P { x: 2u64, mass: 5u64 })
+            val ms = vs.mass
+            total(ms)
+        }
+    "#;
+    assert_eq!(tree_walker_heap_check_report(src), "heap check: 0 double frees (0 distinct)\n");
+    assert_eq!(interpreter_value(src), 8);
+    assert_consistent(src, "column_window_owns_nothing");
+}

@@ -1202,6 +1202,9 @@ impl<'a> EvaluationContext<'a> {
             }
             let obj = v.borrow();
             match &*obj {
+                // A column window views its source; it owns nothing.
+                Object::Struct { fields, .. }
+                    if column::column_source(self.string_interner, fields).is_some() => {}
                 Object::Struct { type_name, .. }
                     if self.drop_trait_structs.contains(type_name) =>
                 {
@@ -1266,6 +1269,12 @@ impl<'a> EvaluationContext<'a> {
             }
             let obj = v.borrow();
             match &*obj {
+                // DOUBLE-DROP-LANE-DIVERGENCE: a column window (`vs.mass`)
+                // holds its source's `Rc` in place of an address, but it
+                // is a view -- dropping it freed the `SoaVec` the window
+                // looked at, which then freed itself again (HEAP-CHECK).
+                Object::Struct { fields, .. }
+                    if column::column_source(self.string_interner, fields).is_some() => {}
                 // Containers: the user drop frees the storage, so
                 // the contents must be glued first.
                 Object::Struct { type_name, fields, .. }

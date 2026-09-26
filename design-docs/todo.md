@@ -17,6 +17,9 @@
   終了時に報告する (文言は 2 ヒープでバイト一致、`--all-backends` で突き合わせ)。
   `HeapFree` が site を持つようになった。stdin 入力の入口名も compiled レーンで
   `<stdin>` に揃えた (`CompilerOptions::display_name`)。結果は HEAP_CHECK.md §7。
+- **tree-walker の列の窓が元を drop しない** (DOUBLE-DROP-LANE-DIVERGENCE の一部) —
+  `vs.mass` (`soa Vec` の列) は tree-walker では元の `Rc` を抱えた `Column` で、
+  窓を捨てると元の `SoaVec` まで drop していた。窓は何も所有しない扱いにした。
 - **tree-walker が `Ptr::get` から束縛した要素を drop しない** (同上) —
   `Vec::sort` の `val key: T = p.get(i)` は要素の別名なのに、tree-walker は生の
   `__builtin_ptr_read` だけを別名扱いしていたので、`Vec<String>::sort` が触った
@@ -3032,8 +3035,9 @@
   (IR VM / JIT / AOT) の二重 free が食い違った。`Box` の連結リスト / 二分木
   (lowering 系だけ、借用 `&List` を match した腕が payload を drop していた) は
   同日に解消、`std_ord_sort.t` (tree-walker だけ、`Ptr::get` から束縛した要素を
+  drop していた) と `soa_column.t` (tree-walker だけ、列の窓が元の `SoaVec` を
   drop していた) も同日に解消。残り: `try_compound.t` は
-  JIT / AOT だけ、`soa_column.t` は tree-walker だけ、
+  JIT / AOT だけ、
   `crypto_sha256.t` は tree-walker と IR VM だけ。free が冪等なので出力は
   変わらず、`--profile=mem` も「要求」で数えるので見えていなかった。表と
   再現手順は [`HEAP_CHECK.md`](HEAP_CHECK.md) §7。lowering 系は

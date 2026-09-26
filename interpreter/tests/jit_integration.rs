@@ -1210,3 +1210,26 @@ fn integer_division_by_zero_traps_under_the_jit() {
     );
     assert_ne!(output.status.code(), Some(0));
 }
+
+#[test]
+fn jit_range_name_and_at_patterns_match_interpreter() {
+    // JIT-INTERP-COVERAGE (b): range, top-level name and `n @ pat`
+    // patterns over a scalar scrutinee.
+    assert_match("example/jit_match_range.t");
+    let r = run("example/jit_match_range.t", false, false);
+    assert_eq!(r.stdout.trim(), "1128", "stderr: {}", r.stderr);
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn jit_range_name_and_at_patterns_compile_natively() {
+    // They used to send the whole function back to the interpreter.
+    let r = run("example/jit_match_range.t", true, true);
+    assert!(
+        r.stderr.contains("JIT compiled:")
+            && r.stderr.contains("bucket")
+            && r.stderr.contains("digits"),
+        "expected both matching functions to compile; stderr: {}",
+        r.stderr
+    );
+}

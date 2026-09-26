@@ -473,8 +473,9 @@ impl<'a> Checker<'a> {
                     Some(Expr::Identifier(s)) => self.compound_locals.enums.get(&s).copied(),
                     _ => None,
                 };
+                let scrut_plain = self.scrutinee_is_plain_scalar(&scrutinee, scrut_ty);
                 for arm in &arms {
-                    let payload_binding = match self.check_match_pattern(&arm.pattern, scrut_ty, scrut_enum_info) {
+                    let payload_binding = match self.check_match_pattern(&arm.pattern, scrut_ty, scrut_enum_info, scrut_plain) {
                         Some(b) => b,
                         None => return false,
                     };
@@ -1141,6 +1142,7 @@ impl<'a> Checker<'a> {
         pat: &Pattern,
         scrut_ty: ScalarTy,
         scrut_enum: Option<EnumLocalInfo>,
+        scrut_plain: bool,
     ) -> Option<Option<(DefaultSymbol, ScalarTy)>> {
         match pat {
             Pattern::Wildcard => Some(None),
@@ -1240,19 +1242,75 @@ impl<'a> Checker<'a> {
                     Some(None)
                 }
             }
-            // PATTERN-STRUCT / PATTERN-EXTEND: struct, tuple and `n @ pat`
-            // patterns fall back to the interpreter.
+            // JIT-INTERP-COVERAGE (b): a half-open range of two integer
+            // literals of the scrutinee's own type. It binds nothing, so
+            // it is sound on any integer scrutinee.
+            Pattern::Range(low, high) => {
+                let int_lit = |e: &ExprRef| match self.program.expression.get(e) {
+                    Some(Expr::Int64(_)) => Some(ScalarTy::I64),
+                    Some(Expr::UInt64(_)) => Some(ScalarTy::U64),
+                    _ => None,
+                };
+                match (int_lit(low), int_lit(high)) {
+                    (Some(a), Some(b)) if a == scrut_ty && b == scrut_ty => Some(None),
+                    _ => {
+                        self.reject(|| {
+                            "JIT match: range pattern needs i64 / u64 literal ends of the \
+                             scrutinee's type"
+                                .to_string()
+                        });
+                        None
+                    }
+                }
+            }
+            // A top-level name, and `n @ pat`, bind the scrutinee itself.
+            // The JIT represents an enum by its u64 tag, so this is only
+            // taken when the scrutinee is known to be a plain scalar;
+            // binding a name to a tag would hand the arm the wrong value.
+            Pattern::Name(sym) if scrut_plain => Some(Some((*sym, scrut_ty))),
+            Pattern::Binding(sym, inner) if scrut_plain => {
+                match self.check_match_pattern(inner, scrut_ty, scrut_enum, scrut_plain)? {
+                    None => Some(Some((*sym, scrut_ty))),
+                    Some(_) => {
+                        self.reject(|| {
+                            "JIT match: `@` over a pattern that binds again".to_string()
+                        });
+                        None
+                    }
+                }
+            }
+            // PATTERN-STRUCT: struct and tuple patterns fall back to the
+            // interpreter.
             Pattern::Struct(_, _, _)
             | Pattern::Tuple(_)
             | Pattern::Name(_)
-            | Pattern::Binding(_, _)
-            | Pattern::Range(_, _) => {
+            | Pattern::Binding(_, _) => {
                 self.reject(|| {
-                    "JIT match: tuple / top-level name / `@` / range patterns not yet supported"
+                    "JIT match: struct / tuple patterns, and a name bound to a \
+                     non-scalar scrutinee, are not yet supported"
                         .to_string()
                 });
                 None
             }
+        }
+    }
+
+    /// Whether a `match` scrutinee is certainly a scalar value rather
+    /// than an enum's tag (which the JIT also carries as a `u64`).
+    /// Anything but `u64` cannot be a tag; a `u64` is plain when it is
+    /// a non-enum local, a literal, or computed by an operator / cast.
+    fn scrutinee_is_plain_scalar(&self, scrutinee: &ExprRef, scrut_ty: ScalarTy) -> bool {
+        if scrut_ty != ScalarTy::U64 {
+            return true;
+        }
+        match self.program.expression.get(scrutinee) {
+            Some(Expr::Identifier(s)) => {
+                !self.compound_locals.enums.contains_key(&s) && self.locals.contains_key(&s)
+            }
+            Some(
+                Expr::UInt64(_) | Expr::Binary(..) | Expr::Unary(..) | Expr::Cast(..),
+            ) => true,
+            _ => false,
         }
     }
 
@@ -1721,9 +1779,11 @@ impl<'a> Checker<'a> {
                 };
                 // All arms unify to a single type. Walk each arm's
                 // pattern (rejecting unsupported shapes) and body.
+                let scrut_plain = self.scrutinee_is_plain_scalar(&scrutinee, scrut_ty);
                 let mut result_ty: Option<ScalarTy> = None;
                 for arm in &arms {
-                    let payload_binding = self.check_match_pattern(&arm.pattern, scrut_ty, scrut_enum_info)?;
+                    let payload_binding =
+                        self.check_match_pattern(&arm.pattern, scrut_ty, scrut_enum_info, scrut_plain)?;
                     if arm.guard.is_some() {
                         self.reject(|| {
                             "JIT match arm guards are not yet supported".to_string()

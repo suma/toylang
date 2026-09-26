@@ -387,6 +387,7 @@ fn lower_into_enum_return(
         .get(expr_ref)
         .ok_or_else(|| "missing enum-producing expression".to_string())?;
     if let Expr::Match(scrutinee, arms) = expr {
+        let scrut_ty = state.expr_type(&scrutinee)?;
         let scrut_v = state
             .gen_expr(&scrutinee)?
             .ok_or_else(|| "match scrutinee produced no value".to_string())?;
@@ -399,16 +400,6 @@ fn lower_into_enum_return(
             let next_blk = state.builder.create_block();
             let mut payload_binding: Option<(DefaultSymbol, Option<Variable>, Option<ScalarTy>)> = None;
             match &arm.pattern {
-                Pattern::Wildcard => {
-                    state.jump(arm_blk);
-                }
-                Pattern::Literal(lit_ref) => {
-                    let lit_v = state
-                        .gen_expr(lit_ref)?
-                        .ok_or_else(|| "match literal produced no value".to_string())?;
-                    let cmp = state.builder.ins().icmp(IntCC::Equal, scrut_v, lit_v);
-                    state.brif(cmp, arm_blk, next_blk);
-                }
                 Pattern::EnumVariant(enum_sym, variant_sym, sub_pats) => {
                     let layout = super::eligibility::enum_layout_for_codegen(*enum_sym)
                         .ok_or_else(|| "match variant: enum layout missing".to_string())?;
@@ -428,7 +419,10 @@ fn lower_into_enum_return(
                         }
                     }
                 }
-                _ => return Err("unsupported match pattern in JIT codegen".to_string()),
+                other => {
+                    payload_binding =
+                        state.gen_scalar_arm_test(other, scrut_v, scrut_ty, arm_blk, next_blk)?;
+                }
             }
             state.switch_to(arm_blk);
             lower_into_enum_return(state, &arm.body, enum_name, payload_ty)?;
@@ -769,6 +763,98 @@ impl<'a, 'b> State<'a, 'b> {
     fn brif(&mut self, cond: Value, then_b: Block, else_b: Block) {
         self.builder.ins().brif(cond, then_b, &[], else_b, &[]);
         self.terminated = true;
+    }
+
+    /// JIT-INTERP-COVERAGE (b): the test of one arm pattern that
+    /// eligibility accepted against a scalar scrutinee -- `_`, a
+    /// literal, a half-open range, a top-level name, `n @ pat` --
+    /// branching to `arm_blk` on a match and to `next_blk` otherwise.
+    ///
+    /// A name is bound to a fresh variable holding the scrutinee before
+    /// the test (a failed test leaves for `next_blk`, which never reads
+    /// it). The returned `(name, prior var, prior type)` is what the
+    /// caller restores once the arm is lowered.
+    #[allow(clippy::type_complexity)]
+    fn gen_scalar_arm_test(
+        &mut self,
+        pattern: &Pattern,
+        scrut_v: Value,
+        scrut_ty: ScalarTy,
+        arm_blk: Block,
+        next_blk: Block,
+    ) -> Result<Option<(DefaultSymbol, Option<Variable>, Option<ScalarTy>)>, String> {
+        match pattern {
+            Pattern::Wildcard => {
+                self.jump(arm_blk);
+                Ok(None)
+            }
+            Pattern::Literal(lit_ref) => {
+                let lit_v = self
+                    .gen_expr(lit_ref)?
+                    .ok_or_else(|| "match literal produced no value".to_string())?;
+                let cmp = self.builder.ins().icmp(IntCC::Equal, scrut_v, lit_v);
+                self.brif(cmp, arm_blk, next_blk);
+                Ok(None)
+            }
+            Pattern::Range(low, high) => {
+                let lo = self
+                    .gen_expr(low)?
+                    .ok_or_else(|| "range pattern bound produced no value".to_string())?;
+                let hi = self
+                    .gen_expr(high)?
+                    .ok_or_else(|| "range pattern bound produced no value".to_string())?;
+                let (ge, lt) = if scrut_ty == ScalarTy::I64 {
+                    (IntCC::SignedGreaterThanOrEqual, IntCC::SignedLessThan)
+                } else {
+                    (IntCC::UnsignedGreaterThanOrEqual, IntCC::UnsignedLessThan)
+                };
+                let above = self.builder.ins().icmp(ge, scrut_v, lo);
+                let below = self.builder.ins().icmp(lt, scrut_v, hi);
+                let inside = self.builder.ins().band(above, below);
+                self.brif(inside, arm_blk, next_blk);
+                Ok(None)
+            }
+            Pattern::Name(sym) => {
+                let bound = self.bind_scrutinee(*sym, scrut_v, scrut_ty)?;
+                self.jump(arm_blk);
+                Ok(Some(bound))
+            }
+            Pattern::Binding(sym, inner) => {
+                let bound = self.bind_scrutinee(*sym, scrut_v, scrut_ty)?;
+                // Eligibility refused an inner pattern that binds again.
+                self.gen_scalar_arm_test(inner, scrut_v, scrut_ty, arm_blk, next_blk)?;
+                Ok(Some(bound))
+            }
+            _ => Err("unsupported match pattern in JIT codegen".to_string()),
+        }
+    }
+
+    /// Name the scrutinee for an arm: a fresh variable holding it.
+    fn bind_scrutinee(
+        &mut self,
+        sym: DefaultSymbol,
+        scrut_v: Value,
+        scrut_ty: ScalarTy,
+    ) -> Result<(DefaultSymbol, Option<Variable>, Option<ScalarTy>), String> {
+        let ty = ir_type(scrut_ty).ok_or_else(|| "cannot bind a unit scrutinee".to_string())?;
+        let var = self.builder.declare_var(ty);
+        self.builder.def_var(var, scrut_v);
+        let prior_var = self.local_vars.insert(sym, var);
+        let prior_ty = self.local_types.insert(sym, scrut_ty);
+        Ok((sym, prior_var, prior_ty))
+    }
+
+    /// Undo [`Self::bind_scrutinee`] after the arm.
+    fn unbind_scrutinee(&mut self, bound: (DefaultSymbol, Option<Variable>, Option<ScalarTy>)) {
+        let (name, prior_var, prior_ty) = bound;
+        match prior_var {
+            Some(v) => { self.local_vars.insert(name, v); }
+            None => { self.local_vars.remove(&name); }
+        }
+        match prior_ty {
+            Some(t) => { self.local_types.insert(name, t); }
+            None => { self.local_types.remove(&name); }
+        }
     }
 
     /// Generate code for an expression. Returns `Some(value)` for expressions
@@ -2016,7 +2102,20 @@ impl<'a, 'b> State<'a, 'b> {
                     } else {
                         None
                     };
+                    // A name the first arm binds to the scrutinee itself.
+                    let named = match &first_arm.pattern {
+                        Pattern::Name(sym) | Pattern::Binding(sym, _) => {
+                            Some((*sym, self.local_types.insert(*sym, scrut_ty)))
+                        }
+                        _ => None,
+                    };
                     let ty = self.expr_type(&first_arm.body)?;
+                    if let Some((name, prior_ty)) = named {
+                        match prior_ty {
+                            Some(t) => { self.local_types.insert(name, t); }
+                            None => { self.local_types.remove(&name); }
+                        }
+                    }
                     if let Some((name, prior_ty, prior_var)) = prior {
                         match prior_ty {
                             Some(t) => { self.local_types.insert(name, t); }
@@ -2041,19 +2140,8 @@ impl<'a, 'b> State<'a, 'b> {
                     // is unconditional jump; literal / variant emit
                     // an `icmp eq scrut, pattern_value` then brif.
                     let mut payload_binding: Option<(DefaultSymbol, Variable, ScalarTy, Option<Variable>)> = None;
+                    let mut scalar_binding = None;
                     match &arm.pattern {
-                        Pattern::Wildcard => {
-                            // Drop the next_blk (unreachable) by
-                            // jumping straight to arm_blk.
-                            self.jump(arm_blk);
-                        }
-                        Pattern::Literal(lit_ref) => {
-                            let lit_v = self
-                                .gen_expr(lit_ref)?
-                                .ok_or_else(|| "match literal produced no value".to_string())?;
-                            let cmp = self.builder.ins().icmp(IntCC::Equal, scrut_v, lit_v);
-                            self.brif(cmp, arm_blk, next_blk);
-                        }
                         Pattern::EnumVariant(enum_sym, variant_sym, sub_pats) => {
                             let layout = super::eligibility::enum_layout_for_codegen(*enum_sym)
                                 .ok_or_else(|| "match variant: enum layout missing in JIT".to_string())?;
@@ -2090,8 +2178,10 @@ impl<'a, 'b> State<'a, 'b> {
                                 }
                             }
                         }
-                        _ => {
-                            return Err("unsupported match pattern in JIT codegen".to_string());
+                        other => {
+                            scalar_binding = self.gen_scalar_arm_test(
+                                other, scrut_v, scrut_ty, arm_blk, next_blk,
+                            )?;
                         }
                     }
 
@@ -2113,6 +2203,9 @@ impl<'a, 'b> State<'a, 'b> {
                             Some(v) => { self.local_vars.insert(name, v); }
                             None => { self.local_vars.remove(&name); }
                         }
+                    }
+                    if let Some(bound) = scalar_binding {
+                        self.unbind_scrutinee(bound);
                     }
 
                     // Continue building in `next_blk` for the

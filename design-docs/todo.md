@@ -12,6 +12,10 @@
 
 ### 2026-09-26
 
+- **JIT-INTERP-COVERAGE (b) の一部 — interpreter JIT が範囲 / 名前 / `@`
+  パターンをコンパイルする** — スカラーの scrutinee に限る (JIT は enum を
+  u64 の tag で持つので、enum に名前を当てる形は従来どおり fallback)。
+  例: `interpreter/example/jit_match_range.t`。
 - **SIMD-F32 の残りは解消済みだった** — format spec (`toy_format_f32`)、
   f32 の libm 群 (`math::sqrt_f32` 等)、`math::min_f32` / `max_f32` は
   STDLIB-NUMERIC N5-N6 (`5b7fdde5`) で入っていた。組み込みの `min` / `max`
@@ -2538,9 +2542,9 @@
 - **JIT-INTERP-COVERAGE (residual)** ★ — interpreter 側 JIT が silent
   fallback する残り: (a) impl block ではなく **method 固有の generic**
   (`fn map<U>(..)`) と **phantom 型パラメータ** (どのフィールドも触れない
-  `T` は literal から復元できない、#159 の残)、(b) **範囲 / `@` / struct /
-  tuple パターン** (`check_match_pattern` が literal / wildcard /
-  enum variant しか受けない)、(c) **enum の payload 形** — 単一・一様
+  `T` は literal から復元できない、#159 の残)、(b) **struct / tuple
+  パターン**と、enum の scrutinee に名前 / `@` を当てる形 (範囲・
+  トップレベルの名前・`@` はスカラーの scrutinee なら 2026-09-26 に対応)、(c) **enum の payload 形** — 単一・一様
   スカラーのみなので `Option<Option<T>>` や struct / tuple payload は
   対象外 (compiled 側の同名の制限は JIT-enum-1 で解消済み。こちらは
   `EnumLayout` が別実装)、(d) **enum 型の struct field** (`StructLayout`

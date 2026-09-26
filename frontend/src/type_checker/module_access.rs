@@ -236,34 +236,32 @@ impl<'a> TypeCheckerVisitor<'a> {
     // Phase 3: Access Control and Visibility Enforcement
     // =========================================================================
 
-    /// Check if a function can be accessed based on visibility and module context
+    /// Check if a function can be accessed based on visibility and module context.
+    ///
+    /// BARE-NAME-COLLISION (1): a function without `pub` in a module is
+    /// that module's own -- callable from its body, not from another
+    /// module or the entry file, qualified or not. The entry file's own
+    /// functions carry no module path and stay callable, as before.
     pub(super) fn check_function_access(&self, function: &Function) -> Result<(), TypeCheckError> {
-        // If function is public, it's accessible from anywhere
         if function.visibility == Visibility::Public {
             return Ok(());
         }
-
-        // If function is private, check if we're in the same module
-        if function.visibility == Visibility::Private {
-            // For now, assume same-module access is allowed
-            if self.is_same_module_access() {
-                return Ok(());
-            } else {
-                let fn_name = self.resolve_symbol_name(function.name);
-                return Err(TypeCheckError::access_denied(
-                    &format!("Private function '{}' cannot be accessed from different module", fn_name)
-                ));
-            }
+        let Some(home) = function.module_path.as_deref() else {
+            return Ok(());
+        };
+        if self.context.current_module_path.as_deref() == Some(home) {
+            return Ok(());
         }
-
-        Ok(())
-    }
-
-    /// Check if current access is within the same module
-    fn is_same_module_access(&self) -> bool {
-        // For Phase 3 initial implementation, assume same module access
-        // TODO: Implement proper module context tracking
-        true
+        let fn_name = self.resolve_symbol_name(function.name);
+        let module = home
+            .iter()
+            .map(|s| self.resolve_symbol_name(*s))
+            .collect::<Vec<_>>()
+            .join("::");
+        Err(TypeCheckError::access_denied(&format!(
+            "function '{fn_name}' is private to module `{module}`: mark it `pub` there to call it \
+             from another module"
+        )))
     }
 }
 

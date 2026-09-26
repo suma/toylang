@@ -2871,6 +2871,13 @@ pub fn add(a: u64, b: u64) -> u64 { ... }   # exported from a module
 fn helper() -> u64 { ... }                  # private (default)
 ```
 
+A module's function without `pub` is its own: callable from that
+module's body, and refused from anywhere else, qualified or not
+(`[E0009] function 'helper' is private to module ...`). So two modules
+may each have a private `helper` and each calls its own. The entry
+file's functions are not in a module and are not affected. Struct
+fields' `pub` is still recorded only.
+
 ### `unsafe fn` — raw memory access
 
 A function whose own body reads or writes raw memory must say so in

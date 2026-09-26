@@ -12,6 +12,12 @@
 
 ### 2026-09-26
 
+- **BARE-NAME-COLLISION の残り — `pub` の実効化と警告の文言** — 非 `pub` の
+  module 関数は自分の module からしか呼べない (`check_function_access` が
+  関数の `module_path` と検査中の本体の module を比べる)。stdlib では
+  `net.t` の `extern fn` 2 本を `pub` にしただけ。`toy` の衝突警告は `pub`
+  同士だけを数え、文言を「そのファイルからの呼び出しは自分のもの、それ以外は
+  最後のもの」に直した。
 - **E0014-WRONG-FILE — モジュールの中の所有権エラーがそのファイルと行を
   指す** — 識別子の式に位置が無いことが多く、move_check の診断は位置なし
   (`span: null`) で入口ファイルに落ちていた。囲む文 / 腕の位置を使う。
@@ -2855,7 +2861,8 @@
   2026-09-05 に landing** (`import a.b as h`)。残り (可視性の規則 P1 /
   遅延読み込み P2 / 型の名前空間化 P3) は未着手。BARE-NAME-COLLISION /
   TYPE-NAME-COLLISION を「規則」で消し (関数の衝突は呼び出し元優先で
-  実害が消えたが、型の衝突は残る)、`pub` を実効化し、hello world の **145ms → 5.7ms**
+  実害が消え、`pub` も 2026-09-26 に実効化した。型の衝突は同じ root なら
+  エラーになったが、名前空間は無い)、hello world の **145ms → 5.7ms**
   (auto-load が 46 モジュール全部を読んでいる分) を取り戻す。
   計測: stdlib のモジュール間依存は 119 辺で**非循環**、prelude を引くと
   足す import は **30 行 / 21 ファイル**、example + poc 200 ファイル側は
@@ -2993,22 +3000,6 @@
   決定的である必要がある — `compiler/tests/reproducible_build.rs` が pin)。
 
 ### 既知の不具合
-
-- **BARE-NAME-COLLISION の残り: `pub` が実効化されていない** ★★ —
-  auto-load される全モジュールが bare 名の 1 つの名前空間を共有する件は、
-  **呼び出し元 module を先に引く**規則 (STDLIB-FN-SHADOWED-BY-USER-FN) で
-  実害の形が解消した — ユーザの private `is_digit` は `std::json::is_digit`
-  に勝ち、同じ root の `src/a.t` / `src/b.t` が各自の private `helper` を
-  呼ぶ形も 3 レーンで各自のものを呼ぶ (2026-09-26 の棚卸しで確認)。
-  残りは 2 つ:
-  (1) **`pub` を実効化する** — 非 `pub` の module 関数が修飾付きで外から
-  呼べてしまう (`json::is_digit(55u64)` が通る。`check_function_access` の
-  `is_same_module_access` が `true` 固定)。stdlib の非 pub 40 本を他 module
-  から呼んでいる箇所は **0 件**なので、この変更単体では stdlib は壊れない。
-  (2) **衝突警告の文言が挙動と食い違う** — `toy` は「a bare call takes the
-  last one」と警告するが、実際は各 module が自分のものを呼ぶ。
-  シンボル名のマングリングは解決にならない (2026-09-05 検討、定義側の
-  一意化は既に済んでいる)。
 
 - **TYPE-NAME-COLLISION の残り: 型の名前空間** ★ — 同じ root の 2 モジュールが
   同じ型名を宣言すると、黙って上書きせず `type \`Item\` is declared by more

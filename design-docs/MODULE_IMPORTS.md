@@ -169,7 +169,12 @@ private な `fn helper` を持っていても、互いの候補集合に入ら�
 前段の調査で挙げた 2 つの規則 (「非 pub は自分のモジュールだけ」
 「呼び出し元モジュールを rank より優先」) は、この規則の系になる。
 
-### D4. `pub` を実効化する
+### D4. `pub` を実効化する ✅ (関数のみ、2026-09-26)
+
+(landing 済み: 非 `pub` の module 関数は自分の module からしか呼べない。
+実際には stdlib の `poll.t` が `net.t` の非 pub な `extern fn` を 2 本
+呼んでいたので、その 2 本を `pub` にした。import との結び付き
+(「import で届くのは pub だけ」) は D5 と一緒。)
 
 import で届くのは `pub` だけ。`check_function_access` の
 `is_same_module_access()` を本物にする。**stdlib の非 pub 40 本を他

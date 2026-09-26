@@ -2077,3 +2077,25 @@ fn a_move_error_inside_a_module_points_at_that_module() {
     assert!(stderr.contains("\"file\": \"src/probe.t\""), "stderr: {stderr}");
     assert!(stderr.contains("\"line\": 7"), "stderr: {stderr}");
 }
+
+#[test]
+fn a_modules_private_function_is_its_own() {
+    // BARE-NAME-COLLISION (1): a function without `pub` is callable from
+    // its own module only. Two private `helper`s therefore never meet --
+    // each module calls its own, and no collision is reported -- while a
+    // call to one from outside is refused rather than resolved.
+    let pkg = scratch("private_fn");
+    write(&pkg, "src/a.t", "fn helper() -> u64 { 1u64 }\npub fn fa() -> u64 { helper() }\n");
+    write(&pkg, "src/b.t", "fn helper() -> u64 { 2u64 }\npub fn fb() -> u64 { helper() }\n");
+    write(&pkg, "main.t", "fn main() -> u64 {\n    a::fa() * 10u64 + b::fb()\n}\n");
+    let out = run(&pkg, &["run", pkg.0.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(12), "stderr: {stderr}");
+    assert!(!stderr.contains("warning: `helper`"), "stderr: {stderr}");
+
+    write(&pkg, "main.t", "fn main() -> u64 {\n    a::helper()\n}\n");
+    let out = run(&pkg, &["check", pkg.0.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "stderr: {stderr}");
+    assert!(stderr.contains("function 'helper' is private to module"), "stderr: {stderr}");
+}

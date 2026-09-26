@@ -61,6 +61,8 @@ struct Outcome {
     /// Registered allocator layouts (MEMORY_PROFILING M3 residual), in
     /// registration order.
     layouts: Vec<interpreter::heap::AllocatorLayoutReport>,
+    /// HEAP-CHECK H0: the double-free report, when one was asked for.
+    heap_check: Option<String>,
     /// `None` when `main` returned something that is not a number, so
     /// there is no exit code to compare. Several examples return `bool`
     /// or `str`.
@@ -99,12 +101,27 @@ pub fn run(
     profile: ProfileMode,
     json: bool,
 ) -> i32 {
+    run_with(options, source, display_name, profile, false, json)
+}
+
+/// [`run`], optionally with each backend counting double frees
+/// (HEAP-CHECK H0, `--heap-check=report`). The reports are compared
+/// like the memory profile: a backend that frees a different block
+/// twice disagrees.
+pub fn run_with(
+    options: &CompilerOptions,
+    source: &str,
+    display_name: &str,
+    profile: ProfileMode,
+    heap_check: bool,
+    json: bool,
+) -> i32 {
     let interpreter = BackendResult {
         name: "interpreter",
-        outcome: run_interpreter(options, source, display_name, profile),
+        outcome: run_interpreter(options, source, display_name, profile, heap_check),
     };
-    let jit = BackendResult { name: "jit", outcome: run_jit(options, source, profile) };
-    let aot = BackendResult { name: "aot", outcome: run_aot(options, profile) };
+    let jit = BackendResult { name: "jit", outcome: run_jit(options, source, profile, heap_check) };
+    let aot = BackendResult { name: "aot", outcome: run_aot(options, profile, heap_check) };
 
     // The interpreter is the reference: it is the most complete
     // implementation and the one whose diagnostics are worth reading
@@ -202,6 +219,21 @@ pub fn run(
         }
     }
 
+    if heap_check {
+        for backend in [&jit, &aot] {
+            let Ok(other) = &backend.outcome else { continue };
+            if other.heap_check != reference.heap_check {
+                problems.push(format!(
+                    "{} reports different double frees:\n  interpreter:\n{}  {}:\n{}",
+                    backend.name,
+                    indent(reference.heap_check.as_deref().unwrap_or("(no report)\n")),
+                    backend.name,
+                    indent(other.heap_check.as_deref().unwrap_or("(no report)\n")),
+                ));
+            }
+        }
+    }
+
     if json {
         let report = serde_json::json!({
             "agree": problems.is_empty(),
@@ -213,6 +245,7 @@ pub fn run(
                 backend_json(&aot, Some(reference)),
             ],
             "problems": problems,
+            "heap_check": reference.heap_check,
         });
         println!("{}", pretty(&report));
         // The allocation report keeps its own flag and its own stream.
@@ -224,6 +257,9 @@ pub fn run(
 
     if problems.is_empty() {
         report_memory(reference, profile);
+        if let Some(report) = &reference.heap_check {
+            eprint!("{report}");
+        }
         eprintln!(
             "all 3 backends agree (exit={})",
             reference.exit.map(|c| c.to_string()).unwrap_or_else(|| "n/a".to_string())
@@ -287,6 +323,7 @@ fn run_interpreter(
     source: &str,
     display_name: &str,
     profile: ProfileMode,
+    heap_check: bool,
 ) -> Result<Outcome, String> {
     let core = crate::resolve_core_modules_dirs(options.core_modules_dirs.clone());
     let mut run_options = interpreter::RunOptions::default();
@@ -294,14 +331,18 @@ fn run_interpreter(
     if profile.enabled() {
         interpreter::heap::reset_profile();
     }
+    if heap_check {
+        interpreter::heap::heap_check_start();
+    }
     let (result, stdout) = interpreter::output::with_capture(|| {
         interpreter::run_source(source, display_name, &run_options)
     });
     let memory = profile.enabled().then(interpreter::heap::profile);
     let sites = if profile.enabled() { interpreter::heap::profile_sites() } else { Vec::new() };
     let layouts = if profile.enabled() { interpreter::heap::allocator_layouts() } else { Vec::new() };
+    let heap_check = heap_check.then(interpreter::heap::heap_check_report);
     result
-        .map(|outcome| Outcome { exit: outcome.exit_code, stdout, memory, sites, layouts })
+        .map(|outcome| Outcome { exit: outcome.exit_code, stdout, memory, sites, layouts, heap_check })
         // `run_source` has already rendered the diagnostic to stderr;
         // repeating it here would print the same text twice.
         .map_err(|_| "see the diagnostics above".to_string())
@@ -311,19 +352,26 @@ fn run_jit(
     options: &CompilerOptions,
     source: &str,
     profile: ProfileMode,
+    heap_check: bool,
 ) -> Result<Outcome, String> {
     let program = crate::compile_to_jit_main_with_options(source, options)?;
     if profile.enabled() {
         crate::jit::reset_memory_profile();
     }
+    // After the profiler reset, which clears the runtime's whole
+    // thread state.
+    if heap_check {
+        toylang_rt::heap_check_start();
+    }
     let (exit, stdout) = program.run_capturing_stdout();
     let memory = profile.enabled().then(crate::jit::memory_profile);
     let sites = if profile.enabled() { crate::jit::memory_profile_sites() } else { Vec::new() };
     let layouts = if profile.enabled() { crate::jit::memory_profile_layouts() } else { Vec::new() };
-    Ok(Outcome { exit: Some(exit as i32), stdout, memory, sites, layouts })
+    let heap_check = heap_check.then(toylang_rt::heap_check_report);
+    Ok(Outcome { exit: Some(exit as i32), stdout, memory, sites, layouts, heap_check })
 }
 
-fn run_aot(options: &CompilerOptions, profile: ProfileMode) -> Result<Outcome, String> {
+fn run_aot(options: &CompilerOptions, profile: ProfileMode, heap_check: bool) -> Result<Outcome, String> {
     let exe = temp_path("toy_all_backends");
     let mut aot_options = options.clone();
     aot_options.output = Some(exe.clone());
@@ -342,6 +390,9 @@ fn run_aot(options: &CompilerOptions, profile: ProfileMode) -> Result<Outcome, S
         // by `aot_json_report_matches_the_shared_one`.
         cmd.env("TOY_PROFILE_MEM", "1");
     }
+    if heap_check {
+        cmd.env("TOY_HEAP_CHECK", "report");
+    }
     let output = cmd
         .output()
         .map_err(|e| format!("could not spawn the compiled binary: {e}"));
@@ -351,13 +402,34 @@ fn run_aot(options: &CompilerOptions, profile: ProfileMode) -> Result<Outcome, S
     let memory = if profile.enabled() { parse_memory_report(&stderr) } else { None };
     let sites = if profile.enabled() { parse_leak_report(&stderr) } else { Vec::new() };
     let layouts = if profile.enabled() { parse_layout_report(&stderr) } else { Vec::new() };
+    let heap_check = heap_check.then(|| parse_heap_check_report(&stderr));
     Ok(Outcome {
         exit: output.status.code(),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         memory,
         sites,
         layouts,
+        heap_check,
     })
+}
+
+/// The HEAP-CHECK report a compiled run wrote to stderr: its header
+/// line and the entries under it, verbatim.
+fn parse_heap_check_report(stderr: &str) -> String {
+    let mut out = String::new();
+    let mut inside = false;
+    for line in stderr.lines() {
+        if line.starts_with("heap check: ") {
+            inside = true;
+        } else if inside && !line.starts_with("  x") {
+            break;
+        }
+        if inside {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// Read back the report the compiled runtime wrote to stderr.

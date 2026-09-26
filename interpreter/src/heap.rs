@@ -19,6 +19,11 @@ pub trait Allocator: fmt::Debug {
         self.alloc(size)
     }
     fn free(&self, addr: usize) -> bool;
+    /// Free, naming where the free was written (HEAP-CHECK H0). Defaults
+    /// to dropping the position, as `alloc_at` does.
+    fn free_at(&self, addr: usize, _site: u64) -> bool {
+        self.free(addr)
+    }
     fn realloc(&self, addr: usize, new_size: usize) -> usize;
 }
 
@@ -48,6 +53,10 @@ impl Allocator for GlobalAllocator {
 
     fn free(&self, addr: usize) -> bool {
         self.inner.borrow_mut().free(addr)
+    }
+
+    fn free_at(&self, addr: usize, site: u64) -> bool {
+        self.inner.borrow_mut().free_at(addr, site)
     }
 
     fn realloc(&self, addr: usize, new_size: usize) -> usize {
@@ -505,6 +514,9 @@ pub struct ProfileSnapshot {
     totals: MemoryStats,
     sites: std::collections::BTreeMap<u64, SiteStats>,
     allocators: Vec<AllocatorLayoutReport>,
+    /// HEAP-CHECK H0: an abandoned attempt's double frees belong to no
+    /// run either.
+    heap_check: HeapCheckState,
 }
 
 /// Capture the counters before an execution attempt that might be
@@ -526,6 +538,7 @@ pub fn snapshot_profile() -> ProfileSnapshot {
         totals: PROFILE.with(|p| p.get()),
         sites: PROFILE_SITES.with(|m| m.borrow().clone()),
         allocators: PROFILE_ALLOCATORS.with(|v| v.borrow().clone()),
+        heap_check: HEAP_CHECK.with(|h| h.borrow().clone()),
     }
 }
 
@@ -535,6 +548,122 @@ pub fn restore_profile(snapshot: ProfileSnapshot) {
     PROFILE.with(|p| p.set(snapshot.totals));
     PROFILE_SITES.with(|m| *m.borrow_mut() = snapshot.sites);
     PROFILE_ALLOCATORS.with(|v| *v.borrow_mut() = snapshot.allocators);
+    HEAP_CHECK.with(|h| *h.borrow_mut() = snapshot.heap_check);
+}
+
+// ---------------------------------------------------------------------------
+// HEAP-CHECK H0: an inventory of double frees.
+//
+// The heap never reuses an address and `free` is idempotent, so a
+// second free of a block does nothing -- and drop glue relies on that.
+// Report mode does not change it: it remembers which blocks were freed
+// and counts each later free of one by (where it was allocated, where
+// it was first freed, where it was freed again). The text is
+// `toylang_rt::heap_check_report` byte for byte, so
+// `--all-backends --heap-check=report` compares the two verbatim.
+// `design-docs/HEAP_CHECK.md`.
+// ---------------------------------------------------------------------------
+
+/// The "first freed" position of a block a resize moved.
+pub const HEAP_CHECK_RESIZE: u64 = u64::MAX;
+
+#[derive(Debug, Clone, Default)]
+struct HeapCheckState {
+    on: bool,
+    /// Freed block -> (allocated at, first freed at).
+    freed: HashMap<usize, (u64, u64)>,
+    /// (allocated at, first freed at, freed again at) -> times.
+    events: std::collections::BTreeMap<(u64, u64, u64), u64>,
+    /// The file each free site is in; allocation sites use the
+    /// profiler's (`note_site_file`).
+    files: HashMap<u64, String>,
+}
+
+thread_local! {
+    static HEAP_CHECK: RefCell<HeapCheckState> = RefCell::new(HeapCheckState::default());
+}
+
+/// Start report mode on this thread, forgetting an earlier run's
+/// record.
+pub fn heap_check_start() {
+    HEAP_CHECK.with(|h| *h.borrow_mut() = HeapCheckState { on: true, ..Default::default() });
+}
+
+/// Whether report mode is on.
+pub fn heap_check_on() -> bool {
+    HEAP_CHECK.with(|h| h.borrow().on)
+}
+
+/// Remember which file a free site is in.
+pub fn note_free_site_file(site: u64, file: &str) {
+    if file.is_empty() {
+        return;
+    }
+    HEAP_CHECK.with(|h| {
+        let mut h = h.borrow_mut();
+        if h.on {
+            h.files.entry(site).or_insert_with(|| file.to_string());
+        }
+    });
+}
+
+fn heap_check_freed(addr: usize, alloc_site: u64, free_site: u64) {
+    HEAP_CHECK.with(|h| {
+        let mut h = h.borrow_mut();
+        if h.on {
+            h.freed.insert(addr, (alloc_site, free_site));
+        }
+    });
+}
+
+fn heap_check_freed_again(addr: usize, site: u64) {
+    HEAP_CHECK.with(|h| {
+        let mut h = h.borrow_mut();
+        if !h.on {
+            return;
+        }
+        let Some(&(alloc, first)) = h.freed.get(&addr) else {
+            return; // not memory this heap handed out
+        };
+        *h.events.entry((alloc, first, site)).or_default() += 1;
+    });
+}
+
+fn heap_check_position(site: u64, files: &HashMap<u64, String>) -> String {
+    if site == 0 {
+        return "an unknown position".to_string();
+    }
+    let file = files.get(&site).cloned().unwrap_or_else(|| {
+        PROFILE_SITES.with(|m| m.borrow().get(&site).map(|e| e.file.clone()).unwrap_or_default())
+    });
+    let (line, column) = (site >> 32, site & 0xffff_ffff);
+    if file.is_empty() {
+        format!("{line}:{column}")
+    } else {
+        format!("{file}:{line}:{column}")
+    }
+}
+
+/// The report, as text.
+pub fn heap_check_report() -> String {
+    HEAP_CHECK.with(|h| {
+        let h = h.borrow();
+        let total: u64 = h.events.values().sum();
+        let mut out = format!("heap check: {total} double frees ({} distinct)\n", h.events.len());
+        for (&(alloc, first, again), count) in &h.events {
+            let first = if first == HEAP_CHECK_RESIZE {
+                "moved by a resize".to_string()
+            } else {
+                format!("freed at {}", heap_check_position(first, &h.files))
+            };
+            out.push_str(&format!(
+                "  x{count}  allocated at {}, {first}, freed again at {}\n",
+                heap_check_position(alloc, &h.files),
+                heap_check_position(again, &h.files),
+            ));
+        }
+        out
+    })
 }
 
 /// Simple heap memory manager for pointer operations
@@ -745,11 +874,17 @@ impl HeapManager {
 
     /// Free memory at address
     pub fn free(&mut self, addr: usize) -> bool {
+        self.free_at(addr, 0)
+    }
+
+    /// Free, naming where the free was written (HEAP-CHECK H0).
+    pub fn free_at(&mut self, addr: usize, free_site: u64) -> bool {
         if addr == 0 {
             return true; // freeing null pointer is a no-op
         }
         match self.free_uncounted(addr) {
             Some((size, site)) => {
+                heap_check_freed(addr, site, free_site);
                 self.stats.free_count += 1;
                 self.stats.record_released(size as u64);
                 PROFILE.with(|p| {
@@ -766,7 +901,10 @@ impl HeapManager {
                 });
                 true
             }
-            None => false,
+            None => {
+                heap_check_freed_again(addr, free_site);
+                false
+            }
         }
     }
 
@@ -875,6 +1013,8 @@ impl HeapManager {
 
             // Free old memory
             self.free_uncounted(addr);
+            // HEAP-CHECK H0: the move released the old block.
+            heap_check_freed(addr, site, HEAP_CHECK_RESIZE);
 
             new_addr
         } else {

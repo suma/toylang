@@ -183,7 +183,7 @@ pub fn compile_to_jit_main_with_options(
     // panic site in the compiled code will print, and a JIT run that
     // says `<input>` while the AOT run of the same program names the
     // file is a disagreement nobody meant to introduce.
-    let display_name = options.input.display().to_string();
+    let display_name = options.entry_name();
     if options.diagnostics_json {
         interpreter::check_typing_diagnostics(
             &mut program,

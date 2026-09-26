@@ -80,6 +80,11 @@ impl VmHost for InterpreterHost {
         let _ = with_active_allocator(|alloc| alloc.free(ptr as usize));
     }
 
+    fn free_at(&self, ptr: u64, site: u64, file: &str) {
+        crate::heap::note_free_site_file(site, file);
+        let _ = with_active_allocator(|alloc| alloc.free_at(ptr as usize, site));
+    }
+
     fn ptr_read(&self, addr: u64, offset: u64, ty: Type) -> Option<RawSlot> {
         with_heap(|h| {
             // MEMORY-ACCESS M1: the bytes come first for a scalar

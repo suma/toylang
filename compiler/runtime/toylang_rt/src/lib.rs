@@ -592,6 +592,12 @@ struct ThreadState {
     prof_site_len: usize,
     prof_layouts: [ProfLayout; PROF_LAYOUT_CAP],
     prof_layout_len: usize,
+    // HEAP-CHECK H0: -1 unresolved, 0 off, 1 report. The freed blocks
+    // (never reused, so an address names one block for good) and the
+    // double frees seen, keyed by (allocated, first freed, freed again).
+    hc_state: i8,
+    hc_freed: alloc::collections::BTreeMap<usize, HcFreed>,
+    hc_events: alloc::collections::BTreeMap<(u64, u64, u64), HcEvent>,
     // Program arguments for `toy_io_argc` / `toy_io_arg`. The AOT
     // binary reads the real process argv; the JIT injects these
     // (default: empty, matching a compiled binary with no arguments).
@@ -687,6 +693,9 @@ impl Default for ThreadState {
             prof_site_len: 0,
             prof_layouts: [PROF_LAYOUT_ZERO; PROF_LAYOUT_CAP],
             prof_layout_len: 0,
+            hc_state: -1,
+            hc_freed: alloc::collections::BTreeMap::new(),
+            hc_events: alloc::collections::BTreeMap::new(),
             io_args: core::ptr::null_mut(),
             io_args_len: 0,
             random_state: 0,
@@ -2153,13 +2162,26 @@ pub extern "C" fn toy_dispatched_alloc(
 /// back to malloc — the bump region never reuses addresses, so a later
 /// glue walk reads the block's original contents, not garbage.
 #[unsafe(no_mangle)]
-pub extern "C" fn toy_dispatched_free(_handle: u64, p: *mut u8) {
+pub extern "C" fn toy_dispatched_free(
+    _handle: u64,
+    p: *mut u8,
+    free_site: u64,
+    free_file: *const u8,
+) {
     if p.is_null() {
         return; // freeing null is a no-op and is not counted
     }
     let (size, site, file) = prof_take(p);
     if size == 0 {
-        return; // already freed, or not this runtime's memory
+        // Already freed, or not this runtime's memory. HEAP-CHECK H0:
+        // the first is worth counting.
+        if hc_enabled() {
+            hc_freed_again(p, free_site, free_file);
+        }
+        return;
+    }
+    if hc_enabled() {
+        hc_note_freed(p, site, file, free_site, free_file);
     }
     if prof_enabled() {
         let st = thread_state();
@@ -2195,7 +2217,9 @@ pub unsafe extern "C" fn toy_dispatched_realloc(
         return toy_dispatched_alloc(_handle, new_size, site, file);
     }
     if new_size == 0 {
-        toy_dispatched_free(_handle, p);
+        // No free site: the interpreter's heap has none for this shape,
+        // and a heap-check report has to read the same on both.
+        toy_dispatched_free(_handle, p, 0, core::ptr::null());
         return core::ptr::null_mut();
     }
     // DROP-GLUE: the registry is always maintained (see
@@ -2209,6 +2233,11 @@ pub unsafe extern "C" fn toy_dispatched_realloc(
     if np.is_null() {
         prof_put(p, old_size, site, file); // restore tracking on failure
         return core::ptr::null_mut();
+    }
+    // The old block is released by the move: a later free of it is a
+    // double free, and says so.
+    if old_size > 0 && hc_enabled() {
+        hc_note_freed(p, site, file, HC_RESIZE, core::ptr::null());
     }
     // ERROR_MODEL D5: the accounting belongs on the success path. A
     // refused request obtained nothing, and reporting the growth
@@ -2247,6 +2276,150 @@ pub unsafe extern "C" fn toy_dispatched_realloc(
     prof_put(np, new_size, site, file);
     np
 }
+
+// ---------------------------------------------------------------------------
+// HEAP-CHECK H0: an inventory of double frees.
+//
+// The heap never reuses an address and `free` is idempotent, so a
+// second free of a block does nothing -- and drop glue relies on that.
+// Report mode does not change it: it only remembers which blocks were
+// freed, and counts each later free of one by (where it was
+// allocated, where it was first freed, where it was freed again). The
+// text is the interpreter's `heap_check_report` byte for byte, so
+// `--all-backends --heap-check=report` compares the two verbatim.
+// `design-docs/HEAP_CHECK.md`.
+// ---------------------------------------------------------------------------
+
+/// The "first freed" position of a block that a resize moved.
+const HC_RESIZE: u64 = u64::MAX;
+
+#[derive(Clone, Copy)]
+struct HcFreed {
+    alloc_site: u64,
+    alloc_file: *const u8,
+    free_site: u64,
+    free_file: *const u8,
+}
+
+#[derive(Clone, Copy)]
+struct HcEvent {
+    count: u64,
+    alloc_file: *const u8,
+    first_file: *const u8,
+    again_file: *const u8,
+}
+
+fn hc_enabled() -> bool {
+    let st = thread_state();
+    if st.hc_state < 0 {
+        let p = unsafe { getenv(c"TOY_HEAP_CHECK".as_ptr().cast()) };
+        let v: &[u8] = if p.is_null() {
+            b""
+        } else {
+            unsafe { core::ffi::CStr::from_ptr(p as *const core::ffi::c_char) }.to_bytes()
+        };
+        st.hc_state = match v {
+            b"report" => 1,
+            b"" | b"0" | b"off" => 0,
+            _ => {
+                err_write(&format!(
+                    "toylang: TOY_HEAP_CHECK={} is not available yet; only `report` is (HEAP-CHECK H0)\n",
+                    core::str::from_utf8(v).unwrap_or("?")
+                ));
+                0
+            }
+        };
+        if st.hc_state == 1 {
+            unsafe {
+                atexit(toy_heap_check_report);
+            }
+        }
+    }
+    st.hc_state == 1
+}
+
+fn hc_note_freed(p: *mut u8, alloc_site: u64, alloc_file: *const u8, free_site: u64, free_file: *const u8) {
+    thread_state()
+        .hc_freed
+        .insert(p as usize, HcFreed { alloc_site, alloc_file, free_site, free_file });
+}
+
+fn hc_freed_again(p: *mut u8, site: u64, file: *const u8) {
+    let st = thread_state();
+    let Some(f) = st.hc_freed.get(&(p as usize)).copied() else {
+        return; // not memory this runtime handed out
+    };
+    let e = st.hc_events.entry((f.alloc_site, f.free_site, site)).or_insert(HcEvent {
+        count: 0,
+        alloc_file: f.alloc_file,
+        first_file: f.free_file,
+        again_file: file,
+    });
+    e.count += 1;
+}
+
+fn hc_position(site: u64, file: *const u8) -> String {
+    if site == 0 {
+        return "an unknown position".into();
+    }
+    let name = unsafe { cstr_as_str(file) };
+    let (line, column) = (site >> 32, site & 0xffff_ffff);
+    if name.is_empty() {
+        format!("{line}:{column}")
+    } else {
+        format!("{name}:{line}:{column}")
+    }
+}
+
+/// The report, as text (also the JIT accessor).
+pub fn heap_check_report() -> String {
+    let st = thread_state();
+    let total: u64 = st.hc_events.values().map(|e| e.count).sum();
+    let mut out = format!(
+        "heap check: {total} double frees ({} distinct)\n",
+        st.hc_events.len()
+    );
+    for (&(alloc, first, again), e) in &st.hc_events {
+        let first = if first == HC_RESIZE {
+            String::from("moved by a resize")
+        } else {
+            format!("freed at {}", hc_position(first, e.first_file))
+        };
+        out.push_str(&format!(
+            "  x{}  allocated at {}, {first}, freed again at {}\n",
+            e.count,
+            hc_position(alloc, e.alloc_file),
+            hc_position(again, e.again_file),
+        ));
+    }
+    out
+}
+
+/// Start report mode on this thread, forgetting what an earlier run
+/// recorded (JIT accessor; an AOT binary reads `TOY_HEAP_CHECK`).
+pub fn heap_check_start() {
+    let st = thread_state();
+    st.hc_state = 1;
+    st.hc_freed.clear();
+    st.hc_events.clear();
+}
+
+extern "C" fn toy_heap_check_report() {
+    err_write(&heap_check_report());
+}
+
+/// Resolve `TOY_HEAP_CHECK` when the binary loads, so the report is
+/// registered even for a program that never frees anything -- which
+/// then says "0 double frees", as the interpreter does, instead of
+/// saying nothing.
+extern "C" fn hc_init() {
+    let _ = hc_enabled();
+}
+
+#[used]
+#[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__mod_init_func"))]
+#[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".init_array"))]
+static HC_INIT: extern "C" fn() = hc_init;
 
 // ---------------------------------------------------------------------------
 // Heap-allocated str helpers (string interpolation Phase 2).
@@ -5762,9 +5935,9 @@ mod tests {
         assert!(!p.is_null());
         let q = toy_dispatched_alloc(0, 32, 2 << 32, core::ptr::null());
         assert!(!q.is_null());
-        toy_dispatched_free(0, p);
-        toy_dispatched_free(0, p); // double free is a no-op
-        toy_dispatched_free(0, q);
+        toy_dispatched_free(0, p, 0, core::ptr::null());
+        toy_dispatched_free(0, p, 0, core::ptr::null()); // double free is a no-op
+        toy_dispatched_free(0, q, 0, core::ptr::null());
         let stats = profiler_stats();
         assert_eq!(stats.alloc_count, 2);
         assert_eq!(stats.free_count, 2);
@@ -5795,10 +5968,10 @@ mod tests {
         for i in 0..20_000u64 {
             let p = toy_dispatched_alloc(0, 32, i << 32, core::ptr::null());
             assert!(!p.is_null());
-            toy_dispatched_free(0, p);
+            toy_dispatched_free(0, p, 0, core::ptr::null());
             // The second free finds nothing, which is the probe that
             // used to run off the end of the table.
-            toy_dispatched_free(0, p);
+            toy_dispatched_free(0, p, 0, core::ptr::null());
             last = p;
         }
         let stats = profiler_stats();
@@ -5806,7 +5979,7 @@ mod tests {
         assert_eq!(stats.free_count, 20_000);
         assert_eq!(stats.live_bytes, 0);
         // An address that was never handed out is the same no-op.
-        toy_dispatched_free(0, last);
+        toy_dispatched_free(0, last, 0, core::ptr::null());
         assert_eq!(profiler_stats().free_count, 20_000);
     }
 

@@ -1,6 +1,8 @@
 # HEAP-CHECK — 解放済みメモリを毒化・再利用する検査モード
 
-> **状態: 提案 (2026-09-26)。** 実装は未着手。§6 の未決事項を決めてから H0 に入る。
+> **状態: H0 (二重 free の棚卸し) landing 済み (2026-09-26)。** §6 の未決事項は
+> 推奨どおりに決まった (二重 free は H5 まで報告のみ / フラグは `--heap-check=` /
+> 隔離は 1 MiB から / AOT の計装はビルドフラグのときだけ)。H0 の実装と結果は §7。
 > 関連: [`MEMORY_PROFILING.md`](MEMORY_PROFILING.md) (計数の定義と site)、
 > [`ALLOCATOR_PLAN.md`](ALLOCATOR_PLAN.md) (`with allocator` と stdlib `Arena`)、
 > [`REGIONS.md`](REGIONS.md) / [`POINTER.md`](POINTER.md) (静的な脱出検査)。
@@ -297,3 +299,73 @@ H2 (IR 命令の追加と 2 つのランタイム) より先に価値が出る�
 4. **H2 の計装を常にビルドに入れるか**。推奨は「ビルドフラグのときだけ」
    (コストゼロを守る)。常に入れて実行時に切り替える案は、バイナリの
    サイズと速度に常に効く。
+
+## 7. H0 の実装と結果 (2026-09-26)
+
+### 使い方
+
+```bash
+cargo run -q -p interpreter -- --heap-check=report prog.t          # IR VM / tree-walker
+cargo run -q -p compiler -- prog.t --all-backends --heap-check=report  # 3 レーンの報告を突き合わせる
+TOY_HEAP_CHECK=report ./prog                                         # AOT バイナリ単体
+```
+
+```
+heap check: 6 double frees (1 distinct)
+  x6  allocated at core/std/box.t:66:22, freed at core/std/box.t:108:9, freed again at core/std/box.t:108:9
+```
+
+- 報告は stderr で、二重 free が無くても `heap check: 0 double frees (0 distinct)` を出す。
+  AOT はロード時の初期化関数で `TOY_HEAP_CHECK` を読んで `atexit` を登録する
+  (free が 1 回も起きないプログラムでも報告が出るように)。
+- `resize` が古いブロックを手放すのも「解放」として記録し、その古い番地の
+  free は `moved by a resize, freed again at ...` と出る — `push` をまたいで
+  保持した窓 (§1.4) の手掛かりになる形。
+- 2 つのヒープ (`HeapManager` と `toylang_rt`) は同じ文言をバイト単位で出し、
+  `--all-backends --heap-check=report` は報告が違えば食い違いとして扱う。
+- 切っているときのコストは free ごとの分岐 1 つ (archive の所要時間は不変)。
+
+### 実装の要点
+
+- `HeapFree` 命令が `site` を持つ (`HeapAlloc` と同じ `(line << 32) | column`)。
+  `toy_dispatched_free(handle, p, site, file)`、`Allocator::free_at`、
+  VM ホストの `free_at` がそれを運ぶ。
+- 報告の鍵は (確保 site, 1 回目の free site, 2 回目の free site)。
+- IR VM が途中で失敗して tree-walker にやり直すときは、プロファイルと同じく
+  記録も巻き戻す (`snapshot_profile` / `restore_profile`)。
+- `realloc(p, 0)` と「解放済みブロックの resize」は `HeapManager` 側が位置を
+  持たないので、両ヒープとも位置なし / 記録なしに揃えた。
+- stdin から読んだプログラムの入口名が compiled レーンだけ一時ファイルのパスに
+  なっていたので `CompilerOptions::display_name` を足した (`--profile=mem` の
+  リーク報告も同じ理由で揃った)。
+
+### 棚卸しの結果
+
+`interpreter/example/*.t` を `--all-backends --heap-check=report` で回した結果と、
+`poc/logsearch` の archive (AOT、実ログ 181,519 行):
+
+| 対象 | 二重 free | 確保 → 解放 |
+|---|---|---|
+| `box_binary_tree.t` | 16 回 (3 レーン一致) | `box.t:66` (`Box::new`) → `box.t:108` (`Box::drop`) |
+| `box_linked_list.t` | 6 回 (3 レーン一致) | 同上 |
+| `json_config.t` | 6 回 (3 レーン一致) | `string.t:112` (`String` の伸長) → `string.t:508` (`String::drop`) |
+| `crypto_sha256.t` | **interpreter だけ 3 回**、JIT / AOT は 0 | `vec.t:157` (`Vec` の伸長) → `vec.t:587` (`Vec::drop`) |
+| `try_compound.t` | **JIT / AOT だけ 1 回**、interpreter は 0 | 同上 |
+| `poc/logsearch` archive | 1 回 | `string.t:112` → `string.t:508` |
+| `poc/logsearch` query | 0 回 | — |
+
+分かったこと:
+
+1. **二重 drop は `Box` の再帰構造と、`String` / `Vec` の値の受け渡しに残っている。**
+2. **レーン間で drop の挙動が割れているものが 2 本ある** (`crypto_sha256.t` /
+   `try_compound.t`)。どちらかのレーンが余計に drop しているか、片方が
+   drop し損ねている。これまでの `--profile=mem` の突き合わせは件数
+   (`free_count`) を「要求」で数えるので、二重 free の有無の差は見えていなかった。
+3. **H0 の鍵では経路が分からない。** 解放の位置はいつも各型の `Drop` 実装
+   (`Box::drop` など) で、確保の位置も stdlib の中なので、「どの型が二重に
+   drop されたか」までしか言えない。**次の一手 (H0b)**: 2 回目の free の
+   backtrace (DEBUG-OBS の shadow stack / `call_stack`) のうち、最初の
+   stdlib 外のフレームを鍵に足す。これで二重 drop を起こしたユーザコードの
+   行が出る。
+
+未実装節の todo (二重 drop の原因を潰す = H5) はこの一覧から切る。

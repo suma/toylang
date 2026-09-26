@@ -88,7 +88,7 @@ pub(crate) fn parse_for(
     options: &CompilerOptions,
 ) -> Result<File, String> {
     if options.diagnostics_json {
-        let name = options.input.to_string_lossy();
+        let name = options.entry_name();
         return session.parse_program_all_errors(source, &name).map_err(|errors| {
             let diagnostics: Vec<_> = errors
                 .iter()
@@ -160,7 +160,7 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
         &mut program,
         session.string_interner_mut(),
         Some(&source),
-        Some(options.input.to_string_lossy().as_ref()),
+        Some(options.entry_name().as_str()),
         &core_modules_dirs,
     )
     .map_err(|diagnostics| {
@@ -168,7 +168,7 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
             interpreter::emit_diagnostics_json(&diagnostics);
             return format!("{} type-check error(s)", diagnostics.len());
         }
-        let input_name = options.input.to_string_lossy();
+        let input_name = options.entry_name();
         // With the source map: a diagnostic about an imported module
         // has that module's `FileId` in its span, and without the map
         // the snippet is drawn from the entry file — the right line
@@ -192,7 +192,7 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
         if diagnostics_json {
             interpreter::emit_diagnostics_json(&warnings);
         } else {
-            let input_name = options.input.to_string_lossy();
+            let input_name = options.entry_name();
             let formatter = interpreter::error_formatter::ErrorFormatter::with_source_map(
                 &source,
                 input_name.as_ref(),

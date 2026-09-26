@@ -15,7 +15,7 @@ use compiler::{compile_file, CompilerOptions, EmitKind};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (mut options, Mode { all_backends, profile, compile_profile, json }) = match parse_args(&args) {
+    let (mut options, Mode { all_backends, profile, compile_profile, json, heap_check }) = match parse_args(&args) {
         Ok(o) => o,
         Err(msg) => {
             eprintln!("{msg}");
@@ -38,11 +38,21 @@ fn main() -> ExitCode {
     };
     options.input = input_path;
     let display_name = if display_name == "-" { "<stdin>".to_string() } else { display_name };
+    // The compiled lanes name the entry after this too, not after the
+    // spill file a pipe was written to.
+    options.display_name = Some(display_name.clone());
 
     if all_backends {
         return ExitCode::from(
-            u8::try_from(compiler::all_backends::run(&options, &source, &display_name, profile, json))
-                .unwrap_or(1),
+            u8::try_from(compiler::all_backends::run_with(
+                &options,
+                &source,
+                &display_name,
+                profile,
+                heap_check,
+                json,
+            ))
+            .unwrap_or(1),
         );
     }
 
@@ -89,6 +99,8 @@ struct Mode {
     /// verdict) as one JSON document on stdout. The same flag also
     /// shapes the diagnostics and the memory report.
     json: bool,
+    /// HEAP-CHECK H0: `--heap-check=report` under `--all-backends`.
+    heap_check: bool,
 }
 
 fn emit_name(emit: EmitKind) -> &'static str {
@@ -115,6 +127,7 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {
     let mut test_mode = false;
     let mut core_modules_dirs: Vec<PathBuf> = Vec::new();
     let mut json = false;
+    let mut heap_check = false;
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -129,6 +142,16 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {
             // blocks instead of `main`.
             "--test" => test_mode = true,
             "--all-backends" => all_backends = true,
+            s if s.starts_with("--heap-check=") => match &s["--heap-check=".len()..] {
+                "report" => heap_check = true,
+                mode @ ("poison" | "reuse") => {
+                    return Err(format!(
+                        "--heap-check={mode} is not available yet; only `report` is \
+                         (design-docs/HEAP_CHECK.md, H0)"
+                    ))
+                }
+                other => return Err(format!("--heap-check expects `report`, got `{other}`")),
+            },
             // Repeatable, and a comma list: `--profile=mem,compile`.
             s if s.starts_with("--profile=") => {
                 for what in s["--profile=".len()..].split(',') {
@@ -209,7 +232,16 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {
     if compile_profile && all_backends {
         return Err("--profile=compile times one AOT build; drop --all-backends".to_string());
     }
-    Ok((options, Mode { all_backends, profile, compile_profile, json }))
+    // Report mode lives in the runtime: a binary reads it from its
+    // environment, so there is nothing to build in.
+    if heap_check && !all_backends {
+        return Err(
+            "--heap-check=report is read at run time: build normally and run the binary \
+             with TOY_HEAP_CHECK=report (or add --all-backends)"
+                .to_string(),
+        );
+    }
+    Ok((options, Mode { all_backends, profile, compile_profile, json, heap_check }))
 }
 
 fn parse_format(value: &str) -> Result<bool, String> {

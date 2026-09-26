@@ -172,6 +172,8 @@ impl<M: Module> CodegenSession<M> {
                 let site = match &inst.kind {
                     InstKind::HeapAlloc { site, .. } => *site,
                     InstKind::HeapRealloc { site, .. } => *site,
+                    // HEAP-CHECK H0: a free names its site too.
+                    InstKind::HeapFree { site, .. } => *site,
                     _ => continue,
                 };
                 let file = ir_module.site_file(site);

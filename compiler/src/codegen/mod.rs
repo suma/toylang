@@ -763,8 +763,12 @@ impl<M: Module> CodegenSession<M> {
             &[abi(I64), abi(I64), abi(I64), abi(I64), abi(I64)],
             &[abi(I64)],
         )?;
-        let rt_dispatched_free =
-            imp.declare("toy_dispatched_free", &[abi(I64), abi(I64)], &[])?;
+        // HEAP-CHECK H0: the free's own site and file, like the alloc's.
+        let rt_dispatched_free = imp.declare(
+            "toy_dispatched_free",
+            &[abi(I64), abi(I64), abi(I64), abi(I64)],
+            &[],
+        )?;
 
         // MEMORY_PROFILING M4. `toy_prof_stat(which) -> u64` reads one
         // counter, selected by `MemStat::code`; `toy_prof_force_counting()`
@@ -1360,6 +1364,9 @@ impl<M: Module> CodegenSession<M> {
                     let site = match &inst.kind {
                         InstKind::HeapAlloc { site, .. } => *site,
                         InstKind::HeapRealloc { site, .. } => *site,
+                        // HEAP-CHECK H0: a double-free report names the
+                        // free's file as well.
+                        InstKind::HeapFree { site, .. } => *site,
                         _ => continue,
                     };
                     let file = ir_module.site_file(site);

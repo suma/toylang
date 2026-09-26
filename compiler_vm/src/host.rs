@@ -88,6 +88,13 @@ pub trait VmHost {
 
     fn free(&self, ptr: u64);
 
+    /// Free, naming where the free was written, and the file it is in
+    /// (HEAP-CHECK H0). The default drops both, for hosts that keep no
+    /// heap check.
+    fn free_at(&self, ptr: u64, _site: u64, _file: &str) {
+        self.free(ptr)
+    }
+
     // --- typed memory ---------------------------------------------
 
     /// Read a typed value from the heap at `addr + offset`. Prefers

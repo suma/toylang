@@ -35,7 +35,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | closure が捕捉した束縛をどう掴むかの設計 | [`design-docs/CLOSURE_CAPTURE.md`](design-docs/CLOSURE_CAPTURE.md) |
 | エフェクト格子と 3 検査の関係 | [`design-docs/EFFECT_SYSTEM.md`](design-docs/EFFECT_SYSTEM.md) |
 | allocator のリージョン脱出検査 | [`design-docs/REGIONS.md`](design-docs/REGIONS.md) |
-| 解放済みメモリの毒化・再利用検査モード (提案) | [`design-docs/HEAP_CHECK.md`](design-docs/HEAP_CHECK.md) |
+| 解放済みメモリの毒化・再利用検査モード (H0 landing、残りは提案) | [`design-docs/HEAP_CHECK.md`](design-docs/HEAP_CHECK.md) |
 | RUNTIME-TRAP guard をどう消しているか | [`design-docs/GUARD_ELISION.md`](design-docs/GUARD_ELISION.md) |
 | 生成バイナリが太る理由 (`&mut self` の ABI) | [`design-docs/CODE_SIZE.md`](design-docs/CODE_SIZE.md) |
 | 配列 / Vec の layout (AoS / SoA) の設計 (Phase 0・2 landing 済み) | [`design-docs/DATA_ORIENTED.md`](design-docs/DATA_ORIENTED.md) |
@@ -139,6 +139,13 @@ TOY_PROFILE_MEM=1 ./compiled_binary          # AOT バイナリ単体
 # 同じレポートを JSON で (M4)。`leaks` は空でも `[]` が出る
 cargo run -q -p interpreter -- --profile=mem --format=json <source_file.t>
 TOY_PROFILE_MEM=json ./compiled_binary
+
+# 二重 free の棚卸し (HEAP-CHECK H0)。解放済みの番地をもう一度 free した回数を
+# (確保位置, 1 回目の free, 2 回目の free) ごとに終了時に stderr へ出す。
+# free は冪等なので出力は変わらない。poison / reuse は未実装
+cargo run -q -p interpreter -- --heap-check=report <source_file.t>
+cargo run -q -p compiler -- <source_file.t> --all-backends --heap-check=report
+TOY_HEAP_CHECK=report ./compiled_binary
 
 # コンパイル自体のどこに時間がかかるか (COMPILE-PROFILE、デバッグ用)。
 # フェーズの木 (read → parse → modules → typecheck → lower → codegen →

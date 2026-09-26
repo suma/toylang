@@ -81,6 +81,12 @@ pub struct CompilerOptions {
     /// driver that leaves them out — which is a *set*, not a single
     /// name: excluding one test is naming all the others.
     pub test_only: Option<Vec<String>>,
+    /// The name the entry file is reported under, when it is not the
+    /// input path: `<stdin>` for a program read from a pipe, whose
+    /// input path is a spill file in the temp directory. Every lane
+    /// then names the same file in a panic, a leak report or a heap
+    /// check -- the interpreter lane already said `<stdin>`.
+    pub display_name: Option<String>,
 }
 
 impl CompilerOptions {
@@ -98,6 +104,14 @@ impl CompilerOptions {
             link_cache_dir: None,
             test_mode: false,
             test_only: None,
+            display_name: None,
         }
+    }
+
+    /// The entry file's name as reports should print it.
+    pub fn entry_name(&self) -> String {
+        self.display_name
+            .clone()
+            .unwrap_or_else(|| self.input.to_string_lossy().into_owned())
     }
 }

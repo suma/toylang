@@ -763,7 +763,17 @@ impl EvaluationContext<'_> {
                 .last()
                 .expect("allocator_stack must always contain the global allocator")
                 .clone();
-            allocator.free(addr);
+            // HEAP-CHECK H0: the free's own position, packed the way an
+            // allocation's is, for a double-free report.
+            let packed = site
+                .map(|loc| ((loc.line as u64) << 32) | (loc.column as u64))
+                .unwrap_or(0);
+            if let Some(loc) = site {
+                if let Some(path) = self.source_map.and_then(|m| m.path(loc.file)) {
+                    crate::heap::note_free_site_file(packed, path);
+                }
+            }
+            allocator.free_at(addr, packed);
             Ok(EvaluationResult::Value((Object::Unit).into()))
         }
 

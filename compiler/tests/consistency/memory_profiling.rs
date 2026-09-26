@@ -747,3 +747,29 @@ fn a_refused_reservation_leaves_the_vector_usable_and_leaks_nothing() {
         "a refused reservation lost the original buffer:\n{report}"
     );
 }
+
+/// HEAP-CHECK H0: the tree-walker counts double frees in the same words
+/// as the compiled lanes (`all_backends_cli.rs` pins those), including a
+/// block a resize moved. It is the lane the harness treats as the
+/// oracle, and `--all-backends` does not run it.
+#[test]
+fn the_tree_walker_reports_double_frees_like_the_other_lanes() {
+    let src = "\
+fn main() -> u64 {
+    val p: ptr = __builtin_heap_alloc(16u64)
+    __builtin_heap_free(p)
+    __builtin_heap_free(p)
+    val q: ptr = __builtin_heap_alloc(8u64)
+    val r: ptr = __builtin_heap_realloc(q, 64u64)
+    __builtin_heap_free(q)
+    __builtin_heap_free(r)
+    0u64
+}
+";
+    assert_eq!(
+        tree_walker_heap_check_report(src),
+        "heap check: 2 double frees (2 distinct)\n\
+         \x20 x1  allocated at test.t:2:18, freed at test.t:3:5, freed again at test.t:4:5\n\
+         \x20 x1  allocated at test.t:5:18, moved by a resize, freed again at test.t:7:5\n"
+    );
+}

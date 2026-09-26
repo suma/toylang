@@ -12,6 +12,11 @@
 
 ### 2026-09-26
 
+- **HEAP-CHECK H0 — 二重 free の棚卸し (`--heap-check=report`)** — 両ヒープが
+  解放済みの番地を覚え、2 回目の free を (確保 site, 1 回目, 2 回目) で数えて
+  終了時に報告する (文言は 2 ヒープでバイト一致、`--all-backends` で突き合わせ)。
+  `HeapFree` が site を持つようになった。stdin 入力の入口名も compiled レーンで
+  `<stdin>` に揃えた (`CompilerOptions::display_name`)。結果は HEAP_CHECK.md §7。
 - **BARE-NAME-COLLISION の残り — `pub` の実効化と警告の文言** — 非 `pub` の
   module 関数は自分の module からしか呼べない (`check_function_access` が
   関数の `module_path` と検査中の本体の module を比べる)。stdlib では
@@ -2855,13 +2860,13 @@
 
 ## 検討中の機能
 
-* **ヒープ検査モード (HEAP-CHECK)** — 解放済みメモリを毒化して隔離する
-  `poison` と、有限の隔離の後に再利用する `reuse`。lowering が生メモリアクセスの
-  前に検査命令を挟み、4 レーンで同じ文言の報告を出す。今のヒープは再利用せず
-  中身も残し free も冪等なので、use-after-free と二重 free は症状が出ない。
-  しかも drop glue がそれに依存しており、consistency テストだけで二重 free が
-  209 回起きている (2026-09-26 実測) ので、H0 は棚卸し (`report`) から。
-  [`HEAP_CHECK.md`](HEAP_CHECK.md)、§6 の未決事項待ち。
+* **ヒープ検査モード (HEAP-CHECK) の残り** — H0 (`--heap-check=report`、
+  二重 free の棚卸し) は 2026-09-26 に landing (完了済み節)。次は **H0b**
+  (2 回目の free の backtrace から最初の stdlib 外のフレームを鍵に足す — 今の鍵は
+  `Box::drop` のような `Drop` 実装しか指さず、経路が分からない)、続いて H1
+  (`poison`、interpreter レーン) → H2 (計装、compiled レーン) → H3 (`reuse`) →
+  H4 (redzone) → H5 (二重 drop を潰して既定でエラー)。
+  [`HEAP_CHECK.md`](HEAP_CHECK.md) §5 / §7。
 * **明示 import (MODULE-IMPORTS)** — stdlib も
   `import std.hex` を書かないと使えない形にする提案。
   [`MODULE_IMPORTS.md`](MODULE_IMPORTS.md)。**D1 の alias 束縛だけ
@@ -3007,6 +3012,17 @@
   決定的である必要がある — `compiler/tests/reproducible_build.rs` が pin)。
 
 ### 既知の不具合
+
+- **DOUBLE-DROP-LANE-DIVERGENCE: 二重 drop するかどうかがレーンで割れる** ★★ —
+  HEAP-CHECK H0 の棚卸し (2026-09-26) で、`crypto_sha256.t` は interpreter レーン
+  だけが `Vec` を 3 回二重 free し、`try_compound.t` は JIT / AOT だけが 1 回
+  二重 free する。どちらかのレーンが余計に drop しているか、片方が drop し
+  損ねている。free は冪等なので出力は変わらず、`--profile=mem` の突き合わせも
+  「要求」で数えるので見えていなかった。
+  `compiler -- <file> --all-backends --heap-check=report` で再現する。
+  あわせて、3 レーン一致で残っている二重 drop (`Box` の再帰構造 — 
+  `box_linked_list.t` / `box_binary_tree.t`、`String` — `json_config.t` と
+  poc/logsearch の archive) は HEAP-CHECK H5 で潰す。
 
 - **TYPE-NAME-COLLISION の残り: 型の名前空間** ★ — 同じ root の 2 モジュールが
   同じ型名を宣言すると、黙って上書きせず `type \`Item\` is declared by more

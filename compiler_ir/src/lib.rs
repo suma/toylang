@@ -2007,8 +2007,10 @@ pub enum InstKind {
     /// report would otherwise attribute their first block to `0:0`.
     HeapRealloc { ptr: ValueId, new_size: ValueId, binding: AllocatorBinding, site: Option<SiteId> },
     /// `__builtin_heap_free(ptr)` — release the allocation at `ptr`
-    /// through the active allocator. Returns no value.
-    HeapFree { ptr: ValueId, binding: AllocatorBinding },
+    /// through the active allocator. Returns no value. `site` is the
+    /// call's position, which only a heap check reads (HEAP-CHECK H0:
+    /// a double free names where each free was written).
+    HeapFree { ptr: ValueId, binding: AllocatorBinding, site: Option<SiteId> },
     /// `__builtin_ptr_read(ptr, offset) -> elem_ty` — typed load at
     /// `ptr + offset`. The element type is fixed at lower time from
     /// the surrounding `val`/`var` annotation (e.g.
@@ -3171,9 +3173,10 @@ impl fmt::Display for DisplayInst<'_> {
                     None => write!(f, "{prefix}heap_realloc {ptr}, {new_size}  ; {binding}"),
                 }
             }
-            InstKind::HeapFree { ptr, binding } => {
-                write!(f, "heap_free {ptr}  ; {binding}")
-            }
+            InstKind::HeapFree { ptr, binding, site } => match site {
+                Some(id) => write!(f, "heap_free {ptr}  ; {binding} @site#{}", id.0),
+                None => write!(f, "heap_free {ptr}  ; {binding}"),
+            },
             InstKind::PtrRead { ptr, offset, elem_ty } => {
                 write!(f, "{prefix}ptr_read {ptr}, {offset}: {elem_ty}")
             }

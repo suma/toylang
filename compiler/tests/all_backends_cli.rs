@@ -215,3 +215,53 @@ fn a_build_as_json_names_what_it_wrote() {
     assert_eq!(doc["output"], out.to_str().unwrap());
     assert!(written);
 }
+
+/// HEAP-CHECK H0: `--heap-check=report` counts double frees on every
+/// backend and compares the reports like the memory profile. A block
+/// freed twice is reported by (allocated, first freed, freed again), and
+/// a block a resize moved says so; a program with no double free still
+/// gets its "0" line.
+#[test]
+fn heap_check_report_names_each_double_free_on_every_backend() {
+    if skip_e2e() {
+        return;
+    }
+    let source = "\
+fn main() -> u64 {
+    val p: ptr = __builtin_heap_alloc(16u64)
+    __builtin_heap_free(p)
+    __builtin_heap_free(p)
+    val q: ptr = __builtin_heap_alloc(8u64)
+    val r: ptr = __builtin_heap_realloc(q, 64u64)
+    __builtin_heap_free(q)
+    __builtin_heap_free(r)
+    0u64
+}
+";
+    let run = run_stdin(source, &["--all-backends", "--heap-check=report"]);
+    assert_eq!(run.status, 0, "stderr: {}", run.stderr);
+    assert!(
+        run.stderr.contains(
+            "heap check: 2 double frees (2 distinct)\n\
+             \x20 x1  allocated at <stdin>:2:18, freed at <stdin>:3:5, freed again at <stdin>:4:5\n\
+             \x20 x1  allocated at <stdin>:5:18, moved by a resize, freed again at <stdin>:7:5\n"
+        ),
+        "stderr: {}",
+        run.stderr
+    );
+    assert!(run.stderr.contains("all 3 backends agree"), "stderr: {}", run.stderr);
+
+    let clean = run_stdin("fn main() -> u64 {\n    0u64\n}\n", &["--all-backends", "--heap-check=report"]);
+    assert!(
+        clean.stderr.contains("heap check: 0 double frees (0 distinct)\n"),
+        "stderr: {}",
+        clean.stderr
+    );
+}
+
+#[test]
+fn heap_check_modes_not_built_yet_are_named() {
+    let run = run_stdin("fn main() -> u64 {\n    0u64\n}\n", &["--all-backends", "--heap-check=poison"]);
+    assert_ne!(run.status, 0);
+    assert!(run.stderr.contains("not available yet"), "stderr: {}", run.stderr);
+}

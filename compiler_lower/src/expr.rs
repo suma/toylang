@@ -2954,7 +2954,8 @@ impl<'a> FunctionLower<'a> {
                 let ptr = self.lower_expr(&args[0])?
                     .ok_or_else(|| "heap_free ptr produced no value".to_string())?;
                 let binding = self.classify_active_allocator_binding();
-                Ok(self.emit(InstKind::HeapFree { ptr, binding }, None))
+                let site = self.alloc_site(call_ref);
+                Ok(self.emit(InstKind::HeapFree { ptr, binding, site }, None))
             }
             BuiltinFunction::HeapRealloc => {
                 expect_args(args, 2, "__builtin_heap_realloc takes 2 args (ptr, new_size)")?;

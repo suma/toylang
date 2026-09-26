@@ -497,9 +497,10 @@ fn exec_heap_and_pointer(vm: &mut Vm, inst: &Instruction) {
                 vm.write_value(vid, RawSlot::from_u64(addr));
             }
         }
-        InstKind::HeapFree { ptr, .. } => {
+        InstKind::HeapFree { ptr, site, .. } => {
             let p = vm.read_value(*ptr);
-            host.free(unsafe { p.u64 });
+            let packed = vm.module().packed_site(*site);
+            host.free_at(unsafe { p.u64 }, packed, vm.module().site_file(*site));
         }
         InstKind::PtrRead { ptr, offset, elem_ty } => {
             let p = vm.read_value(*ptr);

@@ -687,6 +687,24 @@ pub(super) fn tree_walker_error(source: &str) -> String {
     }
 }
 
+/// Run `source` on the tree-walker in HEAP-CHECK report mode and hand
+/// back the double-free report.
+pub(super) fn tree_walker_heap_check_report(source: &str) -> String {
+    let core = core_modules_dir();
+    let mut parser = frontend::ParserWithInterner::new(source);
+    let checked = checked_program(source, &mut parser, std::slice::from_ref(&core))
+        .expect("tree-walker type-check (with core)");
+    interpreter::heap::heap_check_start();
+    interpreter::execute_program_tree_walking(
+        &checked.program,
+        checked.interner,
+        Some(source),
+        Some("test.t"),
+    )
+    .expect("tree-walker run");
+    interpreter::heap::heap_check_report()
+}
+
 /// Parse + type-check `source` with the core modules, returning the
 /// rendered diagnostics on failure.
 pub(super) fn type_check_errors(source: &str) -> Vec<String> {

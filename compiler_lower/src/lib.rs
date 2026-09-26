@@ -142,6 +142,9 @@ mod simd;
 /// DATA-ORIENTED Phase 2: the column arithmetic `__builtin_soa_read`
 /// / `__builtin_soa_write` expand into.
 mod soa;
+/// SPAN-RANGE-INTRINSIC: `Span<T>`'s range operations as the one
+/// instruction their bodies perform.
+mod span_intrinsic;
 
 mod templates;
 use templates::{EnumDefs, StructDefs};

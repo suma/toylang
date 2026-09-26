@@ -712,6 +712,25 @@ pub(super) fn interpreter_error(source: &str) -> String {
     }
 }
 
+/// [`interpreter_error`] on the tree-walker, the lane the harness
+/// treats as the oracle (`interpreter_error` runs the default engine,
+/// the IR VM, which shares the compiled lanes' lowering).
+pub(super) fn tree_walker_error(source: &str) -> String {
+    let core = core_modules_dir();
+    let mut parser = frontend::ParserWithInterner::new(source);
+    let checked = checked_program(source, &mut parser, std::slice::from_ref(&core))
+        .expect("tree-walker type-check (with core)");
+    match interpreter::execute_program_tree_walking(
+        &checked.program,
+        checked.interner,
+        Some(source),
+        Some("test.t"),
+    ) {
+        Ok(_) => panic!("expected a runtime failure on the tree-walker"),
+        Err(e) => e,
+    }
+}
+
 /// Parse + type-check `source` with the core modules, returning the
 /// rendered diagnostics on failure.
 pub(super) fn type_check_errors(source: &str) -> Vec<String> {

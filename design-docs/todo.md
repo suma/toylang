@@ -12,6 +12,19 @@
 
 ### 2026-09-26
 
+- **SPAN-RANGE-INTRINSIC — `Span` の範囲演算を呼び出しにしない** —
+  `copy_from` / `move_from` / `bytes_eq` / `fill` と `val` に束縛する
+  `Span::from_parts` を、lowering と tree-walker が body の 1 命令
+  (と struct リテラル) に直結する (`Ptr` の `get` / `set` と同じく
+  `std.span` のメソッドだけ)。`String::eq` が 2 つの窓 + `bytes_eq` に
+  なり `unsafe` が外れた — archive の所要時間は生の builtin と同じ
+  (呼び出しのままだと +5〜9%)。長さ不一致の panic は呼び出し位置で
+  報告される (4 レーン共通)。`find` / `find_seq` は `Option` を返すので
+  呼び出しのまま。
+- **ZIP-ITER-GENERIC-SCOPE — method 自身の型引数を turbofish に書ける** —
+  `impl<T>` の `fn sz<U>` の中の `__builtin_sizeof::<U>()` が
+  `[E0010] unknown type` だった。型検査器が body の宣言した型引数も見る。
+
 - **FN-NAME-AS-VALUE / HOF-RETURN-UNKNOWN: 関数名を値として渡せる** —
   値の位置の関数名を型検査器が closure リテラル
   (`fn(x: u64) -> u64 { twice(x) }`) に書き換えるので、バックエンドは
@@ -134,8 +147,7 @@
   `unsafe fn` 宣言は 102 本に (コメント行を除いた数)、`poc/logsearch` は出力一致のまま `__text`
   −8.2%・archive ~6% 速い。途中で tree-walker の型引数の穴を 3 つ直した
   (struct リテラルのフィールド型、`Ptr` 注釈と呼び出し元の `T`、
-  enum 値の型引数)。残りは未実装節の UNSAFE-REST / SPAN-RANGE-INTRINSIC /
-  WINDOW-ESCAPE-UNWRAP。
+  enum 値の型引数)。残りは未実装節の UNSAFE-REST / WINDOW-ESCAPE-UNWRAP。
 
 - **UNSAFE-REST 前半: コレクションから `unsafe fn` を外した** — `Deque` /
   `Set` / `PriorityQueue` / `SoaVec` と String の SIMD 走査が `Ptr<T>` /
@@ -2423,25 +2435,17 @@
   書き手は 1 回で済み、`s.read_u32_le(i)` は endianness を型の側に
   置ける。
 
-- **UNSAFE-REST: 残る `unsafe fn` (59 本)** — 2026-09-25 にコレクション
+- **UNSAFE-REST: 残る `unsafe fn` (58 本)** — 2026-09-25 にコレクション
   (`Deque` / `Set` / `PriorityQueue` / `SoaVec`)、String の SIMD・`to_str`、
   `hex` / `base64` の encode・decode (`Ptr<u8>::load16` / `store16` を
   intrinsic にして速度は不変)、`path` / `fs` / `time` / `testing` / `io`
-  の名残を外し、102 → 59。**生 builtin の置き場** (`allocator.t` 30 /
-  `span.t` 14 / `ptr.t` 9 / `column.t` 3) が 56 で、これは残る側。
-  それ以外は `String::eq` (SPAN-RANGE-INTRINSIC) だけ、加えて
+  の名残を外し、102 → 59、2026-09-26 に `String::eq` を外して 58。
+  **生 builtin の置き場** (`allocator.t` 30 / `span.t` 14 / `ptr.t` 9 /
+  `column.t` 3) が 56 で、これは残る側。それ以外は
   `Vec<u8>::extend_bytes` / `String::extend_bytes` (生の `ptr` を受ける —
   呼ぶ側に義務がある API なので `unsafe` が正しい)。`unsafe` の意味を
   「呼ぶ側に義務がある」に変える案 (呼び出しに `unsafe { }` を要求) は
   ユーザ判断待ち。
-
-- **SPAN-RANGE-INTRINSIC: `Span` の範囲演算を呼び出しにしない** —
-  `String::eq` を `Span::bytes_eq` で書くと `poc/logsearch` の archive が
-  ~9% 遅くなった (窓 2 つ + 呼び出し、`Dict<String, _>` のキー比較に
-  乗る) ので、`eq` は生の `__builtin_mem_eq` のまま `unsafe fn` で残した。
-  `Ptr` の `get` / `set` / `borrow` と同じく、stdlib の `Span` の
-  `copy_from` / `bytes_eq` / `find_seq` を lowering と tree-walker で
-  builtin に直結すれば戻せる。
 
 - **WINDOW-ESCAPE-UNWRAP: `Option` から出した窓の脱出を見逃す** —
   `[E0026]` は `v.as_span()` (`Option<Span<T>>`) をそのまま返すのは
@@ -2449,14 +2453,6 @@
   取り出してから返すと通る (taint が unwrap で途切れる)。M5 の
   `Ptr::borrow` を足すときに見つけた (2026-09-25)。`??` / match の
   payload 束縛が scrutinee の taint を引き継げばよい。
-
-- **ZIP-ITER-GENERIC-SCOPE: method-level の型引数が turbofish から
-  見えない** — `VecIter<T>::zip<U>(other: VecIter<U>)` の中で
-  `__builtin_sizeof::<U>()` が `[E0010] unknown type \`U\`` になる
-  (`check_sizeof_type_arg` は impl の generic params と型推論 scope しか
-  見ない)。`ZipIter` が 2 つの stride を `elems` にパックして持って
-  いたのはこれの回避だったが、M5 で `Ptr<A>` / `Ptr<B>` 経由の読みに
-  なり、stride 自体を持たなくなった (2026-09-25)。
 
 - **CONST-ARRAY の残り: struct / tuple の表の渡し方** — 2026-09-25 に
   struct / tuple 要素の表が compiled レーンで読めるようになった

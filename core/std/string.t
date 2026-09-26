@@ -317,16 +317,26 @@ impl String {
     # vectorised version still exists; it is inside the runtime's
     # `toy_mem_eq` now, in one place, for every caller.
     #
-    # Raw rather than through `Span::bytes_eq` (MEMORY-ACCESS M5):
-    # building two windows and making the call cost ~9% of
-    # `poc/logsearch`'s archive run, where this is the key comparison
-    # of every `Dict<String, _>` probe.
-    unsafe fn eq(&self, other: &String) -> bool {
+    # Through two windows and `Span::bytes_eq`, which cost ~9% of
+    # `poc/logsearch`'s archive run while `from_parts` and `bytes_eq`
+    # were calls -- this is the key comparison of every
+    # `Dict<String, _>` probe. They lower to the struct literal and the
+    # one `mem_eq` now (SPAN-RANGE-INTRINSIC), and the run is as fast
+    # as the raw builtin was. An empty string may never have
+    # allocated, and a `Ptr` is never null.
+    fn eq(&self, other: &String) -> bool {
         val n: u64 = self.len
         if n != other.len {
             return false
         }
-        __builtin_mem_eq(self.data, other.data, n)
+        if n == 0u64 {
+            return true
+        }
+        val a: Ptr<u8> = Ptr { addr: self.data }
+        val b: Ptr<u8> = Ptr { addr: other.data }
+        val mine: Span<u8> = Span::from_parts(a, n)
+        val theirs: Span<u8> = Span::from_parts(b, n)
+        mine.bytes_eq(theirs)
     }
 
     # Shared body of `to_ascii_upper` / `to_ascii_lower` (CaseConvert). Copies

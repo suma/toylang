@@ -655,6 +655,143 @@ impl EvaluationContext<'_> {
         }
     }
 
+    /// SPAN-RANGE-INTRINSIC: the stdlib `Span<T>`'s `copy_from` /
+    /// `move_from` / `bytes_eq` / `fill` performed here instead of
+    /// entering the method -- the tree-walker's side of the compiled
+    /// lanes' intrinsic (`compiler_lower/src/span_intrinsic.rs`). It
+    /// is here for the oracle to agree with them, not for speed: with
+    /// no frame for the method, a length-mismatch panic is reported at
+    /// the call, as it is there.
+    ///
+    /// Only a method written in `std.span` qualifies; `Ok(None)` means
+    /// "call it".
+    fn span_range_intrinsic(
+        &mut self,
+        method: &MethodFunction,
+        self_obj: &RcObject,
+        args: &[RcObject],
+        call_site: Option<SourceLocation>,
+    ) -> Result<Option<EvaluationResult>, InterpreterError> {
+        #[derive(PartialEq)]
+        enum Op {
+            CopyFrom,
+            MoveFrom,
+            BytesEq,
+            Fill,
+        }
+        let op = match self.string_interner.resolve(method.name) {
+            Some("copy_from") => Op::CopyFrom,
+            Some("move_from") => Op::MoveFrom,
+            Some("bytes_eq") => Op::BytesEq,
+            Some("fill") => Op::Fill,
+            _ => return Ok(None),
+        };
+        let from_std_span = method.module_path.as_deref().is_some_and(|path| {
+            let names: Vec<&str> =
+                path.iter().filter_map(|s| self.string_interner.resolve(*s)).collect();
+            names == ["std", "span"]
+        });
+        if !from_std_span || args.len() != 1 {
+            return Ok(None);
+        }
+        let (Some(data_sym), Some(count_sym), Some(addr_sym)) = (
+            self.string_interner.get("data"),
+            self.string_interner.get("count"),
+            self.string_interner.get("addr"),
+        ) else {
+            return Ok(None);
+        };
+        // `(addr, count)` of a `Span` value: `data` is a `Ptr { addr }`.
+        let window = |obj: &RcObject| -> Option<(usize, u64)> {
+            let Object::Struct { fields, .. } = &*obj.borrow() else {
+                return None;
+            };
+            let addr = match &*fields.get(&data_sym)?.borrow() {
+                Object::Struct { fields, .. } => {
+                    fields.get(&addr_sym)?.borrow().try_unwrap_pointer().ok()?
+                }
+                _ => return None,
+            };
+            let count = fields.get(&count_sym)?.borrow().try_unwrap_uint64().ok()?;
+            Some((addr, count))
+        };
+        let Some((addr, count)) = window(self_obj) else {
+            return Ok(None);
+        };
+        let unit = || Ok(Some(EvaluationResult::Value(Object::Unit.into())));
+
+        if op == Op::Fill {
+            let Ok(byte) = args[0].borrow().try_unwrap_uint8() else {
+                return Ok(None);
+            };
+            if !self.heap_manager.borrow_mut().set_memory(addr, byte, count as usize) {
+                return Err(InterpreterError::InternalError(
+                    "Invalid memory access in mem_set".to_string(),
+                ));
+            }
+            return unit();
+        }
+
+        let Some((other_addr, other_count)) = window(&args[0]) else {
+            return Ok(None);
+        };
+        let elem_ty = match &*self_obj.borrow() {
+            Object::Struct { type_args, .. } => match type_args.first() {
+                Some(t) => t.clone(),
+                None => return Ok(None),
+            },
+            _ => return Ok(None),
+        };
+        let scope = self.merged_generic_scope();
+        let elem_ty = match &elem_ty {
+            TypeDecl::Identifier(s) | TypeDecl::Generic(s) => {
+                scope.get(s).cloned().unwrap_or(elem_ty)
+            }
+            _ => elem_ty,
+        };
+        let Some(elem_size) = self.type_decl_byte_size(&elem_ty, &scope) else {
+            return Ok(None);
+        };
+
+        if op == Op::BytesEq {
+            if count != other_count {
+                return Ok(Some(EvaluationResult::Value(Object::Bool(false).into())));
+            }
+            let size = count.wrapping_mul(elem_size) as usize;
+            let eq = size == 0 || {
+                let hm = self.heap_manager.borrow();
+                match (hm.read_bytes_raw(addr, size), hm.read_bytes_raw(other_addr, size)) {
+                    (Some(x), Some(y)) => x == y,
+                    _ => false,
+                }
+            };
+            return Ok(Some(EvaluationResult::Value(Object::Bool(eq).into())));
+        }
+
+        // The body's own message, so every lane says the same thing.
+        if count != other_count {
+            let text = if op == Op::CopyFrom {
+                "Span::copy_from length mismatch"
+            } else {
+                "Span::move_from length mismatch"
+            };
+            return Err(self.panic_error(text.to_string(), call_site));
+        }
+        // `args[0]` is the source, `self` the destination.
+        let size = count.wrapping_mul(elem_size) as usize;
+        let ok = if op == Op::CopyFrom {
+            self.heap_manager.borrow_mut().copy_memory(other_addr, addr, size)
+        } else {
+            self.heap_manager.borrow_mut().move_memory(other_addr, addr, size)
+        };
+        if !ok {
+            return Err(InterpreterError::InternalError(
+                "Invalid memory access in Span range copy".to_string(),
+            ));
+        }
+        unit()
+    }
+
     pub(super) fn call_method(
         &mut self,
         method: Rc<MethodFunction>,
@@ -663,6 +800,9 @@ impl EvaluationContext<'_> {
         call_site: Option<SourceLocation>,
     ) -> Result<EvaluationResult, InterpreterError> {
         if let Some(result) = self.ptr_access_intrinsic(&method, &self_obj, &args)? {
+            return Ok(result);
+        }
+        if let Some(result) = self.span_range_intrinsic(&method, &self_obj, &args, call_site)? {
             return Ok(result);
         }
         // DEBUG-OBS D1: this is the choke point every method reaches —

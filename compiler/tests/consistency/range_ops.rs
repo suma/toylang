@@ -182,3 +182,65 @@ fn the_rewritten_string_methods_answer_as_before() {
     assert_eq!(interpreter_value(src), 39);
     assert_consistent(src, "string_range_ops");
 }
+
+/// SPAN-RANGE-INTRINSIC: `copy_from` / `move_from` / `bytes_eq` are
+/// the range instruction itself in every lane, not a call to the
+/// method. Wider elements scale the byte count (`count * 8` here), and
+/// `move_from` over an overlapping window slides the elements the way
+/// `memmove` does.
+#[test]
+fn wide_windows_copy_move_and_compare_by_element() {
+    let src = r#"
+        fn main() -> u64 {
+            val p: Ptr<u64> = Ptr::alloc(5u64)
+            val q: Ptr<u64> = Ptr::alloc(5u64)
+            val a: Span<u64> = Span::from_parts(p, 5u64)
+            val b: Span<u64> = Span::from_parts(q, 5u64)
+            for i in 0u64..5u64 { a.set(i, i + 1u64) }
+            b.copy_from(a)
+            var acc: u64 = 0u64
+            if b.bytes_eq(a) { acc = acc + 1u64 }
+            # Only the last element differs: all 40 bytes are compared.
+            b.set(4u64, 9u64)
+            if b.bytes_eq(a) { acc = acc + 100u64 }
+            # Slide [2, 3, 4, 5] down over [1, 2, 3, 4].
+            val head: Span<u64> = a.slice(0u64, 4u64)
+            val tail: Span<u64> = a.slice(1u64, 4u64)
+            head.move_from(tail)
+            # a = [2, 3, 4, 5, 5]
+            acc + a.get(0u64) * 10u64 + a.get(3u64) * 1000u64 + a.get(4u64) * 100000u64
+        }
+    "#;
+    assert_eq!(interpreter_value(src), 505_021);
+    assert_consistent(src, "span_wide_range_ops");
+}
+
+/// With no frame for `Span::copy_from`, its length-mismatch panic is
+/// reported where the call was written -- by the tree-walker as well as
+/// the compiled lanes, so the oracle and the lanes agree on the line.
+#[test]
+fn a_length_mismatch_is_reported_at_the_call() {
+    let src = "fn main() -> u64 {\n\
+               \x20   val p: Ptr<u64> = Ptr::alloc(4u64)\n\
+               \x20   val a: Span<u64> = Span::from_parts(p, 4u64)\n\
+               \x20   val short: Span<u64> = a.slice(0u64, 3u64)\n\
+               \x20   a.copy_from(short)\n\
+               \x20   0u64\n\
+               }\n";
+    let tree = tree_walker_error(src);
+    assert!(tree.contains("Span::copy_from length mismatch"), "{tree}");
+    assert!(tree.contains("test.t:5:"), "tree-walker: {tree}");
+    assert!(!tree.contains("span.t"), "tree-walker: {tree}");
+
+    let vm = interpreter_error(src);
+    assert!(vm.contains("test.t:5:"), "IR VM: {vm}");
+
+    if skip_e2e() {
+        return;
+    }
+    let (code, stderr) = compiled_run_output(src, "span_mismatch_site").expect("compiles");
+    assert_ne!(code, 0);
+    assert!(stderr.contains("Span::copy_from length mismatch"), "{stderr}");
+    assert!(stderr.contains(":5:"), "AOT: {stderr}");
+    assert!(!stderr.contains("span.t"), "AOT: {stderr}");
+}

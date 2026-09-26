@@ -866,6 +866,12 @@ impl<'a> FunctionLower<'a> {
         {
             return Ok(v);
         }
+        // SPAN-RANGE-INTRINSIC: likewise `Span<T>`'s range operations.
+        if let Some(v) =
+            self.lower_span_range_intrinsic(&binding, target_sym, method, &recv_type_args, args)?
+        {
+            return Ok(v);
+        }
         // CONCRETE-IMPL Phase 2c: unified cross-registry dispatch —
         // exact concrete spec first, then the generic template
         // (instantiated against the receiver), then a lone concrete
@@ -1378,31 +1384,7 @@ impl<'a> FunctionLower<'a> {
             Some("store16") => PtrAccess::Store16,
             _ => return None,
         };
-        // The generic impl's methods are templates in `generic_methods`;
-        // a concrete one (`impl Ptr<u8> { fn load16 .. }`) is in
-        // `method_registry`. Either way every spec has to come from the
-        // stdlib's `ptr` module -- a user type that is merely named
-        // `Ptr` keeps its own methods.
-        let all_from_std_ptr = |specs: &Vec<super::method_registry::MethodTemplateSpec>| {
-            !specs.is_empty()
-                && specs.iter().all(|spec| {
-                    spec.method.module_path.as_deref().is_some_and(|path| {
-                        let names: Vec<&str> =
-                            path.iter().filter_map(|s| self.interner.resolve(*s)).collect();
-                        names == ["std", "ptr"]
-                    })
-                })
-        };
-        let from_std_ptr = self
-            .generic_methods
-            .get(&(target_sym, method))
-            .is_some_and(all_from_std_ptr)
-            || (!self.generic_methods.contains_key(&(target_sym, method))
-                && self
-                    .method_registry
-                    .get(&(target_sym, method))
-                    .is_some_and(all_from_std_ptr));
-        if !from_std_ptr {
+        if !self.method_is_from_std_module(target_sym, method, "ptr") {
             return None;
         }
         let Binding::Struct { fields, .. } = binding else {

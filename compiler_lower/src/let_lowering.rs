@@ -1873,6 +1873,10 @@ impl<'a> FunctionLower<'a> {
         args_vec: &[ExprRef],
     ) -> Result<Option<Option<ValueId>>, String> {
         let struct_id = self.resolve_struct_instance(struct_name, annotation)?;
+        // SPAN-RANGE-INTRINSIC: `Span::from_parts` is its struct literal.
+        if self.lower_let_span_from_parts(name, struct_id, struct_name, fn_name, args_vec)? {
+            return Ok(Some(None));
+        }
         let recv_type_args = self
             .module
             .struct_def(struct_id)

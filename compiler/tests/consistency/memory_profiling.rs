@@ -936,3 +936,36 @@ fn a_consuming_method_is_found_by_the_receivers_type() {
     assert_consistent(src, "consuming_method_by_type");
     memory_profiles_agree(src, "consuming_method_by_type");
 }
+
+/// DOUBLE-DROP-LANE-DIVERGENCE: `val b = self.bytes` in a `&self`
+/// method, and `val b = s.bytes` over a local, name part of a value
+/// another binding owns -- a compound `val` never copies. The move
+/// check knew only plain names as aliases (and did not declare an
+/// implicit `&self` at all), so on the tree-walker `b` dropped the
+/// vector and its owner dropped it again (`crypto_sha256.t`'s
+/// `Sum::to_hex`, found by HEAP-CHECK).
+#[test]
+fn a_field_bound_by_val_is_an_alias_not_an_owner() {
+    let src = r#"
+        struct Sum { bytes: Vec<u8> }
+        impl Sum {
+            fn peek(&self) -> u64 {
+                val b = self.bytes
+                b.size()
+            }
+        }
+        fn main() -> u64 {
+            var v: Vec<u8> = Vec::new()
+            v.push(1u8)
+            v.push(2u8)
+            val s = Sum { bytes: v }
+            val n = s.peek() + s.peek()
+            val b = s.bytes
+            n * 10u64 + b.size()
+        }
+    "#;
+    assert_eq!(tree_walker_heap_check_report(src), "heap check: 0 double frees (0 distinct)\n");
+    assert_eq!(interpreter_value(src), 42);
+    assert_consistent(src, "field_alias_not_owner");
+    memory_profiles_agree(src, "field_alias_not_owner");
+}

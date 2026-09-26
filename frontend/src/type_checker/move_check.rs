@@ -159,6 +159,7 @@ pub fn check_moves(
         transfer_anchors: HashMap::new(),
         stand_ins: 0,
         tail_root: None,
+        implicit_self: None,
         consuming_methods: collect_consuming_methods(program, interner),
         binding_types: HashMap::new(),
         probe: None,
@@ -214,6 +215,12 @@ pub fn check_moves(
             Some(Stmt::ImplBlock { target_type, .. }) => generic_structs.contains(&target_type),
             _ => true,
         };
+        let self_ty = match program.statement.get(&stmt_ref) {
+            Some(Stmt::ImplBlock { target_type, target_type_args, .. }) => {
+                Some(TypeDecl::Struct(target_type, target_type_args.clone()))
+            }
+            _ => None,
+        };
         for m in &methods {
             let arity = m
                 .parameter
@@ -223,7 +230,14 @@ pub fn check_moves(
             let resolvable = signatures.method_target(m.name, arity).is_some();
             let generic = generic_impl || !m.generic_params.is_empty();
             let owns = !generic && resolvable;
+            // An implicit `&self` / `&mut self` is not in the parameter
+            // list; it is the caller's value all the same.
+            let explicit_self =
+                m.parameter.first().is_some_and(|(n, _)| interner.resolve(*n) == Some("self"));
+            checker.implicit_self =
+                if m.has_self_param && !explicit_self { self_ty.clone() } else { None };
             checker.run_function_owning(&m.parameter, m.code, owns, generic && resolvable);
+            checker.implicit_self = None;
         }
     }
     // ELEMENT-BORROW E5, reported here rather than in the walk: a
@@ -644,6 +658,9 @@ struct MoveCheck<'a> {
     /// walked, the binding `t`. A tail naming (part of) `t` hands that
     /// value into `x`; a tail naming anything else stays a read.
     tail_root: Option<DefaultSymbol>,
+    /// The type of the method's implicit `&self` / `&mut self` while its
+    /// body is walked (`None` for a free function or `self: Self`).
+    implicit_self: Option<TypeDecl>,
     /// Methods declared with a by-value receiver (`self: Self`), per
     /// type and across every type (`None`): the call consumes the
     /// receiver.
@@ -772,6 +789,22 @@ impl MoveCheck<'_> {
             }
         }
         self.scopes.push(Vec::new());
+        // DOUBLE-DROP-LANE-DIVERGENCE: an implicit `&self` / `&mut self`
+        // is declared like a parameter nobody drops, so `val b =
+        // self.bytes` is an alias of it rather than a new owner. It was
+        // not declared at all, and the tree-walker then dropped `b` --
+        // freeing the caller's vector (`crypto_sha256.t`'s
+        // `Sum::to_hex`, found by HEAP-CHECK).
+        if let Some(ty) = self.implicit_self.clone()
+            && self.is_owning(&ty)
+            && let Some(self_sym) = self.interner.get("self")
+        {
+            self.declare(self_sym, None);
+            self.binding_types.insert(self_sym, match ty {
+                TypeDecl::Struct(t, _) => t,
+                _ => self_sym,
+            });
+        }
         let lend = self.lend.get(&body).cloned().unwrap_or_default();
         let mut index = 0usize;
         for (name, ty) in params {
@@ -821,13 +854,18 @@ impl MoveCheck<'_> {
         // `val b = a`: one value, two names. The backends already give
         // the pair one drop (`a`'s); the root makes a transfer of `b`
         // a transfer of `a`.
-        if let Some(a) = self.owned_place(rhs) {
+        if let Some(a) = self.aliased_place(rhs) {
             let root = self.root_of(a);
             // A parameter registers no drop (the caller keeps it when
             // the callee lends, and nobody frees it otherwise), so an
             // alias of one must not drop either. The compiled lanes
             // never did; the tree-walker registered the alias.
-            if self.lookup(root).is_some_and(|o| o.decl.is_none() && o.root.is_none()) {
+            //
+            // A field of anything is the same: the whole it belongs to
+            // is what drops it. (A plain `val b = a` shares `a`'s value
+            // outright, and the backends give the pair one drop.)
+            let field_path = !matches!(self.program.expression.get(&rhs), Some(Expr::Identifier(_)));
+            if field_path || self.lookup(root).is_some_and(|o| o.decl.is_none() && o.root.is_none()) {
                 self.transferred.insert(stmt_ref);
             }
             self.declare_alias(name, Some(stmt_ref), root);
@@ -891,6 +929,21 @@ impl MoveCheck<'_> {
         match self.program.expression.get(&expr) {
             Some(Expr::Identifier(sym)) if self.lookup(sym).is_some() => Some(sym),
             _ => None,
+        }
+    }
+
+    /// The binding an initializer names part of: a plain name, or a
+    /// field path off one (`self.bytes`, `o.inner.buf`). `val b =
+    /// self.bytes` aliases the field -- a compound `val` never copies --
+    /// so `b` must not become a second owner of it: the tree-walker
+    /// dropped such a `b` and freed the caller's vector
+    /// (`crypto_sha256.t`'s `Sum::to_hex`, found by HEAP-CHECK).
+    fn aliased_place(&self, expr: ExprRef) -> Option<DefaultSymbol> {
+        match self.program.expression.get(&expr) {
+            Some(Expr::FieldAccess(inner, _)) | Some(Expr::TupleAccess(inner, _)) => {
+                self.aliased_place(inner)
+            }
+            _ => self.owned_place(expr),
         }
     }
 

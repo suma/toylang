@@ -392,3 +392,25 @@ heap check: 6 double frees (1 distinct)
 tree-walker だけが二重に解放する。どれも free が冪等なので出力には出ていない。
 
 未実装節の todo (二重 drop の原因を潰す = H5) はこの一覧から切る。
+
+### 棚卸しの結果を潰した (2026-09-26)
+
+§7 の表の二重 drop は同日に全部直した。example 全体と poc/logsearch の archive で、
+tree-walker を含むどのレーンも二重 free 0 回、`--all-backends --heap-check=report`
+の食い違いも 0。原因は 7 つで、**どれも free が冪等だったので出力には一度も
+出ていなかった**:
+
+| 例 | 実装 | 原因 |
+|---|---|---|
+| `box_linked_list.t` / `box_binary_tree.t` | lowering 系 | `&List` を match した腕が payload の `Box` を drop |
+| `std_ord_sort.t` | tree-walker | `val key: T = p.get(i)` (`Ptr::get` = 要素の別名) を持ち主として drop |
+| `soa_column.t` | tree-walker | 列の窓 (`vs.mass`) が見ている元の `SoaVec` を drop |
+| `try_compound.t` | lowering 系 | `val v = f()?` の desugar で payload が `v` に移っても `t` の drop flag が残った |
+| `json_config.t` / poc/logsearch | 全レーン | `finish(self: Self)` がレシーバを消費していなかった (poc は同名の `&mut self` method があり、型で判定する必要があった) |
+| `crypto_sha256.t` | tree-walker + IR VM | `&self` の method の `val b = self.bytes` を持ち主として drop (暗黙の `&self` が宣言されておらず、フィールドの連鎖も別名扱いでなかった) |
+
+あわせて `crypto_sha256.t` の `--profile=mem` の `peak_live_bytes` の食い違い
+(720 と 784) も消えた — 早すぎる二重 free がピークを下げていた。
+
+これで H5 の前提 (二重 free を既定でエラーにできる状態) は example と poc の範囲で
+満たされた。次は H1 (`poison`)。

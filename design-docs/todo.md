@@ -17,6 +17,13 @@
   終了時に報告する (文言は 2 ヒープでバイト一致、`--all-backends` で突き合わせ)。
   `HeapFree` が site を持つようになった。stdin 入力の入口名も compiled レーンで
   `<stdin>` に揃えた (`CompilerOptions::display_name`)。結果は HEAP_CHECK.md §7。
+- **DOUBLE-DROP-LANE-DIVERGENCE — HEAP-CHECK が見つけた二重 drop を全部潰した** —
+  example 全体と poc/logsearch の archive で、どのレーン (tree-walker を含む) も
+  二重 free 0 回、`--all-backends --heap-check=report` の食い違いも 0。原因は 7 つ
+  (下の 6 項目と、フィールドの別名): 最後の `crypto_sha256.t` は `&self` の method の
+  `val b = self.bytes` — 所有権検査が暗黙の `&self` を宣言しておらず、フィールドの
+  連鎖も別名として扱っていなかったので、tree-walker が `b` を持ち主として drop して
+  いた。フィールドの連鎖の別名は自分では drop しない。
 - **`self: Self` の method がレシーバを消費する** (DOUBLE-DROP-LANE-DIVERGENCE の
   一部) — 所有権検査はレシーバを常に「読む」と扱っていたので、`val part =
   w.finish()` (`fn finish(self: Self) -> String { self.out }`) の後も `w` が
@@ -2890,8 +2897,8 @@
 
 * **ヒープ検査モード (HEAP-CHECK) の残り** — H0 (`--heap-check=report`、
   二重 free の棚卸し) と H0b (報告に二重 drop を起こした関数名) は 2026-09-26 に
-  landing (完了済み節)。次は DOUBLE-DROP-LANE-DIVERGENCE (既知の不具合節) の
-  調査、続いて H1
+  landing (完了済み節)、棚卸しで見つかった二重 drop も全部潰した
+  (DOUBLE-DROP-LANE-DIVERGENCE)。次は H1
   (`poison`、interpreter レーン) → H2 (計装、compiled レーン) → H3 (`reuse`) →
   H4 (redzone) → H5 (二重 drop を潰して既定でエラー)。
   [`HEAP_CHECK.md`](HEAP_CHECK.md) §5 / §7。
@@ -3041,24 +3048,6 @@
 
 ### 既知の不具合
 
-- **DOUBLE-DROP-LANE-DIVERGENCE: 二重 drop するかどうかが実装で割れる** ★★ —
-  HEAP-CHECK H0 / H0b の棚卸し (2026-09-26) で、tree-walker と lowering 系
-  (IR VM / JIT / AOT) の二重 free が食い違った。`Box` の連結リスト / 二分木
-  (lowering 系だけ、借用 `&List` を match した腕が payload を drop していた) は
-  同日に解消、`std_ord_sort.t` (tree-walker だけ、`Ptr::get` から束縛した要素を
-  drop していた) と `soa_column.t` (tree-walker だけ、列の窓が元の `SoaVec` を
-  drop していた) と `try_compound.t` (lowering 系、`val v = f()?` の desugar で
-  payload が `v` に移っても `t` の drop flag が立ったままだった) も同日に解消。
-  残り: `crypto_sha256.t` は tree-walker と IR VM だけ (JIT / AOT とは確保の
-  総量も割れる — `--profile=mem`)。free が冪等なので出力は
-  変わらず、`--profile=mem` も「要求」で数えるので見えていなかった。表と
-  再現手順は [`HEAP_CHECK.md`](HEAP_CHECK.md) §7。lowering 系は
-  `compiler -- <file> --all-backends --heap-check=report`、tree-walker は
-  consistency harness の `tree_walker_heap_check_report`。`String` の二重 drop は
-  `json_config.t` の分 (`self: Self` の `finish` がレシーバを消費しなかった) を
-  同日に直し、poc/logsearch の archive の分 (`mount::write_meta` の同じ形 —
-  別の型に `finish(&mut self)` があったので名前だけの判定では拾えなかった) も
-  レシーバの型で判定して直した。残りは `crypto_sha256.t` だけ。
 - **TYPE-NAME-COLLISION の残り: 型の名前空間** ★ — 同じ root の 2 モジュールが
   同じ型名を宣言すると、黙って上書きせず `type \`Item\` is declared by more
   than one module: src/a.t, src/b.t` のエラーになった (2026-09-26)。残りは

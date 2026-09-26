@@ -1,6 +1,6 @@
 # HEAP-CHECK — 解放済みメモリを毒化・再利用する検査モード
 
-> **状態: H0 (二重 free の棚卸し) landing 済み (2026-09-26)。** §6 の未決事項は
+> **状態: H0 (二重 free の棚卸し) と H1 (interpreter レーンの `poison`) landing 済み (2026-09-26)。** §6 の未決事項は
 > 推奨どおりに決まった (二重 free は H5 まで報告のみ / フラグは `--heap-check=` /
 > 隔離は 1 MiB から / AOT の計装はビルドフラグのときだけ)。H0 の実装と結果は §7。
 > 関連: [`MEMORY_PROFILING.md`](MEMORY_PROFILING.md) (計数の定義と site)、
@@ -414,3 +414,42 @@ tree-walker を含むどのレーンも二重 free 0 回、`--all-backends --hea
 
 これで H5 の前提 (二重 free を既定でエラーにできる状態) は example と poc の範囲で
 満たされた。次は H1 (`poison`)。
+
+## 8. H1 — interpreter レーンの `poison` (2026-09-26)
+
+```bash
+cargo run -q -p interpreter -- --heap-check=poison prog.t
+```
+
+```
+Runtime error occurred:
+Error at test.t:5:13:
+ 5 |     val x = __builtin_ptr_read::<u64>(p, 0u64)
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ panic: heap check: read of 8 bytes at offset 0
+   |   of a 16-byte block that was already freed (allocated at test.t:2:18, freed at test.t:4:5)
+   = backtrace (innermost first):
+       main
+```
+
+- free したブロックを `0xDB` で埋め、型付きスロット (書いた値そのものの表) も消す。
+  解放済みの範囲を「開始番地 → サイズ・確保位置・解放位置」の表に残す。
+  resize で移動した古いブロックも同じ (`moved by a resize`)。
+- `HeapManager` の読み書き口 (`typed_read` / `typed_write` / `read_bytes_raw` /
+  `read_scalar_bytes` / `read_u64` / 各 `write_*` / `copy_memory` / `move_memory` /
+  `set_memory`) が範囲を表と突き合わせ、重なれば「保留中の異常」を記録して失敗する。
+  今まで `read_bytes_raw` は生死を見ておらず、型付きスロットは解放後も残っていたので、
+  解放済みの値が静かに読めていた。
+- tree-walker は builtin と `Ptr` / `Span` の intrinsic の後で、IR VM は命令ごとに
+  保留中の異常を拾って panic として止める。
+- 二重 free は H0 と同じく数えて終了時に報告する (止めない — §6 の決定)。
+- **`push` をまたいで保持した `Span` の窓** (`core/std/span.t` が未検査と書く穴) は
+  `moved by a resize` として止まる。
+- example 全体を `poison` で走らせて、出力・終了コードとも通常の実行と一致
+  (誤検出なし)。切っているときのコストは読み書きごとの `Cell<bool>` の読み 1 回。
+
+**残り**
+
+- IR VM の報告には位置 (`Error at`) が無い — IR の命令が位置を持たないため。
+  H2 の検査命令 (`HeapCheck { .., site }`) で解消する。
+- compiled レーン (AOT / JIT) は H2。`compiler --heap-check=poison` は interpreter を
+  案内する。

@@ -114,8 +114,9 @@ struct CliArgs {
     seed: Option<u64>,
     /// MEMORY_PROFILING M1: print allocation totals after the run.
     profile_mem: bool,
-    /// HEAP-CHECK H0: count double frees and report them after the run.
-    heap_check: bool,
+    /// HEAP-CHECK: `report` counts double frees and reports them after
+    /// the run; `poison` also stops at any access to a freed block.
+    heap_check: HeapCheckMode,
 }
 
 /// The `--core-modules` roots as written on the command line.
@@ -189,7 +190,7 @@ fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
     let mut check_contracts = false;
     let mut seed: Option<u64> = None;
     let mut profile_mem = false;
-    let mut heap_check = false;
+    let mut heap_check = HeapCheckMode::Off;
     let mut prog_args: Vec<String> = Vec::new();
     let mut iter = raw.iter().skip(1);
     while let Some(arg) = iter.next() {
@@ -253,16 +254,23 @@ fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
     Ok(CliArgs { filename, prog_args, verbose, core_modules_cli, json, run_tests, check_contracts, seed, profile_mem, heap_check })
 }
 
-/// `--heap-check=<mode>` (HEAP-CHECK). Only `report` exists so far; the
-/// others are named so the error says what is coming rather than that
-/// the flag is unknown.
-fn parse_heap_check(mode: &str) -> Result<bool, String> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HeapCheckMode {
+    Off,
+    Report,
+    Poison,
+}
+
+/// `--heap-check=<mode>` (HEAP-CHECK). `reuse` is named so the error
+/// says what is coming rather than that the flag is unknown.
+fn parse_heap_check(mode: &str) -> Result<HeapCheckMode, String> {
     match mode {
-        "report" => Ok(true),
-        "poison" | "reuse" => Err(format!(
-            "--heap-check={mode} is not available yet; only `report` is (design-docs/HEAP_CHECK.md, H0)"
-        )),
-        other => Err(format!("--heap-check expects `report`, got `{other}`")),
+        "report" => Ok(HeapCheckMode::Report),
+        "poison" => Ok(HeapCheckMode::Poison),
+        "reuse" => Err(
+            "--heap-check=reuse is not available yet (design-docs/HEAP_CHECK.md, H3)".to_string(),
+        ),
+        other => Err(format!("--heap-check expects `report` or `poison`, got `{other}`")),
     }
 }
 
@@ -357,11 +365,13 @@ fn main() {
     if profile_mem {
         interpreter::heap::reset_profile();
     }
-    if heap_check {
-        interpreter::heap::heap_check_start();
+    match heap_check {
+        HeapCheckMode::Off => {}
+        HeapCheckMode::Report => interpreter::heap::heap_check_start(),
+        HeapCheckMode::Poison => interpreter::heap::heap_check_start_poison(),
     }
     let outcome = interpreter::run_source(&source, &filename, &options);
-    if heap_check {
+    if heap_check != HeapCheckMode::Off {
         // stderr, beside the memory profile: the program's stdout stays
         // its own.
         eprint!("{}", interpreter::heap::heap_check_report());

@@ -88,6 +88,14 @@ impl VmHost for InterpreterHost {
         crate::heap::heap_check_note_culprit(name);
     }
 
+    fn heap_poison_on(&self) -> bool {
+        crate::heap::heap_poison_on()
+    }
+
+    fn take_heap_fault(&self) -> Option<String> {
+        crate::heap::take_heap_fault()
+    }
+
     fn free_at(&self, ptr: u64, site: u64, file: &str) {
         crate::heap::note_free_site_file(site, file);
         let _ = with_active_allocator(|alloc| alloc.free_at(ptr as usize, site));

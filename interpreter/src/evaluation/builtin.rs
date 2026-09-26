@@ -661,6 +661,21 @@ impl EvaluationContext<'_> {
         args: &[ExprRef],
         site: Option<frontend::type_checker::SourceLocation>,
     ) -> Result<EvaluationResult, InterpreterError> {
+        let result = self.evaluate_builtin_call_inner(func, args, site);
+        // HEAP-CHECK H1: a builtin that touched a freed block stops the
+        // run here, at the builtin's position, whatever it returned.
+        if let Some(message) = crate::heap::take_heap_fault() {
+            return Err(self.panic_error(message, site));
+        }
+        result
+    }
+
+    fn evaluate_builtin_call_inner(
+        &mut self,
+        func: &BuiltinFunction,
+        args: &[ExprRef],
+        site: Option<frontend::type_checker::SourceLocation>,
+    ) -> Result<EvaluationResult, InterpreterError> {
         match func {
             BuiltinFunction::HeapAlloc
             | BuiltinFunction::HeapFree

@@ -570,6 +570,12 @@ pub const HEAP_CHECK_RESIZE: u64 = u64::MAX;
 #[derive(Debug, Clone, Default)]
 struct HeapCheckState {
     on: bool,
+    /// H1: freed blocks are poisoned and any access to one stops the
+    /// program (`--heap-check=poison`).
+    poison: bool,
+    /// H1: freed block start -> (size, allocated at, first freed at),
+    /// for finding the block an access lands in.
+    freed_blocks: std::collections::BTreeMap<usize, (usize, u64, u64)>,
     /// Freed block -> (allocated at, first freed at).
     freed: HashMap<usize, (u64, u64)>,
     /// (allocated at, first freed at, freed again at, culprit) -> times.
@@ -585,12 +591,89 @@ struct HeapCheckState {
 
 thread_local! {
     static HEAP_CHECK: RefCell<HeapCheckState> = RefCell::new(HeapCheckState::default());
+    /// H1: whether poison mode is on -- read on every heap access, so a
+    /// `Cell` rather than a borrow of the state.
+    static HEAP_POISON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// H1: the access to a freed block the heap refused, for the engine
+    /// to report where it can (it knows the position and the frames).
+    static HEAP_FAULT: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// The byte every freed block is filled with in poison mode. `0xDB`
+/// reads as `0xDBDBDBDBDBDBDBDB` in a `u64` -- recognisable in a print
+/// -- and is no pointer anything maps.
+pub const HEAP_POISON_BYTE: u8 = 0xDB;
+
+/// Start poison mode (`--heap-check=poison`): report mode, plus every
+/// freed block filled with [`HEAP_POISON_BYTE`] and any later access to
+/// it refused.
+pub fn heap_check_start_poison() {
+    HEAP_CHECK.with(|h| {
+        *h.borrow_mut() = HeapCheckState { on: true, poison: true, ..Default::default() }
+    });
+    HEAP_POISON.with(|p| p.set(true));
+    HEAP_FAULT.with(|f| *f.borrow_mut() = None);
+}
+
+/// Whether poison mode is on.
+pub fn heap_poison_on() -> bool {
+    HEAP_POISON.with(|p| p.get())
+}
+
+/// The refused access, if one happened since the last call.
+pub fn take_heap_fault() -> Option<String> {
+    if !HEAP_POISON.with(|p| p.get()) {
+        return None;
+    }
+    HEAP_FAULT.with(|f| f.borrow_mut().take())
+}
+
+/// H1: whether `[addr, addr + len)` touches a freed block, and if so,
+/// record the fault. `true` means the access may go ahead.
+fn heap_check_access(addr: usize, len: usize, write: bool) -> bool {
+    if !HEAP_POISON.with(|p| p.get()) || addr == 0 {
+        return true;
+    }
+    let end = addr.saturating_add(len.max(1));
+    let hit = HEAP_CHECK.with(|h| {
+        let h = h.borrow();
+        let (&start, &(size, alloc, freed)) = h.freed_blocks.range(..end).next_back()?;
+        if start + size <= addr {
+            return None;
+        }
+        let offset = addr.saturating_sub(start);
+        Some(format!(
+            "heap check: {} of {} bytes at offset {offset} of a {size}-byte block that was already freed \
+             (allocated at {}, {})",
+            if write { "write" } else { "read" },
+            len.max(1),
+            heap_check_position(alloc, &h.files),
+            if freed == HEAP_CHECK_RESIZE {
+                "moved by a resize".to_string()
+            } else {
+                format!("freed at {}", heap_check_position(freed, &h.files))
+            },
+        ))
+    });
+    match hit {
+        Some(message) => {
+            HEAP_FAULT.with(|f| {
+                let mut f = f.borrow_mut();
+                if f.is_none() {
+                    *f = Some(message);
+                }
+            });
+            false
+        }
+        None => true,
+    }
 }
 
 /// Start report mode on this thread, forgetting an earlier run's
 /// record.
 pub fn heap_check_start() {
     HEAP_CHECK.with(|h| *h.borrow_mut() = HeapCheckState { on: true, ..Default::default() });
+    HEAP_POISON.with(|p| p.set(false));
 }
 
 /// Whether report mode is on.
@@ -638,11 +721,14 @@ pub fn note_free_site_file(site: u64, file: &str) {
     });
 }
 
-fn heap_check_freed(addr: usize, alloc_site: u64, free_site: u64) {
+fn heap_check_freed(addr: usize, size: usize, alloc_site: u64, free_site: u64) {
     HEAP_CHECK.with(|h| {
         let mut h = h.borrow_mut();
         if h.on {
             h.freed.insert(addr, (alloc_site, free_site));
+            if h.poison {
+                h.freed_blocks.insert(addr, (size, alloc_site, free_site));
+            }
         }
     });
 }
@@ -766,6 +852,9 @@ impl HeapManager {
 
     /// Record a typed slot so a later `typed_read` can return the exact Rc.
     pub fn typed_write(&mut self, addr: usize, offset: usize, value: crate::object::RcObject) {
+        if !heap_check_access(addr + offset, 1, true) {
+            return;
+        }
         if addr != 0 {
             let key = self.typed_slot_key(addr, offset);
             self.typed_slots.insert(key, value);
@@ -774,6 +863,9 @@ impl HeapManager {
 
     /// Look up a previously-stored typed value, if any.
     pub fn typed_read(&self, addr: usize, offset: usize) -> Option<crate::object::RcObject> {
+        if !heap_check_access(addr + offset, 1, false) {
+            return None;
+        }
         self.typed_slots.get(&self.typed_slot_key(addr, offset)).cloned()
     }
 
@@ -918,7 +1010,8 @@ impl HeapManager {
         }
         match self.free_uncounted(addr) {
             Some((size, site)) => {
-                heap_check_freed(addr, site, free_site);
+                heap_check_freed(addr, size, site, free_site);
+                self.poison_block(addr, size);
                 self.stats.free_count += 1;
                 self.stats.record_released(size as u64);
                 PROFILE.with(|p| {
@@ -940,6 +1033,20 @@ impl HeapManager {
                 false
             }
         }
+    }
+
+    /// H1: in poison mode, fill a freed block with [`HEAP_POISON_BYTE`]
+    /// and forget the values written into it, so nothing reads back
+    /// what it held.
+    fn poison_block(&mut self, addr: usize, size: usize) {
+        if !HEAP_POISON.with(|p| p.get()) {
+            return;
+        }
+        let start = addr - 1;
+        if let Some(bytes) = self.memory.get_mut(start..start + size) {
+            bytes.fill(HEAP_POISON_BYTE);
+        }
+        self.typed_slots.retain(|(base, _), _| *base != addr);
     }
 
     /// Drop the tracking entry, returning the size it held. Counter-free
@@ -1048,7 +1155,8 @@ impl HeapManager {
             // Free old memory
             self.free_uncounted(addr);
             // HEAP-CHECK H0: the move released the old block.
-            heap_check_freed(addr, site, HEAP_CHECK_RESIZE);
+            heap_check_freed(addr, old_size, site, HEAP_CHECK_RESIZE);
+            self.poison_block(addr, old_size);
 
             new_addr
         } else {
@@ -1059,6 +1167,9 @@ impl HeapManager {
     /// Read u64 from memory at address + offset. `addr` may be a base
     /// address or an interior pointer (`__builtin_ptr_offset`).
     pub fn read_u64(&self, addr: usize, offset: usize) -> Option<u64> {
+        if !heap_check_access(addr + offset, 8, false) {
+            return None;
+        }
         if addr == 0 {
             return None; // null pointer access
         }
@@ -1080,6 +1191,9 @@ impl HeapManager {
     /// or out-of-bounds. Used as a fallback when no typed slot exists (e.g.
     /// bytes written via `copy_memory` into a fresh destination buffer).
     pub fn read_scalar_bytes(&self, addr: usize, offset: usize, width: usize) -> Option<u64> {
+        if !heap_check_access(addr + offset, width, false) {
+            return None;
+        }
         if addr == 0 || width == 0 {
             return None;
         }
@@ -1096,6 +1210,9 @@ impl HeapManager {
     /// Used by the `str` runtime layout, whose value points at the trailing
     /// `u64 len` field (interior to its allocation).
     pub fn read_bytes_raw(&self, addr: usize, len: usize) -> Option<Vec<u8>> {
+        if !heap_check_access(addr, len, false) {
+            return None;
+        }
         if addr == 0 {
             return None;
         }
@@ -1134,6 +1251,9 @@ impl HeapManager {
         width: usize,
         bits: u64,
     ) -> bool {
+        if !heap_check_access(addr + offset, width, true) {
+            return false;
+        }
         if addr == 0 || width == 0 || width > 8 {
             return false;
         }
@@ -1157,6 +1277,9 @@ impl HeapManager {
     }
 
     pub fn write_bytes_raw(&mut self, addr: usize, bytes: &[u8]) -> bool {
+        if !heap_check_access(addr, bytes.len(), true) {
+            return false;
+        }
         if addr == 0 {
             return false;
         }
@@ -1171,6 +1294,9 @@ impl HeapManager {
     /// Write u64 to memory at address + offset. `addr` may be a base
     /// address or an interior pointer (`__builtin_ptr_offset`).
     pub fn write_u64(&mut self, addr: usize, offset: usize, value: u64) -> bool {
+        if !heap_check_access(addr + offset, 8, true) {
+            return false;
+        }
         if addr == 0 {
             return false; // null pointer access
         }
@@ -1218,6 +1344,9 @@ impl HeapManager {
         if src_addr == 0 || dest_addr == 0 {
             return false; // null pointer access
         }
+        if !heap_check_access(src_addr, size, false) || !heap_check_access(dest_addr, size, true) {
+            return false;
+        }
 
         let mut copied_any = false;
 
@@ -1264,7 +1393,10 @@ impl HeapManager {
         if src_addr == 0 || dest_addr == 0 {
             return false; // null pointer access
         }
-        
+        if !heap_check_access(src_addr, size, false) || !heap_check_access(dest_addr, size, true) {
+            return false;
+        }
+
         // For simplicity, we'll copy the data to a temporary buffer first
         if let Some(src_slice) = self.get_memory_slice(src_addr, size) {
             let temp_data: Vec<u8> = src_slice.to_vec();
@@ -1284,7 +1416,10 @@ impl HeapManager {
         if addr == 0 {
             return false; // null pointer access
         }
-        
+        if !heap_check_access(addr, size, true) {
+            return false;
+        }
+
         if let Some(slice) = self.get_memory_slice_mut(addr, size) {
             slice.fill(value);
             true

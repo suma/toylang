@@ -104,6 +104,17 @@ pub trait VmHost {
     /// The function the next free is made on behalf of.
     fn note_free_culprit(&self, _name: &str) {}
 
+    /// HEAP-CHECK H1: whether the heap refuses accesses to freed blocks.
+    fn heap_poison_on(&self) -> bool {
+        false
+    }
+
+    /// HEAP-CHECK H1: the access to a freed block the heap refused since
+    /// the last call, as the message to stop with.
+    fn take_heap_fault(&self) -> Option<String> {
+        None
+    }
+
     // --- typed memory ---------------------------------------------
 
     /// Read a typed value from the heap at `addr + offset`. Prefers

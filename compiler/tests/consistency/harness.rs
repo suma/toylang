@@ -705,6 +705,29 @@ pub(super) fn tree_walker_heap_check_report(source: &str) -> String {
     interpreter::heap::heap_check_report()
 }
 
+/// HEAP-CHECK H1: run `source` in poison mode on the tree-walker and on
+/// the default engine (the IR VM), returning each lane's failure.
+pub(super) fn heap_poison_errors(source: &str) -> (String, String) {
+    let core = core_modules_dir();
+    let mut parser = frontend::ParserWithInterner::new(source);
+    let checked = checked_program(source, &mut parser, std::slice::from_ref(&core))
+        .expect("tree-walker type-check (with core)");
+    interpreter::heap::heap_check_start_poison();
+    let tree = match interpreter::execute_program_tree_walking(
+        &checked.program,
+        checked.interner,
+        Some(source),
+        Some("test.t"),
+    ) {
+        Ok(_) => panic!("expected the tree-walker to stop on a freed block"),
+        Err(e) => e,
+    };
+    interpreter::heap::heap_check_start_poison();
+    let vm = interpreter_error(source);
+    interpreter::heap::heap_check_start();
+    (tree, vm)
+}
+
 /// Parse + type-check `source` with the core modules, returning the
 /// rendered diagnostics on failure.
 pub(super) fn type_check_errors(source: &str) -> Vec<String> {

@@ -142,8 +142,11 @@ TOY_PROFILE_MEM=json ./compiled_binary
 
 # 二重 free の棚卸し (HEAP-CHECK H0)。解放済みの番地をもう一度 free した回数を
 # (確保位置, 1 回目の free, 2 回目の free) ごとに終了時に stderr へ出す。
-# free は冪等なので出力は変わらない。poison / reuse は未実装
+# free は冪等なので出力は変わらない
 cargo run -q -p interpreter -- --heap-check=report <source_file.t>
+# 解放済みブロックを毒で埋め、触れたら確保位置・解放位置付きで止める (H1、
+# interpreter レーンのみ。compiled レーンは H2。reuse は未実装)
+cargo run -q -p interpreter -- --heap-check=poison <source_file.t>
 cargo run -q -p compiler -- <source_file.t> --all-backends --heap-check=report
 TOY_HEAP_CHECK=report ./compiled_binary
 

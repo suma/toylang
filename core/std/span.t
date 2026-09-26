@@ -36,7 +36,8 @@
 #
 # The check is REGION's (E0022) over a different owner and shares its
 # pass. Two hazards stay uncovered: a window captured by a closure,
-# and one held across a `push` that reallocates.
+# and one held across a `push` that reallocates -- which
+# `interpreter --heap-check=poison` catches at run time (HEAP-CHECK H1).
 
 struct Span<T> {
     # The window the elements live behind. A `Ptr<T>` field, so the

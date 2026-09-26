@@ -969,3 +969,52 @@ fn a_field_bound_by_val_is_an_alias_not_an_owner() {
     assert_consistent(src, "field_alias_not_owner");
     memory_profiles_agree(src, "field_alias_not_owner");
 }
+
+/// HEAP-CHECK H1: in poison mode a read of a freed block stops the run
+/// and names where the block was allocated and freed, on the
+/// tree-walker and the IR VM alike. Without the mode the read quietly
+/// returns the old value -- the heap never reuses an address.
+#[test]
+fn poison_mode_stops_a_read_of_a_freed_block() {
+    let src = "\
+unsafe fn main() -> u64 {
+    val p: ptr = __builtin_heap_alloc(16u64)
+    __builtin_ptr_write(p, 0u64, 42u64)
+    __builtin_heap_free(p)
+    val x = __builtin_ptr_read::<u64>(p, 0u64)
+    x
+}
+";
+    let (tree, vm) = heap_poison_errors(src);
+    let want = "heap check: read of 8 bytes at offset 0 of a 16-byte block that was already freed \
+                (allocated at test.t:2:18, freed at test.t:4:5)";
+    assert!(tree.contains(want), "tree-walker: {tree}");
+    assert!(vm.contains(want), "IR VM: {vm}");
+    assert_eq!(interpreter_value(src), 42);
+}
+
+/// HEAP-CHECK H1: a window held across a `push` that reallocates -- the
+/// hazard `core/std/span.t` names as unchecked -- reads the vector's
+/// old buffer, and poison mode says so: the block was moved by a resize.
+#[test]
+fn poison_mode_stops_a_window_held_across_a_resize() {
+    let src = r#"
+        fn main() -> u64 {
+            var v: Vec<u64> = Vec::new()
+            v.push(1u64)
+            val w = v.as_span()
+            val s: Span<u64> = w ?? panic("empty")
+            var i: u64 = 0u64
+            while i < 10u64 {
+                v.push(i)
+                i = i + 1u64
+            }
+            s.get(0u64)
+        }
+    "#;
+    let (tree, vm) = heap_poison_errors(src);
+    for (lane, err) in [("tree-walker", &tree), ("IR VM", &vm)] {
+        assert!(err.contains("heap check: read of 8 bytes at offset 0"), "{lane}: {err}");
+        assert!(err.contains("moved by a resize"), "{lane}: {err}");
+    }
+}

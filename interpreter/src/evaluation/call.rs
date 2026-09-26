@@ -799,11 +799,18 @@ impl EvaluationContext<'_> {
         args: Vec<RcObject>,
         call_site: Option<SourceLocation>,
     ) -> Result<EvaluationResult, InterpreterError> {
-        if let Some(result) = self.ptr_access_intrinsic(&method, &self_obj, &args)? {
-            return Ok(result);
-        }
-        if let Some(result) = self.span_range_intrinsic(&method, &self_obj, &args, call_site)? {
-            return Ok(result);
+        let intrinsic = match self.ptr_access_intrinsic(&method, &self_obj, &args) {
+            Ok(Some(r)) => Some(Ok(r)),
+            Ok(None) => self.span_range_intrinsic(&method, &self_obj, &args, call_site).transpose(),
+            Err(e) => Some(Err(e)),
+        };
+        if let Some(result) = intrinsic {
+            // HEAP-CHECK H1: an element access through a window onto a
+            // freed block stops here, at the call.
+            if let Some(message) = crate::heap::take_heap_fault() {
+                return Err(self.panic_error(message, call_site));
+            }
+            return result;
         }
         // DEBUG-OBS D1: this is the choke point every method reaches —
         // `s.boom()`, an operator overload, a `dyn` dispatch, drop

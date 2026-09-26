@@ -144,11 +144,19 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {
             "--all-backends" => all_backends = true,
             s if s.starts_with("--heap-check=") => match &s["--heap-check=".len()..] {
                 "report" => heap_check = true,
-                mode @ ("poison" | "reuse") => {
-                    return Err(format!(
-                        "--heap-check={mode} is not available yet; only `report` is \
-                         (design-docs/HEAP_CHECK.md, H0)"
-                    ))
+                "poison" => {
+                    return Err(
+                        "--heap-check=poison checks the interpreter's heap only for now: run \
+                         `interpreter --heap-check=poison` (the compiled lanes come with \
+                         design-docs/HEAP_CHECK.md H2)"
+                            .to_string(),
+                    )
+                }
+                "reuse" => {
+                    return Err(
+                        "--heap-check=reuse is not available yet (design-docs/HEAP_CHECK.md, H3)"
+                            .to_string(),
+                    )
                 }
                 other => return Err(format!("--heap-check expects `report`, got `{other}`")),
             },

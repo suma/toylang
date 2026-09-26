@@ -12,6 +12,10 @@
 
 ### 2026-09-26
 
+- **HEAP-CHECK H1 — interpreter レーンの `--heap-check=poison`** — free したブロックを
+  `0xDB` で埋めて型付きスロットも消し、以後の読み書きを「確保位置・解放位置」付きの
+  panic で止める (tree-walker と IR VM)。`push` をまたいで保持した `Span` の窓も
+  `moved by a resize` で止まる。example 全体で誤検出なし。
 - **HEAP-CHECK H0 — 二重 free の棚卸し (`--heap-check=report`)** — 両ヒープが
   解放済みの番地を覚え、2 回目の free を (確保 site, 1 回目, 2 回目) で数えて
   終了時に報告する (文言は 2 ヒープでバイト一致、`--all-backends` で突き合わせ)。
@@ -2898,8 +2902,8 @@
 * **ヒープ検査モード (HEAP-CHECK) の残り** — H0 (`--heap-check=report`、
   二重 free の棚卸し) と H0b (報告に二重 drop を起こした関数名) は 2026-09-26 に
   landing (完了済み節)、棚卸しで見つかった二重 drop も全部潰した
-  (DOUBLE-DROP-LANE-DIVERGENCE)。次は H1
-  (`poison`、interpreter レーン) → H2 (計装、compiled レーン) → H3 (`reuse`) →
+  (DOUBLE-DROP-LANE-DIVERGENCE)。H1 (`poison`、interpreter レーン) も landing。次は H2
+  (計装、compiled レーン。IR VM の報告に位置も付く) → H3 (`reuse`) →
   H4 (redzone) → H5 (二重 drop を潰して既定でエラー)。
   [`HEAP_CHECK.md`](HEAP_CHECK.md) §5 / §7。
 * **明示 import (MODULE-IMPORTS)** — stdlib も

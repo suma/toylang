@@ -263,7 +263,7 @@ fn main() -> u64 {
 fn heap_check_modes_not_built_yet_are_named() {
     let run = run_stdin("fn main() -> u64 {\n    0u64\n}\n", &["--all-backends", "--heap-check=poison"]);
     assert_ne!(run.status, 0);
-    assert!(run.stderr.contains("not available yet"), "stderr: {}", run.stderr);
+    assert!(run.stderr.contains("interpreter --heap-check=poison"), "stderr: {}", run.stderr);
 }
 
 /// HEAP-CHECK H0b: a double free is reported under the function that

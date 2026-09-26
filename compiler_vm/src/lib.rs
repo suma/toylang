@@ -140,6 +140,9 @@ pub struct Vm<'a> {
     /// initialiser stops the compile instead of hanging it.
     step_budget: Option<u64>,
     steps: u64,
+    /// HEAP-CHECK H1: the host refuses accesses to freed blocks and
+    /// holds the reason for the VM to report (`--heap-check=poison`).
+    heap_poison: bool,
 }
 
 impl<'a> Vm<'a> {
@@ -157,6 +160,7 @@ impl<'a> Vm<'a> {
             main_return_slots: Vec::new(),
             step_budget: None,
             steps: 0,
+            heap_poison: host.heap_poison_on(),
         }
     }
 
@@ -178,6 +182,7 @@ impl<'a> Vm<'a> {
             main_return_slots: Vec::new(),
             step_budget: None,
             steps: 0,
+            heap_poison: host.heap_poison_on(),
         }
     }
 
@@ -309,6 +314,14 @@ impl<'a> Vm<'a> {
                 }
                 // Ordinary instruction — dispatch only, no terminator.
                 dispatch::execute(self, &inst);
+                // HEAP-CHECK H1: an access to a freed block is the
+                // failure to report, ahead of whatever generic memory
+                // fault the refused access also produced.
+                if self.heap_poison
+                    && let Some(message) = self.host.take_heap_fault()
+                {
+                    self.memory_fault = Some(message);
+                }
                 // Record the result's static type so later type-polymorphic
                 // ops (BinOp f64/i64/u64) can recover operand types.
                 if let Some((vid, ty)) = inst.result {

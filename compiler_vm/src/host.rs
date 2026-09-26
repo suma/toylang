@@ -95,6 +95,15 @@ pub trait VmHost {
         self.free(ptr)
     }
 
+    /// Whether a heap check wants to know who frees (HEAP-CHECK H0b):
+    /// computing it walks the frames, so only when asked.
+    fn heap_check_on(&self) -> bool {
+        false
+    }
+
+    /// The function the next free is made on behalf of.
+    fn note_free_culprit(&self, _name: &str) {}
+
     // --- typed memory ---------------------------------------------
 
     /// Read a typed value from the heap at `addr + offset`. Prefers

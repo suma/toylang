@@ -17,6 +17,10 @@
   終了時に報告する (文言は 2 ヒープでバイト一致、`--all-backends` で突き合わせ)。
   `HeapFree` が site を持つようになった。stdin 入力の入口名も compiled レーンで
   `<stdin>` に揃えた (`CompilerOptions::display_name`)。結果は HEAP_CHECK.md §7。
+- **HEAP-CHECK H0b — 二重 free を起こした関数を名指す** — 2 回目の free の
+  backtrace から `*::drop` / `drop_glue_*` を飛ばした最初のフレーム名を鍵に
+  足した (`  x3  in sum: ...`)。tree-walker と並べて、二重 drop が実装ごとに
+  割れていることが分かった (DOUBLE-DROP-LANE-DIVERGENCE)。
 - **BARE-NAME-COLLISION の残り — `pub` の実効化と警告の文言** — 非 `pub` の
   module 関数は自分の module からしか呼べない (`check_function_access` が
   関数の `module_path` と検査中の本体の module を比べる)。stdlib では
@@ -2861,9 +2865,9 @@
 ## 検討中の機能
 
 * **ヒープ検査モード (HEAP-CHECK) の残り** — H0 (`--heap-check=report`、
-  二重 free の棚卸し) は 2026-09-26 に landing (完了済み節)。次は **H0b**
-  (2 回目の free の backtrace から最初の stdlib 外のフレームを鍵に足す — 今の鍵は
-  `Box::drop` のような `Drop` 実装しか指さず、経路が分からない)、続いて H1
+  二重 free の棚卸し) と H0b (報告に二重 drop を起こした関数名) は 2026-09-26 に
+  landing (完了済み節)。次は DOUBLE-DROP-LANE-DIVERGENCE (既知の不具合節) の
+  調査、続いて H1
   (`poison`、interpreter レーン) → H2 (計装、compiled レーン) → H3 (`reuse`) →
   H4 (redzone) → H5 (二重 drop を潰して既定でエラー)。
   [`HEAP_CHECK.md`](HEAP_CHECK.md) §5 / §7。
@@ -3013,17 +3017,18 @@
 
 ### 既知の不具合
 
-- **DOUBLE-DROP-LANE-DIVERGENCE: 二重 drop するかどうかがレーンで割れる** ★★ —
-  HEAP-CHECK H0 の棚卸し (2026-09-26) で、`crypto_sha256.t` は interpreter レーン
-  だけが `Vec` を 3 回二重 free し、`try_compound.t` は JIT / AOT だけが 1 回
-  二重 free する。どちらかのレーンが余計に drop しているか、片方が drop し
-  損ねている。free は冪等なので出力は変わらず、`--profile=mem` の突き合わせも
-  「要求」で数えるので見えていなかった。
-  `compiler -- <file> --all-backends --heap-check=report` で再現する。
-  あわせて、3 レーン一致で残っている二重 drop (`Box` の再帰構造 — 
-  `box_linked_list.t` / `box_binary_tree.t`、`String` — `json_config.t` と
-  poc/logsearch の archive) は HEAP-CHECK H5 で潰す。
-
+- **DOUBLE-DROP-LANE-DIVERGENCE: 二重 drop するかどうかが実装で割れる** ★★ —
+  HEAP-CHECK H0 / H0b の棚卸し (2026-09-26) で、tree-walker と lowering 系
+  (IR VM / JIT / AOT) の二重 free が食い違った: `Box` の連結リスト / 二分木は
+  lowering 系だけが二重 free (tree-walker は各ノード 1 回)、`try_compound.t` は
+  JIT / AOT だけ、`std_ord_sort.t` / `soa_column.t` は tree-walker だけ、
+  `crypto_sha256.t` は tree-walker と IR VM だけ。free が冪等なので出力は
+  変わらず、`--profile=mem` も「要求」で数えるので見えていなかった。表と
+  再現手順は [`HEAP_CHECK.md`](HEAP_CHECK.md) §7。lowering 系は
+  `compiler -- <file> --all-backends --heap-check=report`、tree-walker は
+  consistency harness の `tree_walker_heap_check_report`。`String` の二重 drop
+  (`json_config.t`、poc/logsearch の archive) は両側で起きている。潰すのが
+  HEAP-CHECK H5。
 - **TYPE-NAME-COLLISION の残り: 型の名前空間** ★ — 同じ root の 2 モジュールが
   同じ型名を宣言すると、黙って上書きせず `type \`Item\` is declared by more
   than one module: src/a.t, src/b.t` のエラーになった (2026-09-26)。残りは

@@ -597,7 +597,7 @@ struct ThreadState {
     // double frees seen, keyed by (allocated, first freed, freed again).
     hc_state: i8,
     hc_freed: alloc::collections::BTreeMap<usize, HcFreed>,
-    hc_events: alloc::collections::BTreeMap<(u64, u64, u64), HcEvent>,
+    hc_events: alloc::collections::BTreeMap<(u64, u64, u64, String), HcEvent>,
     // Program arguments for `toy_io_argc` / `toy_io_arg`. The AOT
     // binary reads the real process argv; the JIT injects these
     // (default: empty, matching a compiled binary with no arguments).
@@ -2344,12 +2344,37 @@ fn hc_note_freed(p: *mut u8, alloc_site: u64, alloc_file: *const u8, free_site: 
         .insert(p as usize, HcFreed { alloc_site, alloc_file, free_site, free_file });
 }
 
+/// HEAP-CHECK H0b: the function that set the second free off -- the
+/// innermost frame that is not a `Drop` impl or drop glue. The free
+/// itself is always in a `drop` (`Box::drop`), so without this the
+/// report named the type but not the code that dropped it twice.
+/// Empty when frames are not recorded (`--release`).
+fn hc_culprit() -> String {
+    let ctx = toy_shadow_ctx();
+    let depth = unsafe { (*ctx).depth } as usize;
+    let shown = depth.min(TOY_SHADOW_CAP);
+    for i in 0..shown {
+        let frame = frame_at(depth, i);
+        if frame.is_null() {
+            continue;
+        }
+        let name = unsafe { cstr_as_str((frame as *const u8).add(FRAME_NAME_OFFSET)) };
+        if name.ends_with("::drop") || name.starts_with("drop_glue") {
+            continue;
+        }
+        return String::from(name);
+    }
+    String::new()
+}
+
 fn hc_freed_again(p: *mut u8, site: u64, file: *const u8) {
     let st = thread_state();
     let Some(f) = st.hc_freed.get(&(p as usize)).copied() else {
         return; // not memory this runtime handed out
     };
-    let e = st.hc_events.entry((f.alloc_site, f.free_site, site)).or_insert(HcEvent {
+    let culprit = hc_culprit();
+    let st = thread_state();
+    let e = st.hc_events.entry((f.alloc_site, f.free_site, site, culprit)).or_insert(HcEvent {
         count: 0,
         alloc_file: f.alloc_file,
         first_file: f.free_file,
@@ -2379,14 +2404,16 @@ pub fn heap_check_report() -> String {
         "heap check: {total} double frees ({} distinct)\n",
         st.hc_events.len()
     );
-    for (&(alloc, first, again), e) in &st.hc_events {
+    for ((alloc, first, again, culprit), e) in &st.hc_events {
+        let (alloc, first, again) = (*alloc, *first, *again);
         let first = if first == HC_RESIZE {
             String::from("moved by a resize")
         } else {
             format!("freed at {}", hc_position(first, e.first_file))
         };
+        let within = if culprit.is_empty() { String::new() } else { format!("in {culprit}: ") };
         out.push_str(&format!(
-            "  x{}  allocated at {}, {first}, freed again at {}\n",
+            "  x{}  {within}allocated at {}, {first}, freed again at {}\n",
             e.count,
             hc_position(alloc, e.alloc_file),
             hc_position(again, e.again_file),

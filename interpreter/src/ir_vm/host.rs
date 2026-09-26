@@ -80,6 +80,14 @@ impl VmHost for InterpreterHost {
         let _ = with_active_allocator(|alloc| alloc.free(ptr as usize));
     }
 
+    fn heap_check_on(&self) -> bool {
+        crate::heap::heap_check_on()
+    }
+
+    fn note_free_culprit(&self, name: &str) {
+        crate::heap::heap_check_note_culprit(name);
+    }
+
     fn free_at(&self, ptr: u64, site: u64, file: &str) {
         crate::heap::note_free_site_file(site, file);
         let _ = with_active_allocator(|alloc| alloc.free_at(ptr as usize, site));

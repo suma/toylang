@@ -243,8 +243,8 @@ fn main() -> u64 {
     assert!(
         run.stderr.contains(
             "heap check: 2 double frees (2 distinct)\n\
-             \x20 x1  allocated at <stdin>:2:18, freed at <stdin>:3:5, freed again at <stdin>:4:5\n\
-             \x20 x1  allocated at <stdin>:5:18, moved by a resize, freed again at <stdin>:7:5\n"
+             \x20 x1  in main: allocated at <stdin>:2:18, freed at <stdin>:3:5, freed again at <stdin>:4:5\n\
+             \x20 x1  in main: allocated at <stdin>:5:18, moved by a resize, freed again at <stdin>:7:5\n"
         ),
         "stderr: {}",
         run.stderr
@@ -264,4 +264,29 @@ fn heap_check_modes_not_built_yet_are_named() {
     let run = run_stdin("fn main() -> u64 {\n    0u64\n}\n", &["--all-backends", "--heap-check=poison"]);
     assert_ne!(run.status, 0);
     assert!(run.stderr.contains("not available yet"), "stderr: {}", run.stderr);
+}
+
+/// HEAP-CHECK H0b: a double free is reported under the function that
+/// set it off -- the innermost frame that is not a `Drop` impl or drop
+/// glue -- because the free itself is always in `Box::drop`. The Box
+/// list example double-frees from `main` and from `sum` on the lanes
+/// that share the lowering (the tree-walker frees each node once; see
+/// `the_tree_walker_frees_each_box_once`).
+#[test]
+fn heap_check_names_the_function_behind_a_double_free() {
+    if skip_e2e() {
+        return;
+    }
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../interpreter/example/box_linked_list.t");
+    let out = Command::new(BIN)
+        .arg(path)
+        .args(["--all-backends", "--heap-check=report", "--core-modules"])
+        .arg(core_modules_dir())
+        .output()
+        .expect("spawn compiler");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("heap check: 6 double frees (2 distinct)\n"), "stderr: {stderr}");
+    assert!(stderr.contains("  x3  in main: allocated at core/std/box.t:"), "stderr: {stderr}");
+    assert!(stderr.contains("  x3  in sum: allocated at core/std/box.t:"), "stderr: {stderr}");
+    assert!(stderr.contains("all 3 backends agree"), "stderr: {stderr}");
 }

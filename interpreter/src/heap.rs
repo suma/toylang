@@ -572,8 +572,12 @@ struct HeapCheckState {
     on: bool,
     /// Freed block -> (allocated at, first freed at).
     freed: HashMap<usize, (u64, u64)>,
-    /// (allocated at, first freed at, freed again at) -> times.
-    events: std::collections::BTreeMap<(u64, u64, u64), u64>,
+    /// (allocated at, first freed at, freed again at, culprit) -> times.
+    events: std::collections::BTreeMap<(u64, u64, u64, String), u64>,
+    /// H0b: the function the next free is made from on behalf of --
+    /// set by the engine just before it frees (see
+    /// `heap_check_note_culprit`).
+    culprit: String,
     /// The file each free site is in; allocation sites use the
     /// profiler's (`note_site_file`).
     files: HashMap<u64, String>,
@@ -592,6 +596,33 @@ pub fn heap_check_start() {
 /// Whether report mode is on.
 pub fn heap_check_on() -> bool {
     HEAP_CHECK.with(|h| h.borrow().on)
+}
+
+/// HEAP-CHECK H0b: the function that set off the free about to happen
+/// -- the innermost frame that is not a `Drop` impl or drop glue. The
+/// engine names it (it has the call stack; the heap does not); a
+/// double free is then reported under it.
+pub fn heap_check_note_culprit(name: &str) {
+    HEAP_CHECK.with(|h| {
+        let mut h = h.borrow_mut();
+        if h.on {
+            h.culprit.clear();
+            h.culprit.push_str(name);
+        }
+    });
+}
+
+/// Which frame [`heap_check_note_culprit`] should name, from frame
+/// names innermost first -- the rule every engine uses, so the reports
+/// agree.
+pub fn heap_check_culprit<'a>(innermost_first: impl Iterator<Item = &'a str>) -> &'a str {
+    for name in innermost_first {
+        if name.ends_with("::drop") || name.starts_with("drop_glue") {
+            continue;
+        }
+        return name;
+    }
+    ""
 }
 
 /// Remember which file a free site is in.
@@ -625,7 +656,8 @@ fn heap_check_freed_again(addr: usize, site: u64) {
         let Some(&(alloc, first)) = h.freed.get(&addr) else {
             return; // not memory this heap handed out
         };
-        *h.events.entry((alloc, first, site)).or_default() += 1;
+        let culprit = h.culprit.clone();
+        *h.events.entry((alloc, first, site, culprit)).or_default() += 1;
     });
 }
 
@@ -650,14 +682,16 @@ pub fn heap_check_report() -> String {
         let h = h.borrow();
         let total: u64 = h.events.values().sum();
         let mut out = format!("heap check: {total} double frees ({} distinct)\n", h.events.len());
-        for (&(alloc, first, again), count) in &h.events {
+        for ((alloc, first, again, culprit), count) in &h.events {
+            let (alloc, first, again) = (*alloc, *first, *again);
             let first = if first == HEAP_CHECK_RESIZE {
                 "moved by a resize".to_string()
             } else {
                 format!("freed at {}", heap_check_position(first, &h.files))
             };
+            let within = if culprit.is_empty() { String::new() } else { format!("in {culprit}: ") };
             out.push_str(&format!(
-                "  x{count}  allocated at {}, {first}, freed again at {}\n",
+                "  x{count}  {within}allocated at {}, {first}, freed again at {}\n",
                 heap_check_position(alloc, &h.files),
                 heap_check_position(again, &h.files),
             ));

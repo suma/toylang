@@ -769,7 +769,23 @@ fn main() -> u64 {
     assert_eq!(
         tree_walker_heap_check_report(src),
         "heap check: 2 double frees (2 distinct)\n\
-         \x20 x1  allocated at test.t:2:18, freed at test.t:3:5, freed again at test.t:4:5\n\
-         \x20 x1  allocated at test.t:5:18, moved by a resize, freed again at test.t:7:5\n"
+         \x20 x1  in main: allocated at test.t:2:18, freed at test.t:3:5, freed again at test.t:4:5\n\
+         \x20 x1  in main: allocated at test.t:5:18, moved by a resize, freed again at test.t:7:5\n"
     );
+}
+
+/// HEAP-CHECK H0: the tree-walker frees each node of the Box list
+/// once. The lanes that share `compiler_lower` (IR VM, JIT, AOT) free
+/// six of them twice (`all_backends_cli.rs` pins that report), so the
+/// double drops the inventory found are the lowering's drop glue, not
+/// the program -- DOUBLE-DROP-LANE-DIVERGENCE in todo.md. This pins the
+/// oracle's side, which is also the answer the lowering should reach.
+#[test]
+fn the_tree_walker_frees_each_box_once() {
+    let src = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../interpreter/example/box_linked_list.t"
+    ))
+    .expect("read example");
+    assert_eq!(tree_walker_heap_check_report(&src), "heap check: 0 double frees (0 distinct)\n");
 }

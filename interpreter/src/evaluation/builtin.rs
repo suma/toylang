@@ -773,6 +773,11 @@ impl EvaluationContext<'_> {
                     crate::heap::note_free_site_file(packed, path);
                 }
             }
+            // HEAP-CHECK H0b: who set this free off.
+            if crate::heap::heap_check_on() {
+                let names = self.call_stack.iter().rev().map(|f| f.function.as_str());
+                crate::heap::heap_check_note_culprit(crate::heap::heap_check_culprit(names));
+            }
             allocator.free_at(addr, packed);
             Ok(EvaluationResult::Value((Object::Unit).into()))
         }

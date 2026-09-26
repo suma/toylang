@@ -361,11 +361,30 @@ heap check: 6 double frees (1 distinct)
    `try_compound.t`)。どちらかのレーンが余計に drop しているか、片方が
    drop し損ねている。これまでの `--profile=mem` の突き合わせは件数
    (`free_count`) を「要求」で数えるので、二重 free の有無の差は見えていなかった。
-3. **H0 の鍵では経路が分からない。** 解放の位置はいつも各型の `Drop` 実装
-   (`Box::drop` など) で、確保の位置も stdlib の中なので、「どの型が二重に
-   drop されたか」までしか言えない。**次の一手 (H0b)**: 2 回目の free の
-   backtrace (DEBUG-OBS の shadow stack / `call_stack`) のうち、最初の
-   stdlib 外のフレームを鍵に足す。これで二重 drop を起こしたユーザコードの
-   行が出る。
+3. **経路 (H0b、同日 landing)。** 解放の位置はいつも各型の `Drop` 実装なので、
+   2 回目の free の backtrace から `*::drop` と `drop_glue_*` を飛ばした最初の
+   フレームの**関数名**を鍵に足した (`  x3  in sum: allocated at ...`)。
+   compiled レーンのフレーム記録は行と名前しか持たないので、名前だけを使う。
+   3 つの実装 (tree-walker の `call_stack`、IR VM の `backtrace_frames`、
+   `toylang_rt` の shadow stack) が同じ規則で選ぶ。`--release` はフレームを
+   積まないので名前が出ない。
+
+### tree-walker との比較 (H0b の後)
+
+`--all-backends` は tree-walker を走らせないので、tree-walker 単独の報告と
+並べ直した (panic する example など、`--all-backends` が完走しないものは除く):
+
+| example | tree-walker | lowering 系 (IR VM / JIT / AOT) |
+|---|---|---|
+| `box_linked_list.t` / `box_binary_tree.t` | **0** | 6 / 16 |
+| `try_compound.t` | 0 | JIT / AOT で 1 |
+| `std_ord_sort.t` | **5** | 0 |
+| `soa_column.t` | **1** | 0 |
+| `crypto_sha256.t` | 3 | JIT / AOT は 0 (IR VM は 3) |
+| `json_config.t` | 6 (2 か所) | 6 (1 か所) |
+
+**二重 drop の原因は両側にある。** `Box` の再帰構造は lowering の drop glue
+だけが二重に解放し (tree-walker は各ノード 1 回)、`sort` と `soa Vec` の列は
+tree-walker だけが二重に解放する。どれも free が冪等なので出力には出ていない。
 
 未実装節の todo (二重 drop の原因を潰す = H5) はこの一覧から切る。

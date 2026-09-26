@@ -500,6 +500,11 @@ fn exec_heap_and_pointer(vm: &mut Vm, inst: &Instruction) {
         InstKind::HeapFree { ptr, site, .. } => {
             let p = vm.read_value(*ptr);
             let packed = vm.module().packed_site(*site);
+            if host.heap_check_on() {
+                let frames = vm.backtrace_frames();
+                let names = frames.iter().map(|(name, _)| name.as_str());
+                host.note_free_culprit(interp_culprit(names));
+            }
             host.free_at(unsafe { p.u64 }, packed, vm.module().site_file(*site));
         }
         InstKind::PtrRead { ptr, offset, elem_ty } => {
@@ -1095,4 +1100,17 @@ fn format_scalar(host: &dyn VmHost, slot: RawSlot, ty: Type) -> String {
         Type::Vector(v) => crate::simd::format(slot.read_v128(), v),
         _ => format!("{:?}", unsafe { slot.u64 }),
     }
+}
+
+/// HEAP-CHECK H0b: the innermost frame that is not a `Drop` impl or
+/// drop glue -- the same rule as `interpreter::heap::heap_check_culprit`
+/// and `toylang_rt`'s, which this crate cannot depend on.
+fn interp_culprit<'a>(innermost_first: impl Iterator<Item = &'a str>) -> &'a str {
+    for name in innermost_first {
+        if name.ends_with("::drop") || name.starts_with("drop_glue") {
+            continue;
+        }
+        return name;
+    }
+    ""
 }

@@ -598,6 +598,15 @@ struct ThreadState {
     hc_state: i8,
     hc_freed: alloc::collections::BTreeMap<usize, HcFreed>,
     hc_events: alloc::collections::BTreeMap<(u64, u64, u64, String), HcEvent>,
+    /// HEAP-CHECK H3 (reuse mode, `hc_state == 3`): freed blocks in
+    /// quarantine, oldest first, as (address, size class); the bytes
+    /// they add up to and may add up to; blocks out of quarantine by
+    /// size class, last in first out; allocations served from them.
+    hc_quarantine: alloc::collections::VecDeque<(usize, u64)>,
+    hc_q_bytes: u64,
+    hc_q_limit: u64,
+    hc_free_lists: alloc::collections::BTreeMap<u64, Vec<usize>>,
+    hc_reused: u64,
     // Program arguments for `toy_io_argc` / `toy_io_arg`. The AOT
     // binary reads the real process argv; the JIT injects these
     // (default: empty, matching a compiled binary with no arguments).
@@ -696,6 +705,11 @@ impl Default for ThreadState {
             hc_state: -1,
             hc_freed: alloc::collections::BTreeMap::new(),
             hc_events: alloc::collections::BTreeMap::new(),
+            hc_quarantine: alloc::collections::VecDeque::new(),
+            hc_q_bytes: 0,
+            hc_q_limit: HC_QUARANTINE_DEFAULT,
+            hc_free_lists: alloc::collections::BTreeMap::new(),
+            hc_reused: 0,
             io_args: core::ptr::null_mut(),
             io_args_len: 0,
             random_state: 0,
@@ -2128,7 +2142,7 @@ pub extern "C" fn toy_dispatched_alloc(
     if size == 0 {
         return core::ptr::null_mut();
     }
-    let p = bump_alloc_raw(size as usize);
+    let p = hc_alloc_raw(size as usize);
     if !p.is_null() {
         // DROP-GLUE: the size table is maintained even when no report
         // was asked for — an always-on registry is what makes
@@ -2183,6 +2197,7 @@ pub extern "C" fn toy_dispatched_free(
     if hc_enabled() {
         hc_note_freed(p, size, site, file, free_site, free_file);
         hc_poison(p, size);
+        hc_quarantine(p, size);
     }
     if prof_enabled() {
         let st = thread_state();
@@ -2230,7 +2245,7 @@ pub unsafe extern "C" fn toy_dispatched_realloc(
     let (old_size, site, file) = prof_take(p);
     // Bump-region move: a fresh block, old contents copied, the old
     // block left in place (it is never reused).
-    let np = bump_alloc_raw(new_size as usize);
+    let np = hc_alloc_raw(new_size as usize);
     if np.is_null() {
         prof_put(p, old_size, site, file); // restore tracking on failure
         return core::ptr::null_mut();
@@ -2278,6 +2293,7 @@ pub unsafe extern "C" fn toy_dispatched_realloc(
     // contents reached the new one.
     if old_size > 0 && hc_enabled() {
         hc_poison(p, old_size);
+        hc_quarantine(p, old_size);
     }
     prof_put(np, new_size, site, file);
     np
@@ -2328,15 +2344,26 @@ fn hc_enabled() -> bool {
         st.hc_state = match v {
             b"report" => 1,
             b"poison" => 2,
+            b"reuse" => 3,
             b"" | b"0" | b"off" => 0,
             _ => {
                 err_write(&format!(
-                    "toylang: TOY_HEAP_CHECK={} is not available; use `report` or `poison` (HEAP-CHECK)\n",
+                    "toylang: TOY_HEAP_CHECK={} is not available; use `report`, `poison` or `reuse` (HEAP-CHECK)\n",
                     core::str::from_utf8(v).unwrap_or("?")
                 ));
                 0
             }
         };
+        if st.hc_state == 3 {
+            let q = unsafe { getenv(c"TOY_HEAP_QUARANTINE".as_ptr().cast()) };
+            if !q.is_null() {
+                let text = unsafe { core::ffi::CStr::from_ptr(q as *const core::ffi::c_char) };
+                match text.to_str().ok().and_then(|t| t.parse::<u64>().ok()) {
+                    Some(n) => st.hc_q_limit = n,
+                    None => err_write("toylang: TOY_HEAP_QUARANTINE expects a number of bytes\n"),
+                }
+            }
+        }
         if st.hc_state > 0 {
             unsafe {
                 atexit(toy_heap_check_report);
@@ -2365,7 +2392,7 @@ fn hc_note_freed(
 /// see (runtime-internal) reads a recognisable pattern, not the old
 /// contents.
 fn hc_poison(p: *mut u8, size: u64) {
-    if thread_state().hc_state == 2 && size > 0 {
+    if thread_state().hc_state >= 2 && size > 0 {
         unsafe { core::ptr::write_bytes(p, HC_POISON_BYTE, size as usize) };
     }
 }
@@ -2373,6 +2400,54 @@ fn hc_poison(p: *mut u8, size: u64) {
 /// The byte a freed block is filled with; the interpreter's
 /// `HEAP_POISON_BYTE`.
 const HC_POISON_BYTE: u8 = 0xDB;
+
+/// H3: the interpreter's `HEAP_QUARANTINE_DEFAULT`.
+const HC_QUARANTINE_DEFAULT: u64 = 1 << 20;
+
+/// H3: the interpreter's `heap_size_class` -- and what `bump_alloc_raw`
+/// reserves for a block, so any request of the class fits.
+fn hc_size_class(size: u64) -> u64 {
+    size.div_ceil(16) * 16
+}
+
+/// H3: a block for a request of `size` bytes -- in reuse mode, the
+/// last one released of its size class if there is one.
+fn hc_alloc_raw(size: usize) -> *mut u8 {
+    if hc_enabled() {
+        let st = thread_state();
+        if st.hc_state == 3 {
+            let class = hc_size_class(size as u64);
+            if let Some(p) = st.hc_free_lists.get_mut(&class).and_then(Vec::pop) {
+                st.hc_reused += 1;
+                return p as *mut u8;
+            }
+        }
+    }
+    bump_alloc_raw(size)
+}
+
+/// H3: in reuse mode, put a freed block in quarantine and let the
+/// oldest out while the quarantine is over its size. A block let out
+/// is forgotten -- an access to it is no longer an access to freed
+/// memory once it can be handed out again -- and waits for a request
+/// of its class. The interpreter's `quarantine_block`, step for step.
+fn hc_quarantine(p: *mut u8, size: u64) {
+    let st = thread_state();
+    if st.hc_state != 3 {
+        return;
+    }
+    let class = hc_size_class(size);
+    st.hc_quarantine.push_back((p as usize, class));
+    st.hc_q_bytes += class;
+    while st.hc_q_bytes > st.hc_q_limit {
+        let Some((a, c)) = st.hc_quarantine.pop_front() else {
+            break;
+        };
+        st.hc_q_bytes -= c;
+        st.hc_freed.remove(&a);
+        st.hc_free_lists.entry(c).or_default().push(a);
+    }
+}
 
 /// HEAP-CHECK H2: `len` bytes at `addr` are about to be read (or
 /// written). In poison mode, stop if they touch a freed block, with
@@ -2391,7 +2466,7 @@ pub unsafe extern "C" fn toy_heap_check(
     suffix: *const u8,
 ) {
     let st = thread_state();
-    if st.hc_state != 2 || addr == 0 {
+    if st.hc_state < 2 || addr == 0 {
         return;
     }
     let len = len.max(1);
@@ -2423,12 +2498,12 @@ pub unsafe extern "C" fn toy_heap_check(
     unsafe { exit(1) };
 }
 
-/// Turn poison mode on for an instrumented binary
-/// (`compiler --heap-check=poison`), which calls this first thing in
-/// `main`. `TOY_HEAP_CHECK=report` is overridden: the build asked for
-/// poison.
+/// Turn poison (`mode` 2) or reuse (`mode` 3, with `quarantine`
+/// bytes) on for an instrumented binary (`compiler --heap-check=...`),
+/// which calls this first thing in `main`. `TOY_HEAP_CHECK` is
+/// overridden: the build asked for the mode.
 #[unsafe(no_mangle)]
-pub extern "C" fn toy_heap_check_poison_start() {
+pub extern "C" fn toy_heap_check_start_mode(mode: u64, quarantine: u64) {
     let _ = hc_enabled();
     let st = thread_state();
     if st.hc_state == 0 {
@@ -2436,7 +2511,8 @@ pub extern "C" fn toy_heap_check_poison_start() {
             atexit(toy_heap_check_report);
         }
     }
-    st.hc_state = 2;
+    st.hc_state = if mode == 3 { 3 } else { 2 };
+    st.hc_q_limit = quarantine;
 }
 
 /// HEAP-CHECK H0b: the function that set the second free off -- the
@@ -2495,8 +2571,13 @@ fn hc_position(site: u64, file: *const u8) -> String {
 pub fn heap_check_report() -> String {
     let st = thread_state();
     let total: u64 = st.hc_events.values().map(|e| e.count).sum();
+    let reused = if st.hc_state == 3 {
+        format!(", {} blocks reused", st.hc_reused)
+    } else {
+        String::new()
+    };
     let mut out = format!(
-        "heap check: {total} double frees ({} distinct)\n",
+        "heap check: {total} double frees ({} distinct){reused}\n",
         st.hc_events.len()
     );
     for ((alloc, first, again, culprit), e) in &st.hc_events {
@@ -2524,12 +2605,26 @@ pub fn heap_check_start() {
     st.hc_state = 1;
     st.hc_freed.clear();
     st.hc_events.clear();
+    st.hc_quarantine.clear();
+    st.hc_q_bytes = 0;
+    st.hc_q_limit = HC_QUARANTINE_DEFAULT;
+    st.hc_free_lists.clear();
+    st.hc_reused = 0;
 }
 
 /// Start poison mode on this thread (JIT accessor).
 pub fn heap_check_start_poison() {
     heap_check_start();
     thread_state().hc_state = 2;
+}
+
+/// Start reuse mode on this thread, with `quarantine` bytes (JIT
+/// accessor).
+pub fn heap_check_start_reuse(quarantine: u64) {
+    heap_check_start();
+    let st = thread_state();
+    st.hc_state = 3;
+    st.hc_q_limit = quarantine;
 }
 
 extern "C" fn toy_heap_check_report() {

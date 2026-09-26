@@ -99,8 +99,8 @@ struct Mode {
     /// verdict) as one JSON document on stdout. The same flag also
     /// shapes the diagnostics and the memory report.
     json: bool,
-    /// HEAP-CHECK H0: `--heap-check=report` under `--all-backends`.
-    heap_check: bool,
+    /// HEAP-CHECK: `--heap-check=report|reuse` under `--all-backends`.
+    heap_check: compiler::all_backends::HeapCheckRun,
 }
 
 fn emit_name(emit: EmitKind) -> &'static str {
@@ -129,6 +129,8 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {
     let mut json = false;
     let mut heap_check = false;
     let mut options_heap_poison = false;
+    let mut heap_reuse = false;
+    let mut heap_quarantine: Option<u64> = None;
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -148,16 +150,21 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {
                 // HEAP-CHECK H2: poison is built in -- every raw access
                 // gets a check in front of it -- so it is a build flag.
                 "poison" => options_heap_poison = true,
-                "reuse" => {
-                    return Err(
-                        "--heap-check=reuse is not available yet (design-docs/HEAP_CHECK.md, H3)"
-                            .to_string(),
-                    )
-                }
+                // H3: a build flag like poison, or under --all-backends a
+                // run-time mode every lane runs uninstrumented.
+                "reuse" => heap_reuse = true,
                 other => {
-                    return Err(format!("--heap-check expects `report` or `poison`, got `{other}`"))
+                    return Err(format!(
+                        "--heap-check expects `report`, `poison` or `reuse`, got `{other}`"
+                    ))
                 }
             },
+            s if s.starts_with("--heap-quarantine=") => {
+                let v = &s["--heap-quarantine=".len()..];
+                heap_quarantine = Some(v.parse().map_err(|_| {
+                    format!("--heap-quarantine expects a number of bytes, got `{v}`")
+                })?);
+            }
             // Repeatable, and a comma list: `--profile=mem,compile`.
             s if s.starts_with("--profile=") => {
                 for what in s["--profile=".len()..].split(',') {
@@ -248,9 +255,24 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {
                 .to_string(),
         );
     }
-    if options_heap_poison && heap_check {
-        return Err("--heap-check takes one mode: `report` or `poison`".to_string());
+    if u8::from(options_heap_poison) + u8::from(heap_check) + u8::from(heap_reuse) > 1 {
+        return Err("--heap-check takes one mode: `report`, `poison` or `reuse`".to_string());
     }
+    if heap_quarantine.is_some() && !heap_reuse {
+        return Err("--heap-quarantine applies to --heap-check=reuse only".to_string());
+    }
+    let quarantine = heap_quarantine.unwrap_or(compiler::all_backends::HEAP_QUARANTINE_DEFAULT);
+    if heap_reuse && !all_backends {
+        options.heap_check = true;
+        options.heap_reuse = Some(quarantine);
+    }
+    let heap_check = if heap_check {
+        compiler::all_backends::HeapCheckRun::Report
+    } else if heap_reuse && all_backends {
+        compiler::all_backends::HeapCheckRun::Reuse(quarantine)
+    } else {
+        compiler::all_backends::HeapCheckRun::Off
+    };
     if options_heap_poison && all_backends {
         return Err(
             "--heap-check=poison stops the process at the first bad access, which the in-process \

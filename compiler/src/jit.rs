@@ -227,8 +227,9 @@ fn compile_program_to_jit(
     // on this thread; the harness may call `set_jit_program_args`
     // between compile and run to override it.
     toylang_rt::set_program_args(Vec::new());
-    let ir_module =
+    let mut ir_module =
         lower::lower_program_with(program, interner, contract_msgs, options.release, options.heap_check)?;
+    ir_module.heap_reuse = options.heap_reuse;
 
     // Build the JIT module. `cranelift_native::builder()` selects
     // the host ISA the same way `make_object_module` does, but
@@ -428,7 +429,7 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
         toy_panic_alloc_budget,
         // HEAP-CHECK H2.
         toy_heap_check,
-        toy_heap_check_poison_start,
+        toy_heap_check_start_mode,
         // DEBUG-OBS D3.
         toy_panic_at,
         // DEBUG-OBS D5.

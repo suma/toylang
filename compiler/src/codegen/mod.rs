@@ -58,6 +58,7 @@ pub fn emit_object(
     use frontend::compile_profile as prof;
     let lower_phase = prof::phase("lower");
     let mut ir_module = lower::lower_program_with(program, interner, contract_msgs, options.release, options.heap_check)?;
+    ir_module.heap_reuse = options.heap_reuse;
     if options.test_mode {
         lower::install_test_driver(&mut ir_module, program, interner, options.test_only.as_deref())?;
     }
@@ -103,7 +104,8 @@ pub fn emit_ir_text(
     contract_msgs: &ContractMessages,
     options: &CompilerOptions,
 ) -> Result<String, String> {
-    let ir_module = lower::lower_program_with(program, interner, contract_msgs, options.release, options.heap_check)?;
+    let mut ir_module = lower::lower_program_with(program, interner, contract_msgs, options.release, options.heap_check)?;
+    ir_module.heap_reuse = options.heap_reuse;
     Ok(format!("{ir_module}"))
 }
 
@@ -115,7 +117,8 @@ pub fn emit_clif_text(
     contract_msgs: &ContractMessages,
     options: &CompilerOptions,
 ) -> Result<String, String> {
-    let ir_module = lower::lower_program_with(program, interner, contract_msgs, options.release, options.heap_check)?;
+    let mut ir_module = lower::lower_program_with(program, interner, contract_msgs, options.release, options.heap_check)?;
+    ir_module.heap_reuse = options.heap_reuse;
     let module = make_object_module()?;
     let mut session = CodegenSession::new(module)?;
     session.declare_all(&ir_module, interner)?;
@@ -380,7 +383,7 @@ pub(crate) struct CodegenSession<M: Module> {
     /// HEAP-CHECK H2: `toy_heap_check(addr, len, write, prefix, suffix)`
     /// and the entry's `toy_heap_check_poison_start()`.
     rt_heap_check: cranelift_module::FuncId,
-    rt_heap_check_poison_start: cranelift_module::FuncId,
+    rt_heap_check_start_mode: cranelift_module::FuncId,
     /// DEBUG-OBS D3: `toy_panic_at(text)` — write a pre-rendered
     /// diagnostic to stderr and exit.
     rt_panic_at: cranelift_module::FuncId,
@@ -797,7 +800,8 @@ impl<M: Module> CodegenSession<M> {
         // front of every raw access, with the same frame halves a
         // budget violation writes around its sentence.
         let rt_heap_check = imp.declare("toy_heap_check", &[abi(I64); 5], &[])?;
-        let rt_heap_check_poison_start = imp.declare("toy_heap_check_poison_start", &[], &[])?;
+        let rt_heap_check_start_mode =
+            imp.declare("toy_heap_check_start_mode", &[abi(I64), abi(I64)], &[])?;
         // DEBUG-OBS D3. `toy_panic_at(text)` writes an already-rendered
         // diagnostic to stderr and exits. The whole text is static, so
         // the helper takes one pointer and does no formatting.
@@ -924,7 +928,7 @@ impl<M: Module> CodegenSession<M> {
             rt_prof_stat,
             rt_panic_alloc_budget,
             rt_heap_check,
-            rt_heap_check_poison_start,
+            rt_heap_check_start_mode,
             rt_panic_at,
             rt_backtrace_str,
             rt_panic_recursion,
@@ -1811,7 +1815,7 @@ struct RuntimeRefs {
     prof_stat: cranelift_codegen::ir::FuncRef,
     panic_alloc_budget: cranelift_codegen::ir::FuncRef,
     heap_check: cranelift_codegen::ir::FuncRef,
-    heap_check_poison_start: cranelift_codegen::ir::FuncRef,
+    heap_check_start_mode: cranelift_codegen::ir::FuncRef,
     panic_at: cranelift_codegen::ir::FuncRef,
     backtrace_str: cranelift_codegen::ir::FuncRef,
     panic_recursion: cranelift_codegen::ir::FuncRef,
@@ -2246,8 +2250,16 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
 
         // 2b'. HEAP-CHECK H2: an instrumented build is in poison mode
         //      from its first instruction.
+        //      (H3: or in reuse mode, with the quarantine it was built
+        //      with.)
         if func.export_name == "main" && self.ir_module.heap_check {
-            self.builder.ins().call(self.runtime.heap_check_poison_start, &[]);
+            let (mode, quarantine) = match self.ir_module.heap_reuse {
+                Some(q) => (3, q),
+                None => (2, 0),
+            };
+            let mode_v = self.builder.ins().iconst(types::I64, mode);
+            let q_v = self.builder.ins().iconst(types::I64, quarantine as i64);
+            self.builder.ins().call(self.runtime.heap_check_start_mode, &[mode_v, q_v]);
         }
 
         // 2c. DEBUG-OBS D4: the shadow-stack prologue.

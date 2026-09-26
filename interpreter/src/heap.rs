@@ -587,6 +587,8 @@ struct HeapCheckState {
     /// The file each free site is in; allocation sites use the
     /// profiler's (`note_site_file`).
     files: HashMap<u64, String>,
+    /// H3: how many allocations were served from a recycled block.
+    reused: u64,
 }
 
 thread_local! {
@@ -597,6 +599,33 @@ thread_local! {
     /// H1: the access to a freed block the heap refused, for the engine
     /// to report where it can (it knows the position and the frames).
     static HEAP_FAULT: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// H3: the quarantine size in bytes when reuse mode is on.
+    static HEAP_REUSE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// H3: the quarantine a freed block waits in before it can be handed
+/// out again, when nothing else says (`--heap-quarantine`).
+pub const HEAP_QUARANTINE_DEFAULT: usize = 1 << 20;
+
+/// H3: the size class a block of `size` bytes is recycled under --
+/// the size rounded up to 16, which is also what the compiled lanes'
+/// bump region reserves for it. The two heaps must agree on this and
+/// on the order below, or a reused block would differ between lanes.
+pub fn heap_size_class(size: usize) -> usize {
+    size.div_ceil(16) * 16
+}
+
+/// Start reuse mode (`--heap-check=reuse`): poison mode, except that a
+/// freed block leaves quarantine once more than `quarantine` bytes are
+/// waiting (oldest first) and is then handed out again by the next
+/// request of its size class (most recently released first).
+pub fn heap_check_start_reuse(quarantine: usize) {
+    heap_check_start_poison();
+    HEAP_REUSE.with(|r| r.set(Some(quarantine)));
+}
+
+fn heap_reuse_quarantine() -> Option<usize> {
+    HEAP_REUSE.with(|r| r.get())
 }
 
 /// The byte every freed block is filled with in poison mode. `0xDB`
@@ -613,6 +642,7 @@ pub fn heap_check_start_poison() {
     });
     HEAP_POISON.with(|p| p.set(true));
     HEAP_FAULT.with(|f| *f.borrow_mut() = None);
+    HEAP_REUSE.with(|r| r.set(None));
 }
 
 /// Whether poison mode is on.
@@ -684,6 +714,7 @@ fn heap_check_access(addr: usize, len: usize, write: bool) -> bool {
 pub fn heap_check_start() {
     HEAP_CHECK.with(|h| *h.borrow_mut() = HeapCheckState { on: true, ..Default::default() });
     HEAP_POISON.with(|p| p.set(false));
+    HEAP_REUSE.with(|r| r.set(None));
 }
 
 /// Whether report mode is on.
@@ -777,7 +808,13 @@ pub fn heap_check_report() -> String {
     HEAP_CHECK.with(|h| {
         let h = h.borrow();
         let total: u64 = h.events.values().sum();
-        let mut out = format!("heap check: {total} double frees ({} distinct)\n", h.events.len());
+        let reused = if heap_reuse_quarantine().is_some() {
+            format!(", {} blocks reused", h.reused)
+        } else {
+            String::new()
+        };
+        let mut out =
+            format!("heap check: {total} double frees ({} distinct){reused}\n", h.events.len());
         for ((alloc, first, again, culprit), count) in &h.events {
             let (alloc, first, again) = (*alloc, *first, *again);
             let first = if first == HEAP_CHECK_RESIZE {
@@ -810,6 +847,13 @@ pub struct HeapManager {
     // byte-level reads, but still deposit the Rc here to keep a single source
     // of truth.
     typed_slots: HashMap<(usize, usize), crate::object::RcObject>,
+    /// HEAP-CHECK H3: freed blocks waiting to be recycled, oldest
+    /// first, as (address, size class), and the bytes they add up to.
+    quarantine: std::collections::VecDeque<(usize, usize)>,
+    quarantined: usize,
+    /// H3: blocks out of quarantine, by size class; the last one
+    /// pushed is handed out first.
+    free_lists: HashMap<usize, Vec<usize>>,
     /// MEMORY_PROFILING M0. Updated by the public `alloc` / `free` /
     /// `realloc` entry points only — never by the internal calls
     /// `realloc` makes to service a move, which would count one resize
@@ -825,6 +869,9 @@ impl HeapManager {
             allocations: HashMap::new(),
             next_addr: 1, // 0 is reserved for null pointer
             typed_slots: HashMap::new(),
+            quarantine: std::collections::VecDeque::new(),
+            quarantined: 0,
+            free_lists: HashMap::new(),
             stats: MemoryStats::default(),
         }
     }
@@ -943,7 +990,7 @@ impl HeapManager {
     /// block would otherwise see `arena.bytes_used()` move because a
     /// local inside it had its address taken.
     pub fn alloc_internal(&mut self, size: usize) -> usize {
-        self.alloc_uncounted_at(size, 0)
+        self.alloc_block(size, 0, false)
     }
 
     /// The allocation itself, without touching the counters.
@@ -954,6 +1001,14 @@ impl HeapManager {
     /// behaviour, recorded rather than endorsed —
     /// `interpreter_heap_does_not_reuse_addresses` pins it.
     fn alloc_uncounted_at(&mut self, size: usize, site: u64) -> usize {
+        self.alloc_block(size, site, true)
+    }
+
+    /// [`Self::alloc_uncounted_at`]; `recycle` is false for storage the
+    /// compiled lanes have no counterpart of (an IR VM cell, a str
+    /// literal), which must not take a recycled block the program's
+    /// next allocation would get there (HEAP-CHECK H3).
+    fn alloc_block(&mut self, size: usize, site: u64, recycle: bool) -> usize {
         if size == 0 {
             return 0; // null pointer for zero-size allocations
         }
@@ -993,11 +1048,56 @@ impl HeapManager {
             return 0;
         }
 
+        // HEAP-CHECK H3: a recycled block of the size class first. A
+        // fresh block is given its whole class, so any request of the
+        // class fits whichever block the list hands back.
+        let reserve = if heap_reuse_quarantine().is_some() {
+            let class = heap_size_class(size);
+            if let Some(addr) =
+                self.free_lists.get_mut(&class).filter(|_| recycle).and_then(Vec::pop)
+            {
+                self.allocations.insert(addr, (size, site));
+                HEAP_CHECK.with(|h| h.borrow_mut().reused += 1);
+                return addr;
+            }
+            class
+        } else {
+            size
+        };
+        let Some(total) = self.memory.len().checked_add(reserve) else {
+            return 0;
+        };
         let addr = self.next_addr;
         self.memory.resize(total, 0);
         self.allocations.insert(addr, (size, site));
-        self.next_addr += size;
+        self.next_addr += reserve;
         addr
+    }
+
+    /// HEAP-CHECK H3: in reuse mode, put a freed block in quarantine
+    /// and let the oldest ones out while the quarantine is over its
+    /// size. A block let out is forgotten by the heap check -- an
+    /// access to it is no longer an access to freed memory once it can
+    /// be handed out again -- and waits for a request of its class.
+    fn quarantine_block(&mut self, addr: usize, size: usize) {
+        let Some(limit) = heap_reuse_quarantine() else {
+            return;
+        };
+        let class = heap_size_class(size);
+        self.quarantine.push_back((addr, class));
+        self.quarantined += class;
+        while self.quarantined > limit {
+            let Some((a, c)) = self.quarantine.pop_front() else {
+                break;
+            };
+            self.quarantined -= c;
+            HEAP_CHECK.with(|h| {
+                let mut h = h.borrow_mut();
+                h.freed.remove(&a);
+                h.freed_blocks.remove(&a);
+            });
+            self.free_lists.entry(c).or_default().push(a);
+        }
     }
 
     /// Counter-free allocation at an unknown site. The storage for a
@@ -1005,7 +1105,7 @@ impl HeapManager {
     /// backends keep literals in `.rodata`, so an interpreter-only heap
     /// allocation would make the allocation counters disagree.
     pub fn alloc_uncounted(&mut self, size: usize) -> usize {
-        self.alloc_uncounted_at(size, 0)
+        self.alloc_block(size, 0, false)
     }
 
     /// Free memory at address
@@ -1022,6 +1122,7 @@ impl HeapManager {
             Some((size, site)) => {
                 heap_check_freed(addr, size, site, free_site);
                 self.poison_block(addr, size);
+                self.quarantine_block(addr, size);
                 self.stats.free_count += 1;
                 self.stats.record_released(size as u64);
                 PROFILE.with(|p| {
@@ -1167,6 +1268,7 @@ impl HeapManager {
             // HEAP-CHECK H0: the move released the old block.
             heap_check_freed(addr, old_size, site, HEAP_CHECK_RESIZE);
             self.poison_block(addr, old_size);
+            self.quarantine_block(addr, old_size);
 
             new_addr
         } else {

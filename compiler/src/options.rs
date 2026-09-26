@@ -90,6 +90,9 @@ pub struct CompilerOptions {
     /// HEAP-CHECK H2: instrument every raw memory access and start the
     /// program in poison mode (`--heap-check=poison`).
     pub heap_check: bool,
+    /// HEAP-CHECK H3: with `heap_check`, start in reuse mode with this
+    /// many bytes of quarantine (`--heap-check=reuse`).
+    pub heap_reuse: Option<u64>,
 }
 
 impl CompilerOptions {
@@ -109,6 +112,7 @@ impl CompilerOptions {
             test_only: None,
             display_name: None,
             heap_check: false,
+            heap_reuse: None,
         }
     }
 

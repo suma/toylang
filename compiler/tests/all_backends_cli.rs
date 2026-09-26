@@ -261,15 +261,40 @@ fn main() -> u64 {
 
 /// HEAP-CHECK H2: poison stops the process, which the in-process JIT
 /// lane cannot survive, so `--all-backends` points at the two ways
-/// that work; `reuse` is not built yet.
+/// that work. A quarantine size means nothing without reuse mode.
 #[test]
 fn heap_check_modes_not_available_are_named() {
     let run = run_stdin("fn main() -> u64 {\n    0u64\n}\n", &["--all-backends", "--heap-check=poison"]);
     assert_ne!(run.status, 0);
     assert!(run.stderr.contains("interpreter --heap-check=poison"), "stderr: {}", run.stderr);
-    let run = run_stdin("fn main() -> u64 {\n    0u64\n}\n", &["--heap-check=reuse"]);
+    let run = run_stdin(
+        "fn main() -> u64 {\n    0u64\n}\n",
+        &["--all-backends", "--heap-check=report", "--heap-quarantine=0"],
+    );
     assert_ne!(run.status, 0);
-    assert!(run.stderr.contains("H3"), "stderr: {}", run.stderr);
+    assert!(run.stderr.contains("--heap-check=reuse only"), "stderr: {}", run.stderr);
+}
+
+/// HEAP-CHECK H3: under `--all-backends`, reuse mode runs every lane
+/// with the same recycling policy and compares how many blocks each
+/// recycled.
+#[test]
+fn heap_check_reuse_runs_every_lane_and_compares_the_reuse() {
+    if skip_e2e() {
+        return;
+    }
+    let source = "\
+fn main() -> u64 {
+    val a: ptr = __builtin_heap_alloc(16u64)
+    __builtin_heap_free(a)
+    val b: ptr = __builtin_heap_alloc(16u64)
+    if __builtin_ptr_eq(a, b) { 1u64 } else { 0u64 }
+}
+";
+    let run = run_stdin(source, &["--all-backends", "--heap-check=reuse", "--heap-quarantine=0"]);
+    assert_eq!(run.status, 0, "stderr: {}", run.stderr);
+    assert!(run.stderr.contains("1 blocks reused"), "stderr: {}", run.stderr);
+    assert!(run.stderr.contains("all 3 backends agree (exit=1)"), "stderr: {}", run.stderr);
 }
 
 /// HEAP-CHECK H0b: a double free is reported under the function that

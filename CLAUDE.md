@@ -35,7 +35,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | closure が捕捉した束縛をどう掴むかの設計 | [`design-docs/CLOSURE_CAPTURE.md`](design-docs/CLOSURE_CAPTURE.md) |
 | エフェクト格子と 3 検査の関係 | [`design-docs/EFFECT_SYSTEM.md`](design-docs/EFFECT_SYSTEM.md) |
 | allocator のリージョン脱出検査 | [`design-docs/REGIONS.md`](design-docs/REGIONS.md) |
-| 解放済みメモリの毒化・再利用検査モード (H0 landing、残りは提案) | [`design-docs/HEAP_CHECK.md`](design-docs/HEAP_CHECK.md) |
+| 解放済みメモリの毒化・再利用検査モード (H0〜H3 landing、H4/H5 は提案) | [`design-docs/HEAP_CHECK.md`](design-docs/HEAP_CHECK.md) |
 | RUNTIME-TRAP guard をどう消しているか | [`design-docs/GUARD_ELISION.md`](design-docs/GUARD_ELISION.md) |
 | 生成バイナリが太る理由 (`&mut self` の ABI) | [`design-docs/CODE_SIZE.md`](design-docs/CODE_SIZE.md) |
 | 配列 / Vec の layout (AoS / SoA) の設計 (Phase 0・2 landing 済み) | [`design-docs/DATA_ORIENTED.md`](design-docs/DATA_ORIENTED.md) |
@@ -146,9 +146,15 @@ TOY_PROFILE_MEM=json ./compiled_binary
 cargo run -q -p interpreter -- --heap-check=report <source_file.t>
 # 解放済みブロックを毒で埋め、触れたら確保位置・解放位置付きで止める (H1/H2。
 # compiled レーンは**ビルドフラグ**で、アクセスごとに検査を埋め込んだバイナリを作る。
-# --all-backends とは組めない (停止が in-process の JIT を道連れにする)。reuse は未実装)
+# --all-backends とは組めない (停止が in-process の JIT を道連れにする))
 cargo run -q -p interpreter -- --heap-check=poison <source_file.t>
 cargo run -q -p compiler -- <source_file.t> --heap-check=poison -o prog && ./prog
+# poison + 有限の隔離。溢れたブロックを同じ size class の次の確保に渡し、
+# 「番地を再利用しない」ことへの依存を炙り出す (H3)。隔離 0 が最も攻撃的。
+# --test にも効く。--all-backends では計装なしで全レーンの再利用回数を突き合わせる
+cargo run -q -p interpreter -- --heap-check=reuse --heap-quarantine=0 [--test] <source_file.t>
+cargo run -q -p compiler -- <source_file.t> --all-backends --heap-check=reuse --heap-quarantine=0
+TOY_HEAP_CHECK=reuse TOY_HEAP_QUARANTINE=0 ./compiled_binary
 cargo run -q -p compiler -- <source_file.t> --all-backends --heap-check=report
 TOY_HEAP_CHECK=report ./compiled_binary
 

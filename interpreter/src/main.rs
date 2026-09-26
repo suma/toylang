@@ -191,6 +191,7 @@ fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
     let mut seed: Option<u64> = None;
     let mut profile_mem = false;
     let mut heap_check = HeapCheckMode::Off;
+    let mut heap_quarantine: Option<usize> = None;
     let mut prog_args: Vec<String> = Vec::new();
     let mut iter = raw.iter().skip(1);
     while let Some(arg) = iter.next() {
@@ -201,6 +202,9 @@ fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
                 "mem" => profile_mem = true,
                 other => return Err(format!("--profile expects `mem`, got `{other}`")),
             },
+            s if s.starts_with("--heap-quarantine=") => {
+                heap_quarantine = Some(parse_heap_quarantine(&s["--heap-quarantine=".len()..])?);
+            }
             s if s.starts_with("--heap-check=") => {
                 heap_check = parse_heap_check(&s["--heap-check=".len()..])?;
             }
@@ -251,6 +255,13 @@ fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
         }
     }
     let filename = filename.ok_or_else(|| "no input file".to_string())?;
+    match (&mut heap_check, heap_quarantine) {
+        (HeapCheckMode::Reuse(q), Some(bytes)) => *q = bytes,
+        (_, Some(_)) => {
+            return Err("--heap-quarantine applies to --heap-check=reuse only".to_string())
+        }
+        _ => {}
+    }
     Ok(CliArgs { filename, prog_args, verbose, core_modules_cli, json, run_tests, check_contracts, seed, profile_mem, heap_check })
 }
 
@@ -259,19 +270,27 @@ enum HeapCheckMode {
     Off,
     Report,
     Poison,
+    /// H3, with the quarantine size in bytes.
+    Reuse(usize),
 }
 
-/// `--heap-check=<mode>` (HEAP-CHECK). `reuse` is named so the error
-/// says what is coming rather than that the flag is unknown.
+/// `--heap-check=<mode>` (HEAP-CHECK). `reuse` takes its quarantine
+/// from `--heap-quarantine`, filled in after the whole command line is
+/// read.
 fn parse_heap_check(mode: &str) -> Result<HeapCheckMode, String> {
     match mode {
         "report" => Ok(HeapCheckMode::Report),
         "poison" => Ok(HeapCheckMode::Poison),
-        "reuse" => Err(
-            "--heap-check=reuse is not available yet (design-docs/HEAP_CHECK.md, H3)".to_string(),
-        ),
-        other => Err(format!("--heap-check expects `report` or `poison`, got `{other}`")),
+        "reuse" => Ok(HeapCheckMode::Reuse(interpreter::heap::HEAP_QUARANTINE_DEFAULT)),
+        other => Err(format!("--heap-check expects `report`, `poison` or `reuse`, got `{other}`")),
     }
+}
+
+/// `--heap-quarantine=<bytes>` (HEAP-CHECK H3).
+fn parse_heap_quarantine(value: &str) -> Result<usize, String> {
+    value
+        .parse()
+        .map_err(|_| format!("--heap-quarantine expects a number of bytes, got `{value}`"))
 }
 
 /// `--format`: the shape of everything the interpreter itself prints
@@ -353,8 +372,21 @@ fn main() {
     options.core_modules_dirs = &core_modules_dirs;
     options.diagnostics_json = json;
     options.args = prog_args;
+    // HEAP-CHECK: before `--test` too, whose blocks are where a heap
+    // check is most often wanted.
+    let start_heap_check = || match heap_check {
+        HeapCheckMode::Off => {}
+        HeapCheckMode::Report => interpreter::heap::heap_check_start(),
+        HeapCheckMode::Poison => interpreter::heap::heap_check_start_poison(),
+        HeapCheckMode::Reuse(q) => interpreter::heap::heap_check_start_reuse(q),
+    };
     if run_tests {
-        process::exit(report_tests(&source, &filename, &options));
+        start_heap_check();
+        let code = report_tests(&source, &filename, &options);
+        if heap_check != HeapCheckMode::Off {
+            eprint!("{}", interpreter::heap::heap_check_report());
+        }
+        process::exit(code);
     }
 
     if check_contracts {
@@ -365,11 +397,7 @@ fn main() {
     if profile_mem {
         interpreter::heap::reset_profile();
     }
-    match heap_check {
-        HeapCheckMode::Off => {}
-        HeapCheckMode::Report => interpreter::heap::heap_check_start(),
-        HeapCheckMode::Poison => interpreter::heap::heap_check_start_poison(),
-    }
+    start_heap_check();
     let outcome = interpreter::run_source(&source, &filename, &options);
     if heap_check != HeapCheckMode::Off {
         // stderr, beside the memory profile: the program's stdout stays

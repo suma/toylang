@@ -101,19 +101,42 @@ pub fn run(
     profile: ProfileMode,
     json: bool,
 ) -> i32 {
-    run_with(options, source, display_name, profile, false, json)
+    run_with(options, source, display_name, profile, HeapCheckRun::Off, json)
 }
 
+/// A heap check every backend runs under (HEAP-CHECK). Poison is not
+/// one: it stops the process, and the JIT lane shares this one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeapCheckRun {
+    Off,
+    /// H0: count double frees.
+    Report,
+    /// H3: recycle freed blocks after this many bytes of quarantine,
+    /// in every lane, uninstrumented.
+    Reuse(u64),
+}
+
+impl HeapCheckRun {
+    fn on(self) -> bool {
+        self != HeapCheckRun::Off
+    }
+}
+
+/// H3: the quarantine when `--heap-quarantine` does not say; the
+/// interpreter's and the runtime's default.
+pub const HEAP_QUARANTINE_DEFAULT: u64 = interpreter::heap::HEAP_QUARANTINE_DEFAULT as u64;
+
 /// [`run`], optionally with each backend counting double frees
-/// (HEAP-CHECK H0, `--heap-check=report`). The reports are compared
-/// like the memory profile: a backend that frees a different block
-/// twice disagrees.
+/// (HEAP-CHECK H0, `--heap-check=report`) or also recycling freed
+/// blocks (H3, `--heap-check=reuse`). The reports are compared like the
+/// memory profile: a backend that frees a different block twice, or
+/// recycles a different number, disagrees.
 pub fn run_with(
     options: &CompilerOptions,
     source: &str,
     display_name: &str,
     profile: ProfileMode,
-    heap_check: bool,
+    heap_check: HeapCheckRun,
     json: bool,
 ) -> i32 {
     let interpreter = BackendResult {
@@ -219,7 +242,7 @@ pub fn run_with(
         }
     }
 
-    if heap_check {
+    if heap_check.on() {
         for backend in [&jit, &aot] {
             let Ok(other) = &backend.outcome else { continue };
             if other.heap_check != reference.heap_check {
@@ -323,7 +346,7 @@ fn run_interpreter(
     source: &str,
     display_name: &str,
     profile: ProfileMode,
-    heap_check: bool,
+    heap_check: HeapCheckRun,
 ) -> Result<Outcome, String> {
     let core = crate::resolve_core_modules_dirs(options.core_modules_dirs.clone());
     let mut run_options = interpreter::RunOptions::default();
@@ -331,8 +354,10 @@ fn run_interpreter(
     if profile.enabled() {
         interpreter::heap::reset_profile();
     }
-    if heap_check {
-        interpreter::heap::heap_check_start();
+    match heap_check {
+        HeapCheckRun::Off => {}
+        HeapCheckRun::Report => interpreter::heap::heap_check_start(),
+        HeapCheckRun::Reuse(q) => interpreter::heap::heap_check_start_reuse(q as usize),
     }
     let (result, stdout) = interpreter::output::with_capture(|| {
         interpreter::run_source(source, display_name, &run_options)
@@ -340,7 +365,7 @@ fn run_interpreter(
     let memory = profile.enabled().then(interpreter::heap::profile);
     let sites = if profile.enabled() { interpreter::heap::profile_sites() } else { Vec::new() };
     let layouts = if profile.enabled() { interpreter::heap::allocator_layouts() } else { Vec::new() };
-    let heap_check = heap_check.then(interpreter::heap::heap_check_report);
+    let heap_check = heap_check.on().then(interpreter::heap::heap_check_report);
     result
         .map(|outcome| Outcome { exit: outcome.exit_code, stdout, memory, sites, layouts, heap_check })
         // `run_source` has already rendered the diagnostic to stderr;
@@ -352,7 +377,7 @@ fn run_jit(
     options: &CompilerOptions,
     source: &str,
     profile: ProfileMode,
-    heap_check: bool,
+    heap_check: HeapCheckRun,
 ) -> Result<Outcome, String> {
     let program = crate::compile_to_jit_main_with_options(source, options)?;
     if profile.enabled() {
@@ -360,18 +385,24 @@ fn run_jit(
     }
     // After the profiler reset, which clears the runtime's whole
     // thread state.
-    if heap_check {
-        toylang_rt::heap_check_start();
+    match heap_check {
+        HeapCheckRun::Off => {}
+        HeapCheckRun::Report => toylang_rt::heap_check_start(),
+        HeapCheckRun::Reuse(q) => toylang_rt::heap_check_start_reuse(q),
     }
     let (exit, stdout) = program.run_capturing_stdout();
     let memory = profile.enabled().then(crate::jit::memory_profile);
     let sites = if profile.enabled() { crate::jit::memory_profile_sites() } else { Vec::new() };
     let layouts = if profile.enabled() { crate::jit::memory_profile_layouts() } else { Vec::new() };
-    let heap_check = heap_check.then(toylang_rt::heap_check_report);
+    let heap_check = heap_check.on().then(toylang_rt::heap_check_report);
     Ok(Outcome { exit: Some(exit as i32), stdout, memory, sites, layouts, heap_check })
 }
 
-fn run_aot(options: &CompilerOptions, profile: ProfileMode, heap_check: bool) -> Result<Outcome, String> {
+fn run_aot(
+    options: &CompilerOptions,
+    profile: ProfileMode,
+    heap_check: HeapCheckRun,
+) -> Result<Outcome, String> {
     let exe = temp_path("toy_all_backends");
     let mut aot_options = options.clone();
     aot_options.output = Some(exe.clone());
@@ -390,8 +421,14 @@ fn run_aot(options: &CompilerOptions, profile: ProfileMode, heap_check: bool) ->
         // by `aot_json_report_matches_the_shared_one`.
         cmd.env("TOY_PROFILE_MEM", "1");
     }
-    if heap_check {
-        cmd.env("TOY_HEAP_CHECK", "report");
+    match heap_check {
+        HeapCheckRun::Off => {}
+        HeapCheckRun::Report => {
+            cmd.env("TOY_HEAP_CHECK", "report");
+        }
+        HeapCheckRun::Reuse(q) => {
+            cmd.env("TOY_HEAP_CHECK", "reuse").env("TOY_HEAP_QUARANTINE", q.to_string());
+        }
     }
     let output = cmd
         .output()
@@ -402,7 +439,7 @@ fn run_aot(options: &CompilerOptions, profile: ProfileMode, heap_check: bool) ->
     let memory = if profile.enabled() { parse_memory_report(&stderr) } else { None };
     let sites = if profile.enabled() { parse_leak_report(&stderr) } else { Vec::new() };
     let layouts = if profile.enabled() { parse_layout_report(&stderr) } else { Vec::new() };
-    let heap_check = heap_check.then(|| parse_heap_check_report(&stderr));
+    let heap_check = heap_check.on().then(|| parse_heap_check_report(&stderr));
     Ok(Outcome {
         exit: output.status.code(),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),

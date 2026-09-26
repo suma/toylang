@@ -1,0 +1,14 @@
+10.0.0.1 - - [03/Sep/2026:12:00:01 +0000] "GET /a HTTP/1.1" 200 12 "-" "curl/8.0"
+10.0.0.1 - - [03/Sep/2026:12:00:02 +0000] "GET /b HTTP/1.1" 404 7 "-" "curl/8.0"
+10.0.0.2 - - [03/Sep/2026:12:00:03 +0000] "POST /a HTTP/1.0" 200 12 "-" "MJ12bot/1.4"
+10.0.0.3 - - [03/Sep/2026:12:00:04 +0000] "GET /c HTTP/2.0" 301 0 "-" "curl/8.0"
+10.0.0.3 - - [03/Sep/2026:12:00:05 +0000] "GET /" 400 0 "-" "-"
+10.0.0.4 - - [03/Sep/2026:12:00:06 +0000] "-" 408 0 "-" "-"
+192.168.1.9 - - [03/Sep/2026:12:00:07 +0000] "GET /a HTTP/1.1" 200 12 "-" "curl/8.0"
+2026-09-03T12:00:08Z web01 sshd[101]: Accepted publickey for deploy
+2026-09-03T12:00:09Z web01 cron[5]: host=web01 job ran
+2026-09-03T12:00:10Z db01 cron[6]: host=web02 job ran
+2026-09-03T12:00:11Z db01 kernel: disk ok
+2026-09-03T12:00:12Z host=web02 app=api level=error request timed out
+2026-09-03T12:00:13Z app=api level=info request served
+1756900810 plain epoch line

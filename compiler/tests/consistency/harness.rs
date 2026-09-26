@@ -728,6 +728,87 @@ pub(super) fn heap_poison_errors(source: &str) -> (String, String) {
     (tree, vm)
 }
 
+/// HEAP-CHECK H3: run `source` in reuse mode with `quarantine` bytes
+/// on every lane -- the tree-walker, the IR VM, a plain AOT binary
+/// told by its environment, and an instrumented one -- returning each
+/// lane's name, stdout and heap-check report.
+pub(super) fn heap_reuse_lanes(source: &str, quarantine: u64, stem: &str) -> Vec<(&'static str, String, String)> {
+    let core = core_modules_dir();
+    let mut lanes = Vec::new();
+
+    let mut parser = frontend::ParserWithInterner::new(source);
+    let checked = checked_program(source, &mut parser, std::slice::from_ref(&core))
+        .expect("tree-walker type-check (with core)");
+    interpreter::heap::heap_check_start_reuse(quarantine as usize);
+    let (result, out) = interpreter::output::with_capture(|| {
+        interpreter::execute_program_tree_walking(
+            &checked.program,
+            checked.interner,
+            Some(source),
+            Some("test.t"),
+        )
+    });
+    result.expect("tree-walker run");
+    lanes.push(("tree-walker", out, interpreter::heap::heap_check_report()));
+
+    interpreter::heap::heap_check_start_reuse(quarantine as usize);
+    let mut options = RunOptions::default();
+    options.core_modules_dirs = std::slice::from_ref(&core);
+    let (result, out) =
+        interpreter::output::with_capture(|| interpreter::run_source(source, "test.t", &options));
+    result.expect("IR VM run");
+    lanes.push(("IR VM", out, interpreter::heap::heap_check_report()));
+    interpreter::heap::heap_check_start();
+
+    let q = quarantine.to_string();
+    let (_, out, err) = compiled_run_streams_env(
+        source,
+        stem,
+        &[("TOY_HEAP_CHECK", "reuse"), ("TOY_HEAP_QUARANTINE", &q)],
+    )
+    .expect("AOT build");
+    lanes.push(("AOT", out, heap_check_lines(&err)));
+
+    let src_path = unique_path(&format!("{stem}_i.t"));
+    std::fs::write(&src_path, source).expect("write source");
+    let exe_path = unique_path(&format!("{stem}_i"));
+    let mut options = CompilerOptions::new(src_path.clone());
+    options.output = Some(exe_path.clone());
+    options.core_modules_dirs = vec![core];
+    options.link_cache_dir = Some(link_cache_dir_for_tests());
+    options.heap_check = true;
+    options.heap_reuse = Some(quarantine);
+    let built = compile_file(&options);
+    let _ = std::fs::remove_file(&src_path);
+    built.expect("instrumented build");
+    let run = Command::new(&exe_path).output().expect("spawn binary");
+    let _ = std::fs::remove_file(&exe_path);
+    lanes.push((
+        "AOT (instrumented)",
+        String::from_utf8_lossy(&run.stdout).into_owned(),
+        heap_check_lines(&String::from_utf8_lossy(&run.stderr)),
+    ));
+    lanes
+}
+
+/// The heap-check report in a compiled run's stderr.
+fn heap_check_lines(stderr: &str) -> String {
+    let mut out = String::new();
+    let mut inside = false;
+    for line in stderr.lines() {
+        if line.starts_with("heap check: ") && line.contains("double frees") {
+            inside = true;
+        } else if inside && !line.starts_with("  x") {
+            break;
+        }
+        if inside {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// Parse + type-check `source` with the core modules, returning the
 /// rendered diagnostics on failure.
 pub(super) fn type_check_errors(source: &str) -> Vec<String> {

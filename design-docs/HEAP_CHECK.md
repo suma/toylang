@@ -1,8 +1,8 @@
 # HEAP-CHECK — 解放済みメモリを毒化・再利用する検査モード
 
-> **状態: H0 (二重 free の棚卸し)・H1 (interpreter レーンの `poison`)・H2 (compiled レーンの `poison`) landing 済み (2026-09-26)。** §6 の未決事項は
+> **状態: H0 (二重 free の棚卸し)・H1 (interpreter レーンの `poison`)・H2 (compiled レーンの `poison`)・H3 (`reuse`) landing 済み (2026-09-26)。** §6 の未決事項は
 > 推奨どおりに決まった (二重 free は H5 まで報告のみ / フラグは `--heap-check=` /
-> 隔離は 1 MiB から / AOT の計装はビルドフラグのときだけ)。H0 の実装と結果は §7、H1 は §8、H2 は §9。
+> 隔離は 1 MiB から / AOT の計装はビルドフラグのときだけ)。H0 の実装と結果は §7、H1 は §8、H2 は §9、H3 は §10。
 > 関連: [`MEMORY_PROFILING.md`](MEMORY_PROFILING.md) (計数の定義と site)、
 > [`ALLOCATOR_PLAN.md`](ALLOCATOR_PLAN.md) (`with allocator` と stdlib `Arena`)、
 > [`REGIONS.md`](REGIONS.md) / [`POINTER.md`](POINTER.md) (静的な脱出検査)。
@@ -280,7 +280,7 @@ Error at main.t:12:9:
 | **H0** | `--heap-check=report`: 両ヒープで二重 free を落とさずに数え、(確保 site, 1 回目の free site, 2 回目の free site) を重複なしで並べる。計装は不要 | 二重 free の棚卸し (§1.3 の 209 か所の出所) |
 | **H1** | `poison`: `HeapManager` 側 (tree-walker + IR VM) に shadow と毒埋めを入れ、読み書き口で検査する | interpreter レーンの UAF / 二重 free |
 | **H2** (済) | `HeapCheck` 命令と lowering の計装、`toylang_rt` の shadow、`HeapFree` の site | AOT / JIT の UAF。IR VM の報告に位置が付く |
-| **H3** | `reuse`: 隔離を有限にし、size class ごとの free list で再利用する。**方針を両ヒープで一字一句同じにする** (size class = 16 バイト単位の切り上げ、LIFO、隔離は FIFO で N バイト) — でないと再利用の結果がレーンで割れる | 「再利用しない」ことへの依存 |
+| **H3** (済) | `reuse`: 隔離を有限にし、size class ごとの free list で再利用する。**方針を両ヒープで一字一句同じにする** (size class = 16 バイト単位の切り上げ、LIFO、隔離は FIFO で N バイト) — でないと再利用の結果がレーンで割れる | 「再利用しない」ことへの依存 |
 | **H4** | redzone (ブロック間に 16 バイトの `REDZONE`) と `__builtin_heap_poison` | ヒープ内の範囲外、`Arena::free` 後のアクセス |
 | **H5** | H0 の一覧を潰す (別名経由の二重 drop の原因を move_check / drop glue 側で直す)。潰し終えたら検査モードの二重 free を既定でエラーにし、example と poc/logsearch を `--heap-check=poison` で回すテストを足す | — |
 
@@ -469,7 +469,7 @@ cargo run -q -p compiler -- prog.t --heap-check=poison -o prog && ./prog
   呼び出しにする。prefix / suffix は予算違反と同じ枠の静的な前後半
   (`frame_strings`) で、ヒットしたらその間に文を書き、backtrace を出して `exit(1)`。
   poison でなければ即 return。計装ビルドの `main` は冒頭で
-  `toy_heap_check_poison_start()` を呼ぶので、環境変数は要らない
+  `toy_heap_check_start_mode(mode, quarantine)` を呼ぶので、環境変数は要らない
   (`TOY_HEAP_CHECK=poison` でも入る)。
 - `toylang_rt` は poison で free したブロックを `0xDB` で埋め、解放済みの表に
   サイズも持つ。resize で移動した古いブロックは内容を写した**後で**埋める。
@@ -488,3 +488,41 @@ cargo run -q -p compiler -- prog.t --heap-check=poison -o prog && ./prog
   in-process の JIT レーンが道連れになる。計装ビルドを走らせるか
   `interpreter --heap-check=poison` を使う。
 - `toylang_rt` 内部の読み (文字列ヘルパなど) は検査しない。埋めた `0xDB` を読む。
+
+## 10. H3 — `reuse` (2026-09-26)
+
+```bash
+cargo run -q -p interpreter -- --heap-check=reuse [--heap-quarantine=BYTES] prog.t
+cargo run -q -p interpreter -- --heap-check=reuse --heap-quarantine=0 --test prog.t
+cargo run -q -p compiler -- prog.t --all-backends --heap-check=reuse --heap-quarantine=0
+cargo run -q -p compiler -- prog.t --heap-check=reuse -o prog && ./prog   # 計装入り
+TOY_HEAP_CHECK=reuse TOY_HEAP_QUARANTINE=0 ./any_binary                  # 計装なし
+```
+
+- **`reuse` は poison に有限の隔離を足したもの**。free したブロックは毒で埋めて
+  隔離 (FIFO) に入り、隔離の合計が上限 (既定 1 MiB、`--heap-quarantine` /
+  `TOY_HEAP_QUARANTINE`) を超えたら**古い順に**出る。出たブロックは解放済みの表から
+  消え (もう「解放済みへのアクセス」ではない)、size class ごとの free list に入り、
+  **最後に入ったものから**次の同 class の確保に渡る。隔離中のブロックへのアクセスは
+  poison と同じく止まる。
+- **size class は 16 バイト単位の切り上げ**。compiled レーンの bump は元から class 分を
+  確保している。interpreter のヒープは要求どおりの長さで切り出していたので、reuse の
+  ときは class 分を確保する (でないと大きめの同 class の要求が隣にはみ出す)。
+- **方針と順序を両ヒープで同じにした** — free は「毒埋め → 隔離 → 溢れを追い出す」、
+  resize は「新ブロックを確保 → 写す → 旧ブロックを隔離」。報告のヘッダに
+  `, N blocks reused` が付くので、`--all-backends` はレーンごとの再利用回数も突き合わせる。
+- interpreter が自分の都合で取る領域 (IR VM のセル、文字列リテラル) は compiled レーンに
+  対応物が無いので、**free list から取らない** (取ると次の確保の行き先がレーンで割れる)。
+- `--all-backends --heap-check=reuse` は**計装なし**で全レーンを走らせる (poison と違い
+  止まらないので in-process の JIT も走れる)。計装入りのビルドは `compiler --heap-check=reuse`。
+- `interpreter --test` も heap check を受けるようにした (以前は黙って無視していた)。
+- **結果**: plain で 3 レーン一致する example 155 本すべてが、隔離 0 (最も早く再利用する)
+  でも出力・一致とも変わらない。実際に再利用が起きたのは 8 本 (最大 64 ブロック)。
+  `poc/logsearch/tests` も `interpreter --test` で隔離 0 にして、合否は通常実行と同じ
+  (測り終えた 6 本。1 本あたり 129〜4573 ブロックを再利用)。
+
+**残り**
+
+- 再利用した後の古いポインタは検出できない (ABA、§2 の非目的)。止まる代わりに
+  他のブロックを壊す — それが症状として出るのを見るのがこのモードの用途。
+- `toy test` / `toy run` はまだ `--heap-check` を受けない。

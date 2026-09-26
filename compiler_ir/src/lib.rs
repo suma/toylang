@@ -176,6 +176,9 @@ pub struct Module {
     /// HEAP-CHECK H2: whether every raw memory access is preceded by a
     /// `HeapCheck`, and the entry turns poison mode on.
     pub heap_check: bool,
+    /// HEAP-CHECK H3: with `heap_check`, start in reuse mode with this
+    /// many bytes of quarantine rather than in poison mode.
+    pub heap_reuse: Option<u64>,
 }
 
 /// One struct's full shape — fields keep their declared order

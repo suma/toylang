@@ -1102,3 +1102,85 @@ fn poison_build_leaves_a_clean_program_alone() {
     assert_eq!(code, 99, "{err}");
     assert!(!lowered_ir(src).contains("heap_check"));
 }
+
+/// HEAP-CHECK H3: with no quarantine, a freed block is handed to the
+/// next request of its size class (12 rounds up to 16), so a read
+/// through the stale pointer sees the new owner's value -- on every
+/// lane, which is the point: the answer a program gets from a recycled
+/// block cannot depend on which lane ran it.
+#[test]
+fn reuse_mode_hands_a_freed_block_to_the_next_request_of_its_class() {
+    if skip_e2e() {
+        return;
+    }
+    let src = "\
+unsafe fn main() -> u64 {
+    val a: ptr = __builtin_heap_alloc(16u64)
+    __builtin_ptr_write(a, 0u64, 1u64)
+    __builtin_heap_free(a)
+    val b: ptr = __builtin_heap_alloc(12u64)
+    __builtin_ptr_write(b, 0u64, 7u64)
+    println(__builtin_ptr_eq(a, b))
+    println(__builtin_ptr_read::<u64>(a, 0u64))
+    0u64
+}
+";
+    for (lane, out, report) in heap_reuse_lanes(src, 0, "h3_next_request") {
+        assert_eq!(out, "true\n7\n", "{lane}");
+        assert_eq!(report, "heap check: 0 double frees (0 distinct), 1 blocks reused\n", "{lane}");
+    }
+}
+
+/// HEAP-CHECK H3: the quarantine lets the oldest block out first once
+/// it holds more than its size, and a size class hands back the block
+/// it got last. With 32 bytes of quarantine, freeing a, b and c (16
+/// each) lets a out; freeing d lets b out; the next two requests get b
+/// then a, and a request of another class gets neither.
+#[test]
+fn reuse_mode_releases_the_oldest_and_recycles_the_newest() {
+    if skip_e2e() {
+        return;
+    }
+    let src = "\
+fn main() -> u64 {
+    val a: ptr = __builtin_heap_alloc(16u64)
+    val b: ptr = __builtin_heap_alloc(16u64)
+    val c: ptr = __builtin_heap_alloc(16u64)
+    val d: ptr = __builtin_heap_alloc(16u64)
+    __builtin_heap_free(a)
+    __builtin_heap_free(b)
+    __builtin_heap_free(c)
+    __builtin_heap_free(d)
+    val big: ptr = __builtin_heap_alloc(32u64)
+    val x: ptr = __builtin_heap_alloc(16u64)
+    val y: ptr = __builtin_heap_alloc(16u64)
+    val z: ptr = __builtin_heap_alloc(16u64)
+    println(__builtin_ptr_eq(big, a) || __builtin_ptr_eq(big, b))
+    println(__builtin_ptr_eq(x, b))
+    println(__builtin_ptr_eq(y, a))
+    println(__builtin_ptr_eq(z, c) || __builtin_ptr_eq(z, d))
+    0u64
+}
+";
+    for (lane, out, report) in heap_reuse_lanes(src, 32, "h3_fifo_lifo") {
+        assert_eq!(out, "false\ntrue\ntrue\nfalse\n", "{lane}");
+        assert_eq!(report, "heap check: 0 double frees (0 distinct), 2 blocks reused\n", "{lane}");
+    }
+}
+
+/// HEAP-CHECK H3: a block still in quarantine is poisoned as in poison
+/// mode -- reuse mode is poison mode with a finite quarantine.
+#[test]
+fn reuse_mode_still_stops_an_access_to_a_quarantined_block() {
+    let src = "\
+unsafe fn main() -> u64 {
+    val p: ptr = __builtin_heap_alloc(16u64)
+    __builtin_heap_free(p)
+    __builtin_ptr_read::<u64>(p, 0u64)
+}
+";
+    interpreter::heap::heap_check_start_reuse(1024);
+    let err = interpreter_error(src);
+    interpreter::heap::heap_check_start();
+    assert!(err.contains("heap check: read at offset 0 of a 16-byte block"), "{err}");
+}

@@ -390,8 +390,8 @@ impl<M: Module> CodegenSession<M> {
             panic_alloc_budget: self
                 .declare_func_in_func_readonly(self.rt_panic_alloc_budget, func),
             heap_check: self.declare_func_in_func_readonly(self.rt_heap_check, func),
-            heap_check_poison_start: self
-                .declare_func_in_func_readonly(self.rt_heap_check_poison_start, func),
+            heap_check_start_mode: self
+                .declare_func_in_func_readonly(self.rt_heap_check_start_mode, func),
             panic_at: self.declare_func_in_func_readonly(self.rt_panic_at, func),
             backtrace_str: self
                 .declare_func_in_func_readonly(self.rt_backtrace_str, func),

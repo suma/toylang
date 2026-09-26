@@ -1,0 +1,4 @@
+2026-09-03T12:00:01Z app=api level=error one
+2026-09-03T12:00:02Z app=api level=error two
+2026-09-03T12:00:03Z app=api level=info three
+2026-09-03T12:00:04Z app=web level=info four

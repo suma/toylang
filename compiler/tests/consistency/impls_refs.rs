@@ -1307,3 +1307,38 @@ fn impl_blocks_can_call_each_other_in_either_direction() {
     assert_eq!(interpreter_value(src) & 0xff, 25);
     assert_consistent(src, "impl_blocks_mutual");
 }
+
+/// OP-OVERLOAD-ENUM: an `eq` / `lt` written in `impl SomeEnum` answers
+/// `==` / `!=` / `<` on two values of that enum. The type checker
+/// replaces the comparison with the method call, so every lane runs an
+/// enum-receiver method it already runs -- before, the method was
+/// ignored and the comparison refused.
+#[test]
+fn an_enum_with_eq_and_lt_answers_the_operators() {
+    let src = r#"
+        enum Kind { A, B(u64), C }
+        impl Kind {
+            fn rank(&self) -> u64 {
+                match self { Kind::A => 0u64, Kind::B(n) => 10u64 + n, Kind::C => 100u64 }
+            }
+            fn eq(&self, other: &Kind) -> bool { self.rank() == other.rank() }
+            fn lt(&self, other: &Kind) -> bool { self.rank() < other.rank() }
+        }
+        fn main() -> u64 {
+            val a = Kind::A
+            val b = Kind::B(3u64)
+            val b2 = Kind::B(3u64)
+            val c = Kind::C
+            var acc: u64 = 0u64
+            if a == a { acc = acc + 1u64 }
+            if b == b2 { acc = acc + 10u64 }
+            if a != c { acc = acc + 100u64 }
+            if b == c { acc = acc + 5000u64 }
+            if a < c { acc = acc + 1000u64 }
+            if c < b { acc = acc + 7000u64 }
+            acc
+        }
+    "#;
+    assert_eq!(interpreter_value(src), 1111);
+    assert_consistent(src, "enum_operator_overload");
+}

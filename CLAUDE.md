@@ -478,7 +478,7 @@ fn main() -> u64 {
   `never_allocates` / `const` と順不同、trait の default body にも書ける
   (omit した impl が継承)。`extern fn` は宣言としてのみ受理。
   `--explain E0024` に直し方 3 通り
-- **`==` / `!=` operator overload** (Phase B) — 同型 struct ペアで `eq(&self, other: &Self) -> bool` method に dispatch (3 backend)。`s == t` で String 比較が動く。**`eq` の無い struct と enum は型検査が拒否する** (E0004、enum は `match` に誘導)。
+- **`==` / `!=` operator overload** (Phase B) — 同型 struct ペアで `eq(&self, other: &Self) -> bool` method に dispatch (3 backend)。`s == t` で String 比較が動く。**enum も比較だけは overload できる** (`impl` に `eq` / `lt` 等を書くと、型検査器が `a == b` を `a.eq(b)` に書き換える。OP-OVERLOAD-ENUM)。`eq` の無い struct / enum は型検査が拒否する (E0004)。
 - **`Vec<u8>::push_char(c: char)`** は **UTF-8 encoding 対応** (RFC 3629、1〜4 bytes、surrogate / U+110000+ は panic)。
 - **alias-qualified associated function call** も frontend で支援 (`String::from_str("...")` / `String::new()` が直接 dispatch)。
 - **Numeric literals**:

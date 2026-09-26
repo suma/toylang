@@ -106,6 +106,11 @@ pub struct TypeCheckerVisitor<'a> {
     /// operand, with the enum and the target type; rewritten into a
     /// match by `apply_enum_cast_rewrites`.
     pub enum_casts: HashMap<ExprRef, (DefaultSymbol, TypeDecl)>,
+    /// OP-OVERLOAD-ENUM: comparisons between two values of an enum
+    /// that defines the operator's method, keyed by the left operand,
+    /// with that method; rewritten into the call by
+    /// `apply_enum_comparison_rewrites`.
+    pub enum_comparisons: HashMap<ExprRef, DefaultSymbol>,
     /// ENUM-STRUCT-VARIANT: `E::A { .. }` literals, keyed by the first
     /// initializer, with the enum, the variant and the arguments in
     /// declaration order; rewritten into `E::A(..)` by
@@ -247,6 +252,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             pattern_rewrites: PatternRewrites::default(),
             loop_values: HashMap::new(),
             enum_casts: HashMap::new(),
+            enum_comparisons: HashMap::new(),
             enum_struct_literals: HashMap::new(),
             null_coalesce_lhs_types: HashMap::new(),
             try_nodes: None,
@@ -339,6 +345,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             pattern_rewrites: PatternRewrites::default(),
             loop_values: HashMap::new(),
             enum_casts: HashMap::new(),
+            enum_comparisons: HashMap::new(),
             enum_struct_literals: HashMap::new(),
             null_coalesce_lhs_types: HashMap::new(),
             try_nodes: None,
@@ -554,6 +561,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             pattern_rewrites: PatternRewrites::default(),
             loop_values: HashMap::new(),
             enum_casts: HashMap::new(),
+            enum_comparisons: HashMap::new(),
             enum_struct_literals: HashMap::new(),
             null_coalesce_lhs_types: HashMap::new(),
             try_nodes: None,

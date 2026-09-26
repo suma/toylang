@@ -742,6 +742,14 @@ impl<'a> TypeCheckerVisitor<'a> {
             if self.struct_method_compatible(l, r, method_name) {
                 return Ok(TypeDecl::Bool);
             }
+            // OP-OVERLOAD-ENUM: the same for an enum pair. No backend
+            // dispatches the operator on an enum, so the comparison is
+            // replaced by the method call itself once every operand
+            // type is known (`apply_enum_comparison_rewrites`).
+            if let Some(method) = self.enum_cmp_method(l, r, method_name) {
+                self.enum_comparisons.insert(*lhs, method);
+                return Ok(TypeDecl::Bool);
+            }
         }
 
         // STDLIB-ORD: two `str`s have an ordering (`impl Ord for
@@ -771,11 +779,10 @@ impl<'a> TypeCheckerVisitor<'a> {
             let name = self.resolve_symbol_name(ln);
             let symbol = Self::comparison_operator_symbol(op);
             let advice = if self.context.enum_definitions.contains_key(&ln) {
-                // Overloading is a struct feature — no backend
-                // dispatches a comparison on an enum receiver — so
-                // pointing at `eq` here would be advice that compiles
-                // and then fails.
-                format!("`{symbol}` on an enum (match on the variants instead)")
+                format!(
+                    "`{symbol}` on an enum (define `fn {method_name}(&self, other: &{name}) -> bool` \
+                     in `impl {name}`, or match on the variants)"
+                )
             } else {
                 format!(
                     "`{symbol}` (define `fn {method_name}(&self, other: &{name}) -> bool` in `impl {name}`)"
@@ -2634,6 +2641,62 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// `Ord` declares only `lt`, so the other three are spelled with
     /// it: `a > b` is `b.lt(a)`, and the inclusive pair are those
     /// negated. Bytes are totally ordered, so the negation is exact.
+    /// OP-OVERLOAD-ENUM: the comparison method `op` names on an enum
+    /// pair of the same type, when that enum defines it.
+    pub(crate) fn enum_cmp_method(
+        &self,
+        lhs: &TypeDecl,
+        rhs: &TypeDecl,
+        method_name: &str,
+    ) -> Option<DefaultSymbol> {
+        let extract = |t: &TypeDecl| -> Option<(DefaultSymbol, Vec<TypeDecl>)> {
+            match t {
+                TypeDecl::Enum(name, args) | TypeDecl::Struct(name, args) => {
+                    Some((*name, args.clone()))
+                }
+                TypeDecl::Identifier(name) => Some((*name, Vec::new())),
+                _ => None,
+            }
+        };
+        let (ln, la) = extract(lhs)?;
+        let (rn, ra) = extract(rhs)?;
+        if ln != rn || la != ra || !self.context.enum_definitions.contains_key(&ln) {
+            return None;
+        }
+        let method = self.core.string_interner.get(method_name)?;
+        self.context.get_struct_method(ln, method, &la).map(|_| method)
+    }
+
+    /// OP-OVERLOAD-ENUM: `a == b` between two values of an enum that
+    /// defines `eq` becomes `a.eq(b)` (`!=` its negation, and `<` /
+    /// `<=` / `>` / `>=` the `lt` / `le` / `gt` / `ge` calls, as for a
+    /// struct). The check records each such comparison by its left
+    /// operand (it knows the operand refs, not the node's own), and
+    /// the node is replaced here once every body is checked. The
+    /// backends see an enum-receiver method call, which they all run.
+    pub fn apply_enum_comparison_rewrites(&mut self) {
+        if self.enum_comparisons.is_empty() {
+            return;
+        }
+        let comparisons = std::mem::take(&mut self.enum_comparisons);
+        for index in 0..self.core.expr_pool.len() {
+            let expr_ref = ExprRef(index as u32);
+            let Some(Expr::Binary(op, lhs, rhs)) = self.core.expr_pool.get(&expr_ref) else {
+                continue;
+            };
+            let Some(&method) = comparisons.get(&lhs) else {
+                continue;
+            };
+            let body = if matches!(op, Operator::NE) {
+                let call = self.core.expr_pool.add(Expr::MethodCall(lhs, method, vec![rhs]));
+                Expr::Unary(UnaryOp::LogicalNot, call)
+            } else {
+                Expr::MethodCall(lhs, method, vec![rhs])
+            };
+            self.core.expr_pool.update(&expr_ref, body);
+        }
+    }
+
     pub fn apply_str_ordering_rewrites(&mut self) {
         let Some(lt) = self.core.string_interner.get("lt") else {
             // No `Ord` in scope — a program checked without the

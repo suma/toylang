@@ -68,6 +68,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         // STDLIB-ORD: `a < b` on two `str`s becomes the `Ord` call that
         // implements it, now that every operand type is recorded.
         self.apply_str_ordering_rewrites();
+        // OP-OVERLOAD-ENUM: `==` on an enum with `eq` becomes the call.
+        self.apply_enum_comparison_rewrites();
 
         // COLLECTIONS C0(a): every body and every call site has been
         // seen, so the recorded `==`-on-a-type-parameter requirements

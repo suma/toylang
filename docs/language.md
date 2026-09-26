@@ -1534,7 +1534,7 @@ Backends: all three (interpreter / cranelift JIT / AOT) execute the
 rewritten `match` directly; the example
 `interpreter/example/null_coalesce.t` is swept across all of them.
 
-### Operator overload (struct receivers)
+### Operator overload (struct receivers, and enum comparisons)
 
 Same-shape struct values can overload most binary and unary
 operators by implementing the matching method on the struct.
@@ -1543,12 +1543,16 @@ type-check rule, so overloaded operators don't conflict with
 the primitive paths (`i64 + i64` continues to lower as a
 direct `BinOp::Add`).
 
-**Structs only.** A struct with no matching method does not get the
-operator, and the type checker says which method is missing. Enums do
-not overload operators at all — including `==` — so two enum values
-are compared by matching on their variants; writing an `eq` in
-`impl SomeEnum` does not change that, and the checker says so rather
-than accepting a comparison nothing dispatches.
+A struct with no matching method does not get the operator, and the
+type checker says which method is missing. **An enum overloads the
+comparisons only** — `==` / `!=` through `eq`, and `<` / `<=` / `>` /
+`>=` through `lt` / `le` / `gt` / `ge`, when written in `impl SomeEnum`.
+The checker replaces the comparison with the method call, so
+`a == b` is exactly `a.eq(b)`. An enum without the method is still a
+type error, and so is `==` on an enum reached through a type parameter
+(a generic body comparing two `T`s): compare where the enum's type is
+written out, or match on the variants. The arithmetic and bit
+operators stay struct-only.
 
 | Operator | Method signature | Result |
 |---|---|---|

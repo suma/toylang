@@ -810,6 +810,8 @@ fn check_typing_collecting(
     // STDLIB-ORD: `a < b` on two `str`s becomes the `Ord` call that
     // implements it, now that every operand type is recorded.
     tc.apply_str_ordering_rewrites();
+    // OP-OVERLOAD-ENUM: `==` on an enum with `eq` becomes the call.
+    tc.apply_enum_comparison_rewrites();
     // COLLECTIONS C0(a): with every body and every call site checked,
     // join the `==`-on-a-type-parameter requirements against the types
     // each call instantiated them with.

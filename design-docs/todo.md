@@ -12,6 +12,11 @@
 
 ### 2026-09-26
 
+- **OP-OVERLOAD-ENUM — enum の比較演算子を `eq` / `lt` 等で定義できる** —
+  型検査器が `a == b` を `a.eq(b)` (`!=` は否定、順序比較は `lt` / `le` /
+  `gt` / `ge`) に書き換えるので、バックエンドは既存の enum レシーバの
+  method 呼び出しを走らせる。算術・ビット演算子は struct のみのまま。
+  型引数経由の `T == T` は従来どおり拒否。
 - **TREE-WALKER-CONCRETE-IMPL — tree-walker も concrete impl の associated
   function を注釈で選ぶ** — `impl C<u8>` と `impl C<i64>` の両方に `make` が
   あるとき、`val b: C<i64> = C::make(..)` の注釈を手がかりにする
@@ -2543,14 +2548,6 @@
   `EnumLayout` が別実装)、(d) **enum 型の struct field** (`StructLayout`
   は scalar フィールドのみ)。どれも correctness 問題ではない。
 - **160. タプルの JIT 対応 (ネスト)** ★ — `((a,b),c)` と tuple-of-struct。`ParamTy::Tuple(Vec<ScalarTy>)` を tree 構造にする 100+ 箇所の refactor。(inline tuple literal を call 引数に渡す件は 2026-08-23 に CALL-ARG-COMPOUND-LITERAL で解消)
-- **OP-OVERLOAD-ENUM: enum の operator overload** ★ — `impl SomeEnum` に
-  `eq` を書いても効かない。型検査は 2026-08-29 に「宣言済み struct のみ」へ
-  絞ったので通らないし、通したとしても interpreter の
-  `overload_method_name` 経路が `(Object::Struct, Object::Struct)` しか
-  見ず、AOT の `try_lower_struct_cmp` も struct 前提。enum 同士の比較は
-  今のところ variant を match する (tuple scrutinee は AOT 非対応なので
-  ネストするか scalar tag に落とす)。実プログラムで踏んでから。
-
 - **195b. `extern fn` の monomorph 化** ★ — generic extern は現状 interpreter の type-erased registry でのみ動く。JIT / AOT には mangled symbol の emit と Rust 側実装の登録が要る。実需要なし。
 - **PTR-ABI-LOW-THRESHOLD: 閾値を下げると lane 間で確保の集計が割れる** ★ —
   `PTR_SELF_LEAF_THRESHOLD` (既定 8) を下げて小さな struct もポインタで
@@ -2968,6 +2965,15 @@
   決定的である必要がある — `compiler/tests/reproducible_build.rs` が pin)。
 
 ### 既知の不具合
+
+- **USER-TYPE-SHADOWS-GENERIC-PARAM: ユーザ型の名前が stdlib の型引数名を
+  乗っ取る** ★★ — `struct T { x: u64 }` や `enum K { A, B }` を宣言した
+  だけで、使いもしない stdlib の generic な本体が型エラーになる
+  (`T` → `priority_queue.t:47` / `box.t:57`、`K` → `dict.t:340` の
+  `k2.hash()` が `method not found for type K`)。stdlib の `T` / `K` が
+  型引数ではなくユーザの型として解決されている。`V` / `U` / `A` では
+  起きなかった (その名前を使う body の形による)。2026-09-26 に
+  OP-OVERLOAD-ENUM のテストを書いていて踏んだ。
 
 **直った項目をこの節に段落で残さないこと** — 常時読まれるファイルが
 changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 バックエンドで

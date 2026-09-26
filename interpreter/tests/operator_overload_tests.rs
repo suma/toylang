@@ -83,10 +83,9 @@ fn comparing_a_struct_without_eq_is_rejected_however_it_is_spelled() {
 }
 
 #[test]
-fn comparing_two_enum_values_points_at_match() {
-    // Overloading is a struct feature: no backend dispatches a
-    // comparison on an enum receiver. So the advice here must not be
-    // "define `eq`" — that would compile and then fail.
+fn comparing_two_enum_values_points_at_eq_or_match() {
+    // OP-OVERLOAD-ENUM: an enum with no `eq` is still a type error, and
+    // the advice names both ways out.
     let source = r#"
         enum Color { Red, Green }
         fn main() -> u64 {
@@ -96,27 +95,10 @@ fn comparing_two_enum_values_points_at_match() {
         }
     "#;
     let diagnostics = type_check_errors(source, "`==` on an enum must be a type error");
-    assert_unsupported_operation(&diagnostics, "on an enum (match on the variants instead)");
-}
-
-#[test]
-fn an_eq_written_on_an_enum_does_not_make_the_comparison_compile() {
-    // The method exists, but nothing dispatches it, so accepting the
-    // program would only move the failure to run time.
-    let source = r#"
-        enum Color { Red, Green }
-        impl Color {
-            fn tag(self: Self) -> u64 { match self { Color::Red => 0u64, Color::Green => 1u64 } }
-            fn eq(&self, other: &Color) -> bool { self.tag() == other.tag() }
-        }
-        fn main() -> u64 {
-            val a: Color = Color::Red
-            val b: Color = Color::Green
-            if a == b { 1u64 } else { 0u64 }
-        }
-    "#;
-    let diagnostics = type_check_errors(source, "an enum `eq` must not make `==` compile");
-    assert_unsupported_operation(&diagnostics, "on an enum (match on the variants instead)");
+    assert_unsupported_operation(
+        &diagnostics,
+        "on an enum (define `fn eq(&self, other: &Color) -> bool` in `impl Color`, or match on the variants)",
+    );
 }
 
 #[test]

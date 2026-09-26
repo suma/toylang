@@ -110,8 +110,9 @@ impl TypeCheckerVisitor<'_> {
                             if self.context.enum_definitions.contains_key(n));
                 let problem = if is_enum {
                     format!(
-                        "`{type_name}` is an enum, and an enum cannot define `eq` \
-                         (match on the variants instead)"
+                        "`{type_name}` is an enum, and an enum's `eq` is not reached through \
+                         a type parameter (compare it where its type is known, or match on \
+                         the variants)"
                     )
                 } else {
                     format!(

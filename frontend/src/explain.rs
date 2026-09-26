@@ -343,8 +343,9 @@ Frequent members, with what each actually means:
     -- the body being called compares two values of that type
     parameter, and the type argument at this call site has no answer
     for `==`. Write `fn eq(&self, other: &T) -> bool` in an `impl T`
-    block. An enum cannot: comparison overloading is a struct feature,
-    so match on the variants instead (or carry a scalar tag). No bound
+    block. For an enum that is not enough: an enum's `eq` answers `==`
+    where the enum's type is written out, not through a type
+    parameter, so compare it there or match on the variants. No bound
     is involved -- the requirement comes from the body, not from the
     signature, which is why it is reported at the call rather than at
     the declaration.

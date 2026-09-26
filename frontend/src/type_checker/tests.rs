@@ -39,6 +39,7 @@ mod tests {
             pattern_rewrites: Default::default(),
             loop_values: Default::default(),
             enum_casts: Default::default(),
+            enum_comparisons: Default::default(),
             enum_struct_literals: Default::default(),
             null_coalesce_lhs_types: HashMap::new(),
             try_nodes: None,

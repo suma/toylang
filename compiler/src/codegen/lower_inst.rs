@@ -127,6 +127,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             | InstKind::HeapFree { .. }
             | InstKind::HeapCheck { .. }
             | InstKind::HeapPoison { .. }
+            | InstKind::HeapCheckFree { .. }
             | InstKind::PtrRead { .. }
             | InstKind::PtrWrite { .. } => self.lower_heap_and_pointer(inst),
             InstKind::StrLen { .. }
@@ -1319,6 +1320,18 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 self.builder
                     .ins()
                     .call(self.runtime.dispatched_free, &[handle_v, ptr_v, site_v, file_v]);
+            }
+            InstKind::HeapCheckFree { ptr, site } => {
+                // HEAP-CHECK H5: stops, with the free's frame, when the
+                // block was freed already; returns at once otherwise.
+                let ptr_v = self.value(*ptr);
+                let (pre_gv, suf_gv) = *self
+                    .frame_imports
+                    .get(&(*site, None))
+                    .ok_or_else(|| "missing frame import for a heap check site".to_string())?;
+                let pre = self.diag_addr(pre_gv);
+                let suf = self.diag_addr(suf_gv);
+                self.builder.ins().call(self.runtime.heap_check_free, &[ptr_v, pre, suf]);
             }
             InstKind::HeapPoison { ptr, size, site } => {
                 // HEAP-CHECK H4: the runtime does nothing outside a heap

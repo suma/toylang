@@ -161,6 +161,9 @@ struct Run {
     /// exits with whatever those happen to truncate to.
     exit_code: Option<i32>,
     stdout: String,
+    /// A compiled run's stderr, for the heap-check sweep to quote; empty
+    /// for the in-process engines, whose diagnostics come back as `Err`.
+    stderr: String,
 }
 
 /// Compare two runs, ignoring the exit code when the reference side has
@@ -243,13 +246,19 @@ fn execute_once(
         interpreter::object::Object::UInt64(v) => Some(*v as i32),
         _ => None,
     };
-    Ok(Run { exit_code, stdout })
+    Ok(Run { exit_code, stdout, stderr: String::new() })
 }
 
 /// Compile and run. `None` when the AOT backend cannot build it.
 fn run_compiled(checked: &CheckedProgram, stem: &str) -> Option<Run> {
+    run_compiled_with(checked, stem, false)
+}
+
+/// [`run_compiled`], optionally built with `--heap-check=poison`.
+fn run_compiled_with(checked: &CheckedProgram, stem: &str, heap_poison: bool) -> Option<Run> {
     let exe_path = unique_path(stem);
     let mut options = CompilerOptions::new(PathBuf::from("<checked>"));
+    options.heap_check = heap_poison;
     options.output = Some(exe_path.clone());
     options.core_modules_dirs = vec![core_modules_dir()];
     options.link_cache_dir = Some(link_cache_dir_for_tests());
@@ -268,6 +277,7 @@ fn run_compiled(checked: &CheckedProgram, stem: &str) -> Option<Run> {
     Some(Run {
         exit_code: output.status.code(),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     })
 }
 
@@ -479,4 +489,149 @@ fn skip_lists_name_existing_examples() {
         missing.is_empty(),
         "skip lists name examples that no longer exist: {missing:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// HEAP-CHECK H5: every example runs clean under `--heap-check=poison`.
+//
+// Poison mode stops at a read or write of a freed block, at an access
+// that starts past a block's end, and at a double free. An example that
+// agrees across backends must give the same answer with all of that
+// switched on -- on the tree-walker, on the IR VM (which the poison mode
+// instruments), and as an instrumented AOT binary. A stop here is either
+// a memory bug in the example or the stdlib, or a false positive in the
+// check; both are worth a failing test.
+// ---------------------------------------------------------------------------
+
+fn check_example_under_poison(path: &Path) -> Result<(), String> {
+    let name = file_name(path);
+    if NEEDS_A_PEER.contains(&name.as_str()) || ERROR_EXAMPLES.contains(&name.as_str()) {
+        return Ok(());
+    }
+    let source = std::fs::read_to_string(path).expect("read example");
+    let mut parser = frontend::ParserWithInterner::new(&source);
+    let checked = check_checked(&source, &name, &mut parser)
+        .map_err(|e| format!("`{name}` failed to check: {e}"))?;
+    let reference = execute_once(&checked, &source, &name, false)
+        .map_err(|e| format!("`{name}` failed on the interpreter: {e}"))?;
+
+    interpreter::heap::heap_check_start_poison();
+    let (tree, stdout) = interpreter::output::with_capture(|| {
+        interpreter::execute_program_tree_walking(
+            &checked.program,
+            checked.interner,
+            Some(&source),
+            Some(&name),
+        )
+    });
+    interpreter::heap::heap_check_start();
+    let tree = tree.map_err(|e| format!("`{name}` stops under poison on the tree-walker:\n{e}"))?;
+    let exit_code = match &*tree.borrow() {
+        interpreter::object::Object::Int64(v) => Some(*v as i32),
+        interpreter::object::Object::UInt64(v) => Some(*v as i32),
+        _ => None,
+    };
+    let tree = Run { exit_code, stdout, stderr: String::new() };
+    if disagrees(&reference, &tree) {
+        return Err(format!(
+            "`{name}`: the tree-walker under poison answers differently\n  \
+             plain:  exit={:?} stdout={:?}\n  poison: exit={:?} stdout={:?}",
+            reference.exit_code, reference.stdout, tree.exit_code, tree.stdout
+        ));
+    }
+
+    interpreter::heap::heap_check_start_poison();
+    let vm = execute_once(&checked, &source, &name, false);
+    interpreter::heap::heap_check_start();
+    let vm = vm.map_err(|e| format!("`{name}` stops under poison on the IR VM:\n{e}"))?;
+    if disagrees(&reference, &vm) {
+        return Err(format!(
+            "`{name}`: the IR VM under poison answers differently\n  \
+             plain:  exit={:?} stdout={:?}\n  poison: exit={:?} stdout={:?}",
+            reference.exit_code, reference.stdout, vm.exit_code, vm.stdout
+        ));
+    }
+
+    if AOT_UNSUPPORTED.contains(&name.as_str()) {
+        return Ok(());
+    }
+    let stem = format!("{}_poison", name.trim_end_matches(".t"));
+    let Some(aot) = run_compiled_with(&checked, &stem, true) else {
+        return Err(format!("`{name}` does not build with --heap-check=poison"));
+    };
+    if disagrees(&reference, &aot) || aot.stderr.contains("heap check: read") ||
+        aot.stderr.contains("heap check: write") || aot.stderr.contains("heap check: free")
+    {
+        return Err(format!(
+            "`{name}`: the instrumented AOT binary answers differently\n  \
+             plain:  exit={:?} stdout={:?}\n  poison: exit={:?} stdout={:?}\n{}",
+            reference.exit_code, reference.stdout, aot.exit_code, aot.stdout, aot.stderr
+        ));
+    }
+    Ok(())
+}
+
+/// As many pieces as the agreement sweep, for the same reason: at 6 a
+/// shard took ~6s, the longest test in the suite.
+const POISON_SHARDS: usize = 12;
+
+fn check_poison_shard(shard: usize) {
+    if skip_e2e() {
+        return;
+    }
+    let failures: Vec<String> = all_examples()
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| i % POISON_SHARDS == shard)
+        .filter_map(|(_, path)| {
+            let name = file_name(&path);
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                check_example_under_poison(&path)
+            })) {
+                Ok(result) => result.err(),
+                Err(_) if KNOWN_CRASHES.contains(&name.as_str()) => None,
+                Err(_) => Some(format!("`{name}` panicked under poison (see above)")),
+            }
+        })
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "{} example(s) do not run clean under --heap-check=poison:\n\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
+}
+
+macro_rules! poison_shards {
+    ($($name:ident => $index:expr),+ $(,)?) => {
+        $(
+            #[test]
+            fn $name() {
+                check_poison_shard($index);
+            }
+        )+
+
+        #[test]
+        fn the_poison_shards_cover_every_example() {
+            let mut declared = [$($index),+];
+            declared.sort_unstable();
+            let expected: Vec<usize> = (0..POISON_SHARDS).collect();
+            assert_eq!(declared.as_slice(), expected.as_slice());
+        }
+    };
+}
+
+poison_shards! {
+    examples_run_clean_under_heap_poison_shard_0 => 0,
+    examples_run_clean_under_heap_poison_shard_1 => 1,
+    examples_run_clean_under_heap_poison_shard_2 => 2,
+    examples_run_clean_under_heap_poison_shard_3 => 3,
+    examples_run_clean_under_heap_poison_shard_4 => 4,
+    examples_run_clean_under_heap_poison_shard_5 => 5,
+    examples_run_clean_under_heap_poison_shard_6 => 6,
+    examples_run_clean_under_heap_poison_shard_7 => 7,
+    examples_run_clean_under_heap_poison_shard_8 => 8,
+    examples_run_clean_under_heap_poison_shard_9 => 9,
+    examples_run_clean_under_heap_poison_shard_10 => 10,
+    examples_run_clean_under_heap_poison_shard_11 => 11,
 }

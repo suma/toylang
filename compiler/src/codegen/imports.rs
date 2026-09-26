@@ -101,7 +101,9 @@ impl<M: Module> CodegenSession<M> {
         for blk in &ir_func.blocks {
             // HEAP-CHECK H2: an access check writes the same frame.
             let checks = blk.instructions.iter().filter_map(|inst| match &inst.kind {
-                InstKind::HeapCheck { site, .. } => Some((*site, None)),
+                InstKind::HeapCheck { site, .. } | InstKind::HeapCheckFree { site, .. } => {
+                    Some((*site, None))
+                }
                 _ => None,
             });
             let term = match &blk.terminator {
@@ -392,6 +394,7 @@ impl<M: Module> CodegenSession<M> {
                 .declare_func_in_func_readonly(self.rt_panic_alloc_budget, func),
             heap_check: self.declare_func_in_func_readonly(self.rt_heap_check, func),
             heap_poison: self.declare_func_in_func_readonly(self.rt_heap_poison, func),
+            heap_check_free: self.declare_func_in_func_readonly(self.rt_heap_check_free, func),
             heap_check_start_mode: self
                 .declare_func_in_func_readonly(self.rt_heap_check_start_mode, func),
             panic_at: self.declare_func_in_func_readonly(self.rt_panic_at, func),

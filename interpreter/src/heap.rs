@@ -811,17 +811,63 @@ fn heap_check_freed(addr: usize, size: usize, alloc_site: u64, free_site: u64) {
 }
 
 fn heap_check_freed_again(addr: usize, site: u64) {
-    HEAP_CHECK.with(|h| {
+    let fault = HEAP_CHECK.with(|h| {
         let mut h = h.borrow_mut();
         if !h.on {
-            return;
+            return None;
         }
-        let Some(&(alloc, first)) = h.freed.get(&addr) else {
-            return; // not memory this heap handed out
-        };
+        let &(alloc, first) = h.freed.get(&addr)?; // else not memory this heap handed out
+        // H5: under poison and reuse a double free is an error, not a
+        // count -- the inventory H0 took is empty, so one now is new.
+        // Not counted either: the compiled lanes and the IR VM stop
+        // before the free, and the report after the stop must agree.
+        if h.poison {
+            return Some(heap_double_free_message(&h, addr, alloc, first));
+        }
         let culprit = h.culprit.clone();
         *h.events.entry((alloc, first, site, culprit)).or_default() += 1;
+        None
     });
+    if let Some(message) = fault {
+        HEAP_FAULT.with(|f| {
+            let mut f = f.borrow_mut();
+            if f.is_none() {
+                *f = Some(message);
+            }
+        });
+    }
+}
+
+/// H5: what a double free stops with -- the block, where it came from
+/// and where it was first freed. The runtime's `toy_heap_check_free`
+/// says the same.
+fn heap_double_free_message(h: &HeapCheckState, addr: usize, alloc: u64, first: u64) -> String {
+    let size = h.freed_blocks.get(&addr).map_or(0, |&(size, _, _)| size);
+    format!(
+        "heap check: free of a {size}-byte block that was already freed (allocated at {}, {})",
+        heap_check_position(alloc, &h.files),
+        if first == HEAP_CHECK_RESIZE {
+            "moved by a resize".to_string()
+        } else {
+            format!("freed at {}", heap_check_position(first, &h.files))
+        },
+    )
+}
+
+/// H5: the fault freeing `addr` would raise, asked ahead of the free by
+/// the IR VM's `HeapCheckFree` so the stop carries the free's position.
+pub fn heap_probe_free(addr: usize) -> Option<String> {
+    if !HEAP_POISON.with(|p| p.get()) {
+        return None;
+    }
+    HEAP_CHECK.with(|h| {
+        let h = h.borrow();
+        if h.live.contains_key(&addr) {
+            return None;
+        }
+        let &(alloc, first) = h.freed.get(&addr)?;
+        Some(heap_double_free_message(&h, addr, alloc, first))
+    })
 }
 
 fn heap_check_position(site: u64, files: &HashMap<u64, String>) -> String {

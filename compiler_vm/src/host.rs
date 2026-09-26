@@ -123,6 +123,12 @@ pub trait VmHost {
         None
     }
 
+    /// HEAP-CHECK H5: whether freeing `ptr` would be a double free, as
+    /// the message to stop with.
+    fn heap_probe_free(&self, _ptr: u64) -> Option<String> {
+        None
+    }
+
     /// HEAP-CHECK H4: `__builtin_heap_poison` -- under a heap check,
     /// treat `size` bytes at `ptr` as freed without freeing them.
     fn heap_poison_range(&self, _ptr: u64, _size: u64, _site: u64, _file: &str) {}

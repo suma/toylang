@@ -1,8 +1,8 @@
 # HEAP-CHECK — 解放済みメモリを毒化・再利用する検査モード
 
-> **状態: H0 (二重 free の棚卸し)・H1 (interpreter レーンの `poison`)・H2 (compiled レーンの `poison`)・H3 (`reuse`)・H4 (redzone と `__builtin_heap_poison`) landing 済み (2026-09-26)。** §6 の未決事項は
+> **状態: H0 (二重 free の棚卸し)・H1 (interpreter レーンの `poison`)・H2 (compiled レーンの `poison`)・H3 (`reuse`)・H4 (redzone と `__builtin_heap_poison`)・H5 (二重 free をエラーに、example の常時検査) landing 済み (2026-09-26)。** §6 の未決事項は
 > 推奨どおりに決まった (二重 free は H5 まで報告のみ / フラグは `--heap-check=` /
-> 隔離は 1 MiB から / AOT の計装はビルドフラグのときだけ)。H0 の実装と結果は §7、H1 は §8、H2 は §9、H3 は §10、H4 は §11。
+> 隔離は 1 MiB から / AOT の計装はビルドフラグのときだけ)。H0 の実装と結果は §7、H1 は §8、H2 は §9、H3 は §10、H4 は §11、H5 は §12。
 > 関連: [`MEMORY_PROFILING.md`](MEMORY_PROFILING.md) (計数の定義と site)、
 > [`ALLOCATOR_PLAN.md`](ALLOCATOR_PLAN.md) (`with allocator` と stdlib `Arena`)、
 > [`REGIONS.md`](REGIONS.md) / [`POINTER.md`](POINTER.md) (静的な脱出検査)。
@@ -282,7 +282,7 @@ Error at main.t:12:9:
 | **H2** (済) | `HeapCheck` 命令と lowering の計装、`toylang_rt` の shadow、`HeapFree` の site | AOT / JIT の UAF。IR VM の報告に位置が付く |
 | **H3** (済) | `reuse`: 隔離を有限にし、size class ごとの free list で再利用する。**方針を両ヒープで一字一句同じにする** (size class = 16 バイト単位の切り上げ、LIFO、隔離は FIFO で N バイト) — でないと再利用の結果がレーンで割れる | 「再利用しない」ことへの依存 |
 | **H4** (済) | redzone (ブロック間に 16 バイトの `REDZONE`) と `__builtin_heap_poison` | ヒープ内の範囲外、`Arena::free` 後のアクセス |
-| **H5** | H0 の一覧を潰す (別名経由の二重 drop の原因を move_check / drop glue 側で直す)。潰し終えたら検査モードの二重 free を既定でエラーにし、example と poc/logsearch を `--heap-check=poison` で回すテストを足す | — |
+| **H5** (済) | H0 の一覧を潰す (別名経由の二重 drop の原因を move_check / drop glue 側で直す)。潰し終えたら検査モードの二重 free を既定でエラーにし、example と poc/logsearch を `--heap-check=poison` で回すテストを足す | — |
 
 H0 → H1 の順にするのは、H0 だけで「今どこに二重 drop が残っているか」が
 分かり、それ自体が todo になるから。H1 は `HeapManager` 1 か所で済むので、
@@ -560,3 +560,26 @@ TOY_HEAP_CHECK=reuse TOY_HEAP_QUARANTINE=0 ./any_binary                  # 計�
 - ブロック内から始まって末尾をまたぐアクセス (上の理由で見ない)。
 - ヒープ外 (stack の配列、`str` リテラル) の範囲外。
 - `FixedBuffer::free` は本当に free するので対象外 (既に検査される)。
+
+## 12. H5 — 二重 free をエラーに、example を常時検査 (2026-09-26)
+
+- H0 の一覧は DOUBLE-DROP-LANE-DIVERGENCE で空になった (§7) ので、**poison / reuse では
+  二重 free を止める** (§6 の 1 は推奨どおり)。`report` は従来どおり数えるだけ:
+
+  ```
+  panic: heap check: free of a 16-byte block that was already freed (allocated at test.t:5:18, freed at test.t:2:5)
+  ```
+
+  位置は 2 回目の free、backtrace に呼び出し元が出る。
+- 計装は IR 命令 **`HeapCheckFree { ptr, site }`** で、lowering が `HeapFree` の前に置く
+  (IR VM と AOT / JIT が free の**前**に止まる)。tree-walker はヒープの free の中で止まる。
+  どちらも止めたものは数えないので、停止の後に出る報告は全レーンで `0 double frees`。
+  `__builtin_heap_poison` で毒化したブロックは生きているので、その free は二重 free では
+  ない。計装なしの AOT (`TOY_HEAP_CHECK=poison`) は止まらず数える。
+- **`example_consistency` に poison のスイープを足した** (12 シャード)。各 example を
+  tree-walker と IR VM を poison で、AOT を `--heap-check=poison` の計装ビルドで走らせ、
+  通常実行と答えが一致すること・止まらないことを見る。解放済みへのアクセス、末尾越え、
+  二重 free のどれかが example か stdlib に入れば落ちる。
+- **poc/logsearch** は 1 ファイルに数分かかるので `#[ignore]` のテスト
+  (`poc_logsearch_tests_run_clean_under_heap_poison`)。各テストの合否が通常実行と同じか
+  を見る。`--run-ignored only` で回す。

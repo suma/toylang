@@ -386,6 +386,8 @@ pub(crate) struct CodegenSession<M: Module> {
     rt_heap_check_start_mode: cranelift_module::FuncId,
     /// HEAP-CHECK H4: `toy_heap_poison(ptr, size, site, file)`.
     rt_heap_poison: cranelift_module::FuncId,
+    /// HEAP-CHECK H5: `toy_heap_check_free(ptr, prefix, suffix)`.
+    rt_heap_check_free: cranelift_module::FuncId,
     /// DEBUG-OBS D3: `toy_panic_at(text)` — write a pre-rendered
     /// diagnostic to stderr and exit.
     rt_panic_at: cranelift_module::FuncId,
@@ -805,6 +807,7 @@ impl<M: Module> CodegenSession<M> {
         let rt_heap_check_start_mode =
             imp.declare("toy_heap_check_start_mode", &[abi(I64), abi(I64)], &[])?;
         let rt_heap_poison = imp.declare("toy_heap_poison", &[abi(I64); 4], &[])?;
+        let rt_heap_check_free = imp.declare("toy_heap_check_free", &[abi(I64); 3], &[])?;
         // DEBUG-OBS D3. `toy_panic_at(text)` writes an already-rendered
         // diagnostic to stderr and exits. The whole text is static, so
         // the helper takes one pointer and does no formatting.
@@ -933,6 +936,7 @@ impl<M: Module> CodegenSession<M> {
             rt_heap_check,
             rt_heap_check_start_mode,
             rt_heap_poison,
+            rt_heap_check_free,
             rt_panic_at,
             rt_backtrace_str,
             rt_panic_recursion,
@@ -1083,7 +1087,9 @@ impl<M: Module> CodegenSession<M> {
                     _ => {}
                 }
                 for inst in &blk.instructions {
-                    if let InstKind::HeapCheck { site, .. } = &inst.kind {
+                    if let InstKind::HeapCheck { site, .. } | InstKind::HeapCheckFree { site, .. } =
+                        &inst.kind
+                    {
                         budget_sites.insert((*site, None));
                     }
                     if let InstKind::PrintStr { message, .. } = &inst.kind {
@@ -1822,6 +1828,7 @@ struct RuntimeRefs {
     heap_check: cranelift_codegen::ir::FuncRef,
     heap_check_start_mode: cranelift_codegen::ir::FuncRef,
     heap_poison: cranelift_codegen::ir::FuncRef,
+    heap_check_free: cranelift_codegen::ir::FuncRef,
     panic_at: cranelift_codegen::ir::FuncRef,
     backtrace_str: cranelift_codegen::ir::FuncRef,
     panic_recursion: cranelift_codegen::ir::FuncRef,

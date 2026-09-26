@@ -100,6 +100,10 @@ impl VmHost for InterpreterHost {
         crate::heap::heap_probe(addr as usize, len as usize, write)
     }
 
+    fn heap_probe_free(&self, ptr: u64) -> Option<String> {
+        crate::heap::heap_probe_free(ptr as usize)
+    }
+
     fn heap_poison_range(&self, ptr: u64, size: u64, site: u64, file: &str) {
         crate::heap::note_free_site_file(site, file);
         // The global heap, whichever allocator is active: the block an

@@ -82,6 +82,7 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
         | InstKind::HeapFree { .. }
         | InstKind::HeapCheck { .. }
         | InstKind::HeapPoison { .. }
+        | InstKind::HeapCheckFree { .. }
         | InstKind::PtrRead { .. }
         | InstKind::PtrWrite { .. } => exec_heap_and_pointer(vm, inst),
         InstKind::StrLen { .. }
@@ -508,6 +509,14 @@ fn exec_heap_and_pointer(vm: &mut Vm, inst: &Instruction) {
                 host.note_free_culprit(interp_culprit(names));
             }
             host.free_at(unsafe { p.u64 }, packed, vm.module().site_file(*site));
+        }
+        InstKind::HeapCheckFree { ptr, site } => {
+            if vm.heap_poison_on() {
+                let p = unsafe { vm.read_value(*ptr).u64 };
+                if let Some(message) = host.heap_probe_free(p) {
+                    vm.memory_fault_at(message, *site);
+                }
+            }
         }
         InstKind::HeapPoison { ptr, size, site } => {
             let p = unsafe { vm.read_value(*ptr).u64 };

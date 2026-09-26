@@ -1730,6 +1730,7 @@ impl InstKind {
             | InstKind::HeapFree { .. }
             | InstKind::HeapCheck { .. }
             | InstKind::HeapPoison { .. }
+            | InstKind::HeapCheckFree { .. }
             | InstKind::PtrRead { .. }
             | InstKind::PtrWrite { .. }
             | InstKind::StrLen { .. }
@@ -2019,6 +2020,10 @@ pub enum InstKind {
     /// call's position, which only a heap check reads (HEAP-CHECK H0:
     /// a double free names where each free was written).
     HeapFree { ptr: ValueId, binding: AllocatorBinding, site: Option<SiteId> },
+    /// HEAP-CHECK H5: `ptr` is about to be freed -- stop if it was
+    /// freed already. Emitted before every `HeapFree` in an
+    /// instrumented build; `site` is the free's position.
+    HeapCheckFree { ptr: ValueId, site: Option<SiteId> },
     /// HEAP-CHECK H4: `__builtin_heap_poison(ptr, size)` -- under a
     /// heap check, treat the range as freed without freeing it. `site`
     /// is where, for the report.
@@ -2628,6 +2633,7 @@ impl InstKind {
                 one(len);
             }
             InstKind::HeapFree { ptr, .. }
+            | InstKind::HeapCheckFree { ptr, .. }
             | InstKind::PtrIsNull { ptr }
             | InstKind::LoadRef { ptr, .. }
             | InstKind::AllocPush { handle: ptr } => one(ptr),
@@ -3208,6 +3214,10 @@ impl fmt::Display for DisplayInst<'_> {
                     None => write!(f, "{prefix}heap_realloc {ptr}, {new_size}  ; {binding}"),
                 }
             }
+            InstKind::HeapCheckFree { ptr, site } => match site {
+                Some(id) => write!(f, "heap_check_free {ptr} @site#{}", id.0),
+                None => write!(f, "heap_check_free {ptr}"),
+            },
             InstKind::HeapPoison { ptr, size, site } => match site {
                 Some(id) => write!(f, "heap_poison {ptr}, {size} @site#{}", id.0),
                 None => write!(f, "heap_poison {ptr}, {size}"),

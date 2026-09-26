@@ -12,6 +12,9 @@
 
 ### 2026-09-26
 
+- **HEAP-CHECK H5 — 二重 free をエラーに、example を poison で常時検査** — poison / reuse
+  で二重 free を 2 回目の free の位置で止める (IR VM / AOT は `HeapCheckFree` で free の前に)。
+  `example_consistency` が全 example を poison の 3 レーンで走らせる。poc は `#[ignore]`。
 - **HEAP-CHECK H4 — redzone と `__builtin_heap_poison`** — 検査モードで各ブロックの後ろに
   16 バイトの redzone を取り、末尾より後ろから始まるアクセスを止める。`Arena::free` は
   ブロックを毒化するので、個別 free の後のアクセスも止まる。`--test` がテストごとに作る
@@ -2914,9 +2917,9 @@
   二重 free の棚卸し) と H0b (報告に二重 drop を起こした関数名) は 2026-09-26 に
   landing (完了済み節)、棚卸しで見つかった二重 drop も全部潰した
   (DOUBLE-DROP-LANE-DIVERGENCE)。H1 (`poison`、interpreter レーン)・H2
-  (計装、compiled レーン)・H3 (`reuse`)・H4 (redzone / `__builtin_heap_poison`) も
-  landing。次は H5 (二重 drop を潰して既定でエラー)。`toy` への `--heap-check` も未。
-  [`HEAP_CHECK.md`](HEAP_CHECK.md) §5 / §11。
+  (計装、compiled レーン)・H3 (`reuse`)・H4 (redzone / `__builtin_heap_poison`)・
+  H5 (二重 free をエラーに) も landing。残りは `toy` への `--heap-check`。
+  [`HEAP_CHECK.md`](HEAP_CHECK.md) §5 / §12。
 * **明示 import (MODULE-IMPORTS)** — stdlib も
   `import std.hex` を書かないと使えない形にする提案。
   [`MODULE_IMPORTS.md`](MODULE_IMPORTS.md)。**D1 の alias 束縛だけ

@@ -1981,6 +1981,13 @@ impl<'a> FunctionLower<'a> {
                 (*hay, None, Len::Value(*hay_len), false),
                 (*needle, None, Len::Value(*needle_len), false),
             ],
+            // H5: a free checks that its block is not freed already, at
+            // the free's own position.
+            InstKind::HeapFree { ptr, site, .. } => {
+                let (ptr, site) = (*ptr, *site);
+                self.emit(InstKind::HeapCheckFree { ptr, site }, None);
+                return;
+            }
             _ => return,
         };
         let site = self.current_site();

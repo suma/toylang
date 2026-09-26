@@ -1308,3 +1308,88 @@ fn main() -> u64 { 0u64 }
     }
     interpreter::heap::heap_check_start();
 }
+
+/// HEAP-CHECK H5: under poison a double free is an error. It stops at
+/// the second free with where the block came from and where it was
+/// first freed, the same on every lane -- the IR VM and the compiled
+/// lanes before the free, the tree-walker in it -- and none of them
+/// counts it in the report that follows.
+#[test]
+fn poison_mode_stops_a_double_free() {
+    if skip_e2e() {
+        return;
+    }
+    let src = "\
+fn release(p: ptr) {
+    __builtin_heap_free(p)
+}
+fn main() -> u64 {
+    val p: ptr = __builtin_heap_alloc(16u64)
+    release(p)
+    release(p)
+    0u64
+}
+";
+    let want = "heap check: free of a 16-byte block that was already freed \
+                (allocated at test.t:5:18, freed at test.t:2:5)";
+    let (tree, vm) = heap_poison_errors(src);
+    assert!(tree.contains(want), "tree-walker: {tree}");
+    assert!(vm.contains(want), "IR VM: {vm}");
+    assert!(vm.contains("test.t:2:5"), "the IR VM names the free: {vm}");
+    let (code, aot) = compiled_heap_poison_run(src, "h5_double_free");
+    assert_eq!(code, 1, "{aot}");
+    assert!(
+        aot.contains(vm.trim_end()),
+        "the AOT diagnostic differs:\n--- IR VM\n{vm}\n--- AOT\n{aot}"
+    );
+    assert!(aot.contains("heap check: 0 double frees"), "{aot}");
+    // Report mode still counts instead of stopping.
+    assert!(tree_walker_heap_check_report(src).starts_with("heap check: 1 double frees"));
+}
+
+/// HEAP-CHECK H5: the poc's own tests pass and fail exactly as they do
+/// without a heap check when run under poison. Ignored by default -- a
+/// single file takes minutes on the tree-walker. Run it with
+/// `cargo nextest run -p compiler --run-ignored only -E 'test(/poc_logsearch/)'`.
+#[test]
+#[ignore]
+fn poc_logsearch_tests_run_clean_under_heap_poison() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let pkg = root.join("poc/logsearch");
+    // The tests write their scratch files under `build/` of the working
+    // directory; the package's own, as `toy test` runs them.
+    std::env::set_current_dir(&pkg).expect("cd poc/logsearch");
+    let roots = [root.join("core"), pkg.join("src")];
+    let mut options = RunOptions::default();
+    options.core_modules_dirs = &roots;
+    let mut tests: Vec<_> = std::fs::read_dir(pkg.join("tests"))
+        .expect("poc tests")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.extension().is_some_and(|x| x == "t"))
+        .collect();
+    tests.sort();
+    let mut problems = Vec::new();
+    for path in tests {
+        let source = std::fs::read_to_string(&path).expect("read test");
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let verdicts = |poison: bool| {
+            if poison {
+                interpreter::heap::heap_check_start_poison();
+            }
+            let outcomes = interpreter::run_tests_from_source(&source, &name, &options)
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            interpreter::heap::heap_check_start();
+            outcomes
+                .into_iter()
+                .map(|o| (o.name, o.failure))
+                .collect::<Vec<_>>()
+        };
+        let plain = verdicts(false);
+        for ((test, before), (_, after)) in plain.iter().zip(verdicts(true)) {
+            if before.is_none() != after.is_none() {
+                problems.push(format!("{name}: `{test}`: {}", after.unwrap_or_default()));
+            }
+        }
+    }
+    assert!(problems.is_empty(), "under --heap-check=poison:\n{}", problems.join("\n"));
+}

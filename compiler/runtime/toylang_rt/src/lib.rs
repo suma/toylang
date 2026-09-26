@@ -2557,6 +2557,40 @@ pub unsafe extern "C" fn toy_heap_check(
     unsafe { exit(1) };
 }
 
+/// HEAP-CHECK H5: `p` is about to be freed. In poison and reuse mode,
+/// stop if it was freed already, with the free's frame around the
+/// interpreter's sentence. A block `__builtin_heap_poison` marked is
+/// still live, and freeing it is not a double free.
+///
+/// # Safety
+/// `prefix` and `suffix` are NUL-terminated or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_heap_check_free(p: *mut u8, prefix: *const u8, suffix: *const u8) {
+    let st = thread_state();
+    if st.hc_state < 2 || p.is_null() || st.hc_live.contains_key(&(p as usize)) {
+        return;
+    }
+    let Some(f) = st.hc_freed.get(&(p as usize)).copied() else {
+        return;
+    };
+    let first = if f.free_site == HC_RESIZE {
+        String::from("moved by a resize")
+    } else {
+        format!("freed at {}", hc_position(f.free_site, f.free_file))
+    };
+    let message = format!(
+        "panic: heap check: free of a {}-byte block that was already freed (allocated at {}, {first})",
+        f.size,
+        hc_position(f.alloc_site, f.alloc_file),
+    );
+    unsafe { write_diag_fd(2, prefix) };
+    err_write(&message);
+    unsafe { write_diag_fd(2, suffix) };
+    write_backtrace();
+    err_write("\n");
+    unsafe { exit(1) };
+}
+
 /// HEAP-CHECK H4: `__builtin_heap_poison(p, size)` -- in poison and
 /// reuse mode, treat the range as freed at `site` without freeing it:
 /// fill it with the poison byte and refuse later accesses the way a

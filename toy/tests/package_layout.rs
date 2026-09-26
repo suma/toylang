@@ -2099,3 +2099,67 @@ fn a_modules_private_function_is_its_own() {
     assert!(!out.status.success(), "stderr: {stderr}");
     assert!(stderr.contains("function 'helper' is private to module"), "stderr: {stderr}");
 }
+
+/// HEAP-CHECK: `toy test --heap-check=poison` runs the package's tests
+/// with the heap check on both lanes. A window held across a resize
+/// reads the vector's old buffer: the plain AOT build passes it
+/// silently, and the instrumented one stops, naming the resize.
+#[test]
+fn test_heap_check_poison_catches_what_the_plain_aot_lane_misses() {
+    let pkg = scratch("heap_poison");
+    write(&pkg, "main.t", "fn main() -> u64 {\n    0u64\n}\n");
+    write(
+        &pkg,
+        "tests/window.t",
+        r#"
+test "window across a resize" {
+    var v: Vec<u64> = Vec::new()
+    v.push(1u64)
+    val w = v.as_span()
+    val s: Span<u64> = w ?? panic("empty")
+    var i: u64 = 0u64
+    while i < 10u64 {
+        v.push(i)
+        i = i + 1u64
+    }
+    assert_eq(s.get(0u64), 1u64)
+}
+"#,
+    );
+    let dir = pkg.0.to_str().unwrap();
+    let plain = run(&pkg, &["test", dir, "--backend", "aot"]);
+    assert!(plain.status.success(), "stderr: {}", String::from_utf8_lossy(&plain.stderr));
+    for backend in ["aot", "vm"] {
+        let out = run(&pkg, &["test", dir, "--backend", backend, "--heap-check=poison"]);
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!out.status.success(), "{backend}: {text}");
+        assert!(text.contains("moved by a resize"), "{backend}: {text}");
+    }
+}
+
+/// HEAP-CHECK: which command takes which mode.
+#[test]
+fn heap_check_modes_are_refused_where_they_mean_nothing() {
+    let pkg = scratch("heap_flags");
+    write(&pkg, "main.t", "fn main() -> u64 {\n    0u64\n}\n");
+    let dir = pkg.0.to_str().unwrap();
+    for (args, says) in [
+        (vec!["build", dir, "--heap-check=report"], "TOY_HEAP_CHECK=report"),
+        (vec!["check", dir, "--heap-check=poison"], "does not"),
+        (vec!["run", dir, "--backend", "all", "--heap-check=poison"], "in-process"),
+        (vec!["run", dir, "--heap-quarantine=0"], "reuse only"),
+    ] {
+        let out = run(&pkg, &args);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{args:?}");
+        assert!(err.contains(says), "{args:?}: {err}");
+    }
+    let out = run(&pkg, &["run", dir, "--heap-check=reuse", "--heap-quarantine=0"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(err.contains("blocks reused"), "{err}");
+}

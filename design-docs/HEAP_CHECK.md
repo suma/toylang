@@ -2,7 +2,7 @@
 
 > **状態: H0 (二重 free の棚卸し)・H1 (interpreter レーンの `poison`)・H2 (compiled レーンの `poison`)・H3 (`reuse`)・H4 (redzone と `__builtin_heap_poison`)・H5 (二重 free をエラーに、example の常時検査) landing 済み (2026-09-26)。** §6 の未決事項は
 > 推奨どおりに決まった (二重 free は H5 まで報告のみ / フラグは `--heap-check=` /
-> 隔離は 1 MiB から / AOT の計装はビルドフラグのときだけ)。H0 の実装と結果は §7、H1 は §8、H2 は §9、H3 は §10、H4 は §11、H5 は §12。
+> 隔離は 1 MiB から / AOT の計装はビルドフラグのときだけ)。H0 の実装と結果は §7、H1 は §8、H2 は §9、H3 は §10、H4 は §11、H5 は §12、`toy` は §13。
 > 関連: [`MEMORY_PROFILING.md`](MEMORY_PROFILING.md) (計数の定義と site)、
 > [`ALLOCATOR_PLAN.md`](ALLOCATOR_PLAN.md) (`with allocator` と stdlib `Arena`)、
 > [`REGIONS.md`](REGIONS.md) / [`POINTER.md`](POINTER.md) (静的な脱出検査)。
@@ -583,3 +583,21 @@ TOY_HEAP_CHECK=reuse TOY_HEAP_QUARANTINE=0 ./any_binary                  # 計�
 - **poc/logsearch** は 1 ファイルに数分かかるので `#[ignore]` のテスト
   (`poc_logsearch_tests_run_clean_under_heap_poison`)。各テストの合否が通常実行と同じか
   を見る。`--run-ignored only` で回す。
+
+## 13. `toy` の `--heap-check` (2026-09-26)
+
+| コマンド | 受けるモード | どう効くか |
+|---|---|---|
+| `toy build` | poison / reuse | 計装ビルド (`compiler --heap-check=...` と同じ) |
+| `toy run --backend vm\|tree` | report / poison / reuse | interpreter の検査モード。報告は stderr |
+| `toy run --backend aot` | report / poison / reuse | report は `TOY_HEAP_CHECK`、他は計装ビルド |
+| `toy run --backend all` | report / reuse | `compiler --all-backends --heap-check=...` |
+| `toy test` | poison / reuse | AOT は計装した driver、VM はワーカーごとに検査モードを開始 |
+
+- `--heap-quarantine=N` は reuse のときだけ。意味の無い組み合わせ (`build` の report、
+  `check` / `api` 等、`run --backend jit` / `all` の poison、`test` の report) は理由つきで拒否。
+- VM の検査状態はスレッドローカルなので、`toy test` は各ワーカーが最初のテストを
+  **準備する前**に開始する (準備が IR VM 向けの lowering を含み、計装は poison が
+  既に有効なときだけ入るため)。
+- 例: `push` をまたいで持った `Span` の窓を読むテストは、**通常の AOT では黙って通り**、
+  `toy test --heap-check=poison` では `moved by a resize` で落ちる (toy のテストで pin)。

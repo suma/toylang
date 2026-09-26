@@ -190,6 +190,8 @@ cargo run -q -p toy -- version [-v] [--format=text|json]         # 各部の ver
 # `git -C <root>` で引く (stdlib はデータで、別 checkout から来うるため)
 cargo run -q -p toy -- test  mypkg [FILTER] [-j N] [--list] [--bless] [--format=text|json]
 cargo run -q -p toy -- test  mypkg --backend all   # aot と vm の両方で走らせ、合否の食い違いを報告
+cargo run -q -p toy -- test  mypkg --heap-check=poison   # 解放済み・末尾越え・二重 free で止める (HEAP-CHECK)。
+# build / run も --heap-check=poison|reuse (run は report も) と --heap-quarantine=N を受ける
 # `test` は tests/*.t と entry を走らせ、**モジュール内の `test` も拾う**
 # (TEST-TOOL T0)。**既定は AOT** で、出荷するレーンが検査対象になる
 # (T1)。`--backend vm` は IR VM で走らせ、**全部の失敗を 1 回で報告する**

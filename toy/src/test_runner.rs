@@ -79,6 +79,37 @@ pub struct Options {
     /// `--backend all` (TEST-TOOL T4 / TEST-PARALLEL P6): run every test
     /// on both lanes and report where they disagree. `aot` is ignored.
     pub all_lanes: bool,
+    /// `--heap-check=poison|reuse` (HEAP-CHECK): the AOT drivers are
+    /// built instrumented, and each IR VM worker runs in the mode.
+    pub heap_check: HeapCheck,
+}
+
+/// The heap check a test run is under.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HeapCheck {
+    Off,
+    Poison,
+    /// With the quarantine in bytes.
+    Reuse(u64),
+}
+
+thread_local! {
+    /// Whether this worker has started its heap check. The state is
+    /// per thread, and a worker runs many tests: started once, before
+    /// the first test is prepared -- preparing lowers for the IR VM,
+    /// which instruments only when poison is already on.
+    static HEAP_CHECK_STARTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn start_heap_check(opts: &Options) {
+    if opts.heap_check == HeapCheck::Off || HEAP_CHECK_STARTED.with(|s| s.replace(true)) {
+        return;
+    }
+    match opts.heap_check {
+        HeapCheck::Poison => interpreter::heap::heap_check_start_poison(),
+        HeapCheck::Reuse(q) => interpreter::heap::heap_check_start_reuse(q as usize),
+        HeapCheck::Off => {}
+    }
 }
 
 /// What an AOT test that never started reports: an earlier test in its
@@ -659,6 +690,9 @@ fn prepared_for(
     display: &str,
     opts: &Options,
 ) -> Result<std::rc::Rc<interpreter::PreparedTests>, String> {
+    // Before anything is prepared on this thread (planning prepares
+    // too, when it keeps the result for a serial run).
+    start_heap_check(opts);
     if let Some(hit) = PREPARED.with(|c| c.borrow().get(path).cloned()) {
         return Ok(hit);
     }
@@ -721,6 +755,14 @@ fn compile_driver(
     options.test_mode = true;
     options.test_only = only.map(|names| names.to_vec());
     options.diagnostics_json = opts.diagnostics_json;
+    match opts.heap_check {
+        HeapCheck::Off => {}
+        HeapCheck::Poison => options.heap_check = true,
+        HeapCheck::Reuse(q) => {
+            options.heap_check = true;
+            options.heap_reuse = Some(q);
+        }
+    }
     compiler::compile_file(&options)?;
     Ok(exe)
 }

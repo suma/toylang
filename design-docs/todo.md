@@ -12,6 +12,9 @@
 
 ### 2026-09-26
 
+- **HEAP-CHECK — `toy` の `--heap-check`** — `toy build` / `run` / `test` が
+  `--heap-check=report|poison|reuse` と `--heap-quarantine` を受ける (コマンドごとに
+  意味のあるモードだけ)。
 - **HEAP-CHECK H5 — 二重 free をエラーに、example を poison で常時検査** — poison / reuse
   で二重 free を 2 回目の free の位置で止める (IR VM / AOT は `HeapCheckFree` で free の前に)。
   `example_consistency` が全 example を poison の 3 レーンで走らせる。poc は `#[ignore]`。
@@ -2918,8 +2921,9 @@
   landing (完了済み節)、棚卸しで見つかった二重 drop も全部潰した
   (DOUBLE-DROP-LANE-DIVERGENCE)。H1 (`poison`、interpreter レーン)・H2
   (計装、compiled レーン)・H3 (`reuse`)・H4 (redzone / `__builtin_heap_poison`)・
-  H5 (二重 free をエラーに) も landing。残りは `toy` への `--heap-check`。
-  [`HEAP_CHECK.md`](HEAP_CHECK.md) §5 / §12。
+  H5 (二重 free をエラーに)・`toy` の `--heap-check` も landing。残りは
+  ブロック内から始まる末尾越えとヒープ外の範囲外 (§11 の残り)。
+  [`HEAP_CHECK.md`](HEAP_CHECK.md) §5 / §13。
 * **明示 import (MODULE-IMPORTS)** — stdlib も
   `import std.hex` を書かないと使えない形にする提案。
   [`MODULE_IMPORTS.md`](MODULE_IMPORTS.md)。**D1 の alias 束縛だけ

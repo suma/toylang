@@ -33,13 +33,13 @@ const USAGE: &str = "\
 toy — build and run toylang programs
 
 usage:
-  toy build [PATH] [--release] [--backend aot|jit] [-o OUT] [--profile=compile] [--format=text|json] [-v]
-  toy run   [PATH] [--release] [--backend aot|jit|vm|tree|all] [--format=text|json] [-v] [-- ARGS...]
+  toy build [PATH] [--release] [--backend aot|jit] [-o OUT] [--profile=compile] [--heap-check=MODE] [--format=text|json] [-v]
+  toy run   [PATH] [--release] [--backend aot|jit|vm|tree|all] [--heap-check=MODE] [--format=text|json] [-v] [-- ARGS...]
   toy check [PATH] [--format=text|json] [-v]
   toy clean [PATH] [--all] [--format=text|json] [-v]
   toy new   <DIR> [--format=text|json] [-v]
   toy init  [DIR] [--format=text|json] [-v]
-  toy test  [FILTER] [PATH] [--backend aot|vm|all] [-j N] [--list] [--bless] [--format=text|json] [-v]
+  toy test  [FILTER] [PATH] [--backend aot|vm|all] [-j N] [--list] [--bless] [--heap-check=MODE] [--format=text|json] [-v]
   toy test  [PATH] --check [--seed=N] [-v]
   toy api <MODULE.t> [PATH] [--format=text|json]
   toy effects [PATH] [--format=text|json] [-v]
@@ -70,6 +70,12 @@ options:
                        on stderr. `run` leaves the program's own output
                        alone and reshapes only the errors. Default text
   --profile=compile    build: time each compile phase, report on stderr
+  --heap-check=MODE    report: count double frees (run only)
+                       poison: stop at a freed block, past a block's end,
+                         or at a double free (build, run, test)
+                       reuse: poison, and hand freed blocks out again
+                         after the quarantine (build, run, test)
+  --heap-quarantine=N  reuse: bytes a freed block waits (default 1 MiB)
   --all                clean: remove the link cache and build/ too
   --no-warn-collisions skip the duplicate-name pre-check
   -- ARGS...           arguments for the program (run only)
@@ -135,6 +141,74 @@ struct Args {
     check_contracts: bool,
     /// `--seed=N` for `--check`; `None` picks one from the clock.
     seed: Option<u64>,
+    /// `--heap-check=` (HEAP-CHECK).
+    heap_check: Option<HeapMode>,
+    /// `--heap-quarantine=` for reuse mode.
+    heap_quarantine: Option<u64>,
+}
+
+/// `--heap-check=` (HEAP-CHECK): what `compiler` and `interpreter`
+/// take, for a package.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum HeapMode {
+    Report,
+    Poison,
+    Reuse,
+}
+
+impl HeapMode {
+    fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "report" => Ok(HeapMode::Report),
+            "poison" => Ok(HeapMode::Poison),
+            "reuse" => Ok(HeapMode::Reuse),
+            other => Err(format!("--heap-check expects `report`, `poison` or `reuse`, got `{other}`")),
+        }
+    }
+}
+
+impl Args {
+    fn quarantine(&self) -> u64 {
+        self.heap_quarantine.unwrap_or(compiler::all_backends::HEAP_QUARANTINE_DEFAULT)
+    }
+
+    /// Instrument a build for poison or reuse mode.
+    fn instrument(&self, options: &mut CompilerOptions) {
+        match self.heap_check {
+            Some(HeapMode::Poison) => options.heap_check = true,
+            Some(HeapMode::Reuse) => {
+                options.heap_check = true;
+                options.heap_reuse = Some(self.quarantine());
+            }
+            Some(HeapMode::Report) | None => {}
+        }
+    }
+
+    /// Start the interpreter's heap check on this thread.
+    fn start_interpreter_heap_check(&self) {
+        match self.heap_check {
+            Some(HeapMode::Report) => interpreter::heap::heap_check_start(),
+            Some(HeapMode::Poison) => interpreter::heap::heap_check_start_poison(),
+            Some(HeapMode::Reuse) => {
+                interpreter::heap::heap_check_start_reuse(self.quarantine() as usize)
+            }
+            None => {}
+        }
+    }
+
+    /// The `--heap-check=...` words for a `-v` line.
+    fn show_heap_check(&self) -> String {
+        let mode = match self.heap_check {
+            None => return String::new(),
+            Some(HeapMode::Report) => "report",
+            Some(HeapMode::Poison) => "poison",
+            Some(HeapMode::Reuse) => "reuse",
+        };
+        match self.heap_quarantine {
+            Some(q) => format!("--heap-check={mode} --heap-quarantine={q} "),
+            None => format!("--heap-check={mode} "),
+        }
+    }
 }
 
 fn main() {
@@ -161,6 +235,9 @@ fn main() {
     if args.seed.is_some() && !args.check_contracts {
         fail("--seed picks the inputs `--check` generates; add --check");
     }
+    if let Err(e) = check_heap_flags(&command, &args) {
+        fail(&e);
+    }
     let result = match command.as_str() {
         "build" => cmd_build(&args),
         "run" => cmd_run(&args),
@@ -177,6 +254,44 @@ fn main() {
     };
     if let Err(e) = result {
         fail(&e);
+    }
+}
+
+/// Which command takes which `--heap-check` mode (HEAP-CHECK).
+fn check_heap_flags(command: &str, args: &Args) -> Result<(), String> {
+    if args.heap_quarantine.is_some() && args.heap_check != Some(HeapMode::Reuse) {
+        return Err("--heap-quarantine applies to --heap-check=reuse only".to_string());
+    }
+    let Some(mode) = args.heap_check else {
+        return Ok(());
+    };
+    match (command, mode, args.backend) {
+        ("build" | "run" | "test", _, _) if args.check_contracts => {
+            Err("--heap-check runs the program; `--check` generates inputs instead".to_string())
+        }
+        ("build", HeapMode::Report, _) => Err(
+            "--heap-check=report is read at run time: build normally and run the binary with \
+             TOY_HEAP_CHECK=report (or use `toy run --heap-check=report`)"
+                .to_string(),
+        ),
+        ("test", HeapMode::Report, _) => Err(
+            "`toy test` stops at a heap error (poison or reuse); a double-free count is \
+             `toy run --heap-check=report`"
+                .to_string(),
+        ),
+        ("run", _, Some(Backend::Jit)) => Err(
+            "the JIT runs inside `toy`, which a heap stop would take with it; use \
+             --backend aot or vm"
+                .to_string(),
+        ),
+        ("run", HeapMode::Poison, Some(Backend::All)) => Err(
+            "--heap-check=poison stops the process at the first bad access, which the \
+             in-process JIT lane cannot survive; use --backend aot or vm (or reuse / report \
+             with --backend all)"
+                .to_string(),
+        ),
+        ("build" | "run" | "test", _, _) => Ok(()),
+        _ => Err(format!("--heap-check runs a program; `toy {command}` does not")),
     }
 }
 
@@ -204,6 +319,8 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
         compile_profile: false,
         check_contracts: false,
         seed: None,
+        heap_check: None,
+        heap_quarantine: None,
     };
     let mut i = 0usize;
     while i < argv.len() {
@@ -223,6 +340,15 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
             "--all" => a.all = true,
             "--profile=compile" => a.compile_profile = true,
             "--check" => a.check_contracts = true,
+            _ if arg.starts_with("--heap-check=") => {
+                a.heap_check = Some(HeapMode::parse(&arg["--heap-check=".len()..])?);
+            }
+            _ if arg.starts_with("--heap-quarantine=") => {
+                let raw = &arg["--heap-quarantine=".len()..];
+                a.heap_quarantine = Some(raw.parse().map_err(|_| {
+                    format!("--heap-quarantine expects a number of bytes, got `{raw}`")
+                })?);
+            }
             // Decimal or `0x` hex, as `interpreter --check --seed=` takes
             // it -- the report prints the seed in hex to be pasted back.
             _ if arg.starts_with("--seed=") => {
@@ -389,13 +515,15 @@ fn cmd_build(args: &Args) -> Result<(), String> {
     options.link_cache_dir = Some(pkg.link_cache_dir());
     options.verbose = args.verbose;
     options.diagnostics_json = args.json;
+    args.instrument(&mut options);
     if args.verbose {
         eprintln!(
-            "toy: compiler {} {} {}{}{}-o {}",
+            "toy: compiler {} {} {}{}{}{}-o {}",
             show_roots(&pkg),
             pkg.entry.display(),
             if args.release { "--release " } else { "" },
             if args.compile_profile { "--profile=compile " } else { "" },
+            args.show_heap_check(),
             show_format(args),
             out.display()
         );
@@ -458,17 +586,25 @@ fn run_all_backends(args: &Args, pkg: &package::Package) -> Result<(), String> {
     options.diagnostics_json = args.json;
     if args.verbose {
         eprintln!(
-            "toy: compiler {} {}{} --all-backends",
+            "toy: compiler {} {}{}{} --all-backends",
             show_roots(pkg),
+            args.show_heap_check(),
             show_format(args),
             filename
         );
     }
-    let code = compiler::all_backends::run(
+    let heap_check = match args.heap_check {
+        Some(HeapMode::Report) => compiler::all_backends::HeapCheckRun::Report,
+        Some(HeapMode::Reuse) => compiler::all_backends::HeapCheckRun::Reuse(args.quarantine()),
+        // Refused by `check_heap_flags`.
+        Some(HeapMode::Poison) | None => compiler::all_backends::HeapCheckRun::Off,
+    };
+    let code = compiler::all_backends::run_with(
         &options,
         &source,
         &filename,
         compiler::all_backends::ProfileMode::Off,
+        heap_check,
         args.json,
     );
     process::exit(code);
@@ -489,11 +625,17 @@ fn run_aot(args: &Args, pkg: &package::Package) -> Result<(), String> {
     options.link_cache_dir = Some(pkg.link_cache_dir());
     options.verbose = args.verbose;
     options.diagnostics_json = args.json;
+    args.instrument(&mut options);
     compiler::compile_file(&options)?;
     if args.verbose {
         eprintln!("toy: {} {}", out.display(), args.program_args.join(" "));
     }
-    let status = std::process::Command::new(&out)
+    let mut cmd = std::process::Command::new(&out);
+    // Report mode is read at run time; poison and reuse were built in.
+    if args.heap_check == Some(HeapMode::Report) {
+        cmd.env("TOY_HEAP_CHECK", "report");
+    }
+    let status = cmd
         .args(&args.program_args)
         .status()
         .map_err(|e| format!("cannot run `{}`: {e}", out.display()))?;
@@ -509,8 +651,9 @@ fn run_in_process(
     let filename = pkg.entry.to_string_lossy().into_owned();
     if args.verbose {
         eprintln!(
-            "toy: interpreter {} {}{} {}",
+            "toy: interpreter {} {}{}{} {}",
             show_roots(pkg),
+            args.show_heap_check(),
             show_format(args),
             filename,
             args.program_args.join(" ")
@@ -541,7 +684,13 @@ fn run_in_process(
     // JSON — so passing its message on would print it a second time,
     // after the JSON array when that was asked for. `interpreter`
     // exits the same way.
-    let Ok(outcome) = interpreter::run_source(&source, &filename, &options) else {
+    args.start_interpreter_heap_check();
+    let result = interpreter::run_source(&source, &filename, &options);
+    if args.heap_check.is_some() {
+        // stderr, as `interpreter --heap-check` prints it.
+        eprint!("{}", interpreter::heap::heap_check_report());
+    }
+    let Ok(outcome) = result else {
         process::exit(1);
     };
     if let Some(code) = outcome.exit_code {
@@ -758,6 +907,12 @@ fn cmd_test(args: &Args) -> Result<(), String> {
         // same path at once would leave whichever won (D5). Recording
         // is a rare, deliberate act; it does not need the parallelism.
         jobs: if args.bless { 1 } else { args.jobs.unwrap_or_else(default_jobs) },
+        heap_check: match args.heap_check {
+            Some(HeapMode::Poison) => test_runner::HeapCheck::Poison,
+            Some(HeapMode::Reuse) => test_runner::HeapCheck::Reuse(args.quarantine()),
+            // Report is refused by `check_heap_flags`.
+            Some(HeapMode::Report) | None => test_runner::HeapCheck::Off,
+        },
     };
     test_runner::run(&pkg, &opts)
 }

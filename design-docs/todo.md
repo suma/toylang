@@ -12,6 +12,10 @@
 
 ### 2026-09-26
 
+- **COMPOUND-BLOCK-RHS の残り — 枝が struct を返す method 呼び出しで
+  終わる形** — `val p = if c { x.twin() } else { P { .. } }` / match の腕 /
+  `&mut self` の method / generic struct の method。検出が method の戻り型を
+  `resolve_method_target` で引くようにした (書き込み側は対応済みだった)。
 - **USER-TYPE-SHADOWS-GENERIC-PARAM — ユーザ型の名前が stdlib の型引数名と
   同じでも stdlib が壊れない** — `struct T` / `enum K` を宣言しただけで
   `PriorityQueue<T>` / `Box<T>` / `Dict<K, V>` の本体が型エラーになっていた
@@ -2533,15 +2537,6 @@
   付いている。`FieldShape` の分類箇所は **74**。半分だけ開けると
   tree-walker が通して compiled lane が断る形になるので、やるなら
   通しで。実用途 (phantom フィールド、`T = ()` の実体化) を踏んでから
-- **COMPOUND-BLOCK-RHS の残: method call の枝** ★ —
-  `val p = if c { x.twin() } else { .. }` は
-  `detect_struct_result` が method の戻り型を安く引けないので検出されず、
-  従来どおり「compound-returning method を式の位置で使えない、`val` で
-  束縛せよ」というエラーになる。誘導が具体的なので実害は小さい。
-  (2026-09-01 に **match の arm 束縛** と **`return` する arm**、
-  2026-09-06 に **block を挟んだ形**は解消。残っているのは method call
-  の枝だけ。)
-
 - **JIT-INTERP-COVERAGE (residual)** ★ — interpreter 側 JIT が silent
   fallback する残り: (a) impl block ではなく **method 固有の generic**
   (`fn map<U>(..)`) と **phantom 型パラメータ** (どのフィールドも触れない

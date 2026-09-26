@@ -151,6 +151,21 @@ impl<'a> FunctionLower<'a> {
             {
                 Some(BranchShape::Produces(ShapeSource::Base(struct_name)))
             }
+            // COMPOUND-BLOCK-RHS: a struct-returning method
+            // (`if c { x.twin() } else { .. }`). Resolving the target
+            // may instantiate a template, which the call's own lowering
+            // needs anyway, and emits nothing.
+            Expr::MethodCall(recv, method, args) => {
+                match self.resolve_method_target(&recv, method, &args) {
+                    Ok(Some((func_id, _))) => match self.module.function(func_id).return_type {
+                        Type::Struct(struct_id) => {
+                            Some(BranchShape::Produces(ShapeSource::Instance(struct_id)))
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            }
             Expr::BuiltinCall(frontend::ast::BuiltinFunction::Panic, _) => {
                 Some(BranchShape::Diverges)
             }

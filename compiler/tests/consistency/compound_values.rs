@@ -1728,3 +1728,41 @@ fn wide_returns_work_through_writeback_and_dyn_dispatch() {
     assert_eq!(interpreter_value(src) & 0xff, 170);
     assert_consistent(src, "wide_return_writeback_dyn");
 }
+
+/// COMPOUND-BLOCK-RHS: a branch that ends in a struct-returning *method*
+/// call -- `if c { x.twin() } else { P { .. } }`, a `match` arm, an
+/// `&mut self` method whose writeback must still land, a generic
+/// struct's method. Detection could not see the method's return type
+/// and the compiled lanes asked for a `val` instead; the store side
+/// already handled the call.
+#[test]
+fn a_branch_may_end_in_a_struct_returning_method() {
+    let src = r#"
+        struct P { a: i64, b: i64 }
+        impl P {
+            fn twin(&self) -> P { P { a: self.b, b: self.a } }
+            fn bump(&mut self) -> P { self.a = self.a + 10i64
+                P { a: self.a, b: self.b } }
+        }
+        struct W<T> { v: T }
+        impl<T> W<T> {
+            fn dup(&self) -> W<T> { W { v: self.v } }
+        }
+        fn main() -> u64 {
+            var x = P { a: 1i64, b: 2i64 }
+            val n = 2u64
+            val p = match n {
+                0u64 => P { a: 0i64, b: 0i64 },
+                1u64 => x.twin(),
+                _ => x.bump(),
+            }
+            val w: W<u64> = W { v: 5u64 }
+            val q: W<u64> = if n > 1u64 { w.dup() } else { W { v: 0u64 } }
+            val r = if n == 0u64 { P { a: 9i64, b: 9i64 } } else { x.twin() }
+            (p.a + x.a * 100i64 + r.a * 10000i64) as u64 + q.v * 1000000u64
+        }
+    "#;
+    // p.a = 11, x.a = 11 (bumped), r.a = 2, q.v = 5
+    assert_eq!(interpreter_value(src), 5_021_111);
+    assert_consistent(src, "branch_struct_method");
+}

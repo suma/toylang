@@ -87,6 +87,9 @@ pub struct CompilerOptions {
     /// then names the same file in a panic, a leak report or a heap
     /// check -- the interpreter lane already said `<stdin>`.
     pub display_name: Option<String>,
+    /// HEAP-CHECK H2: instrument every raw memory access and start the
+    /// program in poison mode (`--heap-check=poison`).
+    pub heap_check: bool,
 }
 
 impl CompilerOptions {
@@ -105,6 +108,7 @@ impl CompilerOptions {
             test_mode: false,
             test_only: None,
             display_name: None,
+            heap_check: false,
         }
     }
 

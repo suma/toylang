@@ -96,6 +96,7 @@ fn inst_supported(kind: &InstKind) -> bool {
         | InstKind::HeapAlloc { .. }
         | InstKind::HeapRealloc { .. }
         | InstKind::HeapFree { .. }
+        | InstKind::HeapCheck { .. }
         | InstKind::PtrRead { .. }
         | InstKind::PtrWrite { .. }
         | InstKind::PtrIsNull { .. }

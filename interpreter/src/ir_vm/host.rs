@@ -96,6 +96,10 @@ impl VmHost for InterpreterHost {
         crate::heap::take_heap_fault()
     }
 
+    fn heap_probe(&self, addr: u64, len: u64, write: bool) -> Option<String> {
+        crate::heap::heap_probe(addr as usize, len as usize, write)
+    }
+
     fn free_at(&self, ptr: u64, site: u64, file: &str) {
         crate::heap::note_free_site_file(site, file);
         let _ = with_active_allocator(|alloc| alloc.free_at(ptr as usize, site));

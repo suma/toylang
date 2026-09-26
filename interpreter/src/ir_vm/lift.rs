@@ -135,11 +135,14 @@ pub fn run_main_via_ir_vm_outcome(
     };
     let mut interner_owned = interner.clone();
     let contract_msgs = compiler_lower::ContractMessages::intern(&mut interner_owned);
-    let module = match compiler_lower::lower_program(
+    // HEAP-CHECK H2: in poison mode every access is checked ahead of
+    // time, so a stop names where the access was written.
+    let module = match compiler_lower::lower_program_with(
         program,
         &interner_owned,
         &contract_msgs,
         release,
+        crate::heap::heap_poison_on(),
     )
     {
         Ok(m) => m,

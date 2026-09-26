@@ -115,6 +115,14 @@ pub trait VmHost {
         None
     }
 
+    /// HEAP-CHECK H2: whether `len` bytes at `addr` touch a freed
+    /// block, as the message to stop with. Asked by the `HeapCheck`
+    /// instruction ahead of the access, so the stop can name where the
+    /// access was written.
+    fn heap_probe(&self, _addr: u64, _len: u64, _write: bool) -> Option<String> {
+        None
+    }
+
     // --- typed memory ---------------------------------------------
 
     /// Read a typed value from the heap at `addr + offset`. Prefers

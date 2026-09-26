@@ -991,6 +991,28 @@ pub(super) fn compiled_run_streams_env(
     result
 }
 
+/// HEAP-CHECK H2: build `source` with `--heap-check=poison`, run it,
+/// and hand back its exit code and stderr. The entry is named
+/// `test.t`, as the interpreting lanes name it, so the diagnostics can
+/// be compared whole.
+pub(super) fn compiled_heap_poison_run(source: &str, stem: &str) -> (i32, String) {
+    let src_path = unique_path(&format!("{stem}.t"));
+    std::fs::write(&src_path, source).expect("write source");
+    let exe_path = unique_path(stem);
+    let mut options = CompilerOptions::new(src_path.clone());
+    options.output = Some(exe_path.clone());
+    options.core_modules_dirs = vec![core_modules_dir()];
+    options.link_cache_dir = Some(link_cache_dir_for_tests());
+    options.display_name = Some("test.t".to_string());
+    options.heap_check = true;
+    let built = compile_file(&options);
+    let _ = std::fs::remove_file(&src_path);
+    built.expect("instrumented build");
+    let out = Command::new(&exe_path).output().expect("spawn binary");
+    let _ = std::fs::remove_file(&exe_path);
+    (out.status.code().expect("exit code"), String::from_utf8_lossy(&out.stderr).into_owned())
+}
+
 /// The IR `lower_program` produces for `source`, rendered.
 pub(super) fn lowered_ir(source: &str) -> String {
     lowered_ir_with(source, false)

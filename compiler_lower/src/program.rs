@@ -1242,9 +1242,22 @@ pub fn lower_program(
     contract_msgs: &crate::ContractMessages,
     release: bool,
 ) -> Result<Module, String> {
+    lower_program_with(program, interner, contract_msgs, release, false)
+}
+
+/// [`lower_program`], optionally instrumenting every raw memory access
+/// with a `HeapCheck` (HEAP-CHECK H2, `--heap-check=poison`).
+pub fn lower_program_with(
+    program: &File,
+    interner: &DefaultStringInterner,
+    contract_msgs: &crate::ContractMessages,
+    release: bool,
+    heap_check: bool,
+) -> Result<Module, String> {
     use frontend::compile_profile as prof;
     let declare_phase = prof::phase("declare");
     let mut module = Module::new();
+    module.heap_check = heap_check;
     // DEBUG-OBS D4/D6: the shadow stack exists in a default build and
     // not under `--release`, and the backends need to know which even
     // when the program makes no calls.

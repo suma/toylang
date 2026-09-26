@@ -80,6 +80,7 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
         InstKind::HeapAlloc { .. }
         | InstKind::HeapRealloc { .. }
         | InstKind::HeapFree { .. }
+        | InstKind::HeapCheck { .. }
         | InstKind::PtrRead { .. }
         | InstKind::PtrWrite { .. } => exec_heap_and_pointer(vm, inst),
         InstKind::StrLen { .. }
@@ -506,6 +507,16 @@ fn exec_heap_and_pointer(vm: &mut Vm, inst: &Instruction) {
                 host.note_free_culprit(interp_culprit(names));
             }
             host.free_at(unsafe { p.u64 }, packed, vm.module().site_file(*site));
+        }
+        InstKind::HeapCheck { ptr, offset, len, write, site } => {
+            if vm.heap_poison_on() {
+                let base = unsafe { vm.read_value(*ptr).u64 };
+                let off = offset.map_or(0, |o| unsafe { vm.read_value(o).u64 });
+                let len = unsafe { vm.read_value(*len).u64 };
+                if let Some(message) = host.heap_probe(base.wrapping_add(off), len, *write) {
+                    vm.memory_fault_at(message, *site);
+                }
+            }
         }
         InstKind::PtrRead { ptr, offset, elem_ty } => {
             let p = vm.read_value(*ptr);

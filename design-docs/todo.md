@@ -12,6 +12,10 @@
 
 ### 2026-09-26
 
+- **HEAP-CHECK H2 — compiled レーンの `--heap-check=poison`** — `compiler --heap-check=poison`
+  が生メモリへのアクセスの前に `HeapCheck` を置いたバイナリを作り、解放済みブロックへの
+  読み書きを interpreter とバイト一致の panic で止める。IR VM も同じ命令で止まり、
+  報告に位置が付いた。example 全体で誤検出なし。
 - **HEAP-CHECK H1 — interpreter レーンの `--heap-check=poison`** — free したブロックを
   `0xDB` で埋めて型付きスロットも消し、以後の読み書きを「確保位置・解放位置」付きの
   panic で止める (tree-walker と IR VM)。`push` をまたいで保持した `Span` の窓も
@@ -2902,10 +2906,10 @@
 * **ヒープ検査モード (HEAP-CHECK) の残り** — H0 (`--heap-check=report`、
   二重 free の棚卸し) と H0b (報告に二重 drop を起こした関数名) は 2026-09-26 に
   landing (完了済み節)、棚卸しで見つかった二重 drop も全部潰した
-  (DOUBLE-DROP-LANE-DIVERGENCE)。H1 (`poison`、interpreter レーン) も landing。次は H2
-  (計装、compiled レーン。IR VM の報告に位置も付く) → H3 (`reuse`) →
+  (DOUBLE-DROP-LANE-DIVERGENCE)。H1 (`poison`、interpreter レーン) と H2
+  (計装、compiled レーン) も landing。次は H3 (`reuse`) →
   H4 (redzone) → H5 (二重 drop を潰して既定でエラー)。
-  [`HEAP_CHECK.md`](HEAP_CHECK.md) §5 / §7。
+  [`HEAP_CHECK.md`](HEAP_CHECK.md) §5 / §9。
 * **明示 import (MODULE-IMPORTS)** — stdlib も
   `import std.hex` を書かないと使えない形にする提案。
   [`MODULE_IMPORTS.md`](MODULE_IMPORTS.md)。**D1 の alias 束縛だけ

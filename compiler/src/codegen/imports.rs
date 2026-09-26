@@ -99,22 +99,29 @@ impl<M: Module> CodegenSession<M> {
         let mut pool: Option<cranelift_codegen::ir::GlobalValue> = None;
         let ir_func = ir_module.function(func_id);
         for blk in &ir_func.blocks {
-            let key = match &blk.terminator {
-                Some(Terminator::PanicAllocBudget { site, head, .. }) => (*site, head.clone()),
+            // HEAP-CHECK H2: an access check writes the same frame.
+            let checks = blk.instructions.iter().filter_map(|inst| match &inst.kind {
+                InstKind::HeapCheck { site, .. } => Some((*site, None)),
+                _ => None,
+            });
+            let term = match &blk.terminator {
+                Some(Terminator::PanicAllocBudget { site, head, .. }) => Some((*site, head.clone())),
                 Some(Terminator::PanicValues { site, .. })
-                | Some(Terminator::PanicStr { site, .. }) => (*site, None),
-                _ => continue,
+                | Some(Terminator::PanicStr { site, .. }) => Some((*site, None)),
+                _ => None,
             };
-            if imports.contains_key(&key) {
-                continue;
+            for key in checks.chain(term) {
+                if imports.contains_key(&key) {
+                    continue;
+                }
+                let Some((prefix, suffix)) = self.frame_strings.get(&key).copied() else {
+                    continue;
+                };
+                let Some(gv) = self.diag_pool_global(&mut pool, func) else {
+                    continue;
+                };
+                imports.insert(key, ((gv, prefix as i64), (gv, suffix as i64)));
             }
-            let Some((prefix, suffix)) = self.frame_strings.get(&key).copied() else {
-                continue;
-            };
-            let Some(gv) = self.diag_pool_global(&mut pool, func) else {
-                continue;
-            };
-            imports.insert(key, ((gv, prefix as i64), (gv, suffix as i64)));
         }
         imports
     }
@@ -382,6 +389,9 @@ impl<M: Module> CodegenSession<M> {
             prof_stat: self.declare_func_in_func_readonly(self.rt_prof_stat, func),
             panic_alloc_budget: self
                 .declare_func_in_func_readonly(self.rt_panic_alloc_budget, func),
+            heap_check: self.declare_func_in_func_readonly(self.rt_heap_check, func),
+            heap_check_poison_start: self
+                .declare_func_in_func_readonly(self.rt_heap_check_poison_start, func),
             panic_at: self.declare_func_in_func_readonly(self.rt_panic_at, func),
             backtrace_str: self
                 .declare_func_in_func_readonly(self.rt_backtrace_str, func),

@@ -128,6 +128,7 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {
     let mut core_modules_dirs: Vec<PathBuf> = Vec::new();
     let mut json = false;
     let mut heap_check = false;
+    let mut options_heap_poison = false;
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -144,21 +145,18 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {
             "--all-backends" => all_backends = true,
             s if s.starts_with("--heap-check=") => match &s["--heap-check=".len()..] {
                 "report" => heap_check = true,
-                "poison" => {
-                    return Err(
-                        "--heap-check=poison checks the interpreter's heap only for now: run \
-                         `interpreter --heap-check=poison` (the compiled lanes come with \
-                         design-docs/HEAP_CHECK.md H2)"
-                            .to_string(),
-                    )
-                }
+                // HEAP-CHECK H2: poison is built in -- every raw access
+                // gets a check in front of it -- so it is a build flag.
+                "poison" => options_heap_poison = true,
                 "reuse" => {
                     return Err(
                         "--heap-check=reuse is not available yet (design-docs/HEAP_CHECK.md, H3)"
                             .to_string(),
                     )
                 }
-                other => return Err(format!("--heap-check expects `report`, got `{other}`")),
+                other => {
+                    return Err(format!("--heap-check expects `report` or `poison`, got `{other}`"))
+                }
             },
             // Repeatable, and a comma list: `--profile=mem,compile`.
             s if s.starts_with("--profile=") => {
@@ -227,6 +225,7 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {
     options.release = release;
     options.core_modules_dirs = core_modules_dirs;
     options.test_mode = test_mode;
+    options.heap_check = options_heap_poison;
     // One flag shapes everything the tool itself prints: the result,
     // the diagnostics and the memory report.
     options.diagnostics_json = json;
@@ -246,6 +245,17 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {
         return Err(
             "--heap-check=report is read at run time: build normally and run the binary \
              with TOY_HEAP_CHECK=report (or add --all-backends)"
+                .to_string(),
+        );
+    }
+    if options_heap_poison && heap_check {
+        return Err("--heap-check takes one mode: `report` or `poison`".to_string());
+    }
+    if options_heap_poison && all_backends {
+        return Err(
+            "--heap-check=poison stops the process at the first bad access, which the in-process \
+             JIT lane cannot survive: build with --heap-check=poison and run the binary, or run \
+             `interpreter --heap-check=poison`"
                 .to_string(),
         );
     }

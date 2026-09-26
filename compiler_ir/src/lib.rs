@@ -173,6 +173,9 @@ pub struct Module {
     /// debug build whose program makes no calls — and that program
     /// still has an entry frame worth naming when it fails.
     pub debug_frames: bool,
+    /// HEAP-CHECK H2: whether every raw memory access is preceded by a
+    /// `HeapCheck`, and the entry turns poison mode on.
+    pub heap_check: bool,
 }
 
 /// One struct's full shape — fields keep their declared order
@@ -1722,6 +1725,7 @@ impl InstKind {
             | InstKind::HeapAlloc { .. }
             | InstKind::HeapRealloc { .. }
             | InstKind::HeapFree { .. }
+            | InstKind::HeapCheck { .. }
             | InstKind::PtrRead { .. }
             | InstKind::PtrWrite { .. }
             | InstKind::StrLen { .. }
@@ -2011,6 +2015,18 @@ pub enum InstKind {
     /// call's position, which only a heap check reads (HEAP-CHECK H0:
     /// a double free names where each free was written).
     HeapFree { ptr: ValueId, binding: AllocatorBinding, site: Option<SiteId> },
+    /// HEAP-CHECK H2: `len` bytes at `ptr + offset` are about to be read
+    /// (or written) -- stop if they belong to a freed block. Emitted
+    /// before every raw access only when the lowering is asked for a
+    /// heap check; `site` is the access's source position, for the
+    /// report.
+    HeapCheck {
+        ptr: ValueId,
+        offset: Option<ValueId>,
+        len: ValueId,
+        write: bool,
+        site: Option<SiteId>,
+    },
     /// `__builtin_ptr_read(ptr, offset) -> elem_ty` — typed load at
     /// `ptr + offset`. The element type is fixed at lower time from
     /// the surrounding `val`/`var` annotation (e.g.
@@ -2592,6 +2608,13 @@ impl InstKind {
                 one(ptr);
                 one(new_size);
             }
+            InstKind::HeapCheck { ptr, offset, len, .. } => {
+                one(ptr);
+                if let Some(o) = offset {
+                    one(o);
+                }
+                one(len);
+            }
             InstKind::HeapFree { ptr, .. }
             | InstKind::PtrIsNull { ptr }
             | InstKind::LoadRef { ptr, .. }
@@ -3171,6 +3194,14 @@ impl fmt::Display for DisplayInst<'_> {
                 match site {
                     Some(id) => write!(f, "{prefix}heap_realloc {ptr}, {new_size}  ; {binding} @site#{}", id.0),
                     None => write!(f, "{prefix}heap_realloc {ptr}, {new_size}  ; {binding}"),
+                }
+            }
+            InstKind::HeapCheck { ptr, offset, len, write, site } => {
+                let what = if *write { "write" } else { "read" };
+                let off = offset.map(|o| format!(" + {o}")).unwrap_or_default();
+                match site {
+                    Some(id) => write!(f, "heap_check {what} {ptr}{off}, {len} @site#{}", id.0),
+                    None => write!(f, "heap_check {what} {ptr}{off}, {len}"),
                 }
             }
             InstKind::HeapFree { ptr, binding, site } => match site {

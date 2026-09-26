@@ -986,7 +986,7 @@ unsafe fn main() -> u64 {
 }
 ";
     let (tree, vm) = heap_poison_errors(src);
-    let want = "heap check: read of 8 bytes at offset 0 of a 16-byte block that was already freed \
+    let want = "heap check: read at offset 0 of a 16-byte block that was already freed \
                 (allocated at test.t:2:18, freed at test.t:4:5)";
     assert!(tree.contains(want), "tree-walker: {tree}");
     assert!(vm.contains(want), "IR VM: {vm}");
@@ -1014,7 +1014,91 @@ fn poison_mode_stops_a_window_held_across_a_resize() {
     "#;
     let (tree, vm) = heap_poison_errors(src);
     for (lane, err) in [("tree-walker", &tree), ("IR VM", &vm)] {
-        assert!(err.contains("heap check: read of 8 bytes at offset 0"), "{lane}: {err}");
+        assert!(err.contains("heap check: read at offset 0"), "{lane}: {err}");
         assert!(err.contains("moved by a resize"), "{lane}: {err}");
     }
+}
+
+/// HEAP-CHECK H2: an instrumented build stops at the same access, with
+/// the same diagnostic -- position, snippet, sentence, backtrace -- as
+/// the IR VM, which now places its stop too.
+#[test]
+fn poison_build_stops_a_read_of_a_freed_block_like_the_interpreter() {
+    if skip_e2e() {
+        return;
+    }
+    let src = "\
+unsafe fn main() -> u64 {
+    val p: ptr = __builtin_heap_alloc(16u64)
+    __builtin_ptr_write(p, 0u64, 42u64)
+    __builtin_heap_free(p)
+    val x = __builtin_ptr_read::<u64>(p, 8u64)
+    x
+}
+";
+    let (_, vm) = heap_poison_errors(src);
+    let (code, aot) = compiled_heap_poison_run(src, "h2_read_freed");
+    assert_eq!(code, 1, "{aot}");
+    assert!(vm.contains("test.t:5:13"), "the IR VM names the access: {vm}");
+    assert!(
+        aot.contains(vm.trim_end()),
+        "the AOT diagnostic differs:\n--- IR VM\n{vm}\n--- AOT\n{aot}"
+    );
+    assert!(aot.contains("heap check: 0 double frees"), "{aot}");
+}
+
+/// HEAP-CHECK H2: the window held across a resize, compiled -- the
+/// stdlib's own reads are checked, and name the resize.
+#[test]
+fn poison_build_stops_a_window_held_across_a_resize() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            var v: Vec<u64> = Vec::new()
+            v.push(1u64)
+            val w = v.as_span()
+            val s: Span<u64> = w ?? panic("empty")
+            var i: u64 = 0u64
+            while i < 10u64 {
+                v.push(i)
+                i = i + 1u64
+            }
+            s.get(0u64)
+        }
+    "#;
+    let (_, vm) = heap_poison_errors(src);
+    let (code, aot) = compiled_heap_poison_run(src, "h2_window_resize");
+    assert_eq!(code, 1, "{aot}");
+    assert!(aot.contains("heap check: read at offset 0"), "{aot}");
+    assert!(aot.contains("moved by a resize"), "{aot}");
+    assert!(
+        aot.contains(vm.trim_end()),
+        "the AOT diagnostic differs:\n--- IR VM\n{vm}\n--- AOT\n{aot}"
+    );
+}
+
+/// HEAP-CHECK H2: a program that touches nothing freed runs the same
+/// instrumented as plain, and the instrumentation is only there when
+/// asked for.
+#[test]
+fn poison_build_leaves_a_clean_program_alone() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            var v: Vec<u64> = Vec::new()
+            var i: u64 = 0u64
+            while i < 100u64 {
+                v.push(i)
+                i = i + 1u64
+            }
+            v.get(99u64)
+        }
+    "#;
+    let (code, err) = compiled_heap_poison_run(src, "h2_clean");
+    assert_eq!(code, 99, "{err}");
+    assert!(!lowered_ir(src).contains("heap_check"));
 }

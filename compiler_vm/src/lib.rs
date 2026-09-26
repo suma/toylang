@@ -118,6 +118,9 @@ pub struct Vm<'a> {
     /// panicked (in Rust) at the first instruction that used it, with
     /// "value not defined" naming the wrong place.
     memory_fault: Option<String>,
+    /// Where the access behind `memory_fault` was written, when the
+    /// instruction that raised it knows (HEAP-CHECK H2).
+    memory_fault_site: Option<compiler_ir::SiteId>,
     /// Optional interner for resolving string symbols.
     interner: Option<&'a DefaultStringInterner>,
     /// Everything the VM cannot do itself: stdout, heap, allocator
@@ -153,6 +156,7 @@ impl<'a> Vm<'a> {
             pending_frame: None,
             recursion_limit_hit: false,
             memory_fault: None,
+            memory_fault_site: None,
             interner: None,
             host,
             vtable_addrs: HashMap::new(),
@@ -175,6 +179,7 @@ impl<'a> Vm<'a> {
             pending_frame: None,
             recursion_limit_hit: false,
             memory_fault: None,
+            memory_fault_site: None,
             interner: Some(interner),
             host,
             vtable_addrs: HashMap::new(),
@@ -262,13 +267,25 @@ impl<'a> Vm<'a> {
         self.memory_fault.get_or_insert(message);
     }
 
+    /// A memory fault the raising instruction can place (HEAP-CHECK H2).
+    pub(crate) fn memory_fault_at(&mut self, message: String, site: Option<compiler_ir::SiteId>) {
+        if self.memory_fault.is_none() {
+            self.memory_fault = Some(message);
+            self.memory_fault_site = site;
+        }
+    }
+
+    pub(crate) fn heap_poison_on(&self) -> bool {
+        self.heap_poison
+    }
+
     fn run_loop(&mut self) -> VmResult {
         loop {
             if let Some(message) = self.memory_fault.take() {
                 let backtrace = self.backtrace_text();
                 return VmResult::Diverged {
                     message,
-                    site: None,
+                    site: self.memory_fault_site.take(),
                     backtrace,
                     needs_panic_prefix: true,
                 };
@@ -319,6 +336,7 @@ impl<'a> Vm<'a> {
                 // fault the refused access also produced.
                 if self.heap_poison
                     && let Some(message) = self.host.take_heap_fault()
+                    && self.memory_fault_site.is_none()
                 {
                     self.memory_fault = Some(message);
                 }

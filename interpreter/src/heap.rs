@@ -628,6 +628,17 @@ pub fn take_heap_fault() -> Option<String> {
     HEAP_FAULT.with(|f| f.borrow_mut().take())
 }
 
+/// H2: the fault an access of `len` bytes at `addr` would raise, asked
+/// ahead of the access by the IR VM's `HeapCheck` so the stop carries
+/// the access's position. The access that follows is refused too, and
+/// that second record is dropped here so it cannot outlive this one.
+pub fn heap_probe(addr: usize, len: usize, write: bool) -> Option<String> {
+    if heap_check_access(addr, len, write) {
+        return None;
+    }
+    HEAP_FAULT.with(|f| f.borrow_mut().take())
+}
+
 /// H1: whether `[addr, addr + len)` touches a freed block, and if so,
 /// record the fault. `true` means the access may go ahead.
 fn heap_check_access(addr: usize, len: usize, write: bool) -> bool {
@@ -643,10 +654,9 @@ fn heap_check_access(addr: usize, len: usize, write: bool) -> bool {
         }
         let offset = addr.saturating_sub(start);
         Some(format!(
-            "heap check: {} of {} bytes at offset {offset} of a {size}-byte block that was already freed \
+            "heap check: {} at offset {offset} of a {size}-byte block that was already freed \
              (allocated at {}, {})",
             if write { "write" } else { "read" },
-            len.max(1),
             heap_check_position(alloc, &h.files),
             if freed == HEAP_CHECK_RESIZE {
                 "moved by a resize".to_string()

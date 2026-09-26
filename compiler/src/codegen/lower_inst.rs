@@ -125,6 +125,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             InstKind::HeapAlloc { .. }
             | InstKind::HeapRealloc { .. }
             | InstKind::HeapFree { .. }
+            | InstKind::HeapCheck { .. }
             | InstKind::PtrRead { .. }
             | InstKind::PtrWrite { .. } => self.lower_heap_and_pointer(inst),
             InstKind::StrLen { .. }
@@ -1317,6 +1318,29 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 self.builder
                     .ins()
                     .call(self.runtime.dispatched_free, &[handle_v, ptr_v, site_v, file_v]);
+            }
+            InstKind::HeapCheck { ptr, offset, len, write, site } => {
+                // HEAP-CHECK H2: the runtime answers at once outside
+                // poison mode, and writes the frame and stops on a hit.
+                let ptr_v = self.value(*ptr);
+                let addr = match offset {
+                    Some(o) => {
+                        let off_v = self.value(*o);
+                        self.builder.ins().iadd(ptr_v, off_v)
+                    }
+                    None => ptr_v,
+                };
+                let len_v = self.value(*len);
+                let write_v = self.builder.ins().iconst(types::I64, i64::from(*write));
+                let (pre_gv, suf_gv) = *self
+                    .frame_imports
+                    .get(&(*site, None))
+                    .ok_or_else(|| "missing frame import for a heap check site".to_string())?;
+                let pre = self.diag_addr(pre_gv);
+                let suf = self.diag_addr(suf_gv);
+                self.builder
+                    .ins()
+                    .call(self.runtime.heap_check, &[addr, len_v, write_v, pre, suf]);
             }
             InstKind::PtrRead { ptr, offset, elem_ty } => {
                 let cl_ty = ir_to_cranelift_ty(*elem_ty)

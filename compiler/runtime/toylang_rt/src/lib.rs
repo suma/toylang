@@ -2181,7 +2181,8 @@ pub extern "C" fn toy_dispatched_free(
         return;
     }
     if hc_enabled() {
-        hc_note_freed(p, site, file, free_site, free_file);
+        hc_note_freed(p, size, site, file, free_site, free_file);
+        hc_poison(p, size);
     }
     if prof_enabled() {
         let st = thread_state();
@@ -2237,7 +2238,7 @@ pub unsafe extern "C" fn toy_dispatched_realloc(
     // The old block is released by the move: a later free of it is a
     // double free, and says so.
     if old_size > 0 && hc_enabled() {
-        hc_note_freed(p, site, file, HC_RESIZE, core::ptr::null());
+        hc_note_freed(p, old_size, site, file, HC_RESIZE, core::ptr::null());
     }
     // ERROR_MODEL D5: the accounting belongs on the success path. A
     // refused request obtained nothing, and reporting the growth
@@ -2273,6 +2274,11 @@ pub unsafe extern "C" fn toy_dispatched_realloc(
             memcpy(np, p, (old_size.min(new_size)) as usize);
         }
     }
+    // H1/H2: the moved-from block is poisoned only now, after its
+    // contents reached the new one.
+    if old_size > 0 && hc_enabled() {
+        hc_poison(p, old_size);
+    }
     prof_put(np, new_size, site, file);
     np
 }
@@ -2295,6 +2301,7 @@ const HC_RESIZE: u64 = u64::MAX;
 
 #[derive(Clone, Copy)]
 struct HcFreed {
+    size: u64,
     alloc_site: u64,
     alloc_file: *const u8,
     free_site: u64,
@@ -2320,28 +2327,116 @@ fn hc_enabled() -> bool {
         };
         st.hc_state = match v {
             b"report" => 1,
+            b"poison" => 2,
             b"" | b"0" | b"off" => 0,
             _ => {
                 err_write(&format!(
-                    "toylang: TOY_HEAP_CHECK={} is not available yet; only `report` is (HEAP-CHECK H0)\n",
+                    "toylang: TOY_HEAP_CHECK={} is not available; use `report` or `poison` (HEAP-CHECK)\n",
                     core::str::from_utf8(v).unwrap_or("?")
                 ));
                 0
             }
         };
-        if st.hc_state == 1 {
+        if st.hc_state > 0 {
             unsafe {
                 atexit(toy_heap_check_report);
             }
         }
     }
-    st.hc_state == 1
+    st.hc_state > 0
 }
 
-fn hc_note_freed(p: *mut u8, alloc_site: u64, alloc_file: *const u8, free_site: u64, free_file: *const u8) {
+fn hc_note_freed(
+    p: *mut u8,
+    size: u64,
+    alloc_site: u64,
+    alloc_file: *const u8,
+    free_site: u64,
+    free_file: *const u8,
+) {
     thread_state()
         .hc_freed
-        .insert(p as usize, HcFreed { alloc_site, alloc_file, free_site, free_file });
+        .insert(p as usize, HcFreed { size, alloc_site, alloc_file, free_site, free_file });
+}
+
+/// HEAP-CHECK H2: in poison mode, fill a freed block with the poison
+/// byte. Safe because the bump region never hands the address out
+/// again; what it buys is that an access the instrumentation cannot
+/// see (runtime-internal) reads a recognisable pattern, not the old
+/// contents.
+fn hc_poison(p: *mut u8, size: u64) {
+    if thread_state().hc_state == 2 && size > 0 {
+        unsafe { core::ptr::write_bytes(p, HC_POISON_BYTE, size as usize) };
+    }
+}
+
+/// The byte a freed block is filled with; the interpreter's
+/// `HEAP_POISON_BYTE`.
+const HC_POISON_BYTE: u8 = 0xDB;
+
+/// HEAP-CHECK H2: `len` bytes at `addr` are about to be read (or
+/// written). In poison mode, stop if they touch a freed block, with
+/// the interpreter's sentence between the access's frame halves.
+/// Outside poison mode it returns at once: the call sits in front of
+/// every access of an instrumented build.
+///
+/// # Safety
+/// `prefix` and `suffix` are NUL-terminated or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_heap_check(
+    addr: u64,
+    len: u64,
+    write: u64,
+    prefix: *const u8,
+    suffix: *const u8,
+) {
+    let st = thread_state();
+    if st.hc_state != 2 || addr == 0 {
+        return;
+    }
+    let len = len.max(1);
+    let end = (addr as usize).saturating_add(len as usize);
+    let Some((&start, &f)) = st.hc_freed.range(..end).next_back() else {
+        return;
+    };
+    if start as u64 + f.size <= addr {
+        return;
+    }
+    let offset = addr.saturating_sub(start as u64);
+    let freed = if f.free_site == HC_RESIZE {
+        String::from("moved by a resize")
+    } else {
+        format!("freed at {}", hc_position(f.free_site, f.free_file))
+    };
+    let message = format!(
+        "panic: heap check: {} at offset {offset} of a {}-byte block that was already freed \
+         (allocated at {}, {freed})",
+        if write != 0 { "write" } else { "read" },
+        f.size,
+        hc_position(f.alloc_site, f.alloc_file),
+    );
+    unsafe { write_diag_fd(2, prefix) };
+    err_write(&message);
+    unsafe { write_diag_fd(2, suffix) };
+    write_backtrace();
+    err_write("\n");
+    unsafe { exit(1) };
+}
+
+/// Turn poison mode on for an instrumented binary
+/// (`compiler --heap-check=poison`), which calls this first thing in
+/// `main`. `TOY_HEAP_CHECK=report` is overridden: the build asked for
+/// poison.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_heap_check_poison_start() {
+    let _ = hc_enabled();
+    let st = thread_state();
+    if st.hc_state == 0 {
+        unsafe {
+            atexit(toy_heap_check_report);
+        }
+    }
+    st.hc_state = 2;
 }
 
 /// HEAP-CHECK H0b: the function that set the second free off -- the
@@ -2429,6 +2524,12 @@ pub fn heap_check_start() {
     st.hc_state = 1;
     st.hc_freed.clear();
     st.hc_events.clear();
+}
+
+/// Start poison mode on this thread (JIT accessor).
+pub fn heap_check_start_poison() {
+    heap_check_start();
+    thread_state().hc_state = 2;
 }
 
 extern "C" fn toy_heap_check_report() {

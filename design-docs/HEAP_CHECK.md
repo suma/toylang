@@ -1,8 +1,8 @@
 # HEAP-CHECK — 解放済みメモリを毒化・再利用する検査モード
 
-> **状態: H0 (二重 free の棚卸し) と H1 (interpreter レーンの `poison`) landing 済み (2026-09-26)。** §6 の未決事項は
+> **状態: H0 (二重 free の棚卸し)・H1 (interpreter レーンの `poison`)・H2 (compiled レーンの `poison`) landing 済み (2026-09-26)。** §6 の未決事項は
 > 推奨どおりに決まった (二重 free は H5 まで報告のみ / フラグは `--heap-check=` /
-> 隔離は 1 MiB から / AOT の計装はビルドフラグのときだけ)。H0 の実装と結果は §7。
+> 隔離は 1 MiB から / AOT の計装はビルドフラグのときだけ)。H0 の実装と結果は §7、H1 は §8、H2 は §9。
 > 関連: [`MEMORY_PROFILING.md`](MEMORY_PROFILING.md) (計数の定義と site)、
 > [`ALLOCATOR_PLAN.md`](ALLOCATOR_PLAN.md) (`with allocator` と stdlib `Arena`)、
 > [`REGIONS.md`](REGIONS.md) / [`POINTER.md`](POINTER.md) (静的な脱出検査)。
@@ -248,7 +248,7 @@ Runtime error occurred:
 Error at main.t:12:9:
    |
 12 |     val x = s.get(0u64)
-   |             ^^^^^^^^^^^ heap check: read of 8 bytes at offset 0 of a
+   |             ^^^^^^^^^^^ heap check: read at offset 0 of a
    |                         32-byte block that was already freed
    |
    = allocated at core/std/collections/vec.t:157:26
@@ -279,7 +279,7 @@ Error at main.t:12:9:
 |---|---|---|
 | **H0** | `--heap-check=report`: 両ヒープで二重 free を落とさずに数え、(確保 site, 1 回目の free site, 2 回目の free site) を重複なしで並べる。計装は不要 | 二重 free の棚卸し (§1.3 の 209 か所の出所) |
 | **H1** | `poison`: `HeapManager` 側 (tree-walker + IR VM) に shadow と毒埋めを入れ、読み書き口で検査する | interpreter レーンの UAF / 二重 free |
-| **H2** | `HeapCheck` 命令と lowering の計装、`toylang_rt` の shadow、`HeapFree` の site | AOT / JIT の UAF。`--all-backends` で報告を突き合わせられる |
+| **H2** (済) | `HeapCheck` 命令と lowering の計装、`toylang_rt` の shadow、`HeapFree` の site | AOT / JIT の UAF。IR VM の報告に位置が付く |
 | **H3** | `reuse`: 隔離を有限にし、size class ごとの free list で再利用する。**方針を両ヒープで一字一句同じにする** (size class = 16 バイト単位の切り上げ、LIFO、隔離は FIFO で N バイト) — でないと再利用の結果がレーンで割れる | 「再利用しない」ことへの依存 |
 | **H4** | redzone (ブロック間に 16 バイトの `REDZONE`) と `__builtin_heap_poison` | ヒープ内の範囲外、`Arena::free` 後のアクセス |
 | **H5** | H0 の一覧を潰す (別名経由の二重 drop の原因を move_check / drop glue 側で直す)。潰し終えたら検査モードの二重 free を既定でエラーにし、example と poc/logsearch を `--heap-check=poison` で回すテストを足す | — |
@@ -425,7 +425,7 @@ cargo run -q -p interpreter -- --heap-check=poison prog.t
 Runtime error occurred:
 Error at test.t:5:13:
  5 |     val x = __builtin_ptr_read::<u64>(p, 0u64)
-   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ panic: heap check: read of 8 bytes at offset 0
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ panic: heap check: read at offset 0
    |   of a 16-byte block that was already freed (allocated at test.t:2:18, freed at test.t:4:5)
    = backtrace (innermost first):
        main
@@ -447,9 +447,44 @@ Error at test.t:5:13:
 - example 全体を `poison` で走らせて、出力・終了コードとも通常の実行と一致
   (誤検出なし)。切っているときのコストは読み書きごとの `Cell<bool>` の読み 1 回。
 
-**残り**
+**残り** (どちらも H2 で解消)
 
 - IR VM の報告には位置 (`Error at`) が無い — IR の命令が位置を持たないため。
-  H2 の検査命令 (`HeapCheck { .., site }`) で解消する。
-- compiled レーン (AOT / JIT) は H2。`compiler --heap-check=poison` は interpreter を
-  案内する。
+- compiled レーン (AOT / JIT) は未対応。
+
+## 9. H2 — compiled レーンの `poison` (2026-09-26)
+
+```bash
+cargo run -q -p compiler -- prog.t --heap-check=poison -o prog && ./prog
+```
+
+- **計装はビルドフラグ** (§6 の 4 は推奨どおり)。`CompilerOptions.heap_check` が
+  立つと lowering (`compiler_lower::lower_program_with`) が `emit()` の 1 か所で、
+  生メモリに触る命令 (`PtrRead` / `PtrWrite` / `SimdLoad` / `SimdStore` /
+  `MemCopy` / `MemMove` / `MemSet` / `MemEq` / `MemFind` / `MemFindSeq` /
+  `StrFromBytes`) の前に `HeapCheck { ptr, offset, len, write, site }` を置く。
+  コピーは読み元を先に検査する (interpreter と同じ順)。`LoadRef` / `StoreRef` は
+  スタックなので対象外。フラグが無ければ命令は 1 つも出ない (IR で確認するテストあり)。
+- AOT / JIT は `HeapCheck` を `toy_heap_check(addr, len, write, prefix, suffix)` の
+  呼び出しにする。prefix / suffix は予算違反と同じ枠の静的な前後半
+  (`frame_strings`) で、ヒットしたらその間に文を書き、backtrace を出して `exit(1)`。
+  poison でなければ即 return。計装ビルドの `main` は冒頭で
+  `toy_heap_check_poison_start()` を呼ぶので、環境変数は要らない
+  (`TOY_HEAP_CHECK=poison` でも入る)。
+- `toylang_rt` は poison で free したブロックを `0xDB` で埋め、解放済みの表に
+  サイズも持つ。resize で移動した古いブロックは内容を写した**後で**埋める。
+- **IR VM も同じ命令を実行する**。interpreter の lowering は poison のとき
+  計装し、`HeapCheck` が位置つきで止めるので、H1 の「位置が無い」が解消した。
+  報告は AOT とバイト一致する (テストで pin)。
+- 文から**バイト数を外した** (`read of 8 bytes at offset 0` → `read at offset 0`)。
+  tree-walker の型付きスロットは幅を知らず、レーンで数が割れるため。
+  オフセットとブロックの大きさは全レーンで同じ。
+- example 全体を計装ビルドで走らせ、出力・終了コードとも通常ビルドと一致
+  (`main` が `str` を返す 2 例は終了コードがポインタの下位バイトなので除く)。
+
+**残り**
+
+- `--all-backends --heap-check=poison` は拒否する — poison の停止は `exit` で、
+  in-process の JIT レーンが道連れになる。計装ビルドを走らせるか
+  `interpreter --heap-check=poison` を使う。
+- `toylang_rt` 内部の読み (文字列ヘルパなど) は検査しない。埋めた `0xDB` を読む。

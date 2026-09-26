@@ -259,11 +259,17 @@ fn main() -> u64 {
     );
 }
 
+/// HEAP-CHECK H2: poison stops the process, which the in-process JIT
+/// lane cannot survive, so `--all-backends` points at the two ways
+/// that work; `reuse` is not built yet.
 #[test]
-fn heap_check_modes_not_built_yet_are_named() {
+fn heap_check_modes_not_available_are_named() {
     let run = run_stdin("fn main() -> u64 {\n    0u64\n}\n", &["--all-backends", "--heap-check=poison"]);
     assert_ne!(run.status, 0);
     assert!(run.stderr.contains("interpreter --heap-check=poison"), "stderr: {}", run.stderr);
+    let run = run_stdin("fn main() -> u64 {\n    0u64\n}\n", &["--heap-check=reuse"]);
+    assert_ne!(run.status, 0);
+    assert!(run.stderr.contains("H3"), "stderr: {}", run.stderr);
 }
 
 /// HEAP-CHECK H0b: a double free is reported under the function that

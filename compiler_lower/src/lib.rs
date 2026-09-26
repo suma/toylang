@@ -156,7 +156,7 @@ mod method_registry;
 use method_registry::{GenericMethods, MethodFuncIds, MethodInstances, MethodRegistry, PendingMethodInstance};
 
 mod program;
-pub use program::{install_test_driver, lower_program};
+pub use program::{install_test_driver, lower_program, lower_program_with};
 use program::{GenericFuncs, GenericInstances, PendingGenericInstance};
 
 mod type_inference;
@@ -1910,6 +1910,9 @@ impl<'a> FunctionLower<'a> {
         // recorded, so what lands in the block is already a `Const`
         // and every later instruction in this block sees it as one.
         let kind = self.fold_kind(kind);
+        if self.module.heap_check {
+            self.emit_heap_checks(&kind);
+        }
         let result = result_ty.map(|t| (self.fresh_value(), t));
         if let (Some((value, _)), InstKind::Const(c)) = (result, &kind) {
             self.block_consts.insert(value, *c);
@@ -1942,6 +1945,54 @@ impl<'a> FunctionLower<'a> {
         let blk: &mut Block = self.module.function_mut(self.func_id).block_mut(cur);
         blk.instructions.push(inst);
         result.map(|(v, _)| v)
+    }
+
+    /// HEAP-CHECK H2: put a `HeapCheck` in front of each range `kind`
+    /// is about to touch, in the order the interpreter's heap checks
+    /// them (a copy's source before its destination). Stack accesses
+    /// (`LoadRef` / `StoreRef`) are left alone: nothing frees a slot.
+    fn emit_heap_checks(&mut self, kind: &InstKind) {
+        enum Len {
+            Bytes(u64),
+            Value(ValueId),
+        }
+        let ranges: Vec<(ValueId, Option<ValueId>, Len, bool)> = match kind {
+            InstKind::PtrRead { ptr, offset, elem_ty } => {
+                vec![(*ptr, Some(*offset), Len::Bytes(heap_access_bytes(*elem_ty)), false)]
+            }
+            InstKind::PtrWrite { ptr, offset, value_ty, .. } => {
+                vec![(*ptr, Some(*offset), Len::Bytes(heap_access_bytes(*value_ty)), true)]
+            }
+            InstKind::SimdLoad { ptr, offset, .. } => vec![(*ptr, Some(*offset), Len::Bytes(16), false)],
+            InstKind::SimdStore { ptr, offset, .. } => vec![(*ptr, Some(*offset), Len::Bytes(16), true)],
+            InstKind::MemCopy { src, dest, size } | InstKind::MemMove { src, dest, size } => vec![
+                (*src, None, Len::Value(*size), false),
+                (*dest, None, Len::Value(*size), true),
+            ],
+            InstKind::MemSet { dest, size, .. } => vec![(*dest, None, Len::Value(*size), true)],
+            InstKind::MemEq { a, b, size } => vec![
+                (*a, None, Len::Value(*size), false),
+                (*b, None, Len::Value(*size), false),
+            ],
+            InstKind::MemFind { ptr, len, .. } | InstKind::StrFromBytes { ptr, len } => {
+                vec![(*ptr, None, Len::Value(*len), false)]
+            }
+            InstKind::MemFindSeq { hay, hay_len, needle, needle_len } => vec![
+                (*hay, None, Len::Value(*hay_len), false),
+                (*needle, None, Len::Value(*needle_len), false),
+            ],
+            _ => return,
+        };
+        let site = self.current_site();
+        for (ptr, offset, len, write) in ranges {
+            let len = match len {
+                Len::Value(v) => v,
+                Len::Bytes(n) => self
+                    .emit(InstKind::Const(compiler_ir::Const::U64(n)), Some(Type::U64))
+                    .expect("a constant has a value"),
+            };
+            self.emit(InstKind::HeapCheck { ptr, offset, len, write, site }, None);
+        }
     }
 
     /// Close the current block with `term`. After this call the lowering
@@ -2405,5 +2456,17 @@ impl<'a> FunctionLower<'a> {
         // route through the right API and a single change here
         // will pick up the tag refinement.
         crate::ir::AllocatorBinding::Ambient
+    }
+}
+
+/// HEAP-CHECK H2: how many bytes a scalar access of `ty` touches, the
+/// width codegen loads or stores it at.
+fn heap_access_bytes(ty: Type) -> u64 {
+    match ty {
+        Type::I8 | Type::U8 | Type::Bool => 1,
+        Type::I16 | Type::U16 => 2,
+        Type::I32 | Type::U32 | Type::F32 => 4,
+        Type::Vector(_) => 16,
+        _ => 8,
     }
 }

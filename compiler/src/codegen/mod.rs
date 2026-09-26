@@ -57,7 +57,7 @@ pub fn emit_object(
 ) -> Result<(Vec<u8>, Vec<String>), String> {
     use frontend::compile_profile as prof;
     let lower_phase = prof::phase("lower");
-    let mut ir_module = lower::lower_program(program, interner, contract_msgs, options.release)?;
+    let mut ir_module = lower::lower_program_with(program, interner, contract_msgs, options.release, options.heap_check)?;
     if options.test_mode {
         lower::install_test_driver(&mut ir_module, program, interner, options.test_only.as_deref())?;
     }
@@ -103,7 +103,7 @@ pub fn emit_ir_text(
     contract_msgs: &ContractMessages,
     options: &CompilerOptions,
 ) -> Result<String, String> {
-    let ir_module = lower::lower_program(program, interner, contract_msgs, options.release)?;
+    let ir_module = lower::lower_program_with(program, interner, contract_msgs, options.release, options.heap_check)?;
     Ok(format!("{ir_module}"))
 }
 
@@ -115,7 +115,7 @@ pub fn emit_clif_text(
     contract_msgs: &ContractMessages,
     options: &CompilerOptions,
 ) -> Result<String, String> {
-    let ir_module = lower::lower_program(program, interner, contract_msgs, options.release)?;
+    let ir_module = lower::lower_program_with(program, interner, contract_msgs, options.release, options.heap_check)?;
     let module = make_object_module()?;
     let mut session = CodegenSession::new(module)?;
     session.declare_all(&ir_module, interner)?;
@@ -377,6 +377,10 @@ pub(crate) struct CodegenSession<M: Module> {
     rt_str_from_bytes: cranelift_module::FuncId,
     rt_prof_stat: cranelift_module::FuncId,
     rt_panic_alloc_budget: cranelift_module::FuncId,
+    /// HEAP-CHECK H2: `toy_heap_check(addr, len, write, prefix, suffix)`
+    /// and the entry's `toy_heap_check_poison_start()`.
+    rt_heap_check: cranelift_module::FuncId,
+    rt_heap_check_poison_start: cranelift_module::FuncId,
     /// DEBUG-OBS D3: `toy_panic_at(text)` — write a pre-rendered
     /// diagnostic to stderr and exit.
     rt_panic_at: cranelift_module::FuncId,
@@ -789,6 +793,11 @@ impl<M: Module> CodegenSession<M> {
         // `Error at file:line:col` frame every other diagnostic uses.
         let rt_panic_alloc_budget =
             imp.declare("toy_panic_alloc_budget", &[abi(I64); 6], &[])?;
+        // HEAP-CHECK H2: the access check an instrumented build puts in
+        // front of every raw access, with the same frame halves a
+        // budget violation writes around its sentence.
+        let rt_heap_check = imp.declare("toy_heap_check", &[abi(I64); 5], &[])?;
+        let rt_heap_check_poison_start = imp.declare("toy_heap_check_poison_start", &[], &[])?;
         // DEBUG-OBS D3. `toy_panic_at(text)` writes an already-rendered
         // diagnostic to stderr and exits. The whole text is static, so
         // the helper takes one pointer and does no formatting.
@@ -914,6 +923,8 @@ impl<M: Module> CodegenSession<M> {
             rt_str_from_bytes,
             rt_prof_stat,
             rt_panic_alloc_budget,
+            rt_heap_check,
+            rt_heap_check_poison_start,
             rt_panic_at,
             rt_backtrace_str,
             rt_panic_recursion,
@@ -1064,6 +1075,9 @@ impl<M: Module> CodegenSession<M> {
                     _ => {}
                 }
                 for inst in &blk.instructions {
+                    if let InstKind::HeapCheck { site, .. } = &inst.kind {
+                        budget_sites.insert((*site, None));
+                    }
                     if let InstKind::PrintStr { message, .. } = &inst.kind {
                         print_needed.insert(*message);
                     }
@@ -1796,6 +1810,8 @@ struct RuntimeRefs {
     str_from_bytes: cranelift_codegen::ir::FuncRef,
     prof_stat: cranelift_codegen::ir::FuncRef,
     panic_alloc_budget: cranelift_codegen::ir::FuncRef,
+    heap_check: cranelift_codegen::ir::FuncRef,
+    heap_check_poison_start: cranelift_codegen::ir::FuncRef,
     panic_at: cranelift_codegen::ir::FuncRef,
     backtrace_str: cranelift_codegen::ir::FuncRef,
     panic_recursion: cranelift_codegen::ir::FuncRef,
@@ -2227,6 +2243,12 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             self.builder.def_var(var, *val);
         }
         let _ = &block_params;
+
+        // 2b'. HEAP-CHECK H2: an instrumented build is in poison mode
+        //      from its first instruction.
+        if func.export_name == "main" && self.ir_module.heap_check {
+            self.builder.ins().call(self.runtime.heap_check_poison_start, &[]);
+        }
 
         // 2c. DEBUG-OBS D4: the shadow-stack prologue.
         //

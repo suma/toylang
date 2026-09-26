@@ -12,6 +12,10 @@
 
 ### 2026-09-26
 
+- **SIMD-F32 の残りは解消済みだった** — format spec (`toy_format_f32`)、
+  f32 の libm 群 (`math::sqrt_f32` 等)、`math::min_f32` / `max_f32` は
+  STDLIB-NUMERIC N5-N6 (`5b7fdde5`) で入っていた。組み込みの `min` / `max`
+  演算子はもう無い。
 - **TYPECHECK-LIES 残 (`str.substring` / `str.split` の compiled 対応) は
   不要になっていた** — STDLIB-TEXT T1+T2 (`cc723096`) で新しいバッファを
   要る操作は `String` の仕事と決め、`str` の `substring` / `split` /
@@ -2550,16 +2554,6 @@
   今のところ variant を match する (tuple scrutinee は AOT 非対応なので
   ネストするか scalar tag に落とす)。実プログラムで踏んでから。
 
-- **SIMD-F32 の残** ★ — **2026-09-22 に `&f32` / `[f32; N]` /
-  クロージャの `f32` が解消**(手書きの型リスト 5 つが `f32` を
-  知らなかった)。残り: (a) **format spec 未対応**: `{x:.2}` の
-  formattable 集合に f32 を入れるには `toy_format_f32` が要る
-  (promote して f64 で整形すると最下位桁が変わるので専用ヘルパ)。
-  (b) **f32 の math intrinsics** (`math::sqrt_f32` 等) は未提供 —
-  `x as f64 → math::sqrt → as f32` の橋渡しで代替できるが、
-  cranelift の `sqrt` は F32 を受けるので unary op 経路の supplied helper
-  を増やせば direct にできる。(c) **`f32` の `min` / `max` 演算子**は
-  f64 同様 AOT 未対応 (cranelift の fmin / fmax で入れられる)。
 - **195b. `extern fn` の monomorph 化** ★ — generic extern は現状 interpreter の type-erased registry でのみ動く。JIT / AOT には mangled symbol の emit と Rust 側実装の登録が要る。実需要なし。
 - **PTR-ABI-LOW-THRESHOLD: 閾値を下げると lane 間で確保の集計が割れる** ★ —
   `PTR_SELF_LEAF_THRESHOLD` (既定 8) を下げて小さな struct もポインタで

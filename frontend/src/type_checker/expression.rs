@@ -1843,6 +1843,23 @@ impl<'a> TypeCheckerVisitor<'a> {
                  the value an expression had on entry to the function",
             ));
         }
+        // A value in scope, called: with no semicolons, a line ending in
+        // a name and the next starting with `(` read as one call
+        // (`val prod = a * b` then `(prod >> 17u64) & mask` is
+        // `b(prod >> 17u64)`). Saying "function not found" -- and
+        // suggesting another function -- sent readers hunting for a
+        // function they never meant to call.
+        if let Some(ty) = self.context.get_var(fn_name)
+            && !matches!(ty, TypeDecl::Function(..))
+        {
+            return Err(TypeCheckError::generic_error(&format!(
+                "`{fn_name_str}` is a value of type `{}`, not a function, so it cannot be \
+                 called. If a line ends with `{fn_name_str}` and the next one starts with \
+                 `(`, the two are read as the single call `{fn_name_str}(...)` -- start the \
+                 next line with something else (bind it: `val x = (...)`)",
+                self.type_name_for_error(&ty)
+            )));
+        }
         let error = TypeCheckError::not_found("Function", &fn_name_str);
         Err(self.suggest_known_function_name(error, &fn_name_str))
     }

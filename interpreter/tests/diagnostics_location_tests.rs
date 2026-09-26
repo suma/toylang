@@ -465,3 +465,28 @@ fn integrated_positions_name_a_file_the_map_can_resolve() {
         );
     }
 }
+
+/// A line ending in a name and the next starting with `(` read as one
+/// call. The diagnostic used to be "Function 'b' not found" plus a
+/// suggestion to call some other function; the reader could not tell
+/// the two lines had joined. It now says the name is a value and how
+/// the join happens.
+#[test]
+fn a_value_called_across_a_line_break_says_how_it_happened() {
+    let source = r#"
+fn f(mask: u64) -> u64 {
+    val a: u64 = 1000000u64
+    val b: u64 = 3u64
+    val prod = a * b
+    (prod >> 17u64) & mask
+}
+fn main() -> u64 { f(255u64) }
+"#;
+    let rendered = match crate::common::test_program(source) {
+        Ok(_) => panic!("expected a type error"),
+        Err(e) => e,
+    };
+    assert!(rendered.contains("`b` is a value of type `u64`, not a function"), "{rendered}");
+    assert!(rendered.contains("the next one starts with `(`"), "{rendered}");
+    assert!(!rendered.contains("replace with"), "{rendered}");
+}

@@ -122,6 +122,24 @@ fn stamp_payload_type_args(value: &Value, args: &[TypeDecl]) {
 }
 
 impl EvaluationContext<'_> {
+    /// A `val` / `var` annotation with the running body's type
+    /// parameters replaced by what this call bound them to.
+    ///
+    /// Inside `EnumerateIter<T>::collect`, `Vec<(u64, T)>` is written
+    /// with the *iterator's* `T`. Stamped onto the value as written, the
+    /// `Vec`'s own `T` became `(u64, T)` once `push` was entered, and
+    /// the scopes, merged by name, then read that `T` as itself:
+    /// `__builtin_sizeof::<T>()` recursed until the stack ran out. The
+    /// annotation's parameters are the enclosing body's, so they are
+    /// resolved here, before the callee's scope can shadow them.
+    fn resolve_annotation(&self, annotation: Option<&TypeDecl>) -> Option<TypeDecl> {
+        let anno = annotation?;
+        if self.generic_type_scopes.is_empty() {
+            return Some(anno.clone());
+        }
+        Some(super::call::substitute_params(anno, &self.merged_generic_scope()))
+    }
+
     /// `one` is the step, passed rather than derived: `T::from(1u8)`
     /// looked like the obvious bound until `i8` turned out not to
     /// implement `From<u8>`, and an `i8` range is one of the widths
@@ -371,6 +389,8 @@ impl EvaluationContext<'_> {
         // evaluates — `val h: Holder<u64> = Holder::make(n)` derives
         // the callee body's `T` from it. Restored before the flow
         // check so an early `return` in the rhs cannot leak it.
+        let annotation = self.resolve_annotation(annotation);
+        let annotation = annotation.as_ref();
         let prev_annotation = self.pending_annotation.take();
         self.pending_annotation = annotation.cloned();
         let value = self.evaluate(expr);
@@ -414,6 +434,8 @@ impl EvaluationContext<'_> {
     ) -> Result<EvaluationResult, InterpreterError> {
         use crate::try_value_v;
         // POINTER P1: same pending-annotation window as `val`.
+        let annotation = self.resolve_annotation(annotation);
+        let annotation = annotation.as_ref();
         let prev_annotation = self.pending_annotation.take();
         self.pending_annotation = annotation.cloned();
         let evaluated: Result<crate::evaluation::EvaluationResult, InterpreterError> =

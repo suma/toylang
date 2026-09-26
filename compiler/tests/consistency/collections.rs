@@ -779,3 +779,48 @@ fn main() -> u64 {
 "#;
     assert_value(src, "pq_max_heap", 951u64);
 }
+
+/// A `Vec` of tuples, and the adapters that produce one. `Vec<(i64, u64)>`
+/// and `soa Vec<(u64, u8)>` push and read back on every lane, and
+/// `enumerate` / `zip` have a `collect` now that the element is sized
+/// through `sizeof::<T>()`. Writing those two `collect`s turned up a
+/// tree-walker hole: the iterator's `T` in `Vec<(u64, T)>` was stamped
+/// on the value unresolved, the `Vec`'s own `T` then read as
+/// `(u64, T)` inside `push`, and sizing it recursed forever.
+#[test]
+fn vecs_of_tuples_and_the_adapters_that_collect_them() {
+    let src = r#"
+        fn main() -> u64 {
+            var v: Vec<u64> = Vec::new()
+            v.push(10u64)
+            v.push(20u64)
+            v.push(30u64)
+            var w: Vec<i64> = Vec::new()
+            w.push(-1i64)
+            w.push(-2i64)
+            val vi = v.iter()
+            val wi = w.iter()
+            val en = vi.enumerate()
+            val zp = vi.zip(wi)
+            val e: Vec<(u64, u64)> = en.collect()
+            val z: Vec<(u64, i64)> = zp.collect()
+            var acc: u64 = 0u64
+            val ei = e.iter()
+            for p in ei { acc = acc + p.0 * p.1 }
+            val zi = z.iter()
+            for q in zi { acc = acc + q.0 * ((0i64 - q.1) as u64) }
+            var t: Vec<(i64, u64)> = Vec::new()
+            t.push((3i64, 4u64))
+            t.push((5i64, 6u64))
+            val second: (i64, u64) = t.get(1u64)
+            var s: soa Vec<(u64, u8)> = SoaVec::new()
+            s.push((7u64, 1u8))
+            val first: (u64, u8) = s.get(0u64)
+            acc * 1000u64 + e.size() * 100u64 + z.size() * 10u64
+                + second.1 + first.0 + (first.1 as u64)
+        }
+    "#;
+    // 130 * 1000 + 300 + 20 + 6 + 7 + 1
+    assert_eq!(interpreter_value(src), 130_334);
+    assert_consistent(src, "vec_of_tuples_collect");
+}

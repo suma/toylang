@@ -79,7 +79,7 @@ fn primitive_target_symbol(
 /// non-generic struct, or generic param appearing only in nested
 /// positions we don't drill into).
 /// `ty` with each of `params` (as a parameter or a bare name) replaced.
-fn substitute_params(ty: &TypeDecl, params: &HashMapStd<DefaultSymbol, TypeDecl>) -> TypeDecl {
+pub(super) fn substitute_params(ty: &TypeDecl, params: &HashMapStd<DefaultSymbol, TypeDecl>) -> TypeDecl {
     match ty {
         TypeDecl::Generic(s) | TypeDecl::Identifier(s) => {
             params.get(s).cloned().unwrap_or_else(|| ty.clone())

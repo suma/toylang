@@ -12,6 +12,12 @@
 
 ### 2026-09-26
 
+- **tuple 要素の `Vec` と `enumerate` / `zip` の `collect`** — `Vec<(i64, u64)>` /
+  `soa Vec<(u64, u8)>` は M5 以降すでに 3 レーンで動いていた。
+  `EnumerateIter` / `ZipIter` に `collect` を足し、そこで踏んだ
+  tree-walker の穴 (generic body 内の `val` 注釈の型引数を未解決のまま
+  値に刻み、`Vec` の `T` が `(u64, T)` と名前で循環) を、注釈を実行中の
+  scope で解決してから刻む形で直した。
 - **ENUM-TUPLE-SUBPATTERN-AOT — enum variant の中の tuple / struct
   パターンが compiled レーンで動く** — `Some((a, b))` /
   `B(P { x, y: 0i64 })`。payload を独立した compound scrutinee として
@@ -2477,11 +2483,6 @@
   ([`VEC_CONTRACTS.md`](VEC_CONTRACTS.md) §5-3)。
 
 
-- **tuple 要素の `Vec` / `SoaVec` が AOT 不可** ★ —
-  `Vec<(i64, u64)>` は `push` の `__builtin_sizeof(value)` が
-  `could not infer arg type at AOT` になる。iterator アダプタの
-  `enumerate` / `zip` の `collect` を提供していないのと同じ制限で、
-  そちらは stdlib 側で避けている
 - **DIAG-DEBUG-FMT の残: codegen 層** ★ — `compiler_lower` と
   `compiler/src` の parse error は 2026-09-02 に決着したが、
   `compiler/src/codegen/` には `{:?}` が **50 箇所以上**ある

@@ -791,10 +791,9 @@ impl Vec<u8> {
 # lay them out without per-monomorph entries. `collect` takes the
 # iterator by value (`self: Self`) rather than `&mut self` — the
 # receiver writeback plus the `Vec` return would otherwise exceed the
-# backend register budget (6 receiver fields + 4 Vec fields). Only
-# scalar-element adapters (`VecIter` / `MapIter` / `FilterIter`) get
-# `collect`: `Vec<(A, B)>` needs `__builtin_sizeof` on a tuple value,
-# which the AOT backend cannot resolve yet.
+# backend register budget (6 receiver fields + 4 Vec fields). Every
+# adapter has `collect`; `enumerate` / `zip` produce a `Vec` of tuples,
+# which `Vec` sizes through `sizeof::<T>()` like any other element.
 
 struct MapIter<T, U> {
     source: VecIter<T>,
@@ -896,6 +895,18 @@ struct EnumerateIter<T> {
     index: u64,
 }
 
+impl<T> EnumerateIter<T> {
+    # Drain the `(index, element)` pairs into a fresh `Vec<(u64, T)>`.
+    fn collect(self: Self) -> Vec<(u64, T)> {
+        val out: Vec<(u64, T)> = Vec::new()
+        var it = self
+        for p in it {
+            out.push(p)
+        }
+        out
+    }
+}
+
 impl<T> Iterator<(u64, T)> for EnumerateIter<T> {
     # Yield `(index, element)` pairs, starting at 0.
     fn next(&mut self) -> Option<(u64, T)> {
@@ -927,6 +938,18 @@ struct ZipIter<A, B> {
     b_data: ptr,
     min_len: u64,
     index: u64,
+}
+
+impl<A, B> ZipIter<A, B> {
+    # Drain the pairs into a fresh `Vec<(A, B)>`.
+    fn collect(self: Self) -> Vec<(A, B)> {
+        val out: Vec<(A, B)> = Vec::new()
+        var it = self
+        for p in it {
+            out.push(p)
+        }
+        out
+    }
 }
 
 impl<A, B> Iterator<(A, B)> for ZipIter<A, B> {

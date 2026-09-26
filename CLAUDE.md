@@ -35,6 +35,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | closure が捕捉した束縛をどう掴むかの設計 | [`design-docs/CLOSURE_CAPTURE.md`](design-docs/CLOSURE_CAPTURE.md) |
 | エフェクト格子と 3 検査の関係 | [`design-docs/EFFECT_SYSTEM.md`](design-docs/EFFECT_SYSTEM.md) |
 | allocator のリージョン脱出検査 | [`design-docs/REGIONS.md`](design-docs/REGIONS.md) |
+| 解放済みメモリの毒化・再利用検査モード (提案) | [`design-docs/HEAP_CHECK.md`](design-docs/HEAP_CHECK.md) |
 | RUNTIME-TRAP guard をどう消しているか | [`design-docs/GUARD_ELISION.md`](design-docs/GUARD_ELISION.md) |
 | 生成バイナリが太る理由 (`&mut self` の ABI) | [`design-docs/CODE_SIZE.md`](design-docs/CODE_SIZE.md) |
 | 配列 / Vec の layout (AoS / SoA) の設計 (Phase 0・2 landing 済み) | [`design-docs/DATA_ORIENTED.md`](design-docs/DATA_ORIENTED.md) |

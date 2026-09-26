@@ -2855,6 +2855,13 @@
 
 ## 検討中の機能
 
+* **ヒープ検査モード (HEAP-CHECK)** — 解放済みメモリを毒化して隔離する
+  `poison` と、有限の隔離の後に再利用する `reuse`。lowering が生メモリアクセスの
+  前に検査命令を挟み、4 レーンで同じ文言の報告を出す。今のヒープは再利用せず
+  中身も残し free も冪等なので、use-after-free と二重 free は症状が出ない。
+  しかも drop glue がそれに依存しており、consistency テストだけで二重 free が
+  209 回起きている (2026-09-26 実測) ので、H0 は棚卸し (`report`) から。
+  [`HEAP_CHECK.md`](HEAP_CHECK.md)、§6 の未決事項待ち。
 * **明示 import (MODULE-IMPORTS)** — stdlib も
   `import std.hex` を書かないと使えない形にする提案。
   [`MODULE_IMPORTS.md`](MODULE_IMPORTS.md)。**D1 の alias 束縛だけ

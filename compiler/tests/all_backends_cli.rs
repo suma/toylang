@@ -268,25 +268,54 @@ fn heap_check_modes_not_built_yet_are_named() {
 
 /// HEAP-CHECK H0b: a double free is reported under the function that
 /// set it off -- the innermost frame that is not a `Drop` impl or drop
-/// glue -- because the free itself is always in `Box::drop`. The Box
-/// list example double-frees from `main` and from `sum` on the lanes
-/// that share the lowering (the tree-walker frees each node once; see
-/// `the_tree_walker_frees_each_box_once`).
+/// glue -- because in a real program the free itself is usually in a
+/// `drop` (`Box::drop`), which names the type but not the code.
 #[test]
 fn heap_check_names_the_function_behind_a_double_free() {
     if skip_e2e() {
         return;
     }
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../interpreter/example/box_linked_list.t");
-    let out = Command::new(BIN)
-        .arg(path)
-        .args(["--all-backends", "--heap-check=report", "--core-modules"])
-        .arg(core_modules_dir())
-        .output()
-        .expect("spawn compiler");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("heap check: 6 double frees (2 distinct)\n"), "stderr: {stderr}");
-    assert!(stderr.contains("  x3  in main: allocated at core/std/box.t:"), "stderr: {stderr}");
-    assert!(stderr.contains("  x3  in sum: allocated at core/std/box.t:"), "stderr: {stderr}");
-    assert!(stderr.contains("all 3 backends agree"), "stderr: {stderr}");
+    let source = "\
+fn release(p: ptr) {
+    __builtin_heap_free(p)
+}
+fn main() -> u64 {
+    val p: ptr = __builtin_heap_alloc(16u64)
+    release(p)
+    release(p)
+    0u64
+}
+";
+    let run = run_stdin(source, &["--all-backends", "--heap-check=report"]);
+    assert!(
+        run.stderr.contains(
+            "heap check: 1 double frees (1 distinct)\n\
+             \x20 x1  in release: allocated at <stdin>:5:18, freed at <stdin>:2:5, freed again at <stdin>:2:5\n"
+        ),
+        "stderr: {}",
+        run.stderr
+    );
+    assert!(run.stderr.contains("all 3 backends agree"), "stderr: {}", run.stderr);
+}
+
+/// DOUBLE-DROP-LANE-DIVERGENCE: the Box list and tree examples free each
+/// node once on the lanes that share the lowering too (they matched a
+/// borrowed `&List` and freed its payloads).
+#[test]
+fn box_examples_free_each_node_once() {
+    if skip_e2e() {
+        return;
+    }
+    for example in ["box_linked_list.t", "box_binary_tree.t"] {
+        let path = format!("{}/../interpreter/example/{example}", env!("CARGO_MANIFEST_DIR"));
+        let out = Command::new(BIN)
+            .arg(&path)
+            .args(["--all-backends", "--heap-check=report", "--core-modules"])
+            .arg(core_modules_dir())
+            .output()
+            .expect("spawn compiler");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("heap check: 0 double frees (0 distinct)\n"), "{example}: {stderr}");
+        assert!(stderr.contains("all 3 backends agree"), "{example}: {stderr}");
+    }
 }

@@ -396,6 +396,10 @@ struct FunctionLower<'a> {
     /// payload read through `v.borrow(i)` closed the container's
     /// descriptor while the container still listed it.
     not_owned_locals: std::collections::HashSet<crate::ir::LocalId>,
+    /// DOUBLE-DROP-LANE-DIVERGENCE: the body being lowered takes its
+    /// receiver by reference (`&self` / `&mut self`), so the receiver's
+    /// leaves are the caller's, like a `&T` parameter's.
+    borrowed_self: bool,
     /// MOVE-CONDITIONAL: the drop flag of each flagged `val` / `var`
     /// lowered so far (`File::drop_flags`).
     drop_flag_locals: HashMap<frontend::ast::StmtRef, crate::ir::LocalId>,

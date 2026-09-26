@@ -1878,6 +1878,7 @@ impl<'a> FunctionLower<'a> {
             with_scope_arena_drops: Vec::new(),
             drop_scopes: Vec::new(),
             not_owned_locals: std::collections::HashSet::new(),
+            borrowed_self: false,
             drop_flag_locals: HashMap::new(),
             compound_block_depth: 0,
             pending_param_drops: Vec::new(),
@@ -2122,6 +2123,7 @@ impl<'a> FunctionLower<'a> {
             }).unwrap_or(true)
         {
             parameter.insert(0, (self.contract_msgs.self_ident, self_decl.clone()));
+            self.borrowed_self = true;
             // CODE-SIZE-SELF-ABI: the implicit form is exactly the
             // by-reference form (`&self` / `&mut self`) -- an explicit
             // `(self: Self)` receiver is by value and already carries
@@ -2571,6 +2573,27 @@ impl<'a> FunctionLower<'a> {
             .statement
             .get(&func.code)
             .ok_or_else(|| "function body missing".to_string())?;
+        // DOUBLE-DROP-LANE-DIVERGENCE: what a `&T` parameter (or a
+        // `&self` receiver) holds is the caller's. A `match` arm over it
+        // must not take a drop target for a payload -- `match l {
+        // List::Cons(v, rest) => .. }` in `fn sum(l: &List)` freed every
+        // `Box` of the caller's list, which the caller then freed again.
+        for (name, ty) in &func.parameter {
+            let borrowed = matches!(ty, frontend::type_decl::TypeDecl::Ref { .. })
+                || (self.borrowed_self && *name == self.contract_msgs.self_ident);
+            if !borrowed {
+                continue;
+            }
+            let leaves = match self.bindings.get(name) {
+                Some(Binding::Struct { fields, .. }) => flatten_struct_locals(fields),
+                Some(Binding::Enum(storage)) => crate::bindings::flatten_enum_storage_locals(storage),
+                Some(Binding::Tuple { elements }) => {
+                    crate::bindings::flatten_tuple_element_locals(elements)
+                }
+                _ => continue,
+            };
+            self.not_owned_locals.extend(leaves.into_iter().map(|(l, _)| l));
+        }
         // LEND-FREEING-CALLEE: the parameters this body owns, for its
         // scope to register when it opens.
         self.pending_param_drops =

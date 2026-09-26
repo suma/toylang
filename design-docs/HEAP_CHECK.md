@@ -383,6 +383,10 @@ heap check: 6 double frees (1 distinct)
 | `crypto_sha256.t` | 3 | JIT / AOT は 0 (IR VM は 3) |
 | `json_config.t` | 6 (2 か所) | 6 (1 か所) |
 
+**2026-09-26 追記**: `Box` の行は同日に解消 — `fn sum(l: &List)` の
+`match l { Cons(v, rest) => .. }` で、腕が借用の payload (`Box`) に drop を
+登録していた。`&T` 引数と `&self` レシーバの leaf を「所有しない」として扱う。
+
 **二重 drop の原因は両側にある。** `Box` の再帰構造は lowering の drop glue
 だけが二重に解放し (tree-walker は各ノード 1 回)、`sort` と `soa Vec` の列は
 tree-walker だけが二重に解放する。どれも free が冪等なので出力には出ていない。

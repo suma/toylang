@@ -774,12 +774,13 @@ fn main() -> u64 {
     );
 }
 
-/// HEAP-CHECK H0: the tree-walker frees each node of the Box list
-/// once. The lanes that share `compiler_lower` (IR VM, JIT, AOT) free
-/// six of them twice (`all_backends_cli.rs` pins that report), so the
-/// double drops the inventory found are the lowering's drop glue, not
-/// the program -- DOUBLE-DROP-LANE-DIVERGENCE in todo.md. This pins the
-/// oracle's side, which is also the answer the lowering should reach.
+/// DOUBLE-DROP-LANE-DIVERGENCE: every lane frees each node of the Box
+/// list once. The lanes that share `compiler_lower` used to free six of
+/// them twice: `sum(l: &List)` matched its borrowed list, and each arm
+/// took a drop target for the `Box` payload, freeing the caller's nodes
+/// -- which the caller freed again. A `&T` parameter's and a `&self`
+/// receiver's leaves are the caller's now, as a `borrow()` result's
+/// already were.
 #[test]
 fn the_tree_walker_frees_each_box_once() {
     let src = std::fs::read_to_string(concat!(

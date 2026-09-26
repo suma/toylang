@@ -17,6 +17,11 @@
   終了時に報告する (文言は 2 ヒープでバイト一致、`--all-backends` で突き合わせ)。
   `HeapFree` が site を持つようになった。stdin 入力の入口名も compiled レーンで
   `<stdin>` に揃えた (`CompilerOptions::display_name`)。結果は HEAP_CHECK.md §7。
+- **借用を match した腕が payload を drop しない** (DOUBLE-DROP-LANE-DIVERGENCE の
+  一部) — `fn sum(l: &List)` の `match l { Cons(v, rest) => .. }` が `rest` の
+  `Box` を解放し、呼び出し側が再び解放していた (lowering 系だけ)。`&T` 引数と
+  `&self` レシーバの leaf を `not_owned_locals` に入れる。`box_linked_list.t` /
+  `box_binary_tree.t` の二重 free が 0 に。
 - **HEAP-CHECK H0b — 二重 free を起こした関数を名指す** — 2 回目の free の
   backtrace から `*::drop` / `drop_glue_*` を飛ばした最初のフレーム名を鍵に
   足した (`  x3  in sum: ...`)。tree-walker と並べて、二重 drop が実装ごとに
@@ -3019,8 +3024,9 @@
 
 - **DOUBLE-DROP-LANE-DIVERGENCE: 二重 drop するかどうかが実装で割れる** ★★ —
   HEAP-CHECK H0 / H0b の棚卸し (2026-09-26) で、tree-walker と lowering 系
-  (IR VM / JIT / AOT) の二重 free が食い違った: `Box` の連結リスト / 二分木は
-  lowering 系だけが二重 free (tree-walker は各ノード 1 回)、`try_compound.t` は
+  (IR VM / JIT / AOT) の二重 free が食い違った。`Box` の連結リスト / 二分木
+  (lowering 系だけ、借用 `&List` を match した腕が payload を drop していた) は
+  同日に解消。残り: `try_compound.t` は
   JIT / AOT だけ、`std_ord_sort.t` / `soa_column.t` は tree-walker だけ、
   `crypto_sha256.t` は tree-walker と IR VM だけ。free が冪等なので出力は
   変わらず、`--profile=mem` も「要求」で数えるので見えていなかった。表と

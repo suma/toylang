@@ -265,6 +265,37 @@ fn integrate_modules(
         }
     }
 
+    // TYPE-NAME-COLLISION: a struct / enum name is one global key, so
+    // two modules of the same root declaring the same one used to have
+    // the later silently replace the earlier -- and the loser's own
+    // code then failed against the winner's fields, naming its own
+    // file. Say so instead. (Across roots the entry-shadow alias above
+    // is the only arrangement; a user module against the stdlib is not
+    // covered here.)
+    if let Some(ref modules) = discovered_modules {
+        let mut declared: std::collections::BTreeMap<(u32, String), Vec<String>> =
+            std::collections::BTreeMap::new();
+        for (idx, result) in preparsed_results.iter().enumerate() {
+            if let Ok(preparsed) = result {
+                for name in &preparsed.type_names {
+                    declared
+                        .entry((modules[idx].root_rank, name.clone()))
+                        .or_default()
+                        .push(modules[idx].display_path.clone());
+                }
+            }
+        }
+        for ((_, name), files) in &declared {
+            if files.len() > 1 {
+                errors.push(format!(
+                    "type `{name}` is declared by more than one module: {} -- type names \
+                     share one namespace, so rename all but one",
+                    files.join(", ")
+                ));
+            }
+        }
+    }
+
     // Phase 2: sequential integrate pass.  Mutates
     // `main_string_interner`, so it must stay sequential.
     let integrate_phase = prof::phase("integrate");

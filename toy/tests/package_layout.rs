@@ -2030,3 +2030,29 @@ test "after the failure" {
     let out = run(&pkg, &["test", dir, "--backend", "all", "--bless"]);
     assert!(!out.status.success(), "{}", text(&out));
 }
+
+#[test]
+fn two_modules_declaring_one_type_name_is_an_error() {
+    // TYPE-NAME-COLLISION: type names share one namespace, and the
+    // later declaration used to replace the earlier in silence -- the
+    // losing module then failed against the winner's fields
+    // ("Missing required field 'w'"), naming its own file.
+    let pkg = scratch("type_collision");
+    write(&pkg, "src/a.t", "pub struct Item { v: u64 }\npub fn mk_a() -> Item { Item { v: 1u64 } }\n");
+    write(
+        &pkg,
+        "src/b.t",
+        "pub struct Item { v: u64, w: u64 }\npub fn mk_b() -> Item { Item { v: 2u64, w: 3u64 } }\n",
+    );
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
+    let out = run(&pkg, &["check", pkg.0.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains("type `Item` is declared by more than one module")
+            && stderr.contains("src/a.t")
+            && stderr.contains("src/b.t"),
+        "stderr: {stderr}"
+    );
+    assert!(!stderr.contains("Missing required field"), "stderr: {stderr}");
+}

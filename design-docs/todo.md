@@ -12,6 +12,10 @@
 
 ### 2026-09-26
 
+- **TYPE-NAME-COLLISION — 同じ root の 2 モジュールの同名の型がエラーに
+  なる** — 後勝ちで黙って上書きされ、負けた側が勝った側のフィールドで
+  落ちていた (`Missing required field 'w'`、しかも自分のファイルを指す)。
+  事前解析の型名一覧で検出し、両方のファイルを名指す。
 - **QUALIFIER-BARE-FALLBACK — 修飾付き呼び出しが別モジュールの関数に
   落ちない** — `hex::abs(-3i64)` が bare 名で引き直されて `math::abs` を
   呼び 3 を返していた。修飾が既知のモジュールを名指すのに関数が無ければ
@@ -3016,23 +3020,12 @@
   シンボル名のマングリングは解決にならない (2026-09-05 検討、定義側の
   一意化は既に済んでいる)。
 
-- **TYPE-NAME-COLLISION: struct / enum 名には曖昧性検査すら無い** ★★ —
-  関数には (module path, rank) の候補集合があるが、型は
-  `register_struct` / `enum_definitions` が**名前だけのマップ**なので、
-  2 つの module が同じ `struct Item` を宣言すると**後勝ちで黙って
-  上書き**される。壊れるのは負けた側の module で、しかも診断は
-  そちらのフィールドを名指す:
-
-  ```
-  src/a.t: struct Item { v: u64 }        # 1 フィールド
-  src/b.t: struct Item { v: u64, w: u64 }
-  -> [E0010] Error in imported module `a`: Missing required field 'w'
-     in struct 'Item'
-  ```
-
-  BARE-NAME-COLLISION より重い (あちらは曖昧だと**言う**)。
-  2026-09-05、BARE-NAME-COLLISION の検討中に見つけた。
-
+- **TYPE-NAME-COLLISION の残り: 型の名前空間** ★ — 同じ root の 2 モジュールが
+  同じ型名を宣言すると、黙って上書きせず `type \`Item\` is declared by more
+  than one module: src/a.t, src/b.t` のエラーになった (2026-09-26)。残りは
+  (a) **root をまたぐ衝突** (パッケージのモジュールと stdlib が同名の型を
+  持つ形。entry の型だけは `__std_<name>` の別名で共存できる) と、
+  (b) 衝突を許す本当の解決 = 型の名前空間化 (MODULE-IMPORTS P3)。
 - **ENUM-CALL-VALUE-COUNT (internal error)** ★ —
   `internal error: enum call returned 19 value(s), expected 15`。
   自由関数が `&mut` の compound を 2 つと `&` を 1 つ取り `u64` を返す形で

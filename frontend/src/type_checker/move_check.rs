@@ -82,10 +82,13 @@
 //! b` (LEND-MUTATING-CALLEE). Any other callee owns the argument and
 //! drops it unless it hands it on: the parameter is declared under a
 //! stand-in `val` (`DropFlags::param_drops`), so every rule above
-//! applies to it (LEND-FREEING-CALLEE). Not for a generic callee, which
-//! may have copied the contents out through raw memory, nor for a name
-//! several bodies share, where the caller cannot tell which it reaches
-//! and keeps the argument: those arguments still leak.
+//! applies to it (LEND-FREEING-CALLEE). A generic callee may have
+//! copied the contents out through raw memory, so it owns an argument
+//! only when a probe walk finds every mention of it hands the whole
+//! value on, lends it, or reads a scalar off it (CALLEE-DROP-GENERIC,
+//! `probe_generic_params`). A name several bodies share is never an
+//! owner: the caller cannot tell which body it reaches and keeps the
+//! argument, which then leaks.
 
 use std::collections::{HashMap, HashSet};
 
@@ -155,6 +158,9 @@ pub fn check_moves(
         tail: false,
         transfer_anchors: HashMap::new(),
         stand_ins: 0,
+        probe: None,
+        safe_receiver: None,
+        scalar_readers: collect_scalar_readers(program, interner),
     };
     // LEND-FREEING-CALLEE: a name every call resolves to one body.
     // A caller that cannot tell which body a call reaches keeps the
@@ -178,8 +184,10 @@ pub fn check_moves(
         if function.is_extern {
             continue;
         }
-        let owns = function.generic_params.is_empty() && fn_names[&function.name] == 1;
-        checker.run_function_owning(&function.parameter, function.code, owns);
+        let unique = fn_names[&function.name] == 1;
+        let owns = function.generic_params.is_empty() && unique;
+        let generic_owns = !function.generic_params.is_empty() && unique;
+        checker.run_function_owning(&function.parameter, function.code, owns, generic_owns);
     }
     // Impl-block methods, which `program.function` does not contain.
     //
@@ -209,10 +217,10 @@ pub fn check_moves(
                 .iter()
                 .skip_while(|(name, _)| interner.resolve(*name) == Some("self"))
                 .count();
-            let owns = !generic_impl
-                && m.generic_params.is_empty()
-                && signatures.method_target(m.name, arity).is_some();
-            checker.run_function_owning(&m.parameter, m.code, owns);
+            let resolvable = signatures.method_target(m.name, arity).is_some();
+            let generic = generic_impl || !m.generic_params.is_empty();
+            let owns = !generic && resolvable;
+            checker.run_function_owning(&m.parameter, m.code, owns, generic && resolvable);
         }
     }
     // ELEMENT-BORROW E5, reported here rather than in the walk: a
@@ -615,6 +623,17 @@ struct MoveCheck<'a> {
     /// MOVE-REINIT: where each binding was handed over unconditionally,
     /// so a later reassignment can put those hand-overs behind a flag.
     transfer_anchors: HashMap<StmtRef, Vec<Anchor>>,
+    /// CALLEE-DROP-GENERIC: while a generic body is probed, its
+    /// candidate by-value parameters -- name, the base name of its type,
+    /// and whether every mention so far is one the body may own after.
+    probe: Option<HashMap<DefaultSymbol, (DefaultSymbol, bool)>>,
+    /// The receiver of the method call being walked, when that call
+    /// only reads a scalar off a probed parameter (`v.size()`).
+    safe_receiver: Option<ExprRef>,
+    /// `(type, method)` pairs every impl declares with `&self` /
+    /// `&mut self` and a scalar result: a call that cannot hand an
+    /// element out.
+    scalar_readers: HashSet<(DefaultSymbol, DefaultSymbol)>,
     /// LEND-FREEING-CALLEE: stand-in `val`s handed out so far.
     stand_ins: u32,
 }
@@ -640,12 +659,94 @@ enum Exit {
 }
 
 impl MoveCheck<'_> {
+    fn run_function_owning(
+        &mut self,
+        params: &[(DefaultSymbol, TypeDecl)],
+        body: StmtRef,
+        owns: bool,
+        generic_owns: bool,
+    ) {
+        let owned_generic = if generic_owns {
+            self.probe_generic_params(params, body)
+        } else {
+            HashSet::new()
+        };
+        self.walk_function(params, body, owns, &owned_generic);
+    }
+
+    /// CALLEE-DROP-GENERIC: which by-value parameters a generic body
+    /// may drop.
+    ///
+    /// A generic body is not trusted with its arguments by default: it
+    /// may have copied the elements out through raw memory (`get`, an
+    /// iterator, the `data` field), and dropping the container then
+    /// frees them twice. So the body is walked once as a probe, with
+    /// its effects undone, and a parameter qualifies only when every
+    /// mention of it hands the whole value on (to a place, a return, a
+    /// by-value argument), lends it, or reads a scalar off it through a
+    /// `&self` / `&mut self` method (`v.size()`). None of those can
+    /// leave an element behind, so the paths that did not hand it on
+    /// may drop it -- which is what a caller that gave it away expects.
+    fn probe_generic_params(
+        &mut self,
+        params: &[(DefaultSymbol, TypeDecl)],
+        body: StmtRef,
+    ) -> HashSet<DefaultSymbol> {
+        let lend = self.lend.get(&body).cloned().unwrap_or_default();
+        let mut candidates: HashMap<DefaultSymbol, (DefaultSymbol, bool)> = HashMap::new();
+        let mut index = 0usize;
+        for (name, ty) in params {
+            if self.interner.resolve(*name) == Some("self") {
+                continue;
+            }
+            let i = index;
+            index += 1;
+            if !self.is_owning(ty) || is_borrow(ty) || lend.get(i).copied().unwrap_or(true) {
+                continue;
+            }
+            let base = match ty {
+                TypeDecl::Struct(n, _) | TypeDecl::Enum(n, _) | TypeDecl::Identifier(n) => *n,
+                _ => continue,
+            };
+            candidates.insert(*name, (base, true));
+        }
+        if candidates.is_empty() {
+            return HashSet::new();
+        }
+        // The walk's outputs, restored afterwards: the probe decides,
+        // the real walk records.
+        let errors = self.errors.len();
+        let element_copies = self.element_copies.len();
+        let transferred = self.transferred.clone();
+        let drop_flags = self.drop_flags.clone();
+        let transfer_anchors = self.transfer_anchors.clone();
+        let stand_ins = self.stand_ins;
+        self.probe = Some(candidates);
+        self.walk_function(params, body, false, &HashSet::new());
+        let probe = self.probe.take().unwrap_or_default();
+        self.errors.truncate(errors);
+        self.element_copies.truncate(element_copies);
+        self.transferred = transferred;
+        self.drop_flags = drop_flags;
+        self.transfer_anchors = transfer_anchors;
+        self.stand_ins = stand_ins;
+        probe.into_iter().filter(|(_, (_, ok))| *ok).map(|(name, _)| name).collect()
+    }
+
     /// LEND-FREEING-CALLEE: `owns` says every call reaches this body
     /// unambiguously, so a by-value parameter the caller hands over
     /// (one the body does not only lend) is the body's to drop. It is
     /// declared under a stand-in `val` (see `DropFlags::param_drops`),
     /// which lets every hand-over rule for locals apply to it.
-    fn run_function_owning(&mut self, params: &[(DefaultSymbol, TypeDecl)], body: StmtRef, owns: bool) {
+    /// `owned_generic` are the parameters of a generic body the probe
+    /// cleared (`probe_generic_params`).
+    fn walk_function(
+        &mut self,
+        params: &[(DefaultSymbol, TypeDecl)],
+        body: StmtRef,
+        owns: bool,
+        owned_generic: &HashSet<DefaultSymbol>,
+    ) {
         self.scopes.clear();
         self.moved.clear();
         self.borrows.clear();
@@ -664,10 +765,11 @@ impl MoveCheck<'_> {
             if !self.is_owning(ty) {
                 continue;
             }
-            let dropped_here = owns
+            let dropped_here = (owns
                 && !is_borrow(ty)
                 && !ty.contains_generic()
-                && !lend.get(i).copied().unwrap_or(true);
+                && !lend.get(i).copied().unwrap_or(true))
+                || owned_generic.contains(name);
             if dropped_here {
                 let stand_in = StmtRef(u32::MAX - 1 - self.stand_ins);
                 self.stand_ins += 1;
@@ -1285,7 +1387,20 @@ impl MoveCheck<'_> {
                 // `self: Self`, and treating an unknown as a borrow only
                 // costs a missed transfer, where the other way round
                 // would reject working programs.
+                // CALLEE-DROP-GENERIC: a scalar read off a probed
+                // parameter leaves no element behind.
+                let safe = match (self.program.expression.get(&receiver), &self.probe) {
+                    (Some(Expr::Identifier(r)), Some(probe)) => probe
+                        .get(&r)
+                        .is_some_and(|(base, _)| self.scalar_readers.contains(&(*base, method))),
+                    _ => false,
+                };
+                let prev_safe = std::mem::replace(
+                    &mut self.safe_receiver,
+                    if safe { Some(receiver) } else { None },
+                );
                 self.walk_expr(receiver, Use::Read, conditional);
+                self.safe_receiver = prev_safe;
                 let target = self.signatures.method_target(method, args.len());
                 self.walk_arg_list(&args, target.as_ref(), conditional);
             }
@@ -1437,6 +1552,15 @@ impl MoveCheck<'_> {
         use_kind: Use,
         conditional: bool,
     ) {
+        // CALLEE-DROP-GENERIC: any other read of a probed parameter
+        // may be where an element leaves it.
+        if let Some(probe) = &mut self.probe
+            && let Some((_, ok)) = probe.get_mut(&name)
+            && use_kind == Use::Read
+            && self.safe_receiver != Some(expr_ref)
+        {
+            *ok = false;
+        }
         let Some(owned) = self.lookup(name) else {
             return;
         };
@@ -2118,4 +2242,47 @@ impl LendAnalysis<'_> {
             | Expr::Null => true,
         }
     }
+}
+
+/// CALLEE-DROP-GENERIC: `(type, method)` pairs where every impl of the
+/// method takes `&self` / `&mut self` and returns a primitive scalar
+/// (or nothing) -- `size`, `len`, `is_empty`, `capacity`. Such a call
+/// on a container cannot hand one of its elements out.
+fn collect_scalar_readers(
+    program: &File,
+    interner: &DefaultStringInterner,
+) -> HashSet<(DefaultSymbol, DefaultSymbol)> {
+    let mut verdict: HashMap<(DefaultSymbol, DefaultSymbol), bool> = HashMap::new();
+    for i in 0..program.statement.len() {
+        let Some(Stmt::ImplBlock { target_type, methods, .. }) =
+            program.statement.get(&StmtRef(i as u32))
+        else {
+            continue;
+        };
+        for m in &methods {
+            let by_value_self = m
+                .parameter
+                .first()
+                .is_some_and(|(n, _)| interner.resolve(*n) == Some("self"));
+            let scalar = matches!(
+                m.return_type.as_ref().unwrap_or(&TypeDecl::Unit),
+                TypeDecl::Unit
+                    | TypeDecl::Bool
+                    | TypeDecl::UInt8
+                    | TypeDecl::UInt16
+                    | TypeDecl::UInt32
+                    | TypeDecl::UInt64
+                    | TypeDecl::Int8
+                    | TypeDecl::Int16
+                    | TypeDecl::Int32
+                    | TypeDecl::Int64
+                    | TypeDecl::Float32
+                    | TypeDecl::Float64
+            );
+            let ok = m.has_self_param && !by_value_self && scalar;
+            let entry = verdict.entry((target_type, m.name)).or_insert(true);
+            *entry = *entry && ok;
+        }
+    }
+    verdict.into_iter().filter(|(_, ok)| *ok).map(|(k, _)| k).collect()
 }

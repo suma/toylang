@@ -942,3 +942,52 @@ fn main() -> u64 {
          kept\nclose 5\n0\nclose 3\nleak 0\n",
     );
 }
+
+/// CALLEE-DROP-GENERIC: a generic callee owns a by-value argument when a
+/// probe finds every mention of it hands the whole value on, lends it,
+/// or reads a scalar off it -- `maybe` keeps the vector on one path and
+/// used to leak it on the other (`close 2` never printed). `peek` names
+/// an element through `borrow`, which a generic body might have copied
+/// out through raw memory, so it stays a non-owner: its argument still
+/// leaks (no `close 3`), which is the safe side of a double free.
+#[test]
+fn a_generic_callee_drops_an_argument_it_only_hands_on() {
+    let src = r#"
+struct H { id: u64 }
+impl Drop for H {
+    fn drop(&mut self) { println("close {self.id}") }
+}
+fn maybe<T>(v: Vec<T>, keep: &mut Vec<Vec<T>>, c: bool) -> u64 {
+    val n = v.size()
+    if c { keep.push(v) }
+    n
+}
+fn peek<T>(v: Vec<T>) -> u64 {
+    val e: &T = v.borrow(0u64)
+    v.size()
+}
+fn mk(id: u64) -> Vec<H> {
+    var v: Vec<H> = Vec::new()
+    v.push(H { id: id })
+    v
+}
+fn run() -> u64 {
+    var k: Vec<Vec<H>> = Vec::new()
+    println(maybe(mk(1u64), &mut k, true))
+    println(maybe(mk(2u64), &mut k, false))
+    println("kept {k.size()}")
+    println(peek(mk(3u64)))
+    0u64
+}
+fn main() -> u64 {
+    run()
+    println("end")
+    0u64
+}
+    "#;
+    assert_renders(
+        src,
+        "generic_callee_owned_param",
+        "1\nclose 2\n1\nkept 1\n1\nclose 1\nend\n",
+    );
+}

@@ -12,6 +12,11 @@
 
 ### 2026-09-26
 
+- **CALLEE-DROP-GENERIC — 手渡すだけの generic な受け手は引数を drop する** —
+  `fn maybe<T>(v: Vec<T>, keep: &mut Vec<Vec<T>>, c: bool)` の `c = false`
+  経路で漏れていた。本体を 1 度 probe として走らせ (効果は巻き戻す)、
+  引数の出現がすべて手渡し / 貸し出し / スカラーを返す `&self` method の
+  レシーバなら持ち主として扱う。要素に触れる本体は従来どおり (未実装節)。
 - **COMPOUND-BLOCK-RHS の残り — 枝が struct を返す method 呼び出しで
   終わる形** — `val p = if c { x.twin() } else { P { .. } }` / match の腕 /
   `&mut self` の method / generic struct の method。検出が method の戻り型を
@@ -2661,12 +2666,14 @@
   (`{ val t = ..  match t { Ok(v) => v, .. } }`) で持ち主 `t` がブロック
   より先に死ぬので、「ブロックの末尾から外へ出る束縛」を move_check が
   移動として扱う (`?` の別名規則と合わせる) のが先。
-- **CALLEE-DROP-GENERIC: generic な受け手に渡した所有値が漏れる** ★ —
-  受け手が値渡しの引数を drop するのは、型が具体的で、名前を 1 つの本体
-  だけが持つときに限る (LEND-FREEING-CALLEE)。generic な受け手
-  (`Vec::extend(other)` 等) は生メモリ経由で要素を写し出すので、`other`
-  を drop すると要素を二重に解放する。「どの要素を写し出したか」を型で
-  言えるようになるまで (所有の移動を `ptr_read` 側に表す) 漏れたまま。
+- **CALLEE-DROP-GENERIC の残り: 要素に触れる generic な受け手** ★ —
+  generic な受け手が値渡しの引数を drop するのは、本体での出現がすべて
+  「丸ごと手渡す / 貸す / `&self` の method でスカラーを読む」ときだけ
+  (2026-09-26、`probe_generic_params`)。`get` / `borrow` / `iter` /
+  フィールドで要素に触れる本体は、生メモリ経由で要素を写し出したかも
+  しれないので従来どおり drop せず漏れる (`Vec::extend(other)` 等)。
+  「どの要素を写し出したか」を型で言えるようになるまで (所有の移動を
+  `ptr_read` 側に表す) 残る。
 - **Trait 拡張** ★★★ (大規模、ロードマップ)
   - **A3: trait inheritance (`trait B: A`)** — 中。super trait 経由で `A` の method を `B` impl からも要求。
   - **A4: associated types (`trait Iterator { type Item }`)** — 中〜大。

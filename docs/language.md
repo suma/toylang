@@ -6734,11 +6734,16 @@ A callee that is handed an argument — one it does not only lend —
 **owns** it, and drops it when it returns unless it hands it on (stores
 it, returns it, passes it to another taker; on some paths only, behind
 a flag). So `fn grow(s: String) -> u64 { s.push(b)  s.len() }` frees
-the string, grown buffer and all. Two kinds of callee leave the
-argument unfreed instead: a generic one (`Vec::extend(other)` copies
-elements out through raw memory, so dropping `other` would free them
-twice), and one whose name several bodies share, where a call cannot
-say which body it reaches. (Before 2026-09-25 no callee dropped an
+the string, grown buffer and all. A generic callee owns its argument
+only when every mention of it hands the whole value on, lends it, or
+reads a scalar off it through a `&self` / `&mut self` method
+(`v.size()`) — `fn maybe<T>(v: Vec<T>, keep: &mut Vec<Vec<T>>, c: bool)
+{ if c { keep.push(v) } }` frees `v` when `c` is false. One that touches
+the elements (`get`, `borrow`, an iterator, a field) leaves the argument
+unfreed: it may have copied them out through raw memory
+(`Vec::extend(other)` does), and dropping the argument would free them
+twice. So does a callee whose name several bodies share, where a call
+cannot say which body it reaches. (Before 2026-09-25 no callee dropped an
 argument, so a callee that changed what the argument owned without
 storing it leaked it.)
 

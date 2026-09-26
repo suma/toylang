@@ -2469,15 +2469,6 @@
   `trait Digest` が元を取る場所、C4 (SHA-1 / MD5) は相互運用専用で
   壊れていることを明示する。
 
-- **NEVER-ALLOCATES-METHOD-STACK: method に `never_allocates` と `unsafe`
-  を重ねられない** — `parse_method_modifiers` (`frontend/src/parser/stmt.rs`)
-  が両方の修飾子に「次が `fn`」を要求するので、impl 内の
-  `never_allocates unsafe fn` / `unsafe never_allocates fn` が parse
-  エラー。自由関数側 (`program_parser.rs`) は「次がもう 1 つの修飾子」も
-  通す。CLAUDE.md の「順不同」に実装が追いついていない。`Vec` の読み取り系
-  (ほぼ全部 `unsafe fn`) に `never_allocates` を付けられない原因
-  ([`VEC_CONTRACTS.md`](VEC_CONTRACTS.md) §5-1、2026-09-04)。
-
 - **DBC-CHECK-SKIP-REPORT: `--check` が `ptr` レシーバの method を黙って
   飛ばす** — design_by_contract.md には明記があるが、`Vec` のように契約が
   増えるほど「検査されたつもり」が危険。最低限 `SKIPPED` 行を出す。

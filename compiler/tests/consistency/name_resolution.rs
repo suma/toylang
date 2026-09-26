@@ -51,3 +51,32 @@ fn a_user_function_still_wins_its_own_bare_call() {
     "#;
     assert_renders(src, "user_bare_call_wins", "8\n");
 }
+
+/// QUALIFIER-BARE-FALLBACK: a qualifier that names a module which does
+/// not have the function is an error, not a detour. `hex::abs(-3i64)`
+/// used to fall back to the bare name, ran `std::math::abs` and
+/// answered 3 on every lane -- the qualifier said "hex's", the answer
+/// came from somewhere else.
+#[test]
+fn a_qualifier_does_not_fall_back_to_another_modules_function() {
+    let src = r#"
+        fn main() -> u64 {
+            val x = hex::abs(-3i64)
+            x as u64
+        }
+    "#;
+    let errors = type_check_errors(src);
+    assert!(
+        errors.iter().any(|e| e.contains("module 'hex' has no exported function 'abs'")),
+        "{errors:?}"
+    );
+    // The right module still answers.
+    let ok = r#"
+        fn main() -> u64 {
+            val x = math::abs(-3i64)
+            x as u64
+        }
+    "#;
+    assert_eq!(interpreter_value(ok), 3);
+    assert_consistent(ok, "qualified_abs");
+}

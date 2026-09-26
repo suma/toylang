@@ -12,6 +12,11 @@
 
 ### 2026-09-26
 
+- **QUALIFIER-BARE-FALLBACK — 修飾付き呼び出しが別モジュールの関数に
+  落ちない** — `hex::abs(-3i64)` が bare 名で引き直されて `math::abs` を
+  呼び 3 を返していた。修飾が既知のモジュールを名指すのに関数が無ければ
+  `module 'hex' has no exported function 'abs'`。既存のテスト /
+  example / poc/logsearch で救われていた呼び出しは 0 件だった。
 - **COMPOUND-BLOCK-DROP-TIMING — compound を作るブロックの束縛がブロックと
   一緒に死ぬ** — `val o: Option<u64> = if c { val t = H{..}  Some(1) } else ..`
   の `t` を compiled レーンは外側のスコープの終わりで drop しており、`Drop` が
@@ -3010,18 +3015,6 @@
   last one」と警告するが、実際は各 module が自分のものを呼ぶ。
   シンボル名のマングリングは解決にならない (2026-09-05 検討、定義側の
   一意化は既に済んでいる)。
-
-- **QUALIFIER-BARE-FALLBACK: 修飾付き呼び出しが別モジュールの関数に
-  落ちる** ★★ — `hex::abs(-3i64)` が `std::math::abs` を呼んで `3` を
-  返す。`m::f(...)` の `m` が既知のモジュールで `f` を輸出していないとき、
-  `method_call.rs` の module 呼び出し経路が**bare 名で引き直す**
-  (「module integration が修飾なしで入れていた頃の流れ」のための
-  フォールバック)。**誤答であって拒否ではない** — 修飾は「このモジュールの」
-  と言っているのに別のモジュールのものが返る。MODULE-IMPORTS D1 の
-  alias (`import std.hex as math` → `math::abs` が `std.math::abs` に
-  当たる) で表面化したが、alias 以前からある。消すと、修飾付きで書いて
-  bare に救われていた既存コードが落ちうるので、影響範囲を測ってから。
-  2026-09-05。
 
 - **TYPE-NAME-COLLISION: struct / enum 名には曖昧性検査すら無い** ★★ —
   関数には (module path, rank) の候補集合があるが、型は

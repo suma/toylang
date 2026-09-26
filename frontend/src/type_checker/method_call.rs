@@ -1030,7 +1030,6 @@ impl<'a> TypeCheckerVisitor<'a> {
         Err(TypeCheckError::method_error(&method_name, obj_type.clone(), reason))
     }
 
-    /// Type check associated function calls - implementation
     /// Dispatch a `module::func(args)` qualified call. The qualifier
     /// has already been confirmed to match an imported module alias;
     /// the function lives in the (flat) main function table because
@@ -1038,16 +1037,8 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Type-check the args against the callee parameter list (mirrors
     /// the non-generic branch of `visit_call`) and return the
     /// callee's declared return type.
-    fn dispatch_module_function_call(
-        &mut self,
-        function_name: DefaultSymbol,
-        args: &Vec<ExprRef>,
-    ) -> Result<TypeDecl, TypeCheckError> {
-        self.dispatch_module_function_call_with_qualifier(None, function_name, args)
-    }
-
-    /// Same as `dispatch_module_function_call` but takes the module
-    /// qualifier the call site wrote (`["math"]` for
+    ///
+    /// The qualifier is the one the call site wrote (`["math"]` for
     /// `math::add(args)`), matched against the tail of each
     /// candidate's module path (MODULE-SYSTEM P2). Two modules whose
     /// last segment collides therefore report as ambiguous instead of
@@ -1351,13 +1342,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                     args,
                 );
             }
-            if self.context.lookup_fn(None, function_name).is_some() {
-                return self.dispatch_module_function_call(function_name, args);
-            }
-            // Module name was recognised but the function isn't in the
-            // (flat) function table — surface a targeted diagnostic
-            // rather than falling through to the struct-not-found
-            // path which would mention "Struct".
+            // QUALIFIER-BARE-FALLBACK: the qualifier names a module and
+            // that module has no such function. A bare-name lookup used
+            // to follow, for flows where module integration left entries
+            // unqualified -- so `hex::abs(-3i64)` ran `std::math::abs`
+            // and answered 3. The qualifier says which module; a
+            // function from another one is a wrong answer, not a
+            // fallback.
             let module_str = self.resolve_symbol_name(struct_name);
             let func_str = self.resolve_symbol_name(function_name);
             return Err(TypeCheckError::generic_error(&format!(

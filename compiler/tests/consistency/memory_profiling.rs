@@ -1184,3 +1184,127 @@ unsafe fn main() -> u64 {
     interpreter::heap::heap_check_start();
     assert!(err.contains("heap check: read at offset 0 of a 16-byte block"), "{err}");
 }
+
+/// HEAP-CHECK H4: poison mode leaves a redzone after every block, so a
+/// read that starts past a block's end lands on nothing and stops --
+/// the same way on every lane -- instead of reading the neighbour.
+#[test]
+fn poison_mode_stops_a_read_past_a_blocks_end() {
+    if skip_e2e() {
+        return;
+    }
+    let src = "\
+fn main() -> u64 {
+    val p: Ptr<u64> = Ptr::alloc(3u64)
+    val q: Ptr<u64> = Ptr::alloc(3u64)
+    q.set(0u64, 9u64)
+    p.get(3u64)
+}
+";
+    let want = "heap check: read at offset 24 of a 24-byte block, past its end \
+                (allocated at core/std/ptr.t:";
+    let (tree, vm) = heap_poison_errors(src);
+    assert!(tree.contains(want), "tree-walker: {tree}");
+    assert!(vm.contains(want), "IR VM: {vm}");
+    assert!(vm.contains("test.t:5:5"), "the IR VM names the access: {vm}");
+    let (code, aot) = compiled_heap_poison_run(src, "h4_past_end");
+    assert_eq!(code, 1, "{aot}");
+    assert!(
+        aot.contains(vm.trim_end()),
+        "the AOT diagnostic differs:\n--- IR VM\n{vm}\n--- AOT\n{aot}"
+    );
+}
+
+/// HEAP-CHECK H4: an access that starts inside the block is not judged,
+/// even when it runs past the end -- the tree-walker does not know how
+/// wide its accesses are, so only where one starts is a verdict every
+/// lane can share. The last element of a block is in bounds.
+#[test]
+fn poison_mode_accepts_the_last_element_of_a_block() {
+    if skip_e2e() {
+        return;
+    }
+    let src = "\
+fn main() -> u64 {
+    val p: Ptr<u64> = Ptr::alloc(3u64)
+    p.set(2u64, 5u64)
+    p.get(2u64)
+}
+";
+    let (code, err) = compiled_heap_poison_run(src, "h4_last_element");
+    assert_eq!(code, 5, "{err}");
+    interpreter::heap::heap_check_start_poison();
+    assert_eq!(interpreter_value(src), 5);
+    interpreter::heap::heap_check_start();
+}
+
+/// HEAP-CHECK H4: `Arena::free` keeps its block until `reset`, and now
+/// poisons it under a heap check, so a use after the `free` stops -- the
+/// same way on every lane. Without a heap check nothing changes.
+#[test]
+fn poison_mode_stops_a_use_after_an_arena_free() {
+    if skip_e2e() {
+        return;
+    }
+    let src = "\
+unsafe fn main() -> u64 {
+    var a = Arena::new()
+    val p = a.alloc(16u64)
+    __builtin_ptr_write(p, 0u64, 5u64)
+    a.free(p)
+    __builtin_ptr_read::<u64>(p, 0u64)
+}
+";
+    assert_eq!(interpreter_value(src), 5);
+    let want = "heap check: read at offset 0 of a 16-byte block that was already freed \
+                (allocated at core/std/allocator.t:";
+    let (tree, vm) = heap_poison_errors(src);
+    assert!(tree.contains(want), "tree-walker: {tree}");
+    assert!(vm.contains(want), "IR VM: {vm}");
+    let (code, aot) = compiled_heap_poison_run(src, "h4_arena_free");
+    assert_eq!(code, 1, "{aot}");
+    assert!(
+        aot.contains(vm.trim_end()),
+        "the AOT diagnostic differs:\n--- IR VM\n{vm}\n--- AOT\n{aot}"
+    );
+    // The arena's real free at its drop is not a double free.
+    assert!(aot.contains("heap check: 0 double frees"), "{aot}");
+}
+
+/// HEAP-CHECK H4: each `test` block runs on a heap of its own, whose
+/// addresses start over; what the check remembers by address is the old
+/// heap's and must not be read as the new one's blocks.
+#[test]
+fn heap_check_starts_over_with_each_test_blocks_heap() {
+    let src = r#"
+test "first" {
+    val a: String = String::from_str("ab")
+    val b: String = String::from_str("abcde")
+    assert_eq(a.len() + b.len(), 7u64)
+}
+test "second" {
+    var v: Vec<u64> = Vec::new()
+    var i: u64 = 0u64
+    while i < 20u64 {
+        v.push(i)
+        i = i + 1u64
+    }
+    assert_eq(v.size(), 20u64)
+}
+fn main() -> u64 { 0u64 }
+"#;
+    let core = core_modules_dir();
+    let mut options = RunOptions::default();
+    options.core_modules_dirs = std::slice::from_ref(&core);
+    for start in [
+        interpreter::heap::heap_check_start_poison as fn(),
+        || interpreter::heap::heap_check_start_reuse(0),
+    ] {
+        start();
+        let outcomes = interpreter::run_tests_from_source(src, "test.t", &options).expect("tests");
+        for o in outcomes {
+            assert!(o.failure.is_none(), "{}: {:?}", o.name, o.failure);
+        }
+    }
+    interpreter::heap::heap_check_start();
+}

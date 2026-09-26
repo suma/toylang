@@ -12,6 +12,10 @@
 
 ### 2026-09-26
 
+- **HEAP-CHECK H4 — redzone と `__builtin_heap_poison`** — 検査モードで各ブロックの後ろに
+  16 バイトの redzone を取り、末尾より後ろから始まるアクセスを止める。`Arena::free` は
+  ブロックを毒化するので、個別 free の後のアクセスも止まる。`--test` がテストごとに作る
+  ヒープで番地の表を引き継いでいた誤検出も直した。
 - **HEAP-CHECK H3 — `--heap-check=reuse`** — poison に有限の隔離 (FIFO) を足し、溢れた
   ブロックを size class ごとの LIFO で次の確保に渡す。両ヒープで方針と順序を揃え、
   `--all-backends` は再利用回数も突き合わせる。隔離 0 で example 全体が不変。
@@ -2910,9 +2914,9 @@
   二重 free の棚卸し) と H0b (報告に二重 drop を起こした関数名) は 2026-09-26 に
   landing (完了済み節)、棚卸しで見つかった二重 drop も全部潰した
   (DOUBLE-DROP-LANE-DIVERGENCE)。H1 (`poison`、interpreter レーン)・H2
-  (計装、compiled レーン)・H3 (`reuse`) も landing。次は
-  H4 (redzone) → H5 (二重 drop を潰して既定でエラー)。`toy` への `--heap-check` も未。
-  [`HEAP_CHECK.md`](HEAP_CHECK.md) §5 / §10。
+  (計装、compiled レーン)・H3 (`reuse`)・H4 (redzone / `__builtin_heap_poison`) も
+  landing。次は H5 (二重 drop を潰して既定でエラー)。`toy` への `--heap-check` も未。
+  [`HEAP_CHECK.md`](HEAP_CHECK.md) §5 / §11。
 * **明示 import (MODULE-IMPORTS)** — stdlib も
   `import std.hex` を書かないと使えない形にする提案。
   [`MODULE_IMPORTS.md`](MODULE_IMPORTS.md)。**D1 の alias 束縛だけ

@@ -2881,6 +2881,7 @@ impl<'a> FunctionLower<'a> {
         match func {
             BuiltinFunction::HeapAlloc
             | BuiltinFunction::HeapFree
+            | BuiltinFunction::HeapPoison
             | BuiltinFunction::HeapRealloc
             | BuiltinFunction::PtrRead
             | BuiltinFunction::PtrReadTyped(_)
@@ -2956,6 +2957,15 @@ impl<'a> FunctionLower<'a> {
                 let binding = self.classify_active_allocator_binding();
                 let site = self.alloc_site(call_ref);
                 Ok(self.emit(InstKind::HeapFree { ptr, binding, site }, None))
+            }
+            BuiltinFunction::HeapPoison => {
+                expect_args(args, 2, "__builtin_heap_poison takes 2 args (ptr, size)")?;
+                let ptr = self.lower_expr(&args[0])?
+                    .ok_or_else(|| "heap_poison ptr produced no value".to_string())?;
+                let size = self.lower_expr(&args[1])?
+                    .ok_or_else(|| "heap_poison size produced no value".to_string())?;
+                let site = self.alloc_site(call_ref);
+                Ok(self.emit(InstKind::HeapPoison { ptr, size, site }, None))
             }
             BuiltinFunction::HeapRealloc => {
                 expect_args(args, 2, "__builtin_heap_realloc takes 2 args (ptr, new_size)")?;

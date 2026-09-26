@@ -4595,6 +4595,7 @@ These always go through the active allocator:
 | `__builtin_heap_alloc(size: u64)` | `-> ptr` |
 | `__builtin_heap_free(p: ptr)` | `-> ()` |
 | `__builtin_heap_realloc(p: ptr, new_size: u64)` | `-> ptr` |
+| `__builtin_heap_poison(p: ptr, size: u64)` | `-> ()` (under `--heap-check=poison\|reuse`, treat the range as freed without freeing it; a no-op otherwise. `Arena::free` calls it) |
 | `__builtin_ptr_read::<T>(p: ptr, offset: u64)` | `-> T` (the written type) |
 | `__builtin_ptr_write(p: ptr, offset: u64, v: T)` | `-> ()` |
 | `__builtin_ptr_is_null(p: ptr)` | `-> bool` |

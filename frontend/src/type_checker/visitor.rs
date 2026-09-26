@@ -356,6 +356,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         vec![
             sig(BuiltinFunction::HeapAlloc, vec![TypeDecl::UInt64], TypeDecl::Ptr),
             sig(BuiltinFunction::HeapFree, vec![TypeDecl::Ptr], TypeDecl::Unit),
+            sig(BuiltinFunction::HeapPoison, vec![TypeDecl::Ptr, TypeDecl::UInt64], TypeDecl::Unit),
             sig(BuiltinFunction::HeapRealloc, vec![TypeDecl::Ptr, TypeDecl::UInt64], TypeDecl::Ptr),
             sig(BuiltinFunction::PtrRead, vec![TypeDecl::Ptr, TypeDecl::UInt64], TypeDecl::UInt64),
             sig(

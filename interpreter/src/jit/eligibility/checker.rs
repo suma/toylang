@@ -2131,6 +2131,15 @@ impl<'a> Checker<'a> {
                     // program to the tree-walker, which answers it —
                     // a silent fallback, like the rest of this JIT's
                     // gaps, and not an observable difference.
+                    // HEAP-CHECK H4: a heap-check hook; the tree-walker
+                    // has the heap check, so decline.
+                    BuiltinFunction::HeapPoison => {
+                        self.reject(|| {
+                            "__builtin_heap_poison is not supported in the interpreter JIT"
+                                .to_string()
+                        });
+                        None
+                    }
                     BuiltinFunction::Backtrace => {
                         self.reject(|| {
                             "__builtin_backtrace is not supported in the interpreter JIT"

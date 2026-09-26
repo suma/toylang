@@ -181,6 +181,7 @@ impl<M: Module> CodegenSession<M> {
                     InstKind::HeapRealloc { site, .. } => *site,
                     // HEAP-CHECK H0: a free names its site too.
                     InstKind::HeapFree { site, .. } => *site,
+                    InstKind::HeapPoison { site, .. } => *site,
                     _ => continue,
                 };
                 let file = ir_module.site_file(site);
@@ -390,6 +391,7 @@ impl<M: Module> CodegenSession<M> {
             panic_alloc_budget: self
                 .declare_func_in_func_readonly(self.rt_panic_alloc_budget, func),
             heap_check: self.declare_func_in_func_readonly(self.rt_heap_check, func),
+            heap_poison: self.declare_func_in_func_readonly(self.rt_heap_poison, func),
             heap_check_start_mode: self
                 .declare_func_in_func_readonly(self.rt_heap_check_start_mode, func),
             panic_at: self.declare_func_in_func_readonly(self.rt_panic_at, func),

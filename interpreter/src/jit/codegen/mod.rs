@@ -1459,6 +1459,11 @@ impl<'a, 'b> State<'a, 'b> {
                         "{} is not supported in the interpreter JIT",
                         op.builtin_name()
                     )),
+                    BuiltinFunction::HeapPoison => {
+                        // Rejected by eligibility; unreachable here.
+                        Err("__builtin_heap_poison is not supported in the interpreter JIT"
+                            .to_string())
+                    }
                     BuiltinFunction::Backtrace => {
                         // Rejected by eligibility; unreachable here.
                         Err("__builtin_backtrace is not supported in the interpreter JIT"

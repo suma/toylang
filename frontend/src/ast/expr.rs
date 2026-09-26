@@ -710,6 +710,11 @@ pub enum BuiltinFunction {
     HeapAlloc,    // __builtin_heap_alloc(size: u64) -> ptr
     HeapFree,     // __builtin_heap_free(pointer: ptr) -> unit
     HeapRealloc,  // __builtin_heap_realloc(pointer: ptr, new_size: u64) -> ptr
+    /// `__builtin_heap_poison(pointer: ptr, size: u64) -> unit` —
+    /// HEAP-CHECK H4: under a heap check, treat the range as freed
+    /// without freeing it (an allocator whose `free` keeps the block,
+    /// like `Arena`). A no-op otherwise.
+    HeapPoison,
 
     // Pointer operations
     PtrRead,      // __builtin_ptr_read(pointer: ptr, offset: u64) -> u64
@@ -1049,6 +1054,9 @@ pub struct BuiltinFunctionSymbols {
     // emitting an inequality check + formatted `panic` on failure.
     pub assert_eq: DefaultSymbol,
     pub assert_ne: DefaultSymbol,
+    /// HEAP-CHECK H4. Interned last so the symbols before it keep
+    /// their numbers.
+    pub heap_poison: DefaultSymbol,
     // NOTE: f64 math symbol fields (`pow` / `sqrt` / `sin` / `cos` /
     // `tan` / `log` / `log2` / `exp` / `floor` / `ceil`) lived here
     // before Phase 4. They were the parser-side recogniser for the
@@ -1123,6 +1131,7 @@ impl BuiltinFunctionSymbols {
             dbg: interner.get_or_intern("__builtin_dbg"),
             assert_eq: interner.get_or_intern("assert_eq"),
             assert_ne: interner.get_or_intern("assert_ne"),
+            heap_poison: interner.get_or_intern("__builtin_heap_poison"),
         };
         // RANGE-FOR: the checker rewrites `for i in r` over a range
         // value into `for i in r.start..r.end`, and by then the
@@ -1173,6 +1182,7 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.abs { Some(BuiltinFunction::Abs) }
         else if symbol == self.min { Some(BuiltinFunction::Min) }
         else if symbol == self.max { Some(BuiltinFunction::Max) }
+        else if symbol == self.heap_poison { Some(BuiltinFunction::HeapPoison) }
         else {
             self.mem_stats
                 .iter()

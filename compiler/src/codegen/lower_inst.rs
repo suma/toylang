@@ -126,6 +126,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             | InstKind::HeapRealloc { .. }
             | InstKind::HeapFree { .. }
             | InstKind::HeapCheck { .. }
+            | InstKind::HeapPoison { .. }
             | InstKind::PtrRead { .. }
             | InstKind::PtrWrite { .. } => self.lower_heap_and_pointer(inst),
             InstKind::StrLen { .. }
@@ -1318,6 +1319,21 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 self.builder
                     .ins()
                     .call(self.runtime.dispatched_free, &[handle_v, ptr_v, site_v, file_v]);
+            }
+            InstKind::HeapPoison { ptr, size, site } => {
+                // HEAP-CHECK H4: the runtime does nothing outside a heap
+                // check; the site and file are a free's.
+                let ptr_v = self.value(*ptr);
+                let size_v = self.value(*size);
+                let packed = self.ir_module.packed_site(*site);
+                let site_v = self.builder.ins().iconst(types::I64, packed as i64);
+                let file_v = match self.alloc_file_imports.get(self.ir_module.site_file(*site)) {
+                    Some(gv) => self.builder.ins().symbol_value(types::I64, *gv),
+                    None => self.builder.ins().iconst(types::I64, 0),
+                };
+                self.builder
+                    .ins()
+                    .call(self.runtime.heap_poison, &[ptr_v, size_v, site_v, file_v]);
             }
             InstKind::HeapCheck { ptr, offset, len, write, site } => {
                 // HEAP-CHECK H2: the runtime answers at once outside

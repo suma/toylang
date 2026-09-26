@@ -607,6 +607,10 @@ struct ThreadState {
     hc_q_limit: u64,
     hc_free_lists: alloc::collections::BTreeMap<u64, Vec<usize>>,
     hc_reused: u64,
+    /// H4 (poison and reuse): live block start -> (size, allocated at,
+    /// its file), for finding the block an access past an end
+    /// belongs to.
+    hc_live: alloc::collections::BTreeMap<usize, (u64, u64, *const u8)>,
     // Program arguments for `toy_io_argc` / `toy_io_arg`. The AOT
     // binary reads the real process argv; the JIT injects these
     // (default: empty, matching a compiled binary with no arguments).
@@ -710,6 +714,7 @@ impl Default for ThreadState {
             hc_q_limit: HC_QUARANTINE_DEFAULT,
             hc_free_lists: alloc::collections::BTreeMap::new(),
             hc_reused: 0,
+            hc_live: alloc::collections::BTreeMap::new(),
             io_args: core::ptr::null_mut(),
             io_args_len: 0,
             random_state: 0,
@@ -2148,6 +2153,7 @@ pub extern "C" fn toy_dispatched_alloc(
         // was asked for — an always-on registry is what makes
         // `toy_dispatched_free` idempotent (see below).
         prof_put(p, size, site, file);
+        hc_note_live(p, size, site, file);
         if prof_enabled() {
             let st = thread_state();
             st.stats.alloc_count += 1;
@@ -2195,6 +2201,7 @@ pub extern "C" fn toy_dispatched_free(
         return;
     }
     if hc_enabled() {
+        hc_note_dead(p);
         hc_note_freed(p, size, site, file, free_site, free_file);
         hc_poison(p, size);
         hc_quarantine(p, size);
@@ -2253,6 +2260,7 @@ pub unsafe extern "C" fn toy_dispatched_realloc(
     // The old block is released by the move: a later free of it is a
     // double free, and says so.
     if old_size > 0 && hc_enabled() {
+        hc_note_dead(p);
         hc_note_freed(p, old_size, site, file, HC_RESIZE, core::ptr::null());
     }
     // ERROR_MODEL D5: the accounting belongs on the success path. A
@@ -2296,6 +2304,9 @@ pub unsafe extern "C" fn toy_dispatched_realloc(
         hc_quarantine(p, old_size);
     }
     prof_put(np, new_size, site, file);
+    if hc_enabled() {
+        hc_note_live(np, new_size, site, file);
+    }
     np
 }
 
@@ -2422,8 +2433,32 @@ fn hc_alloc_raw(size: usize) -> *mut u8 {
                 return p as *mut u8;
             }
         }
+        if st.hc_state >= 2 {
+            // H4: the class and a redzone after it, as the
+            // interpreter's heap lays blocks out in poison mode.
+            return bump_alloc_raw(hc_size_class(size as u64) as usize + HC_REDZONE);
+        }
     }
     bump_alloc_raw(size)
+}
+
+/// H4: the interpreter's `HEAP_REDZONE`.
+const HC_REDZONE: usize = 16;
+
+/// H4: in poison and reuse mode, remember a block handed out (or
+/// forget one released) for the past-the-end check.
+fn hc_note_live(p: *mut u8, size: u64, site: u64, file: *const u8) {
+    let st = thread_state();
+    if st.hc_state >= 2 {
+        st.hc_live.insert(p as usize, (size, site, file));
+    }
+}
+
+fn hc_note_dead(p: *mut u8) {
+    let st = thread_state();
+    if st.hc_state >= 2 {
+        st.hc_live.remove(&(p as usize));
+    }
 }
 
 /// H3: in reuse mode, put a freed block in quarantine and let the
@@ -2471,12 +2506,36 @@ pub unsafe extern "C" fn toy_heap_check(
     }
     let len = len.max(1);
     let end = (addr as usize).saturating_add(len as usize);
-    let Some((&start, &f)) = st.hc_freed.range(..end).next_back() else {
-        return;
+    let freed = st
+        .hc_freed
+        .range(..end)
+        .next_back()
+        .filter(|(start, f)| **start as u64 + f.size > addr)
+        .map(|(start, f)| (*start, *f));
+    let Some((start, f)) = freed else {
+        // H4: an access that starts past a live block's end, in its
+        // class's slack or the redzone after it -- judged by where it
+        // starts, as the interpreter judges it.
+        let Some((&start, &(size, site, file))) = st.hc_live.range(..=addr as usize).next_back()
+        else {
+            return;
+        };
+        let offset = addr - start as u64;
+        if offset < size || offset >= hc_size_class(size) + HC_REDZONE as u64 {
+            return;
+        }
+        let message = format!(
+            "panic: heap check: {} at offset {offset} of a {size}-byte block, past its end (allocated at {})",
+            if write != 0 { "write" } else { "read" },
+            hc_position(site, file),
+        );
+        unsafe { write_diag_fd(2, prefix) };
+        err_write(&message);
+        unsafe { write_diag_fd(2, suffix) };
+        write_backtrace();
+        err_write("\n");
+        unsafe { exit(1) };
     };
-    if start as u64 + f.size <= addr {
-        return;
-    }
     let offset = addr.saturating_sub(start as u64);
     let freed = if f.free_site == HC_RESIZE {
         String::from("moved by a resize")
@@ -2496,6 +2555,41 @@ pub unsafe extern "C" fn toy_heap_check(
     write_backtrace();
     err_write("\n");
     unsafe { exit(1) };
+}
+
+/// HEAP-CHECK H4: `__builtin_heap_poison(p, size)` -- in poison and
+/// reuse mode, treat the range as freed at `site` without freeing it:
+/// fill it with the poison byte and refuse later accesses the way a
+/// freed block's are. `Arena::free` keeps its block until `reset`, and
+/// calls this so a use after it stops. The block stays live, so its
+/// real free later is not a double free. The interpreter's
+/// `poison_range`.
+///
+/// # Safety
+/// `p` is null or points into a block this runtime handed out;
+/// `file` is NUL-terminated or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_heap_poison(p: *mut u8, size: u64, site: u64, file: *const u8) {
+    if p.is_null() || size == 0 || !hc_enabled() {
+        return;
+    }
+    let st = thread_state();
+    if st.hc_state < 2 {
+        return;
+    }
+    let addr = p as usize;
+    let Some((&start, &(bsize, alloc_site, alloc_file))) = st.hc_live.range(..=addr).next_back()
+    else {
+        return;
+    };
+    if addr >= start + bsize as usize {
+        return;
+    }
+    st.hc_freed.insert(
+        addr,
+        HcFreed { size, alloc_site, alloc_file, free_site: site, free_file: file },
+    );
+    unsafe { core::ptr::write_bytes(p, HC_POISON_BYTE, size as usize) };
 }
 
 /// Turn poison (`mode` 2) or reuse (`mode` 3, with `quarantine`
@@ -2610,6 +2704,7 @@ pub fn heap_check_start() {
     st.hc_q_limit = HC_QUARANTINE_DEFAULT;
     st.hc_free_lists.clear();
     st.hc_reused = 0;
+    st.hc_live.clear();
 }
 
 /// Start poison mode on this thread (JIT accessor).

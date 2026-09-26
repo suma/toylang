@@ -203,6 +203,15 @@ impl Arena {
         }
     }
 
+    # HEAP-CHECK H4: poison a tracked block without releasing it.
+    unsafe fn _poison(&self, p: ptr) {
+        val idx = self._find(p)
+        if idx < self.count {
+            val sz: u64 = __builtin_ptr_read::<u64>(self.sizes, idx * 8u64)
+            __builtin_heap_poison(p, sz)
+        }
+    }
+
     # Internal: linear search for `p` in `addrs`. Returns the
     # index, or `count` (one past end) if not found.
     unsafe fn _find(&self, p: ptr) -> u64 {
@@ -263,13 +272,19 @@ impl Alloc for Arena {
     }
 
     unsafe fn free(&mut self, p: ptr) {
-        # Arena policy: per-pointer free is a no-op; everything is
-        # released in bulk via `reset()` or `drop()`.
+        # Arena policy: per-pointer free keeps the block; everything is
+        # released in bulk via `reset()` or `drop()`. Under a heap check
+        # the block is poisoned now, so a use after this `free` stops
+        # instead of reading on until the reset (HEAP-CHECK H4). A
+        # no-op otherwise.
+        self._poison(p)
     }
 
     unsafe fn realloc(&mut self, p: ptr, new_size: u64) -> ptr {
         if new_size == 0u64 {
-            # Arena policy keeps the existing allocation tracked until reset.
+            # Arena policy keeps the existing allocation tracked until
+            # reset -- poisoned, as `free` leaves it.
+            self._poison(p)
             return __builtin_null_ptr()
         }
         val idx = self._find(p)

@@ -1,8 +1,8 @@
 # HEAP-CHECK — 解放済みメモリを毒化・再利用する検査モード
 
-> **状態: H0 (二重 free の棚卸し)・H1 (interpreter レーンの `poison`)・H2 (compiled レーンの `poison`)・H3 (`reuse`) landing 済み (2026-09-26)。** §6 の未決事項は
+> **状態: H0 (二重 free の棚卸し)・H1 (interpreter レーンの `poison`)・H2 (compiled レーンの `poison`)・H3 (`reuse`)・H4 (redzone と `__builtin_heap_poison`) landing 済み (2026-09-26)。** §6 の未決事項は
 > 推奨どおりに決まった (二重 free は H5 まで報告のみ / フラグは `--heap-check=` /
-> 隔離は 1 MiB から / AOT の計装はビルドフラグのときだけ)。H0 の実装と結果は §7、H1 は §8、H2 は §9、H3 は §10。
+> 隔離は 1 MiB から / AOT の計装はビルドフラグのときだけ)。H0 の実装と結果は §7、H1 は §8、H2 は §9、H3 は §10、H4 は §11。
 > 関連: [`MEMORY_PROFILING.md`](MEMORY_PROFILING.md) (計数の定義と site)、
 > [`ALLOCATOR_PLAN.md`](ALLOCATOR_PLAN.md) (`with allocator` と stdlib `Arena`)、
 > [`REGIONS.md`](REGIONS.md) / [`POINTER.md`](POINTER.md) (静的な脱出検査)。
@@ -281,7 +281,7 @@ Error at main.t:12:9:
 | **H1** | `poison`: `HeapManager` 側 (tree-walker + IR VM) に shadow と毒埋めを入れ、読み書き口で検査する | interpreter レーンの UAF / 二重 free |
 | **H2** (済) | `HeapCheck` 命令と lowering の計装、`toylang_rt` の shadow、`HeapFree` の site | AOT / JIT の UAF。IR VM の報告に位置が付く |
 | **H3** (済) | `reuse`: 隔離を有限にし、size class ごとの free list で再利用する。**方針を両ヒープで一字一句同じにする** (size class = 16 バイト単位の切り上げ、LIFO、隔離は FIFO で N バイト) — でないと再利用の結果がレーンで割れる | 「再利用しない」ことへの依存 |
-| **H4** | redzone (ブロック間に 16 バイトの `REDZONE`) と `__builtin_heap_poison` | ヒープ内の範囲外、`Arena::free` 後のアクセス |
+| **H4** (済) | redzone (ブロック間に 16 バイトの `REDZONE`) と `__builtin_heap_poison` | ヒープ内の範囲外、`Arena::free` 後のアクセス |
 | **H5** | H0 の一覧を潰す (別名経由の二重 drop の原因を move_check / drop glue 側で直す)。潰し終えたら検査モードの二重 free を既定でエラーにし、example と poc/logsearch を `--heap-check=poison` で回すテストを足す | — |
 
 H0 → H1 の順にするのは、H0 だけで「今どこに二重 drop が残っているか」が
@@ -519,10 +519,44 @@ TOY_HEAP_CHECK=reuse TOY_HEAP_QUARANTINE=0 ./any_binary                  # 計�
 - **結果**: plain で 3 レーン一致する example 155 本すべてが、隔離 0 (最も早く再利用する)
   でも出力・一致とも変わらない。実際に再利用が起きたのは 8 本 (最大 64 ブロック)。
   `poc/logsearch/tests` も `interpreter --test` で隔離 0 にして、合否は通常実行と同じ
-  (測り終えた 6 本。1 本あたり 129〜4573 ブロックを再利用)。
+  (1 本あたり最大 4573 ブロックを再利用)。
 
 **残り**
 
 - 再利用した後の古いポインタは検出できない (ABA、§2 の非目的)。止まる代わりに
   他のブロックを壊す — それが症状として出るのを見るのがこのモードの用途。
 - `toy test` / `toy run` はまだ `--heap-check` を受けない。
+
+## 11. H4 — redzone と `__builtin_heap_poison` (2026-09-26)
+
+- **redzone**: poison / reuse のとき、両ヒープとも各ブロックに size class 分 +
+  16 バイト (`HEAP_REDZONE`) を取る。ブロック末尾より後ろ (class の余りと redzone) から
+  **始まる**アクセスは次のブロックに届かず止まる:
+
+  ```
+  panic: heap check: read at offset 24 of a 24-byte block, past its end (allocated at core/std/ptr.t:72:22)
+  ```
+
+  判定は**アクセスの開始位置だけ**で行う。tree-walker の型付きスロットはアクセス幅を
+  知らないので、ブロック内から始まって末尾をまたぐアクセスを数えると、レーンで結果が
+  割れる。探索には生きているブロックの表 (開始番地 → サイズ・確保位置) を両ヒープに
+  足した (poison / reuse のときだけ保つ)。
+- **`__builtin_heap_poison(p, size)`**: 検査モードのとき、範囲を「解放済み」として
+  毒で埋め、以後のアクセスを止める。ブロックは生きたままなので、後の本当の free は
+  二重 free にならない。検査モードでなければ何もしない。IR 命令 `HeapPoison` →
+  `toy_heap_poison` / `HeapManager::poison_range`。**`Arena::free` と
+  `Arena::realloc(p, 0)` がこれを呼ぶ**ので、個別 free の後のアクセスが `reset` を
+  待たずに止まる (§4 論点 7)。報告の「freed at」は `allocator.t` の中の位置で、
+  呼び出し元は backtrace に出る。
+- **新しいヒープは新しい番地空間**: `--test` はテストごとにヒープを作り、番地は 1 から
+  やり直す。heap check が番地で覚えていた表 (生存・解放済み) を引き継いでいたので、
+  前のテストのブロックが今のテストのブロックに見え、reuse で「末尾越え」を誤検出した
+  (poc の mount / ontology_* で発覚)。`HeapManager::new` で番地の表だけ捨て、回数は残す。
+- example 全体を計装ビルドと interpreter の poison で走らせて誤検出なし。reuse (隔離 0)
+  でも 155 本が不変。
+
+**残り**
+
+- ブロック内から始まって末尾をまたぐアクセス (上の理由で見ない)。
+- ヒープ外 (stack の配列、`str` リテラル) の範囲外。
+- `FixedBuffer::free` は本当に free するので対象外 (既に検査される)。

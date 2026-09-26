@@ -679,6 +679,7 @@ impl EvaluationContext<'_> {
         match func {
             BuiltinFunction::HeapAlloc
             | BuiltinFunction::HeapFree
+            | BuiltinFunction::HeapPoison
             | BuiltinFunction::HeapRealloc
             | BuiltinFunction::PtrRead
             | BuiltinFunction::PtrReadTyped(_)
@@ -794,6 +795,33 @@ impl EvaluationContext<'_> {
                 crate::heap::heap_check_note_culprit(crate::heap::heap_check_culprit(names));
             }
             allocator.free_at(addr, packed);
+            Ok(EvaluationResult::Value((Object::Unit).into()))
+        }
+
+        BuiltinFunction::HeapPoison => {
+            Self::expect_args("heap_poison", args, 2)?;
+            let ptr_obj = try_value!(Ok(self.evaluate(&args[0])?));
+            let addr = ptr_obj.borrow().try_unwrap_pointer()
+                .map_err(|_| InterpreterError::InternalError("heap_poison expects pointer".to_string()))?;
+            let size_obj = try_value!(Ok(self.evaluate(&args[1])?));
+            let size = size_obj.borrow().try_unwrap_uint64()
+                .map_err(|_| InterpreterError::InternalError("heap_poison expects a u64 size".to_string()))?;
+            // HEAP-CHECK H4: the poison's position stands in for a free's.
+            let packed = site
+                .map(|loc| ((loc.line as u64) << 32) | (loc.column as u64))
+                .unwrap_or(0);
+            if let Some(loc) = site {
+                if let Some(path) = self.source_map.and_then(|m| m.path(loc.file)) {
+                    crate::heap::note_free_site_file(packed, path);
+                }
+            }
+            // The global allocator, whichever is active: the block an
+            // allocator's `free` keeps came from there.
+            let allocator = self.allocator_stack
+                .first()
+                .expect("allocator_stack must always contain the global allocator")
+                .clone();
+            allocator.poison_range(addr, size as usize, packed);
             Ok(EvaluationResult::Value((Object::Unit).into()))
         }
 

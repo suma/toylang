@@ -430,6 +430,7 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
         // HEAP-CHECK H2.
         toy_heap_check,
         toy_heap_check_start_mode,
+        toy_heap_poison,
         // DEBUG-OBS D3.
         toy_panic_at,
         // DEBUG-OBS D5.

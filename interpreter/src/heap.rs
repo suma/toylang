@@ -25,6 +25,9 @@ pub trait Allocator: fmt::Debug {
         self.free(addr)
     }
     fn realloc(&self, addr: usize, new_size: usize) -> usize;
+    /// HEAP-CHECK H4: `__builtin_heap_poison`. Defaults to nothing, for
+    /// an allocator that keeps no heap check.
+    fn poison_range(&self, _addr: usize, _size: usize, _site: u64) {}
 }
 
 /// Default allocator backed by the process-wide `HeapManager`. Every
@@ -61,6 +64,10 @@ impl Allocator for GlobalAllocator {
 
     fn realloc(&self, addr: usize, new_size: usize) -> usize {
         self.inner.borrow_mut().realloc(addr, new_size)
+    }
+
+    fn poison_range(&self, addr: usize, size: usize, site: u64) {
+        self.inner.borrow_mut().poison_range(addr, size, site)
     }
 }
 
@@ -589,6 +596,9 @@ struct HeapCheckState {
     files: HashMap<u64, String>,
     /// H3: how many allocations were served from a recycled block.
     reused: u64,
+    /// H4: live block start -> (size, allocated at), in poison mode, for
+    /// finding the block an access past an end belongs to.
+    live: std::collections::BTreeMap<usize, (usize, u64)>,
 }
 
 thread_local! {
@@ -602,6 +612,12 @@ thread_local! {
     /// H3: the quarantine size in bytes when reuse mode is on.
     static HEAP_REUSE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
+
+/// H4: the gap left after every block in poison mode, on top of the
+/// block's size class, so an access starting past a block's end lands
+/// on nothing rather than on its neighbour. The compiled lanes leave
+/// the same gap.
+pub const HEAP_REDZONE: usize = 16;
 
 /// H3: the quarantine a freed block waits in before it can be handed
 /// out again, when nothing else says (`--heap-quarantine`).
@@ -694,6 +710,26 @@ fn heap_check_access(addr: usize, len: usize, write: bool) -> bool {
                 format!("freed at {}", heap_check_position(freed, &h.files))
             },
         ))
+    });
+    // H4: an access that starts past a live block's end, in the slack of
+    // its size class or the redzone after it. Judged by where the access
+    // starts: the tree-walker does not know how wide its accesses are,
+    // so one that starts inside and runs over would be caught on some
+    // lanes and not others.
+    let hit = hit.or_else(|| {
+        HEAP_CHECK.with(|h| {
+            let h = h.borrow();
+            let (&start, &(size, alloc)) = h.live.range(..=addr).next_back()?;
+            let offset = addr - start;
+            if offset < size || offset >= heap_size_class(size) + HEAP_REDZONE {
+                return None;
+            }
+            Some(format!(
+                "heap check: {} at offset {offset} of a {size}-byte block, past its end (allocated at {})",
+                if write { "write" } else { "read" },
+                heap_check_position(alloc, &h.files),
+            ))
+        })
     });
     match hit {
         Some(message) => {
@@ -864,6 +900,16 @@ pub struct HeapManager {
 
 impl HeapManager {
     pub fn new() -> Self {
+        // HEAP-CHECK: a new heap is a new address space (addresses start
+        // at 1 again) -- `--test` makes one per test. What the check
+        // remembers by address belongs to the old one and would name
+        // the new heap's blocks; the counts carry over.
+        HEAP_CHECK.with(|h| {
+            let mut h = h.borrow_mut();
+            h.live.clear();
+            h.freed_blocks.clear();
+            h.freed.clear();
+        });
         Self {
             memory: Vec::new(),
             allocations: HashMap::new(),
@@ -1057,10 +1103,18 @@ impl HeapManager {
                 self.free_lists.get_mut(&class).filter(|_| recycle).and_then(Vec::pop)
             {
                 self.allocations.insert(addr, (size, site));
-                HEAP_CHECK.with(|h| h.borrow_mut().reused += 1);
+                HEAP_CHECK.with(|h| {
+                    let mut h = h.borrow_mut();
+                    h.reused += 1;
+                    h.live.insert(addr, (size, site));
+                });
                 return addr;
             }
-            class
+            class + HEAP_REDZONE
+        } else if HEAP_POISON.with(|p| p.get()) {
+            // H4: the class and a redzone, as the compiled lanes lay
+            // blocks out in poison mode.
+            heap_size_class(size) + HEAP_REDZONE
         } else {
             size
         };
@@ -1071,6 +1125,9 @@ impl HeapManager {
         self.memory.resize(total, 0);
         self.allocations.insert(addr, (size, site));
         self.next_addr += reserve;
+        if HEAP_POISON.with(|p| p.get()) {
+            HEAP_CHECK.with(|h| h.borrow_mut().live.insert(addr, (size, site)));
+        }
         addr
     }
 
@@ -1146,6 +1203,33 @@ impl HeapManager {
         }
     }
 
+    /// HEAP-CHECK H4: `__builtin_heap_poison` -- in poison mode, treat
+    /// `size` bytes at `addr` as freed at `site` without freeing them:
+    /// fill them with the poison byte, forget the values written there,
+    /// and refuse later accesses the way a freed block's are refused.
+    /// An allocator whose `free` keeps the block (`Arena`) calls it, so
+    /// a use after its `free` stops instead of reading on until `reset`.
+    /// The block stays allocated: its real free later is not a double
+    /// free.
+    pub fn poison_range(&mut self, addr: usize, size: usize, site: u64) {
+        if !HEAP_POISON.with(|p| p.get()) || addr == 0 || size == 0 {
+            return;
+        }
+        let Some((base, _)) = self.resolve_block(addr) else {
+            return;
+        };
+        let alloc_site = self.allocations.get(&base).map_or(0, |&(_, s)| s);
+        let start = addr - 1;
+        if let Some(bytes) = self.memory.get_mut(start..start + size) {
+            bytes.fill(HEAP_POISON_BYTE);
+        }
+        let (lo, hi) = (addr - base, addr - base + size);
+        self.typed_slots.retain(|(b, off), _| *b != base || *off < lo || *off >= hi);
+        HEAP_CHECK.with(|h| {
+            h.borrow_mut().freed_blocks.insert(addr, (size, alloc_site, site));
+        });
+    }
+
     /// H1: in poison mode, fill a freed block with [`HEAP_POISON_BYTE`]
     /// and forget the values written into it, so nothing reads back
     /// what it held.
@@ -1163,7 +1247,11 @@ impl HeapManager {
     /// Drop the tracking entry, returning the size it held. Counter-free
     /// for the same reason as `alloc_uncounted`.
     fn free_uncounted(&mut self, addr: usize) -> Option<(usize, u64)> {
-        self.allocations.remove(&addr)
+        let freed = self.allocations.remove(&addr);
+        if freed.is_some() && HEAP_POISON.with(|p| p.get()) {
+            HEAP_CHECK.with(|h| h.borrow_mut().live.remove(&addr));
+        }
+        freed
     }
     
     /// Reallocate memory

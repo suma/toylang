@@ -1729,6 +1729,7 @@ impl InstKind {
             | InstKind::HeapRealloc { .. }
             | InstKind::HeapFree { .. }
             | InstKind::HeapCheck { .. }
+            | InstKind::HeapPoison { .. }
             | InstKind::PtrRead { .. }
             | InstKind::PtrWrite { .. }
             | InstKind::StrLen { .. }
@@ -2018,6 +2019,10 @@ pub enum InstKind {
     /// call's position, which only a heap check reads (HEAP-CHECK H0:
     /// a double free names where each free was written).
     HeapFree { ptr: ValueId, binding: AllocatorBinding, site: Option<SiteId> },
+    /// HEAP-CHECK H4: `__builtin_heap_poison(ptr, size)` -- under a
+    /// heap check, treat the range as freed without freeing it. `site`
+    /// is where, for the report.
+    HeapPoison { ptr: ValueId, size: ValueId, site: Option<SiteId> },
     /// HEAP-CHECK H2: `len` bytes at `ptr + offset` are about to be read
     /// (or written) -- stop if they belong to a freed block. Emitted
     /// before every raw access only when the lowering is asked for a
@@ -2611,6 +2616,10 @@ impl InstKind {
                 one(ptr);
                 one(new_size);
             }
+            InstKind::HeapPoison { ptr, size, .. } => {
+                one(ptr);
+                one(size);
+            }
             InstKind::HeapCheck { ptr, offset, len, .. } => {
                 one(ptr);
                 if let Some(o) = offset {
@@ -3199,6 +3208,10 @@ impl fmt::Display for DisplayInst<'_> {
                     None => write!(f, "{prefix}heap_realloc {ptr}, {new_size}  ; {binding}"),
                 }
             }
+            InstKind::HeapPoison { ptr, size, site } => match site {
+                Some(id) => write!(f, "heap_poison {ptr}, {size} @site#{}", id.0),
+                None => write!(f, "heap_poison {ptr}, {size}"),
+            },
             InstKind::HeapCheck { ptr, offset, len, write, site } => {
                 let what = if *write { "write" } else { "read" };
                 let off = offset.map(|o| format!(" + {o}")).unwrap_or_default();

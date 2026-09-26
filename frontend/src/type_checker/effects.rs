@@ -328,6 +328,7 @@ pub fn builtin_effect(func: BuiltinFunction) -> (EffectSet, &'static str) {
         // Realloc can move the block, so it both takes and returns.
         HeapRealloc => (EffectSet::of(&[Effect::Alloc, Effect::Free]), "__builtin_heap_realloc"),
         HeapFree => (EffectSet::of(&[Effect::Free]), "__builtin_heap_free"),
+        HeapPoison => (EffectSet::of(&[Effect::Free]), "__builtin_heap_poison"),
 
         PtrRead => (EffectSet::of(&[Effect::RawRead]), "__builtin_ptr_read"),
         // MEMORY-ACCESS M1: same dereference, same effect -- naming the

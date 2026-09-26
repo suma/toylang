@@ -123,6 +123,10 @@ pub trait VmHost {
         None
     }
 
+    /// HEAP-CHECK H4: `__builtin_heap_poison` -- under a heap check,
+    /// treat `size` bytes at `ptr` as freed without freeing them.
+    fn heap_poison_range(&self, _ptr: u64, _size: u64, _site: u64, _file: &str) {}
+
     // --- typed memory ---------------------------------------------
 
     /// Read a typed value from the heap at `addr + offset`. Prefers

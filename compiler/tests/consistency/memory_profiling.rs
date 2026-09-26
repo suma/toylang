@@ -844,3 +844,36 @@ fn a_column_window_owns_nothing_on_the_tree_walker() {
     assert_eq!(interpreter_value(src), 8);
     assert_consistent(src, "column_window_owns_nothing");
 }
+
+/// DOUBLE-DROP-LANE-DIVERGENCE: `val v = f()?` over a compound payload.
+/// The desugar `{ val t = f()  match t { Ok(p) => p, Err(e) => .. } }`
+/// hands the payload into `v` on the `Ok` path, but `t` kept its drop
+/// flag set, so the lanes that share the lowering freed the vector twice
+/// (`try_compound.t`, found by HEAP-CHECK). The block's tail is now a
+/// transfer out of `t` into the binding.
+#[test]
+fn a_question_mark_hands_its_payload_over_once() {
+    let src = r#"
+        fn digits(n: u64) -> Result<Vec<u64>, str> {
+            if n == 0u64 { return Result::Err("no digits") }
+            var out: Vec<u64> = Vec::new()
+            out.push(n)
+            Result::Ok(out)
+        }
+        fn digit_sum(n: u64) -> Result<u64, str> {
+            val v = digits(n)?
+            Result::Ok(v.size())
+        }
+        fn main() -> u64 {
+            val a = digit_sum(5u64)
+            val b = digit_sum(0u64)
+            val x = match a { Result::Ok(x) => x, Result::Err(_) => 100u64 }
+            val y = match b { Result::Ok(y) => y, Result::Err(_) => 10u64 }
+            x + y
+        }
+    "#;
+    assert_eq!(tree_walker_heap_check_report(src), "heap check: 0 double frees (0 distinct)\n");
+    assert_eq!(interpreter_value(src), 11);
+    assert_consistent(src, "question_mark_payload_once");
+    memory_profiles_agree(src, "question_mark_payload_once");
+}

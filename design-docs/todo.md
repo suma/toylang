@@ -17,6 +17,11 @@
   終了時に報告する (文言は 2 ヒープでバイト一致、`--all-backends` で突き合わせ)。
   `HeapFree` が site を持つようになった。stdin 入力の入口名も compiled レーンで
   `<stdin>` に揃えた (`CompilerOptions::display_name`)。結果は HEAP_CHECK.md §7。
+- **`val v = f()?` の payload を 1 回だけ drop する** (DOUBLE-DROP-LANE-DIVERGENCE の
+  一部) — desugar `{ val t = f()  match t { Ok(p) => p, .. } }` で payload が `v` に
+  移っても `t` の drop flag が立ったままで、lowering 系が二重 free していた。
+  move_check がこの形のブロックの末尾を `t` からの移動として扱う (根が `t` の
+  名前だけ)。
 - **tree-walker の列の窓が元を drop しない** (DOUBLE-DROP-LANE-DIVERGENCE の一部) —
   `vs.mass` (`soa Vec` の列) は tree-walker では元の `Rc` を抱えた `Column` で、
   窓を捨てると元の `SoaVec` まで drop していた。窓は何も所有しない扱いにした。
@@ -3036,9 +3041,10 @@
   (lowering 系だけ、借用 `&List` を match した腕が payload を drop していた) は
   同日に解消、`std_ord_sort.t` (tree-walker だけ、`Ptr::get` から束縛した要素を
   drop していた) と `soa_column.t` (tree-walker だけ、列の窓が元の `SoaVec` を
-  drop していた) も同日に解消。残り: `try_compound.t` は
-  JIT / AOT だけ、
-  `crypto_sha256.t` は tree-walker と IR VM だけ。free が冪等なので出力は
+  drop していた) と `try_compound.t` (lowering 系、`val v = f()?` の desugar で
+  payload が `v` に移っても `t` の drop flag が立ったままだった) も同日に解消。
+  残り: `crypto_sha256.t` は tree-walker と IR VM だけ (JIT / AOT とは確保の
+  総量も割れる — `--profile=mem`)。free が冪等なので出力は
   変わらず、`--profile=mem` も「要求」で数えるので見えていなかった。表と
   再現手順は [`HEAP_CHECK.md`](HEAP_CHECK.md) §7。lowering 系は
   `compiler -- <file> --all-backends --heap-check=report`、tree-walker は

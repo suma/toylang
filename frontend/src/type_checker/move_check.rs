@@ -158,6 +158,7 @@ pub fn check_moves(
         tail: false,
         transfer_anchors: HashMap::new(),
         stand_ins: 0,
+        tail_root: None,
         probe: None,
         safe_receiver: None,
         scalar_readers: collect_scalar_readers(program, interner),
@@ -636,6 +637,11 @@ struct MoveCheck<'a> {
     scalar_readers: HashSet<(DefaultSymbol, DefaultSymbol)>,
     /// LEND-FREEING-CALLEE: stand-in `val`s handed out so far.
     stand_ins: u32,
+    /// DOUBLE-DROP-LANE-DIVERGENCE: while the initializer of `val x =
+    /// { val t = ..  match t { .. } }` (the `?` / `??` desugar) is
+    /// walked, the binding `t`. A tail naming (part of) `t` hands that
+    /// value into `x`; a tail naming anything else stays a read.
+    tail_root: Option<DefaultSymbol>,
 }
 
 /// Where a conditional hand-over clears its flag (`DropFlags`).
@@ -1127,6 +1133,48 @@ impl MoveCheck<'_> {
     /// innermost statement or arm being walked (E0014-WRONG-FILE).
     /// Without the fallback a move error inside a module had no
     /// position at all, and the report fell back to the entry file.
+    /// Walk a `val` / `var` initializer.
+    ///
+    /// `val v = f()?` is `{ val t = f()  match t { Ok(p) => p, Err(e) =>
+    /// { return .. } } }`: on the `Ok` path the payload leaves the block
+    /// in `v`, so `t` no longer owns it. Walked as a plain read, `t`
+    /// kept its drop and `v` took one too -- the lanes that share the
+    /// lowering freed the payload twice (`try_compound.t`, found by
+    /// HEAP-CHECK). For exactly that shape the block's tail is walked
+    /// as the value it is, handed into the binding; see `tail_root`.
+    fn walk_initializer(&mut self, rhs: ExprRef, conditional: bool) {
+        let Some(root) = self.desugared_block_root(rhs) else {
+            self.walk_expr(rhs, Use::Read, conditional);
+            return;
+        };
+        let prev = self.tail_root.replace(root);
+        self.tail = true;
+        self.walk_expr(rhs, Use::Read, conditional);
+        self.tail = false;
+        self.tail_root = prev;
+    }
+
+    /// `t` when `rhs` is `{ .. val t = .. .. match t { .. } }`.
+    fn desugared_block_root(&self, rhs: ExprRef) -> Option<DefaultSymbol> {
+        let Some(Expr::Block(stmts)) = self.program.expression.get(&rhs) else {
+            return None;
+        };
+        let last = *stmts.last()?;
+        let Some(Stmt::Expression(tail)) = self.program.statement.get(&last) else {
+            return None;
+        };
+        let Some(Expr::Match(scrutinee, _)) = self.program.expression.get(&tail) else {
+            return None;
+        };
+        let Some(Expr::Identifier(t)) = self.program.expression.get(&scrutinee) else {
+            return None;
+        };
+        let declared_here = stmts.iter().any(|s| {
+            matches!(self.program.statement.get(s), Some(Stmt::Val(n, _, _)) if n == t)
+        });
+        declared_here.then_some(t)
+    }
+
     fn location(&self, expr: ExprRef) -> Option<SourceLocation> {
         if let Some(loc) = self.program.location_pool.get_expr_location(&expr) {
             return Some(*loc);
@@ -1159,7 +1207,7 @@ impl MoveCheck<'_> {
             // `var` may be declared without an initializer; `val`
             // always has one.
             Stmt::Val(name, annotation, rhs) => {
-                self.walk_expr(rhs, Use::Read, conditional);
+                self.walk_initializer(rhs, conditional);
                 self.check_copy_out_of_borrow(name, &annotation, rhs);
                 self.check_owning_element_copy(stmt_ref, name, &annotation, rhs);
                 if let Some(ty) = self.binding_type(&annotation, rhs) {
@@ -1177,7 +1225,7 @@ impl MoveCheck<'_> {
                 }
             }
             Stmt::Var(name, annotation, Some(rhs)) => {
-                self.walk_expr(rhs, Use::Read, conditional);
+                self.walk_initializer(rhs, conditional);
                 self.check_copy_out_of_borrow(name, &annotation, rhs);
                 self.check_owning_element_copy(stmt_ref, name, &annotation, rhs);
                 if let Some(ty) = self.binding_type(&annotation, rhs) {
@@ -1239,7 +1287,9 @@ impl MoveCheck<'_> {
         };
         match expr {
             Expr::Identifier(name) => {
-                let use_kind = if tail && use_kind == Use::Read { Use::Transfer } else { use_kind };
+                let into_binding = self.tail_root.is_none_or(|root| self.root_of(name) == root);
+                let use_kind =
+                    if tail && use_kind == Use::Read && into_binding { Use::Transfer } else { use_kind };
                 self.use_binding(name, expr_ref, use_kind, conditional)
             }
 

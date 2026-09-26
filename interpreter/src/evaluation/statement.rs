@@ -405,15 +405,7 @@ impl EvaluationContext<'_> {
         // DATA-ORIENTED Phase 2: `__builtin_soa_read` copies out of a
         // column-split buffer the same way, and is an alias for the
         // same reason.
-        let from_ptr_read = matches!(
-            self.expr_pool.get(expr),
-            Some(Expr::BuiltinCall(
-                frontend::ast::BuiltinFunction::PtrReadTyped(_)
-                    | frontend::ast::BuiltinFunction::PtrRefTyped(_)
-                    | frontend::ast::BuiltinFunction::SoaRead,
-                _
-            ))
-        );
+        let from_ptr_read = self.is_element_alias_read(expr);
         if !from_ptr_read {
             // Phase 5 (汎用 RAII): record the binding for auto-drop
             // before consuming `value` into the environment.
@@ -421,6 +413,65 @@ impl EvaluationContext<'_> {
         }
         self.environment.set_val(name, value);
         Ok(EvaluationResult::None)
+    }
+
+    /// Whether `expr` reads an element out of raw memory, which makes
+    /// the value an alias of the slot rather than something the
+    /// binding owns: the raw builtins, and the stdlib `Ptr` / `SoaPtr`
+    /// element access (`p.get(i)` / `p.borrow(i)` / `p[i]`), which run
+    /// as those builtins (MEMORY-ACCESS M5).
+    ///
+    /// The second half was missing, so a generic body such as
+    /// `Vec::sort`'s `val key: T = p.get(i)` dropped every `String` it
+    /// read at scope exit, and the vector freed them again -- the
+    /// compiled lanes already treated the intrinsic as the alias it is
+    /// (DOUBLE-DROP-LANE-DIVERGENCE, found by HEAP-CHECK).
+    fn is_element_alias_read(&self, expr: &ExprRef) -> bool {
+        match self.expr_pool.get(expr) {
+            Some(Expr::BuiltinCall(
+                frontend::ast::BuiltinFunction::PtrReadTyped(_)
+                | frontend::ast::BuiltinFunction::PtrRefTyped(_)
+                | frontend::ast::BuiltinFunction::SoaRead,
+                _,
+            )) => true,
+            Some(Expr::MethodCall(recv, method, _)) => {
+                matches!(
+                    self.string_interner.resolve(method),
+                    Some("get" | "__getitem__" | "borrow")
+                ) && self.is_std_ptr_window(&recv, method)
+            }
+            Some(Expr::SliceAccess(recv, _)) => match self.string_interner.get("__getitem__") {
+                Some(getitem) => self.is_std_ptr_window(&recv, getitem),
+                None => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// `recv` names a `Ptr` / `SoaPtr` value whose `method` is the
+    /// stdlib's (`std.ptr`), as `ptr_access_intrinsic` requires.
+    fn is_std_ptr_window(&self, recv: &ExprRef, method: DefaultSymbol) -> bool {
+        let Some(Expr::Identifier(name)) = self.expr_pool.get(recv) else {
+            return false;
+        };
+        let Some(value) = self.environment.get_val(name) else {
+            return false;
+        };
+        let rc = value.into_rc();
+        let (type_name, type_args) = match &*rc.borrow() {
+            Object::Struct { type_name, type_args, .. } => (*type_name, type_args.clone()),
+            _ => return false,
+        };
+        if !matches!(self.string_interner.resolve(type_name), Some("Ptr" | "SoaPtr")) {
+            return false;
+        }
+        self.get_method(type_name, method, &type_args).is_some_and(|m| {
+            m.module_path.as_deref().is_some_and(|path| {
+                let names: Vec<&str> =
+                    path.iter().filter_map(|s| self.string_interner.resolve(*s)).collect();
+                names == ["std", "ptr"]
+            })
+        })
     }
 
     /// Handles var (mutable variable) declarations. Same flow-propagation
@@ -449,17 +500,7 @@ impl EvaluationContext<'_> {
         let value = apply_annotation_type_args(value, annotation);
         // DROP-GLUE: same ptr_read alias rule as `val` — see
         // `handle_val_declaration`.
-        let from_ptr_read = expr.is_some_and(|e| {
-            matches!(
-                self.expr_pool.get(&e),
-                Some(Expr::BuiltinCall(
-                    frontend::ast::BuiltinFunction::PtrReadTyped(_)
-                        | frontend::ast::BuiltinFunction::PtrRefTyped(_)
-                        | frontend::ast::BuiltinFunction::SoaRead,
-                    _
-                ))
-            )
-        });
+        let from_ptr_read = expr.is_some_and(|e| self.is_element_alias_read(&e));
         if !from_ptr_read {
             // Phase 5 (汎用 RAII): same as val — `var` bindings are
             // also auto-dropped at scope exit when the type impls

@@ -790,3 +790,27 @@ fn the_tree_walker_frees_each_box_once() {
     .expect("read example");
     assert_eq!(tree_walker_heap_check_report(&src), "heap check: 0 double frees (0 distinct)\n");
 }
+
+/// DOUBLE-DROP-LANE-DIVERGENCE: `Vec<String>::sort` reads elements
+/// through `Ptr::get` (`val key: T = p.get(i)`), an alias of the slot.
+/// The tree-walker treated only the raw `__builtin_ptr_read` as one, so
+/// it dropped every string `sort` touched and the vector freed them
+/// again (5 double frees in `std_ord_sort.t`); the compiled lanes never
+/// did.
+#[test]
+fn sorting_strings_frees_each_once_on_the_tree_walker() {
+    let src = r#"
+        fn main() -> u64 {
+            var words: Vec<String> = Vec::new()
+            words.push(String::from_str("pear"))
+            words.push(String::from_str("apple"))
+            words.push(String::from_str("fig"))
+            words.sort()
+            val first: &String = words.borrow(0u64)
+            first.len()
+        }
+    "#;
+    assert_eq!(tree_walker_heap_check_report(src), "heap check: 0 double frees (0 distinct)\n");
+    assert_eq!(interpreter_value(src), 5);
+    assert_consistent(src, "sort_strings_once");
+}

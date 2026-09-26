@@ -17,6 +17,11 @@
   終了時に報告する (文言は 2 ヒープでバイト一致、`--all-backends` で突き合わせ)。
   `HeapFree` が site を持つようになった。stdin 入力の入口名も compiled レーンで
   `<stdin>` に揃えた (`CompilerOptions::display_name`)。結果は HEAP_CHECK.md §7。
+- **tree-walker が `Ptr::get` から束縛した要素を drop しない** (同上) —
+  `Vec::sort` の `val key: T = p.get(i)` は要素の別名なのに、tree-walker は生の
+  `__builtin_ptr_read` だけを別名扱いしていたので、`Vec<String>::sort` が触った
+  文字列を解放し、`Vec` が再び解放していた。stdlib の `Ptr` / `SoaPtr` の
+  `get` / `borrow` / 添字も別名として扱う。
 - **借用を match した腕が payload を drop しない** (DOUBLE-DROP-LANE-DIVERGENCE の
   一部) — `fn sum(l: &List)` の `match l { Cons(v, rest) => .. }` が `rest` の
   `Box` を解放し、呼び出し側が再び解放していた (lowering 系だけ)。`&T` 引数と
@@ -3026,8 +3031,9 @@
   HEAP-CHECK H0 / H0b の棚卸し (2026-09-26) で、tree-walker と lowering 系
   (IR VM / JIT / AOT) の二重 free が食い違った。`Box` の連結リスト / 二分木
   (lowering 系だけ、借用 `&List` を match した腕が payload を drop していた) は
-  同日に解消。残り: `try_compound.t` は
-  JIT / AOT だけ、`std_ord_sort.t` / `soa_column.t` は tree-walker だけ、
+  同日に解消、`std_ord_sort.t` (tree-walker だけ、`Ptr::get` から束縛した要素を
+  drop していた) も同日に解消。残り: `try_compound.t` は
+  JIT / AOT だけ、`soa_column.t` は tree-walker だけ、
   `crypto_sha256.t` は tree-walker と IR VM だけ。free が冪等なので出力は
   変わらず、`--profile=mem` も「要求」で数えるので見えていなかった。表と
   再現手順は [`HEAP_CHECK.md`](HEAP_CHECK.md) §7。lowering 系は

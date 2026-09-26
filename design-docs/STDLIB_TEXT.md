@@ -9,7 +9,7 @@
 > 俯瞰と優先順位: [`RUNTIME_LIBRARY.md`](RUNTIME_LIBRARY.md)
 > 実測: 2026-09-03 (この文書の数値と診断文はすべてこの日に取った)
 
-## Status snapshot
+## Status snapshot (着手前、2026-09-03 — 今の `str` は `substring` 等を型エラーで `String` へ誘導する)
 
 | 項目 | 状態 |
 |---|---|

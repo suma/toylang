@@ -194,7 +194,7 @@ For the full CLI / env-var reference see [`interpreter/README.md`](interpreter/R
 lines, because the output is what makes a test run readable, not the speed.
 
 ```bash
-# Everything (~3,100 tests, about 20 s once built)
+# Everything (~3,100 tests)
 cargo nextest run
 
 # One crate, or a name (filters are substring matches, not exact)

@@ -2589,11 +2589,11 @@ Bind the struct first if you need one (`val it = MyIter { .. }`).
    drains it into a fresh `Vec`. Because compound values alias in
    toylang, the caller's iterator binding keeps its state afterwards
    — a second `collect()` call starts again from the beginning.
-   `collect` is provided on `VecIter` / `MapIter` / `FilterIter`
-   only: `Vec<(A, B)>` (from `zip` / `enumerate`) needs
-   `__builtin_sizeof` on a tuple value, which the AOT backend
-   cannot resolve yet. The adapters work on all three backends
-   (interpreter / AOT / JIT).
+   Every adapter has `collect`; `enumerate` and `zip` produce a
+   `Vec` of tuples (`Vec<(u64, T)>` / `Vec<(A, B)>`). The adapters
+   work on all three backends (interpreter / AOT / JIT); the
+   compiled lanes do not take a method chain, so bind each step
+   (`val e = v.iter()` then `val p = e.enumerate()` ...).
 
    `DictIter<K, V>` (`d.iter()`) gains `map` / `filter` in
    `core/std/dict.t`; `StringIter` (`s.iter()`) gains `map` /
@@ -6823,11 +6823,11 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   neither `str` nor `String` provides an `add` overload, so the type
   checker refuses it (`E0004`, naming the alternatives). Use
   `a.concat(b)` or interpolation (`"{a}{b}"`).
-- **`str.substring` / `str.split` run in the interpreter only** — they
-  type-check and work there, but the compiled backends reject the call
-  (`the method receiver must be a struct or enum binding`), so they
-  cannot appear in a program you AOT-compile. The `String` methods have
-  no such limit.
+- **`str` has no `substring` / `split` / `trim` / `to_upper`** — each
+  needs a new buffer, which a borrowed `str` cannot own, so the type
+  checker rejects the call and names the `String` form
+  (`String::from_str(s).substring(start, end)`), which runs on every
+  backend.
 - **No bare `self`** — `self: Self` is mandatory in method signatures.
 - **`val` is a keyword** — cannot be used as a parameter or field name.
 - **Literals in a generic struct literal are not converted by the
@@ -6895,11 +6895,12 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   variant), nested generic enums (`Option<Option<T>>`), and
   guarded match arms. The AOT compiler handles all of these
   through its monomorph pipeline.
-- **Generic struct / method JIT** — `struct Cell<T>` and methods
-  on it run in the interpreter only; the JIT eligibility rejects
-  generic struct types because `struct_layouts` isn't yet keyed by
-  type args. AOT compiler handles them through its monomorph
-  pipeline.
+- **Generic method JIT** — the interpreter's JIT compiles a generic
+  `struct Cell<T>` and the methods of its impl block, but a method's
+  own type parameter (`fn map<U>(..)`) and a phantom parameter no
+  field mentions have nothing to infer from, so those functions fall
+  back to the interpreter. The AOT compiler handles them through its
+  monomorph pipeline.
 - **JIT tuple parameter shape** — only flat scalar tuples (`(i64,
   i64, bool)`) reach the JIT; nested tuples (`((a, b), c)`) and
   tuple-of-struct (`(Point, i64)`) fall back to the interpreter

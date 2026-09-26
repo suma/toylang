@@ -351,7 +351,9 @@ turbofish に書ける。)
 
 - `String::eq` — `__simd_load` の 16 バイトループ + スカラーの端数
   ループ (**同じ比較の 2 実装**) が `__builtin_mem_eq` 1 行になった。
-  ベクトル化は消えていない — runtime の中に 1 つある
+  ベクトル化は消えていない — runtime の中に 1 つある。
+  (2026-09-26 追記: 今は窓 2 つ + `Span::bytes_eq` で書いてあり、
+  `unsafe` も無い。下の SPAN-RANGE-INTRINSIC 参照)
 - `String::find_from` — 二重ループの部分文字列探索が
   `__builtin_mem_find_seq` 1 呼び出しに。`find` / `rfind` /
   `contains` / `replace` はこれを通るので、残る手書きの走査は
@@ -359,6 +361,18 @@ turbofish に書ける。)
 
 interpreter JIT は 3 つとも silent fallback (`toylang_rt` を link して
 いないため)。
+
+**SPAN-RANGE-INTRINSIC (2026-09-26)**: compiled レーンには inliner が
+無いので、`Span` の範囲演算を呼ぶと 1 命令のために呼び出しを 1 回
+(IR VM では Rust のフレームも 1 つ) 払っていた。`String::eq` を窓 2 つ +
+`bytes_eq` で書くと `poc/logsearch` の archive が 5〜9% 遅く、`eq` は生の
+`__builtin_mem_eq` のまま残っていた。今は `copy_from` / `move_from` /
+`bytes_eq` / `fill` と `val` に束縛する `Span::from_parts` を、lowering
+(`compiler_lower/src/span_intrinsic.rs`) と tree-walker が body の 1 命令
+(と struct リテラル) に直結する。`Ptr` の `get` / `set` と同じく
+`std.span` で書かれたメソッドだけが対象。長さ不一致の panic は呼び出し
+位置で報告される。`find` / `find_seq` は `Option` を返すので呼び出しの
+まま。
 
 **実測 (2026-09-05、debug build の interpreter、200 KB の buffer に
 対する 1 回の部分文字列探索。needle は一致しないので走査は全長)**:

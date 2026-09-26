@@ -96,7 +96,7 @@ variants are zero-extended at function-call boundaries via
 | `String` literal + interpolation | `"hello {x}"` lowers through `jit_string_literal` (interner-symbol fast path) + per-piece `jit_to_string_<ty>` + `jit_str_concat`. See *Strings* below. |
 | `__builtin_to_string(x)` | scalar primitive `x` only; routes to the `jit_to_string_<ty>` matching the static value type. |
 | `s.concat(t)` | inherent `String` / `str` method; lowers to `jit_str_concat`. |
-| `match` expression | scalar / enum scrutinees with literal patterns, enum variant patterns, payload binding, wildcards. Arm bodies must yield the same `ScalarTy`. Match guards (`if cond` arms) are still rejected. |
+| `match` expression | scalar / enum scrutinees with literal patterns, enum variant patterns, payload binding, wildcards; over a scalar scrutinee also half-open ranges (`0i64..10i64`), a top-level name and `n @ pat`. A name is bound only when the scrutinee is certainly a scalar — an enum travels as its `u64` tag, so naming one falls back. Arm bodies must yield the same `ScalarTy`. Match guards (`if cond` arms) and struct / tuple patterns are still rejected. |
 | Enum constructor (`Option::Some(x)`, user enums) | tuple + unit variants; payloads must be JIT scalars. Lowers via the JE-2/3/4/5/6 path. See *Enums* below. |
 
 ### Statements
@@ -304,7 +304,7 @@ Tuple-payload and unit variants of both `enum Option<T>` / `enum Result<T, E>`
   function with the enum receiver expanded.
 
 Match arms (literal patterns / enum variants / payload binding /
-wildcards) lower to a tag-dispatch `br_table` (or compare-and-branch
+wildcards, and ranges / names / `@` over a scalar scrutinee) lower to a tag-dispatch `br_table` (or compare-and-branch
 chain) plus per-arm payload reads. All arms must agree on `ScalarTy`.
 
 Out of scope (silent fallback):

@@ -1122,8 +1122,21 @@ impl MoveCheck<'_> {
         self.interner.resolve(name).unwrap_or("?").to_string()
     }
 
+    /// Where a diagnostic about `expr` points: its own position, or --
+    /// since a bare identifier often carries none -- that of the
+    /// innermost statement or arm being walked (E0014-WRONG-FILE).
+    /// Without the fallback a move error inside a module had no
+    /// position at all, and the report fell back to the entry file.
     fn location(&self, expr: ExprRef) -> Option<SourceLocation> {
-        self.program.location_pool.get_expr_location(&expr).copied()
+        if let Some(loc) = self.program.location_pool.get_expr_location(&expr) {
+            return Some(*loc);
+        }
+        self.anchors.iter().rev().find_map(|anchor| match anchor {
+            Anchor::Stmt(stmt, e) => e
+                .and_then(|e| self.program.location_pool.get_expr_location(&e).copied())
+                .or_else(|| self.program.location_pool.get_stmt_location(stmt).copied()),
+            Anchor::Expr(e) => self.program.location_pool.get_expr_location(e).copied(),
+        })
     }
 
     // ---- statements ----

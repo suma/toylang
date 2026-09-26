@@ -12,6 +12,10 @@
 
 ### 2026-09-26
 
+- **E0014-WRONG-FILE — モジュールの中の所有権エラーがそのファイルと行を
+  指す** — 識別子の式に位置が無いことが多く、move_check の診断は位置なし
+  (`span: null`) で入口ファイルに落ちていた。囲む文 / 腕の位置を使う。
+  同じ項目の後半 (モジュールの `[E0001]` の行番号のずれ) は再現しなかった。
 - **COMPOUND-FIELD-ARG — compound なフィールドを引数に渡せる** —
   `count(self.buf)` / `sum(o.p)` / `bump(&mut o.p)` / method の引数。
   フィールドの leaf は持ち主の locals なので、束縛と同じく展開・番地渡しし、
@@ -3020,48 +3024,6 @@
   減らしたら消えたので、writeback の leaf 数の数え方が疑わしい。
   internal error なのでユーザ側に直し方の手掛かりが無い。
 
-- **E0014-WRONG-FILE: モジュールの中の `[E0014]` が入口ファイルを指す** ★★ —
-  所有権検査の診断だけがモジュール帰属を持っていない。**ファイル名は
-  入口のもの、行番号はモジュールのもの**という混ざり方をするので、
-  入口が短ければ `<line not available>`、長ければ**無関係な行**を
-  指すスニペットが出る。
-
-  ```rust
-  # probe.t (モジュール根の下)
-  pub fn collect_names(flag: bool) -> Vec<String> {
-      var out: Vec<String> = Vec::new()
-      val s = String::from_str("hello")
-      if flag { out.push(s) }        # ← ここが [E0014]
-      out
-  }
-  # entry.t (9 行)  ->  Error at entry.t:10:1 / `<line not available>`
-  ```
-
-  同じ状況で `[E0010]` は
-  `Error in imported module \`logsearch::query\` (line 680 of that
-  module)` と正しく出るので、**帰属を持つ診断と持たない診断がある**。
-  2026-09-05、`String` が所有型になった直後の `poc/logsearch` で
-  5 件同時に出て、全部が入口 `main.t` の無関係な行を指した
-  (実際の出所は `query.t` と `logdir.t`)。原因の特定が grep 頼みになる。
-
-  **帰属を持つ診断も、行番号は合っていない。** 同じ日に
-  `[E0001]` で踏んだ最小再現:
-
-  ```rust
-  # probe.t -- 1..9 行はコメント
-  pub fn sink(out: &mut ByteWriter) { out.put_u8(1u8) }   # 10 行目
-  # 11..13 もコメント
-  pub fn hop(out: &mut ByteWriter) {                      # 14 行目
-      sink(out)                                           # 15 行目 <- ここ
-  }
-  ```
-
-  報告は `Error in imported module \`logsearch::probe\` (line 6 of
-  that module)`。**6 行目はコメント**である。別の例では実際の 120 行目が
-  「line 17」と出た (ずれ幅は一定ではない)。ファイル名は正しいので、
-  モジュール内の位置を数える側が間違っている。
-
-### パーサーの既知制限事項
 - **行末の識別子と、次の行頭の `(` が改行を跨いで呼び出しになる** —
   セミコロンが無いので、
 

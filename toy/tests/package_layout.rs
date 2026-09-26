@@ -2056,3 +2056,24 @@ fn two_modules_declaring_one_type_name_is_an_error() {
     );
     assert!(!stderr.contains("Missing required field"), "stderr: {stderr}");
 }
+
+#[test]
+fn a_move_error_inside_a_module_points_at_that_module() {
+    // E0014-WRONG-FILE: a bare identifier often has no position of its
+    // own, and the move check's diagnostic then had none at all -- the
+    // report fell back to the entry file (`main.t`, `span: null`). It
+    // now takes the enclosing statement's position, which knows its
+    // file.
+    let pkg = scratch("e0014_file");
+    write(
+        &pkg,
+        "src/probe.t",
+        "# 1\n# 2\npub fn names(flag: bool) -> Vec<String> {\n    var out: Vec<String> = Vec::new()\n    val s = String::from_str(\"hello\")\n    if flag { out.push(s) }\n    println(s)\n    out\n}\n",
+    );
+    write(&pkg, "main.t", "fn main() -> u64 {\n    val v = probe::names(true)\n    v.size()\n}\n");
+    let out = run(&pkg, &["check", pkg.0.to_str().unwrap(), "--format=json"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("\"code\": \"E0014\""), "stderr: {stderr}");
+    assert!(stderr.contains("\"file\": \"src/probe.t\""), "stderr: {stderr}");
+    assert!(stderr.contains("\"line\": 7"), "stderr: {stderr}");
+}

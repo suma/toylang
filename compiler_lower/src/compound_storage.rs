@@ -30,7 +30,7 @@
 //!   counterparts of the pre-allocated write path, also called
 //!   recursively from the enum payload code.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use frontend::ast::{Expr, ExprRef, MatchArm, Pattern, Stmt, StmtRef};
 use frontend::type_decl::TypeDecl;
@@ -40,7 +40,7 @@ use super::bindings::{
     flatten_struct_locals, flatten_tuple_element_locals, Binding, EnumStorage, FieldBinding,
     FieldShape, PayloadSlot, TupleElementBinding, TupleElementShape,
 };
-use super::FunctionLower;
+use super::{DropTarget, FunctionLower};
 use crate::ir::{
     BlockId, Const, EnumId, InstKind, LocalId, StructId, Terminator, Type, ValueId,
 };
@@ -596,7 +596,7 @@ impl<'a> FunctionLower<'a> {
         } else {
             self.compound_block_depth += 1;
         }
-        let result = self.lower_block_into_compound_stmts(stmts, target);
+        let result = self.lower_block_into_compound_stmts(stmts, target, !own_scope);
         if !own_scope {
             self.compound_block_depth -= 1;
         }
@@ -607,6 +607,7 @@ impl<'a> FunctionLower<'a> {
         &mut self,
         stmts: &[frontend::ast::StmtRef],
         target: &CompoundTarget,
+        nested: bool,
     ) -> Result<(), String> {
         // Where this block's own registrations begin in the top scope.
         let start = self.drop_scopes.last().map_or(0, Vec::len);
@@ -624,6 +625,9 @@ impl<'a> FunctionLower<'a> {
                 // A tail naming a binding hands that value out: the
                 // target holds it now.
                 self.forget_escaping_binding(&e, start);
+                if nested && !self.is_unreachable() {
+                    self.drop_block_bindings_untouched_by(&e, start)?;
+                }
                 return Ok(());
             }
             let _ = self.lower_stmt(stmt_ref)?;
@@ -635,6 +639,97 @@ impl<'a> FunctionLower<'a> {
             }
         }
         Err("block has no compound-producing tail expression".to_string())
+    }
+
+    /// COMPOUND-BLOCK-DROP-TIMING: drop, here at the block's end, the
+    /// bindings the block made (registered from `start` in the top
+    /// scope) that its tail does not mention.
+    ///
+    /// A compound block's bindings otherwise live to the end of the
+    /// enclosing scope -- which `val f = File::open(p)?` needs, since
+    /// its desugar `{ val t = ..  match t { Ok(v) => v, .. } }` hands
+    /// out `v`, a name for part of `t`'s value. A binding the tail never
+    /// names (nor anything sharing its locals) cannot be part of what
+    /// the block hands out, so it dies with the block, as it does on
+    /// the tree-walker and in a scalar-producing block. When the tail
+    /// holds a shape the name walk does not know, nothing is dropped
+    /// early.
+    fn drop_block_bindings_untouched_by(&mut self, tail: &ExprRef, start: usize) -> Result<(), String> {
+        let Some((mut names, reads)) = mentioned_names(self.program, tail) else {
+            return Ok(());
+        };
+        // `keep.n` with `n` a number copies the value into the target,
+        // which is written before these drops; any other field read
+        // may share what the binding owns.
+        for (name, field) in reads {
+            if !self.field_is_plain_number(name, field) {
+                names.insert(name);
+            }
+        }
+        let mut kept: HashSet<LocalId> = HashSet::new();
+        for name in names {
+            match self.bindings.get(&name) {
+                Some(Binding::Struct { fields, .. }) => {
+                    kept.extend(crate::bindings::flatten_struct_locals(fields).into_iter().map(|(l, _)| l))
+                }
+                Some(Binding::Enum(storage)) => kept.extend(
+                    crate::bindings::flatten_enum_storage_locals(storage).into_iter().map(|(l, _)| l),
+                ),
+                Some(Binding::Tuple { elements }) => kept.extend(
+                    crate::bindings::flatten_tuple_element_locals(elements).into_iter().map(|(l, _)| l),
+                ),
+                Some(Binding::Scalar { local, .. }) => {
+                    kept.insert(*local);
+                }
+                _ => {}
+            }
+        }
+        let Some(top) = self.drop_scopes.last_mut() else {
+            return Ok(());
+        };
+        if start > top.len() {
+            return Ok(());
+        }
+        let own: Vec<DropTarget> = top.split_off(start);
+        let (stay, dying): (Vec<DropTarget>, Vec<DropTarget>) = own
+            .into_iter()
+            .partition(|t| t.field_locals.iter().any(|(l, _)| kept.contains(l)));
+        top.extend(stay);
+        for target in dying.iter().rev() {
+            self.emit_drop_call(target)?;
+        }
+        Ok(())
+    }
+
+    /// Whether `name.field` is a numeric or `bool` field of a struct
+    /// binding -- a value, not a pointer or a compound that could share
+    /// what the binding owns.
+    fn field_is_plain_number(&self, name: DefaultSymbol, field: DefaultSymbol) -> bool {
+        let Some(Binding::Struct { struct_id, .. }) = self.bindings.get(&name) else {
+            return false;
+        };
+        let base = self.module.struct_def(*struct_id).base_name;
+        let (Some(template), Some(field_name)) = (self.struct_defs.get(&base), self.interner.resolve(field))
+        else {
+            return false;
+        };
+        template.fields.iter().any(|(n, ty)| {
+            n == field_name
+                && matches!(
+                    ty,
+                    TypeDecl::Bool
+                        | TypeDecl::UInt8
+                        | TypeDecl::UInt16
+                        | TypeDecl::UInt32
+                        | TypeDecl::UInt64
+                        | TypeDecl::Int8
+                        | TypeDecl::Int16
+                        | TypeDecl::Int32
+                        | TypeDecl::Int64
+                        | TypeDecl::Float32
+                        | TypeDecl::Float64
+                )
+        })
     }
 
     /// `expr` is a block's tail that names a binding the block made
@@ -1673,4 +1768,144 @@ impl<'a> FunctionLower<'a> {
         self.switch_to(merge);
         Ok(())
     }
+}
+
+/// COMPOUND-BLOCK-DROP-TIMING: every name `expr` mentions, or `None`
+/// when it holds a shape this walk does not know (a closure, a `?` /
+/// `??` / struct update not yet desugared), which the caller reads as
+/// "may mention anything".
+fn mentioned_names(
+    program: &frontend::ast::File,
+    expr: &ExprRef,
+) -> Option<(HashSet<DefaultSymbol>, Vec<(DefaultSymbol, DefaultSymbol)>)> {
+    type Reads = Vec<(DefaultSymbol, DefaultSymbol)>;
+    fn walk(program: &frontend::ast::File, e: &ExprRef, out: &mut HashSet<DefaultSymbol>, reads: &mut Reads) -> Option<()> {
+        match program.expression.get(e)? {
+            Expr::Identifier(s) => {
+                out.insert(s);
+            }
+            Expr::True
+            | Expr::False
+            | Expr::Null
+            | Expr::Int64(_)
+            | Expr::UInt64(_)
+            | Expr::Int8(_)
+            | Expr::Int16(_)
+            | Expr::Int32(_)
+            | Expr::UInt8(_)
+            | Expr::UInt16(_)
+            | Expr::UInt32(_)
+            | Expr::CharLiteral(_)
+            | Expr::Float64(_)
+            | Expr::Float32(_)
+            | Expr::Number(_)
+            | Expr::String(_)
+            | Expr::QualifiedIdentifier(_) => {}
+            Expr::Assign(a, b) | Expr::Binary(_, a, b) | Expr::Range(a, b) | Expr::With(a, b) => {
+                walk(program, &a, out, reads)?;
+                walk(program, &b, out, reads)?;
+            }
+            // A field read straight off a binding is recorded apart:
+            // the caller can tell a value copied out (a number) from a
+            // part that stays shared (a pointer, a compound).
+            Expr::FieldAccess(a, field) => match program.expression.get(&a)? {
+                Expr::Identifier(s) => reads.push((s, field)),
+                _ => walk(program, &a, out, reads)?,
+            },
+            Expr::Unary(_, a) | Expr::Cast(a, _) | Expr::TupleAccess(a, _) => {
+                walk(program, &a, out, reads)?
+            }
+            Expr::IfElifElse(c, t, elifs, f) => {
+                walk(program, &c, out, reads)?;
+                walk(program, &t, out, reads)?;
+                for (c, b) in &elifs {
+                    walk(program, c, out, reads)?;
+                    walk(program, b, out, reads)?;
+                }
+                walk(program, &f, out, reads)?;
+            }
+            Expr::Block(stmts) => {
+                for st in &stmts {
+                    walk_stmt(program, st, out, reads)?;
+                }
+            }
+            Expr::ExprList(items)
+            | Expr::ArrayLiteral(items)
+            | Expr::TupleLiteral(items)
+            | Expr::BuiltinCall(_, items)
+            | Expr::AssociatedFunctionCall(_, _, items) => {
+                for i in &items {
+                    walk(program, i, out, reads)?;
+                }
+            }
+            Expr::Call(_, args) => walk(program, &args, out, reads)?,
+            Expr::MethodCall(r, _, items) | Expr::BuiltinMethodCall(r, _, items) => {
+                walk(program, &r, out, reads)?;
+                for i in &items {
+                    walk(program, i, out, reads)?;
+                }
+            }
+            Expr::StructLiteral(_, fields) => {
+                for (_, v) in &fields {
+                    walk(program, v, out, reads)?;
+                }
+            }
+            Expr::DictLiteral(entries) => {
+                for (k, v) in &entries {
+                    walk(program, k, out, reads)?;
+                    walk(program, v, out, reads)?;
+                }
+            }
+            Expr::SliceAccess(obj, info) => {
+                walk(program, &obj, out, reads)?;
+                for part in [info.start, info.end].into_iter().flatten() {
+                    walk(program, &part, out, reads)?;
+                }
+            }
+            Expr::SliceAssign(obj, a, b, v) => {
+                walk(program, &obj, out, reads)?;
+                for part in [a, b].into_iter().flatten() {
+                    walk(program, &part, out, reads)?;
+                }
+                walk(program, &v, out, reads)?;
+            }
+            Expr::Match(scrutinee, arms) => {
+                walk(program, &scrutinee, out, reads)?;
+                for arm in &arms {
+                    if let Some(g) = arm.guard {
+                        walk(program, &g, out, reads)?;
+                    }
+                    walk(program, &arm.body, out, reads)?;
+                }
+            }
+            _ => return None,
+        }
+        Some(())
+    }
+    fn walk_stmt(program: &frontend::ast::File, st: &frontend::ast::StmtRef, out: &mut HashSet<DefaultSymbol>, reads: &mut Reads) -> Option<()> {
+        match program.statement.get(st)? {
+            Stmt::Expression(e) | Stmt::Val(_, _, e) => walk(program, &e, out, reads)?,
+            Stmt::Var(_, _, e) | Stmt::Return(e) => {
+                if let Some(e) = e {
+                    walk(program, &e, out, reads)?;
+                }
+            }
+            Stmt::Break(_) | Stmt::Continue(_) => {}
+            Stmt::For(_, _, a, b, body) => {
+                walk(program, &a, out, reads)?;
+                walk(program, &b, out, reads)?;
+                walk(program, &body, out, reads)?;
+            }
+            Stmt::While(_, c, body) => {
+                walk(program, &c, out, reads)?;
+                walk(program, &body, out, reads)?;
+            }
+            _ => return None,
+        }
+        Some(())
+    }
+    let mut out = HashSet::new();
+    let mut reads = Vec::new();
+    walk(program, expr, &mut out, &mut reads)?;
+    Some((out, reads))
 }

@@ -12,6 +12,11 @@
 
 ### 2026-09-26
 
+- **COMPOUND-BLOCK-DROP-TIMING — compound を作るブロックの束縛がブロックと
+  一緒に死ぬ** — `val o: Option<u64> = if c { val t = H{..}  Some(1) } else ..`
+  の `t` を compiled レーンは外側のスコープの終わりで drop しており、`Drop` が
+  出力すると tree-walker と順序が割れた。末尾の式が名指さない束縛 (数値
+  フィールドの読みだけのものも) はブロックの終わりで drop する。
 - **CALLEE-DROP-GENERIC — 手渡すだけの generic な受け手は引数を drop する** —
   `fn maybe<T>(v: Vec<T>, keep: &mut Vec<Vec<T>>, c: bool)` の `c = false`
   経路で漏れていた。本体を 1 度 probe として走らせ (効果は巻き戻す)、
@@ -2658,14 +2663,13 @@
 
 ### 型システム (NEW-TYPE-SYSTEM)
 
-- **COMPOUND-BLOCK-DROP-TIMING: compound を作るブロックの束縛の drop 時期** —
-  `val o: Option<u64> = if c { val t = H{..}  Some(1) } else { None }` の
-  `t` を tree-walker はブロックの終わりで、compiled レーンは外側の
-  スコープの終わりで drop する (回数は一致、`Drop` が出力すると順序が
-  割れる)。ブロックで drop すると `val f = File::open(p)?` の desugar
-  (`{ val t = ..  match t { Ok(v) => v, .. } }`) で持ち主 `t` がブロック
-  より先に死ぬので、「ブロックの末尾から外へ出る束縛」を move_check が
-  移動として扱う (`?` の別名規則と合わせる) のが先。
+- **COMPOUND-BLOCK-DROP-TIMING の残り: 末尾が束縛に触れる形** — compound を
+  作るブロックの束縛は、末尾の式がそれに触れない (数値フィールドの読みは
+  除く) ときブロックの終わりで drop するようになった (2026-09-26)。触れる形
+  (`Some(t.clone())` / `match t { .. }` = `?` の desugar / ポインタや
+  compound のフィールドの読み) は、別名の可能性があるので compiled レーンでは
+  従来どおり外側のスコープの終わりまで生き、tree-walker と順序が割れうる。
+  直すなら「ブロックの末尾から外へ出る束縛」を move_check が移動として扱う。
 - **CALLEE-DROP-GENERIC の残り: 要素に触れる generic な受け手** ★ —
   generic な受け手が値渡しの引数を drop するのは、本体での出現がすべて
   「丸ごと手渡す / 貸す / `&self` の method でスカラーを読む」ときだけ

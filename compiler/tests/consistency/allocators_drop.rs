@@ -991,3 +991,61 @@ fn main() -> u64 {
         "1\nclose 2\n1\nkept 1\n1\nclose 1\nend\n",
     );
 }
+
+/// COMPOUND-BLOCK-DROP-TIMING: a binding made inside a block that
+/// produces a compound value dies with the block when the block's tail
+/// does not mention it -- `t` / `u` in the `if` arms, `w` in the `match`
+/// arm, and `keep`, whose tail only copies a number out of it
+/// (`keep.n`). The compiled lanes used to keep every such binding to the end
+/// of the enclosing scope (which `val f = File::open(p)?` needs: its
+/// desugar hands out a name for part of the block's `t`), so `drop 1`
+/// printed after `after if` there and before it on the tree-walker.
+#[test]
+fn a_compound_blocks_bindings_die_with_the_block() {
+    let src = r#"
+struct H { n: u64 }
+impl Drop for H { fn drop(&mut self) { println("drop {self.n}") } }
+struct P { a: u64, b: u64 }
+fn pick(c: bool) -> Option<u64> {
+    val o: Option<u64> = if c {
+        val t = H { n: 1u64 }
+        println("then")
+        Option::Some(1u64)
+    } else {
+        val u = H { n: 2u64 }
+        println("else")
+        Option::None
+    }
+    println("after if")
+    o
+}
+fn arm(k: u64) -> P {
+    val p: P = match k {
+        0u64 => {
+            val w = H { n: 3u64 }
+            P { a: 0u64, b: 0u64 }
+        }
+        _ => {
+            val keep = H { n: 4u64 }
+            P { a: keep.n, b: k }
+        }
+    }
+    println("after match")
+    p
+}
+fn main() -> u64 {
+    val a = pick(true)
+    val b = pick(false)
+    val p = arm(0u64)
+    val q = arm(5u64)
+    println("{q.a}")
+    0u64
+}
+    "#;
+    assert_renders(
+        src,
+        "compound_block_drop_timing",
+        "then\ndrop 1\nafter if\nelse\ndrop 2\nafter if\ndrop 3\nafter match\n\
+         drop 4\nafter match\n4\n",
+    );
+}

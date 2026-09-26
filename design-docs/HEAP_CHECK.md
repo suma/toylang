@@ -601,7 +601,8 @@ TOY_HEAP_CHECK=reuse TOY_HEAP_QUARANTINE=0 ./any_binary                  # 計�
   二重 free のどれかが example か stdlib に入れば落ちる。
 - **poc/logsearch** は 1 ファイルに数分かかるので `#[ignore]` のテスト
   (`poc_logsearch_tests_run_clean_under_heap_poison`)。各テストの合否が通常実行と同じか
-  を見る。`--run-ignored only` で回す。
+  を見る。`--run-ignored only` で回す。2026-09-26 に全 16 ファイルで通過
+  (debug ビルドで約 1 時間)。
 
 ## 13. `toy` の `--heap-check` (2026-09-26)
 

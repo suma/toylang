@@ -2798,8 +2798,17 @@ impl EvaluationContext<'_> {
         // module, not a type.
         let names_a_type = self.struct_definitions.contains_key(&struct_name)
             || self.enum_definitions.contains_key(&struct_name);
+        // TREE-WALKER-CONCRETE-IMPL: an associated function has no
+        // receiver to read type arguments off, so with `impl C<u8>` and
+        // `impl C<i64>` both defining `make` the lookup could pick
+        // neither. The binding's annotation (`val b: C<i64> = C::make(..)`)
+        // is the discriminator, as it is for the compiled lanes.
+        let hint_args: Vec<TypeDecl> = match &self.pending_annotation {
+            Some(TypeDecl::Struct(n, a) | TypeDecl::Enum(n, a)) if *n == struct_name => a.clone(),
+            _ => Vec::new(),
+        };
         let resolved = if names_a_type {
-            let own = self.get_method(struct_name, function_name, &[]);
+            let own = self.get_method(struct_name, function_name, &hint_args);
             if let Some(method) = own {
                 return self.call_associated_method(
                     method,
@@ -2832,7 +2841,7 @@ impl EvaluationContext<'_> {
         // impl is preferred. The caller-side annotation hint
         // (`var v: Vec<u8> = ...`) isn't threaded into this layer
         // yet — that's a Phase 2b refinement.
-        if let Some(method) = self.get_method(struct_name, function_name, &[]) {
+        if let Some(method) = self.get_method(struct_name, function_name, &hint_args) {
             return self.call_associated_method(method, args.to_vec(), Some(struct_name), call_site);
         }
 

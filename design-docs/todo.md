@@ -12,6 +12,11 @@
 
 ### 2026-09-26
 
+- **TREE-WALKER-CONCRETE-IMPL — tree-walker も concrete impl の associated
+  function を注釈で選ぶ** — `impl C<u8>` と `impl C<i64>` の両方に `make` が
+  あるとき、`val b: C<i64> = C::make(..)` の注釈を手がかりにする
+  (compiled レーンと同じ)。最後の利用者が消えたので
+  `assert_consistent_without_tree_walker` も撤去。
 - **JIT-INTERP-COVERAGE (b) の一部 — interpreter JIT が範囲 / 名前 / `@`
   パターンをコンパイルする** — スカラーの scrutinee に限る (JIT は enum を
   u64 の tag で持つので、enum に名前を当てる形は従来どおり fallback)。
@@ -2526,14 +2531,6 @@
   (2026-09-01 に **match の arm 束縛** と **`return` する arm**、
   2026-09-06 に **block を挟んだ形**は解消。残っているのは method call
   の枝だけ。)
-
-- **TREE-WALKER-CONCRETE-IMPL** ★ — `impl C<u8>` と `impl C<i64>` の
-  両方に同名の associated function があると tree-walker が spec を
-  1 つしか持たず解決できない (`concrete_associated_hint` を
-  `assert_consistent_without_tree_walker` で除外)。
-  method 版と「concrete + generic」の組合せは動く。
-  2026-08-25 に tree-walker レーンを本物にして初めて見えた
-  (対だった TREE-WALKER-NUM-W は 2026-08-28 に解消)。
 
 - **JIT-INTERP-COVERAGE (residual)** ★ — interpreter 側 JIT が silent
   fallback する残り: (a) impl block ではなく **method 固有の generic**

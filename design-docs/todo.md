@@ -12,6 +12,11 @@
 
 ### 2026-09-26
 
+- **USER-TYPE-SHADOWS-GENERIC-PARAM — ユーザ型の名前が stdlib の型引数名と
+  同じでも stdlib が壊れない** — `struct T` / `enum K` を宣言しただけで
+  `PriorityQueue<T>` / `Box<T>` / `Dict<K, V>` の本体が型エラーになっていた
+  (`val child: T` がユーザの struct に解決され、method 呼び出しがそちらを
+  引いた)。境界つき型引数の本体の中では型引数を優先する。
 - **OP-OVERLOAD-ENUM — enum の比較演算子を `eq` / `lt` 等で定義できる** —
   型検査器が `a == b` を `a.eq(b)` (`!=` は否定、順序比較は `lt` / `le` /
   `gt` / `ge`) に書き換えるので、バックエンドは既存の enum レシーバの
@@ -2965,24 +2970,6 @@
   決定的である必要がある — `compiler/tests/reproducible_build.rs` が pin)。
 
 ### 既知の不具合
-
-- **USER-TYPE-SHADOWS-GENERIC-PARAM: ユーザ型の名前が stdlib の型引数名を
-  乗っ取る** ★★ — `struct T { x: u64 }` や `enum K { A, B }` を宣言した
-  だけで、使いもしない stdlib の generic な本体が型エラーになる
-  (`T` → `priority_queue.t:47` / `box.t:57`、`K` → `dict.t:340` の
-  `k2.hash()` が `method not found for type K`)。stdlib の `T` / `K` が
-  型引数ではなくユーザの型として解決されている。`V` / `U` / `A` では
-  起きなかった (その名前を使う body の形による)。2026-09-26 に
-  OP-OVERLOAD-ENUM のテストを書いていて踏んだ。
-
-**直った項目をこの節に段落で残さないこと** — 常時読まれるファイルが
-changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 バックエンドで
-食い違う / `if` の条件が型検査されない / MATCH-STRUCT-ARM) はいずれも解消し、
-経緯は git log と完了済み節にある。「compound を返す method 呼び出しから
-束縛したローカルに drop glue が付く」も ELEMENT-BORROW (`[E0028]` で
-拒否し `borrow` / `clone()` へ誘導) で解消。`__getitem__` の 2 件
-(`&self` 受理 / generic 戻り型置換) も 2026-08-30 に解消
-(POINTER P2、完了済み節)。
 
 - **COMPOUND-FIELD-ARG: compound な *フィールド* を引数に渡せない** ★★ —
   束縛・リテラル・呼び出し結果は通る (COMPOUND-ARG-CALL、2026-09-02) が、

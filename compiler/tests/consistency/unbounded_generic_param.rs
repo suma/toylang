@@ -179,3 +179,43 @@ fn a_methods_own_parameter_is_a_turbofish_type() {
     // 21 * 100 + 81
     assert_consistent(src, "method_own_param_turbofish");
 }
+
+/// USER-TYPE-SHADOWS-GENERIC-PARAM: a program's own type named like a
+/// stdlib type parameter (`struct T`, `enum K`) made unrelated stdlib
+/// generics fail to type-check -- `child.lt(above)` in
+/// `PriorityQueue<T>`, `v.clone()` in `Box<T>`, `k2.hash()` in
+/// `Dict<K, V>` -- because a local annotated `T` resolved to the user's
+/// struct, and a method call on it looked there. Inside a body whose
+/// bounded parameter has that name, the parameter wins.
+#[test]
+fn a_user_type_named_like_a_type_parameter_leaves_the_stdlib_alone() {
+    let src = r#"
+        struct T { x: u64 }
+        enum K { A, B }
+        struct V { y: u64 }
+        fn main() -> u64 {
+            val t = T { x: 1u64 }
+            val k = K::B
+            var pq: PriorityQueue<u64> = PriorityQueue::new()
+            pq.push(5u64)
+            pq.push(2u64)
+            pq.push(9u64)
+            val top = pq.pop() ?? 0u64
+            val b: Box<u64> = Box::new(7u64)
+            val c: Box<u64> = b.clone()
+            var d: Dict<u64, u64> = Dict::new()
+            d.insert(3u64, 30u64)
+            val got = d.get(3u64) ?? 0u64
+            val kk = match k { K::A => 0u64, K::B => 1u64 }
+            var v: Vec<String> = Vec::new()
+            v.push(String::from_str("zz"))
+            v.push(String::from_str("aa"))
+            v.sort()
+            val first: &String = v.borrow(0u64)
+            top * 1000u64 + c.get() * 100u64 + got + kk + t.x + first.len()
+        }
+    "#;
+    // 2 * 1000 + 7 * 100 + 30 + 1 + 1 + 2
+    assert_eq!(interpreter_value(src), 2734);
+    assert_consistent(src, "user_type_named_t");
+}

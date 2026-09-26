@@ -608,10 +608,21 @@ impl<'a> TypeCheckerVisitor<'a> {
         // shapes are treated as the bounded generic when `t_sym` is a
         // bound in scope; a bare struct name is never in
         // `current_fn_generic_bounds`, so the guard is precise.
+        //
+        // USER-TYPE-SHADOWS-GENERIC-PARAM: the name may also be a
+        // declared type — a program's own `struct T` — and then the
+        // annotation resolves to `Struct(T, [])`. Inside a body whose
+        // parameter `T` is bounded, the parameter is what the name
+        // means, so that shape counts too.
         let generic_sym = match obj_type {
             TypeDecl::Generic(sym) => Some(*sym),
             TypeDecl::Identifier(sym)
                 if self.context.current_fn_generic_bounds.contains_key(sym) =>
+            {
+                Some(*sym)
+            }
+            TypeDecl::Struct(sym, args) | TypeDecl::Enum(sym, args)
+                if args.is_empty() && self.context.current_fn_generic_bounds.contains_key(sym) =>
             {
                 Some(*sym)
             }

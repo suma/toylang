@@ -1,27 +1,45 @@
 # HEAP-CHECK — 解放済みメモリを毒化・再利用する検査モード
 
-> **状態: H0 (二重 free の棚卸し)・H1 (interpreter レーンの `poison`)・H2 (compiled レーンの `poison`)・H3 (`reuse`)・H4 (redzone と `__builtin_heap_poison`)・H5 (二重 free をエラーに、example の常時検査) landing 済み (2026-09-26)。** §6 の未決事項は
-> 推奨どおりに決まった (二重 free は H5 まで報告のみ / フラグは `--heap-check=` /
-> 隔離は 1 MiB から / AOT の計装はビルドフラグのときだけ)。H0 の実装と結果は §7、H1 は §8、H2 は §9、H3 は §10、H4 は §11、H5 は §12、`toy` は §13。
+> **状態: 全フェーズ landing 済み (2026-09-26)** — H0 (二重 free の棚卸し)・H1 (interpreter
+> レーンの `poison`)・H2 (compiled レーンの `poison`)・H3 (`reuse`)・H4 (redzone と
+> `__builtin_heap_poison`)・H5 (二重 free をエラーに、example の常時検査)・`toy` の
+> `--heap-check`。§6 の未決事項は推奨どおりに決まった。**使い方は §0、仕様の正本は
+> [`docs/language.md`](../docs/language.md) の「Heap checks」**。§1〜§5 は着手前の設計
+> (数字はその時点のもの)、§7〜§13 が各フェーズの実装と結果。
 > 関連: [`MEMORY_PROFILING.md`](MEMORY_PROFILING.md) (計数の定義と site)、
 > [`ALLOCATOR_PLAN.md`](ALLOCATOR_PLAN.md) (`with allocator` と stdlib `Arena`)、
 > [`REGIONS.md`](REGIONS.md) / [`POINTER.md`](POINTER.md) (静的な脱出検査)。
 
 ## 0. 要約
 
-- 今のヒープは**解放したブロックを再利用せず、中身も残し、free は冪等**。
-  このため use-after-free は**静かに正しい値を返し**、二重 free は何も起こさない。
-  バグが症状として一切出ない。
-- 検査モードを 2 つ作る: **`poison`** (解放したら毒で埋めて永久に隔離し、
-  触れたら報告) と **`reuse`** (隔離を有限にして、実際に再利用する)。
-- 検出は **lowering が生メモリアクセスの前に検査命令を挟む**方式を本命にする
-  (ASan の shadow memory に近い)。IR VM / AOT / JIT が同じ lowering を
-  通るので、報告の文言が 4 レーンで一致する。tree-walker は `HeapManager`
-  の読み書き口 1 か所で検査する。
-- **最初の壁は言語自身**: drop glue は冪等な free に依存しており、
-  consistency テストだけで **209 回**、example でも 4 本が解放済みブロックを
-  もう一度 free している (§1.3)。したがって最初のフェーズ (H0) は
-  「落とさずに数えて出所を並べる」棚卸しになる。
+ヒープは**解放したブロックを再利用せず、中身も残し、free は冪等**。そのため
+use-after-free は静かに古い値を返し、二重 free は何も起こさず、バグが症状として
+出ない。検査モードはこれを見えるようにする。
+
+| モード | 何をするか |
+|---|---|
+| `report` | 二重 free を (確保位置, 1 回目の free, 2 回目の free, 呼んだ関数) ごとに数えて終了時に出す。止めない (§7) |
+| `poison` | free したブロックを `0xDB` で埋めて永久に隔離。解放済みへの読み書き、ブロック末尾より後ろから**始まる**アクセス (16 バイトの redzone)、二重 free で止まる (§8・§9・§11・§12) |
+| `reuse` | `poison` + 有限の隔離。溢れたブロックを size class ごとに次の確保へ渡し、「番地を再利用しない」ことへの依存を炙り出す (§10) |
+
+```bash
+cargo run -q -p interpreter -- --heap-check=poison prog.t                  # tree-walker / IR VM
+cargo run -q -p interpreter -- --heap-check=reuse --heap-quarantine=0 --test prog.t
+cargo run -q -p compiler -- prog.t --heap-check=poison -o prog && ./prog   # 計装入りの AOT
+cargo run -q -p compiler -- prog.t --all-backends --heap-check=report      # 3 レーン突き合わせ
+cargo run -q -p toy -- test mypkg --heap-check=poison                      # パッケージ (§13)
+TOY_HEAP_CHECK=report ./prog                                               # 計装なしのバイナリ
+```
+
+- **4 レーンで同じ文言**。tree-walker はヒープの読み書き口で、IR VM と AOT / JIT は
+  lowering が生メモリアクセスと free の前に置く検査命令 (`HeapCheck` / `HeapCheckFree`)
+  で判定する。レーン間で食い違わないよう、判定はアクセスの**開始位置**だけで行い、
+  メッセージにバイト数は出さない。
+- **当初の壁は言語自身だった**: drop glue が冪等な free に依存していて、着手時点で
+  consistency テストだけで 209 回の二重 free があった (§1.3)。H0 で出所を並べて潰し
+  (§7)、今は example 全体が poison の 3 レーンで常時走っている (§12)。
+- **見ないもの**: ブロック内から始まって末尾をまたぐアクセス、ヒープ外 (stack の配列、
+  `str` リテラル) の範囲外、再利用された後の古いポインタ (ABA)。
 
 ## 1. 現状
 
@@ -518,8 +536,9 @@ TOY_HEAP_CHECK=reuse TOY_HEAP_QUARANTINE=0 ./any_binary                  # 計�
 - `interpreter --test` も heap check を受けるようにした (以前は黙って無視していた)。
 - **結果**: plain で 3 レーン一致する example 155 本すべてが、隔離 0 (最も早く再利用する)
   でも出力・一致とも変わらない。実際に再利用が起きたのは 8 本 (最大 64 ブロック)。
-  `poc/logsearch/tests` も `interpreter --test` で隔離 0 にして、合否は通常実行と同じ
-  (1 本あたり最大 4573 ブロックを再利用)。
+  `poc/logsearch/tests` の 16 ファイルも `interpreter --test` で隔離 0 にして、各ファイルの
+  合否は通常実行と同じ (1 ファイルあたり最大 12991 ブロックを再利用。`lsz` と
+  `segment_format` は通常実行でも 1 本ずつ落ちるテストがあり、reuse でも同じ本数)。
 
 **残り**
 

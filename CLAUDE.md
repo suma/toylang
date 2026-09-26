@@ -923,7 +923,7 @@ fn main() -> u64 {
   [`design-docs/REGIONS.md`](design-docs/REGIONS.md)
 - `Allocator` 値は `Rc::ptr_eq` で同値性を判定。`==` / `!=` のみサポート（順序比較は不可）
 - 関数の引数として `Allocator` を渡す形は推奨しない (関数は `with allocator = ...` の active stack を経由して暗黙的に allocator を使う)
-- arena は個別 `free` を no-op とし、`Drop` で一括解放。fixed_buffer は quota 超過で `0`（null ポインタ）を返す。両者の policy はすべて toylang stdlib (`core/std/allocator.t`) に実装され、底に default allocator が居る
+- arena は個別 `free` でブロックを返さず (検査モードでは毒化だけする、HEAP-CHECK H4)、`Drop` で一括解放。fixed_buffer は quota 超過で `0`（null ポインタ）を返す。両者の policy はすべて toylang stdlib (`core/std/allocator.t`) に実装され、底に default allocator が居る
 - `List<T>` のようなコレクションは言語組み込みではなく、`struct` + `impl` + `__builtin_heap_alloc/realloc/ptr_read/ptr_write` で書く。これらの builtin は現在の active allocator を経由する
 - `__builtin_ptr_write(p, off, value)` は任意型の値を受け取り、`__builtin_ptr_read::<T>(p, off)` は**型引数で幅を名指す** (型引数の無い旧形 `__builtin_ptr_read(p, off)` はパースエラー — 注釈から幅を取っていたので式の位置に置けず、幅が食い違うとレーンで答えが割れた)。`List<i64>` / `List<bool>` / `List<MyStruct>` もそのまま動作する。`T` には generic param / primitive に加えて **user 定義の struct / tuple / enum 名**も書ける (3 backend)
 

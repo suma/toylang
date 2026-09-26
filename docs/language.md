@@ -5230,6 +5230,54 @@ There is no builtin for `peak_at_request`. That field is the axis the
 report uses to say *when* a peak happened reproducibly — not a
 quantity a program should hold an opinion about.
 
+### Heap checks
+
+The heap never reuses an address and `free` is idempotent (see
+[Ownership](#ownership)), so a use after free quietly reads
+the old value and a double free does nothing. A heap check makes those
+bugs visible. It is a mode of the tools, not of the language: a
+program's output does not change unless it has one of these bugs.
+
+| Mode | What it does |
+|---|---|
+| `report` | Counts double frees, keyed by where the block was allocated, first freed and freed again, and prints the count at exit. Nothing stops. |
+| `poison` | Fills a freed block with `0xDB` and keeps it forever. Stops the program at a read or write of a freed block, at an access that *starts* past a block's end (each block is followed by a 16-byte redzone), and at a double free. |
+| `reuse` | `poison`, except that a freed block leaves quarantine once more than N bytes are waiting (oldest first, default 1 MiB). It is then handed to the next request of its size class (the size rounded up to 16, last released first). This shows whether a program depends on addresses never being reused. |
+
+```
+cargo run -q -p interpreter -- --heap-check=poison prog.t
+cargo run -q -p interpreter -- --heap-check=reuse --heap-quarantine=0 --test prog.t
+cargo run -q -p compiler -- prog.t --heap-check=poison -o prog && ./prog
+cargo run -q -p compiler -- prog.t --all-backends --heap-check=report
+cargo run -q -p toy -- test mypkg --heap-check=poison
+TOY_HEAP_CHECK=report ./prog
+```
+
+A stop reads like a panic, at the access or the second free:
+
+```
+panic: heap check: read at offset 0 of a 32-byte block that was already freed (allocated at core/std/collections/vec.t:157:26, moved by a resize)
+panic: heap check: read at offset 24 of a 24-byte block, past its end (allocated at core/std/ptr.t:72:22)
+panic: heap check: free of a 16-byte block that was already freed (allocated at test.t:5:18, freed at test.t:2:5)
+```
+
+- **Every engine says the same thing.** The tree-walker checks inside
+  its heap. The IR VM and compiled code run instrumented lowering,
+  which puts a check before every raw memory access and every free. A
+  compiled binary gets that instrumentation from the build flag
+  (`compiler --heap-check=poison|reuse`, `toy build --heap-check=...`).
+  An uninstrumented binary still honours `TOY_HEAP_CHECK=poison|reuse`
+  for filling and recycling blocks, but cannot stop at an access.
+- **Only where an access starts is judged** for "past its end". An
+  access that starts inside the block and runs over is not caught,
+  because the tree-walker does not know how wide its accesses are.
+- **`__builtin_heap_poison(p, size)`** treats a range as freed without
+  freeing it (see [Pointer / memory builtins](#pointer--memory-builtins)).
+  `Arena::free` calls it, so a use after an arena `free` stops before
+  the arena's `reset`.
+- Memory outside the heap (stack arrays, `str` literals) is not
+  checked.
+
 ### Numeric value methods
 
 ```rust
@@ -6773,7 +6821,9 @@ A limit worth knowing:
   frees are *idempotent*: a value reachable through several aliases (a
   `get()` copy, a shared boxed node) is freed once and later visits are
   no-ops. Both heaps are bump allocators that never reuse an address,
-  so a second visit reads the block's original contents.
+  so a second visit reads the block's original contents. (Under
+  `--heap-check=reuse` addresses are reused on purpose, to find code
+  that relies on this; see [Heap checks](#heap-checks).)
 
 #### Lending an element (`borrow`)
 

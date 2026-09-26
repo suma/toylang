@@ -170,6 +170,12 @@ cargo run -q -p interpreter -- --check interpreter/example/memory_contract.t
 
 # Print allocation totals after the run (JSON with --format=json)
 cargo run -q -p interpreter -- --profile=mem interpreter/example/allocator_list.t
+
+# Stop at a use after free, an access past a block's end or a double
+# free; `reuse` also hands freed blocks out again (docs/language.md,
+# "Heap checks")
+cargo run -q -p interpreter -- --heap-check=poison interpreter/example/allocator_list.t
+cargo run -q -p compiler -- interpreter/example/allocator_list.t --heap-check=poison -o /tmp/al && /tmp/al
 ```
 
 ### A program with its own modules (`toy`)

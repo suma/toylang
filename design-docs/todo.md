@@ -12,6 +12,10 @@
 
 ### 2026-09-26
 
+- **COMPOUND-FIELD-ARG — compound なフィールドを引数に渡せる** —
+  `count(self.buf)` / `sum(o.p)` / `bump(&mut o.p)` / method の引数。
+  フィールドの leaf は持ち主の locals なので、束縛と同じく展開・番地渡しし、
+  `&mut` なら書き戻し先にも数える (数えないと書き込みが黙って消えた)。
 - **TYPE-NAME-COLLISION — 同じ root の 2 モジュールの同名の型がエラーに
   なる** — 後勝ちで黙って上書きされ、負けた側が勝った側のフィールドで
   落ちていた (`Missing required field 'w'`、しかも自分のファイルを指す)。
@@ -2985,24 +2989,6 @@
   決定的である必要がある — `compiler/tests/reproducible_build.rs` が pin)。
 
 ### 既知の不具合
-
-- **COMPOUND-FIELD-ARG: compound な *フィールド* を引数に渡せない** ★★ —
-  束縛・リテラル・呼び出し結果は通る (COMPOUND-ARG-CALL、2026-09-02) が、
-  フィールドパスだけが残っている。
-
-  ```rust
-  struct Holder { buf: Vec<u8> }
-  fn count(b: &Vec<u8>) -> u64 { b.size() }
-  impl Holder {
-      fn via_field(&self) -> u64 { count(self.buf) }   # compile error
-  }
-  ```
-
-  AOT が `call argument produced no value` (method 呼び出しなら
-  `method argument produced no value`) で拒否する。**診断が規則を
-  名指ししていない** ので、原因に辿り着くのに二分探索が要る。
-  回避策は窓を渡すこと (`self.buf.as_span()` を `val` に束縛して
-  `Span<u8>` で渡す) で、`poc/logsearch` の行分割はこの形にしてある。
 
 - **BARE-NAME-COLLISION の残り: `pub` が実効化されていない** ★★ —
   auto-load される全モジュールが bare 名の 1 つの名前空間を共有する件は、

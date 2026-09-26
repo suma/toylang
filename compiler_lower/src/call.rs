@@ -786,23 +786,22 @@ impl<'a> FunctionLower<'a> {
                 }
                 _ => continue,
             };
-            let sym = match self.program.expression.get(&inner) {
-                Some(frontend::ast::Expr::Identifier(s)) => s,
-                _ => continue,
-            };
-            match self.bindings.get(&sym) {
+            // COMPOUND-FIELD-ARG: `&mut o.p` writes back into the
+            // owner's own leaf locals, the same as `&mut p` does into a
+            // binding's.
+            match self.compound_arg_binding(&inner) {
                 Some(super::bindings::Binding::Struct { fields, .. }) => {
-                    for (l, _) in super::bindings::flatten_struct_locals(fields) {
+                    for (l, _) in super::bindings::flatten_struct_locals(&fields) {
                         dests.push(l);
                     }
                 }
                 Some(super::bindings::Binding::Tuple { elements }) => {
-                    for (l, _) in super::bindings::flatten_tuple_element_locals(elements) {
+                    for (l, _) in super::bindings::flatten_tuple_element_locals(&elements) {
                         dests.push(l);
                     }
                 }
                 Some(super::bindings::Binding::Enum(storage)) => {
-                    Self::flatten_enum_dests_into(storage, &mut dests);
+                    Self::flatten_enum_dests_into(&storage, &mut dests);
                 }
                 _ => {} // Scalar bindings handled by AddressOf path; not a writeback dest.
             }

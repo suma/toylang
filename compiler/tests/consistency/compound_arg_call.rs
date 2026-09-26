@@ -149,3 +149,74 @@ fn a_call_argument_frees_the_same_as_a_binding() {
     assert_eq!(interpreter_value(src) & 0xff, 1);
     assert_consistent(src, "compound_arg_call_drop_parity");
 }
+
+/// COMPOUND-FIELD-ARG: a compound *field* as an argument -- by value
+/// (`sum(o.p)`), auto-borrowed (`count(self.buf)`, `sum_ref(o.p)`), to a
+/// method. Bindings, literals and call results already passed; a field
+/// path failed on the compiled lanes with "call argument produced no
+/// value", a message that did not name the rule. A field's leaves are
+/// the owner's locals, so it expands exactly as a binding does.
+#[test]
+fn a_compound_field_is_an_argument() {
+    let src = r#"
+struct Holder { buf: Vec<u8>, n: u64 }
+struct P { a: u64, b: u64 }
+struct Outer { p: P, h: Holder }
+fn count(b: &Vec<u8>) -> u64 { b.size() }
+fn sum(p: P) -> u64 { p.a + p.b }
+fn sum_ref(p: &P) -> u64 { p.a * p.b }
+impl Holder {
+    fn via_field(&self) -> u64 { count(self.buf) }
+    fn m(&self, p: &P) -> u64 { p.a }
+}
+fn main() -> u64 {
+    var v: Vec<u8> = Vec::new()
+    v.push(1u8)
+    v.push(2u8)
+    val h = Holder { buf: v, n: 0u64 }
+    val o = Outer { p: P { a: 3u64, b: 4u64 }, h: h }
+    val a = o.h.via_field()
+    val b = sum(o.p)
+    val c = sum_ref(o.p)
+    val d = count(o.h.buf)
+    val e = o.h.m(o.p)
+    a * 10000u64 + b * 1000u64 + c * 10u64 + d + e * 100000u64
+}
+    "#;
+    // 2 * 10000 + 7 * 1000 + 12 * 10 + 2 + 3 * 100000
+    assert_eq!(interpreter_value(src), 327_122);
+    assert_consistent(src, "compound_field_arg");
+}
+
+/// The same for `&mut` of a field -- struct, enum and tuple fields, and
+/// a method argument. The writes have to land in the owner's leaves:
+/// expanding the field without collecting it as a writeback destination
+/// silently dropped them (the value came back unchanged).
+#[test]
+fn a_compound_field_is_a_mutable_argument() {
+    let src = r#"
+struct P { a: u64, b: u64 }
+enum C { R, G }
+struct Outer { p: P, c: C, t: (u64, u64) }
+struct Tool { k: u64 }
+fn bump(p: &mut P) { p.a = p.a + 100u64 }
+fn flip(c: &mut C) { c = C::G }
+fn swap(t: &mut (u64, u64)) { t.0 = t.1 }
+impl Tool {
+    fn apply(&self, p: &mut P) { p.b = p.b + self.k }
+}
+fn main() -> u64 {
+    var o = Outer { p: P { a: 1u64, b: 2u64 }, c: C::R, t: (5u64, 9u64) }
+    bump(&mut o.p)
+    flip(&mut o.c)
+    swap(&mut o.t)
+    val tool = Tool { k: 30u64 }
+    tool.apply(&mut o.p)
+    val cc = match o.c { C::R => 1u64, C::G => 2u64 }
+    o.p.a + o.p.b * 10u64 + cc * 10000u64 + o.t.0 * 100000u64
+}
+    "#;
+    // p = (101, 32), c = G, t.0 = 9
+    assert_eq!(interpreter_value(src), 920_421);
+    assert_consistent(src, "compound_field_mut_arg");
+}

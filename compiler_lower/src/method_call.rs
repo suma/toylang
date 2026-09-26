@@ -1339,6 +1339,33 @@ impl<'a> FunctionLower<'a> {
         Ok(addr)
     }
 
+    /// COMPOUND-FIELD-ARG: the compound an argument names -- a struct /
+    /// tuple / enum binding, or a field path that reaches one
+    /// (`self.buf`, `o.h.p`). A field's leaves are the owner's own
+    /// locals, so it expands, and borrows by address, exactly as a
+    /// binding does.
+    pub(super) fn compound_arg_binding(&self, expr: &ExprRef) -> Option<Binding> {
+        match self.program.expression.get(expr)? {
+            Expr::Identifier(sym) => match self.bindings.get(&sym)? {
+                b @ (Binding::Struct { .. } | Binding::Tuple { .. } | Binding::Enum(_)) => {
+                    Some(b.clone())
+                }
+                _ => None,
+            },
+            Expr::FieldAccess(..) => match self.resolve_field_chain(expr).ok()? {
+                super::bindings::FieldChainResult::Struct { struct_id, fields } => {
+                    Some(Binding::Struct { struct_id, fields })
+                }
+                super::bindings::FieldChainResult::Tuple { elements } => {
+                    Some(Binding::Tuple { elements })
+                }
+                super::bindings::FieldChainResult::Enum(storage) => Some(Binding::Enum(storage)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// The address a pointer parameter at `slot` of `target` takes for
     /// a temporary's `values`, or the values themselves when that
     /// parameter travels as its leaves.
@@ -1772,8 +1799,8 @@ impl<'a> FunctionLower<'a> {
                 }
                 _ => *a,
             };
-            if let Some(Expr::Identifier(sym)) = self.program.expression.get(&arg_expr_ref) {
-                if let Some(Binding::Struct { fields, .. }) = self.bindings.get(&sym).cloned() {
+            if let Some(arg_binding) = self.compound_arg_binding(&arg_expr_ref) {
+                if let Binding::Struct { fields, .. } = arg_binding.clone() {
                     let leaves = flatten_struct_locals(&fields);
                     // CODE-SIZE-SELF-ABI: the receiver sits at param 0,
                     // so this argument fills slot `1 + arg_idx`.
@@ -1796,7 +1823,7 @@ impl<'a> FunctionLower<'a> {
                     }
                     continue;
                 }
-                if let Some(Binding::Tuple { elements }) = self.bindings.get(&sym).cloned() {
+                if let Binding::Tuple { elements } = arg_binding.clone() {
                     for (local, ty) in flatten_tuple_element_locals(&elements) {
                         let v = self
                             .emit(InstKind::LoadLocal(local), Some(ty))
@@ -1805,7 +1832,7 @@ impl<'a> FunctionLower<'a> {
                     }
                     continue;
                 }
-                if let Some(Binding::Enum(storage)) = self.bindings.get(&sym).cloned() {
+                if let Binding::Enum(storage) = arg_binding {
                     let vs = self.load_enum_locals(&storage);
                     values.extend(vs);
                     continue;

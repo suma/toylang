@@ -1865,8 +1865,8 @@ impl<'a> FunctionLower<'a> {
             // Struct-typed identifier argument: expand into per-field
             // values in declaration order. Anything else flows through
             // `lower_expr`.
-            if let Some(Expr::Identifier(sym)) = self.program.expression.get(&arg_expr_ref) {
-                if let Some(Binding::Struct { fields, .. }) = self.bindings.get(&sym).cloned() {
+            if let Some(arg_binding) = self.compound_arg_binding(&arg_expr_ref) {
+                if let Binding::Struct { fields, .. } = arg_binding.clone() {
                     let leaves = flatten_struct_locals(&fields);
                     // CODE-SIZE-SELF-ABI S3: a wide `&T` / `&mut T`
                     // parameter takes one address, the same as a wide
@@ -1888,7 +1888,7 @@ impl<'a> FunctionLower<'a> {
                     }
                     continue;
                 }
-                if let Some(Binding::Tuple { elements }) = self.bindings.get(&sym).cloned() {
+                if let Binding::Tuple { elements } = arg_binding.clone() {
                     // Tuple-typed identifier argument: expand into
                     // one value per leaf scalar, in declaration order
                     // (recursing through compound elements).
@@ -1900,7 +1900,7 @@ impl<'a> FunctionLower<'a> {
                     }
                     continue;
                 }
-                if let Some(Binding::Enum(storage)) = self.bindings.get(&sym).cloned() {
+                if let Binding::Enum(storage) = arg_binding {
                     // Enum-typed identifier argument: same shape as
                     // the function-boundary flattening — tag first,
                     // then each variant's payloads in declaration

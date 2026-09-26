@@ -629,6 +629,7 @@ impl EvaluationContext<'_> {
             match lhs_expr {
                 Expr::Identifier(name) => self.handle_variable_assignment(name, lhs, rhs),
                 Expr::FieldAccess(obj, field) => self.handle_field_assignment(&obj, field, rhs),
+                Expr::TupleAccess(obj, index) => self.handle_tuple_element_assignment(&obj, index, rhs),
                 _ => {
                     Err(InterpreterError::InternalError("bad assignment due to lhs is not identifier or array access".to_string()))
                 }
@@ -681,6 +682,43 @@ impl EvaluationContext<'_> {
             }
         }
 
+        let cloned_value = new_value.borrow().clone();
+        Ok(EvaluationResult::Value((cloned_value).into()))
+    }
+
+    /// `t.0 = v`: the tuple counterpart of `handle_field_assignment`.
+    /// Writing through the evaluated receiver's `Rc` reaches every
+    /// alias -- the caller's tuple, for a `&mut (A, B)` parameter.
+    /// Missing before, so `t.0 = t.1` stopped the tree-walker with an
+    /// internal error while the compiled lanes ran it.
+    fn handle_tuple_element_assignment(
+        &mut self,
+        obj: &ExprRef,
+        index: usize,
+        rhs: &ExprRef,
+    ) -> Result<EvaluationResult, InterpreterError> {
+        let obj_val = self.evaluate(obj);
+        let obj_val = try_value!(obj_val);
+        let new_value = self.evaluate(rhs);
+        let new_value = try_value!(new_value);
+        {
+            let mut obj_borrowed = obj_val.borrow_mut();
+            match &mut *obj_borrowed {
+                Object::Tuple(elements) => {
+                    let len = elements.len();
+                    let slot = elements.get_mut(index).ok_or(InterpreterError::IndexOutOfBounds {
+                        index: index as isize,
+                        size: len,
+                    })?;
+                    *slot = new_value.clone();
+                }
+                other => {
+                    return Err(InterpreterError::InternalError(format!(
+                        "Cannot assign a tuple element on a non-tuple object: {:?}", other
+                    )));
+                }
+            }
+        }
         let cloned_value = new_value.borrow().clone();
         Ok(EvaluationResult::Value((cloned_value).into()))
     }

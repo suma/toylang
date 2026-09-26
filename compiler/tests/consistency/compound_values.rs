@@ -1766,3 +1766,24 @@ fn a_branch_may_end_in_a_struct_returning_method() {
     assert_eq!(interpreter_value(src), 5_021_111);
     assert_consistent(src, "branch_struct_method");
 }
+
+/// `t.0 = v` as a statement: on a local tuple and through a
+/// `&mut (A, B)` parameter. The tree-walker's statement-level assignment
+/// knew identifiers and fields only, and stopped with "bad assignment
+/// due to lhs is not identifier or array access" on both, while the
+/// compiled lanes ran them.
+#[test]
+fn a_tuple_element_is_assigned() {
+    let src = r#"
+        fn swap(t: &mut (u64, u64)) { t.0 = t.1 }
+        fn main() -> u64 {
+            var t = (5u64, 9u64)
+            t.1 = 7u64
+            var u = (1u64, 2u64)
+            swap(&mut u)
+            t.0 * 100u64 + t.1 * 10u64 + u.0
+        }
+    "#;
+    assert_eq!(interpreter_value(src), 572);
+    assert_consistent(src, "tuple_element_assign");
+}

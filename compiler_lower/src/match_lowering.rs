@@ -14,9 +14,9 @@
 //!   local up front).
 //! - `dispatch_enum_variant_pattern`: emits the per-variant
 //!   tag / payload sub-pattern dispatch chain. Handles `Name`
-//!   binding (re-bind the storage), `_` discards, and literal
-//!   payload sub-patterns (deferred-error on nested enum /
-//!   tuple sub-patterns since the MVP doesn't allow them).
+//!   binding (re-bind the storage), `_` discards, literal / range
+//!   payload sub-patterns, nested enum variants, and struct / tuple
+//!   sub-patterns (walked as a compound scrutinee of their own).
 //! - `apply_arm_pattern_bindings_for_inference`: temporarily
 //!   binds pattern names so `arm_body_type` can peek through
 //!   them when the arm body references payload locals.
@@ -45,8 +45,8 @@ impl<'a> FunctionLower<'a> {
     ///   scalar scrutinee).
     /// - Variant sub-patterns: `Name(sym)` binds the payload, `_`
     ///   discards, `Literal(_)` adds an equality check on the
-    ///   payload slot. Nested enum / tuple sub-patterns are deferred
-    ///   (no enum-of-enum payloads in this MVP anyway).
+    ///   payload slot; nested enum / struct / tuple sub-patterns
+    ///   recurse.
     /// - Optional `if` guard runs after the pattern matches and any
     ///   `Name` sub-patterns are in scope.
     /// - Arms must agree on result type (same as `if` chain).
@@ -542,17 +542,12 @@ impl<'a> FunctionLower<'a> {
             Pattern::Wildcard
             | Pattern::Literal(_)
             | Pattern::Range(_, _)
-            | Pattern::EnumVariant(..) => {
+            | Pattern::EnumVariant(..)
+            | Pattern::Struct(..)
+            | Pattern::Tuple(_) => {
                 // Wildcard discards; literals and ranges were checked
-                // above; nested EnumVariant patterns introduced
-                // their own bindings via the recursive call.
-            }
-            other => {
-                return Err(format!(
-                    "compiler MVP only supports `Name`, `_`, literal, and \
-                     nested `EnumVariant` sub-patterns inside enum variants, got {}",
-                    crate::spelling::describe_pattern(self.interner, other)
-                ));
+                // above; nested EnumVariant, struct and tuple patterns
+                // introduced their own bindings in the check pass.
             }
         }
         Ok(())
@@ -626,6 +621,32 @@ impl<'a> FunctionLower<'a> {
             Pattern::Binding(_, inner) => {
                 self.check_payload_sub_pattern(inner, slot, fail_blk)?;
             }
+            // ENUM-TUPLE-SUBPATTERN-AOT: `Some((a, b))` /
+            // `B(P { x, y: 0i64 })`. The payload's locals are a struct /
+            // tuple scrutinee of their own, so the walk a top-level
+            // compound pattern gets applies as it is. It binds as it
+            // checks; a later failed check only leaves names the arm's
+            // caller rolls back, as the top-level walk does.
+            Pattern::Struct(_, field_patterns, _) => match slot {
+                PayloadSlot::Struct { fields, .. } => {
+                    self.dispatch_struct_pattern(&fields, field_patterns, fail_blk)?;
+                }
+                _ => {
+                    return Err(
+                        "struct sub-pattern requires a struct-typed payload".to_string(),
+                    );
+                }
+            },
+            Pattern::Tuple(sub_patterns) => match slot {
+                PayloadSlot::Tuple { elements, .. } => {
+                    self.dispatch_tuple_pattern(&elements, sub_patterns, fail_blk)?;
+                }
+                _ => {
+                    return Err(
+                        "tuple sub-pattern requires a tuple-typed payload".to_string(),
+                    );
+                }
+            },
             _ => {}
         }
         Ok(())
@@ -683,6 +704,29 @@ impl<'a> FunctionLower<'a> {
                                             Binding::Scalar { local: *local, ty: *ty },
                                         );
                                     }
+                            // ENUM-TUPLE-SUBPATTERN-AOT: the names a
+                            // compound payload pattern introduces.
+                            match (sp, storage.payloads[variant_idx].get(i)) {
+                                (
+                                    Pattern::Struct(_, field_patterns, _),
+                                    Some(PayloadSlot::Struct { fields, .. }),
+                                ) => {
+                                    let (fields, field_patterns) =
+                                        (fields.clone(), field_patterns.clone());
+                                    self.bind_struct_pattern_for_inference(
+                                        &fields,
+                                        &field_patterns,
+                                    );
+                                }
+                                (
+                                    Pattern::Tuple(subs),
+                                    Some(PayloadSlot::Tuple { elements, .. }),
+                                ) => {
+                                    let (elements, subs) = (elements.clone(), subs.clone());
+                                    self.bind_tuple_pattern_for_inference(&elements, &subs);
+                                }
+                                _ => {}
+                            }
                                     // Enum-typed Name bindings would
                                     // require allocating a fresh
                                     // EnumStorage for inference, which

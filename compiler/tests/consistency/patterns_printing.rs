@@ -8,6 +8,53 @@ use super::harness::*;
 /// enum-variant and name patterns, and a compound scrutinee was
 /// refused outright. Both lower now, so the three engines agree on
 /// what an arm selects.
+/// ENUM-TUPLE-SUBPATTERN-AOT. A tuple or struct pattern inside an
+/// enum variant (`Some((a, b))`, `B(P { x, y: 0i64 })`) was refused by
+/// the compiled lanes -- only the scrutinee's own top level took one.
+/// The payload is a compound scrutinee of its own, so the same walk
+/// checks and binds it, literal elements included.
+#[test]
+fn compound_patterns_inside_an_enum_variant_match_across_backends() {
+    let src = r#"
+        struct P { x: i64, y: i64 }
+        enum E { A((i64, u64)), B(P), C }
+        fn pair(n: u64) -> Option<(u64, u64)> {
+            if n > 0u64 { Option::Some((n, n + 1u64)) } else { Option::None }
+        }
+        fn f(o: Option<(u64, u64)>) -> u64 {
+            match o {
+                Option::Some((a, b)) => a * 10u64 + b,
+                Option::None => 0u64,
+            }
+        }
+        fn g(e: E) -> i64 {
+            match e {
+                E::A((a, 3u64)) => a * 100i64,
+                E::A((a, _)) => a,
+                E::B(P { x, y: 0i64 }) => x + 1000i64,
+                E::B(P { x, y }) => x * y,
+                E::C => 7i64,
+            }
+        }
+        fn main() -> u64 {
+            val s: Option<(u64, u64)> = Option::Some((4u64, 2u64))
+            val n: Option<(u64, u64)> = Option::None
+            var acc: u64 = f(s) + f(n)
+            val t: Option<(u64, u64)> = pair(3u64)
+            match t {
+                Option::Some((a, b)) => { acc = acc + a * b }
+                Option::None => {}
+            }
+            val r = g(E::A((5i64, 3u64))) + g(E::A((5i64, 4u64)))
+                + g(E::B(P { x: 2i64, y: 0i64 })) + g(E::B(P { x: 2i64, y: 3i64 })) + g(E::C)
+            acc + r as u64
+        }
+    "#;
+    // 42 + 12 + (500 + 5 + 1002 + 6 + 7)
+    assert_eq!(interpreter_value(src), 1574);
+    assert_consistent(src, "enum_compound_subpattern");
+}
+
 #[test]
 fn struct_patterns_match_across_backends() {
     let src = r#"

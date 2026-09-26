@@ -12,6 +12,10 @@
 
 ### 2026-09-26
 
+- **ENUM-TUPLE-SUBPATTERN-AOT — enum variant の中の tuple / struct
+  パターンが compiled レーンで動く** — `Some((a, b))` /
+  `B(P { x, y: 0i64 })`。payload を独立した compound scrutinee として
+  トップレベルと同じ walk に渡す。
 - **SPAN-RANGE-INTRINSIC — `Span` の範囲演算を呼び出しにしない** —
   `copy_from` / `move_from` / `bytes_eq` / `fill` と `val` に束縛する
   `Span::from_parts` を、lowering と tree-walker が body の 1 命令
@@ -2731,14 +2735,6 @@
   (`interpreter/src/object.rs::to_display_string` /
   `compiler_lower/src/print.rs`) に `field_names` を渡す必要がある
   (`--api` の宣言の描画は対応済み)。踏んでから。
-- **ENUM-TUPLE-SUBPATTERN-AOT: enum variant の中の tuple パターン** ★ —
-  `match o { Option::Some((a, b)) => .., Option::None => .. }` が AOT で
-  ``compiler MVP only supports `Name`, `_`, literal, and nested
-  `EnumVariant` sub-patterns inside enum variants, got a tuple pattern``
-  (interpreter は通る)。tuple パターン自体は PATTERN-STRUCT のときに
-  scrutinee 直下では lowering 対応したが、variant の payload の中は
-  未対応。struct パターンも同じ位置で落ちるか要確認。2026-09-25 に
-  README の例を書いていて踏んだ。
 - **MATCH-STRING-LITERAL-NESTED: 入れ子の位置の `String` リテラル** ★ —
   MATCH-STRING-LITERAL (2026-09-24) は一番外の腕だけを
   `_ if s.eq_str("a")` に書き換える。`Option<String>` に

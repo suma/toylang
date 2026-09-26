@@ -12,6 +12,11 @@
 
 ### 2026-09-26
 
+- **TYPECHECK-LIES 残 (`str.substring` / `str.split` の compiled 対応) は
+  不要になっていた** — STDLIB-TEXT T1+T2 (`cc723096`) で新しいバッファを
+  要る操作は `String` の仕事と決め、`str` の `substring` / `split` /
+  `trim` / `to_upper` は `String::from_str(s).…` へ誘導する型エラーに
+  なっている。`String` 側は 3 レーンで動く。
 - **tuple 要素の `Vec` と `enumerate` / `zip` の `collect`** — `Vec<(i64, u64)>` /
   `soa Vec<(u64, u8)>` は M5 以降すでに 3 レーンで動いていた。
   `EnumerateIter` / `ZipIter` に `collect` を足し、そこで踏んだ
@@ -2628,15 +2633,6 @@
   2026-09-03 に `core/std/base64.t` の `symbol()` で踏んで、
   `'+' as u8` / `'/' as u8` で回避した (隣の 3 arm が元から `as u8`
   なので実害は小さい)。
-
-- **TYPECHECK-LIES 残: `str.substring` / `str.split` の AOT/JIT 対応** ★ —
-  2026-08-20 に 3 件を実測したところ、**本物の嘘は `null` だけ**だった
-  (E0015 で拒否、同日 landing)。`str + str` は元から型検査が拒否して
-  おり (メッセージを E0004 + `concat` 誘導に改善)、`substring` / `split`
-  は interpreter で**動く** — docs 側の Known limitations が古い記述を
-  抱えていたのを実態に合わせた。残るのはバックエンドカバレッジで、
-  compiled 側は `the method receiver must be a struct or enum binding`
-  で受け付けない (`String` の同名 method には制限なし)。
 
 ### コンパイル時実行 (CTFE)
 

@@ -877,3 +877,32 @@ fn a_question_mark_hands_its_payload_over_once() {
     assert_consistent(src, "question_mark_payload_once");
     memory_profiles_agree(src, "question_mark_payload_once");
 }
+
+/// DOUBLE-DROP-LANE-DIVERGENCE: a method that takes its receiver by
+/// value (`fn finish(self: Self) -> String { self.out }`) consumes it.
+/// The move check treated every receiver as a read, so after
+/// `val part = w.finish()` both `part` and `w` owned the buffer and
+/// every lane freed it twice (`json_config.t` via `JsonWriter`, found by
+/// HEAP-CHECK).
+#[test]
+fn a_consuming_method_takes_its_receiver() {
+    let src = r#"
+        struct Writer { out: String, n: u64 }
+        impl Writer {
+            fn new() -> Self { Writer { out: String::new(), n: 0u64 } }
+            fn put(&mut self, s: str) { self.out.push_str(s)  self.n = self.n + 1u64 }
+            fn finish(self: Self) -> String { self.out }
+        }
+        fn main() -> u64 {
+            var w: Writer = Writer::new()
+            w.put("ab")
+            w.put("cde")
+            val part: String = w.finish()
+            part.len()
+        }
+    "#;
+    assert_eq!(tree_walker_heap_check_report(src), "heap check: 0 double frees (0 distinct)\n");
+    assert_eq!(interpreter_value(src), 5);
+    assert_consistent(src, "consuming_method_receiver");
+    memory_profiles_agree(src, "consuming_method_receiver");
+}

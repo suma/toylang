@@ -159,6 +159,7 @@ pub fn check_moves(
         transfer_anchors: HashMap::new(),
         stand_ins: 0,
         tail_root: None,
+        consuming_methods: collect_consuming_methods(program, interner),
         probe: None,
         safe_receiver: None,
         scalar_readers: collect_scalar_readers(program, interner),
@@ -642,6 +643,9 @@ struct MoveCheck<'a> {
     /// walked, the binding `t`. A tail naming (part of) `t` hands that
     /// value into `x`; a tail naming anything else stays a read.
     tail_root: Option<DefaultSymbol>,
+    /// Methods every impl declares with a by-value receiver
+    /// (`self: Self`): the call consumes the receiver.
+    consuming_methods: HashSet<DefaultSymbol>,
 }
 
 /// Where a conditional hand-over clears its flag (`DropFlags`).
@@ -1445,11 +1449,22 @@ impl MoveCheck<'_> {
                 self.walk_args(args, target.as_ref(), conditional);
             }
             Expr::MethodCall(receiver, method, args) => {
-                // The receiver is read, never handed over: the AST does
-                // not record whether a method was written `&self` or
-                // `self: Self`, and treating an unknown as a borrow only
-                // costs a missed transfer, where the other way round
-                // would reject working programs.
+                // The receiver is read unless every impl of the method
+                // takes it by value (`self: Self`, which the declaration
+                // records as a parameter named `self`): then the call
+                // consumes it. Treated as a read, a consuming call left
+                // the caller's binding owning what the method returned
+                // -- `val part = w.finish()` with `finish(self: Self) ->
+                // String { self.out }` freed the buffer through both
+                // `part` and `w` (DOUBLE-DROP-LANE-DIVERGENCE, found by
+                // HEAP-CHECK). A name some impl declares `&self` stays
+                // a read: the call site cannot tell which it reaches.
+                if self.consuming_methods.contains(&method) {
+                    let target = self.signatures.method_target(method, args.len());
+                    self.walk_expr(receiver, Use::Transfer, conditional);
+                    self.walk_arg_list(&args, target.as_ref(), conditional);
+                    return;
+                }
                 // CALLEE-DROP-GENERIC: a scalar read off a probed
                 // parameter leaves no element behind.
                 let safe = match (self.program.expression.get(&receiver), &self.probe) {
@@ -2348,4 +2363,26 @@ fn collect_scalar_readers(
         }
     }
     verdict.into_iter().filter(|(_, ok)| *ok).map(|(k, _)| k).collect()
+}
+
+/// DOUBLE-DROP-LANE-DIVERGENCE: method names every impl declares with a
+/// by-value receiver (`fn finish(self: Self)`). An implicit `&self` /
+/// `&mut self` is not in the parameter list; an explicit `self: Self`
+/// is, as the first parameter.
+fn collect_consuming_methods(program: &File, interner: &DefaultStringInterner) -> HashSet<DefaultSymbol> {
+    let mut verdict: HashMap<DefaultSymbol, bool> = HashMap::new();
+    for i in 0..program.statement.len() {
+        let Some(Stmt::ImplBlock { methods, .. }) = program.statement.get(&StmtRef(i as u32)) else {
+            continue;
+        };
+        for m in &methods {
+            let by_value = m
+                .parameter
+                .first()
+                .is_some_and(|(n, _)| interner.resolve(*n) == Some("self"));
+            let e = verdict.entry(m.name).or_insert(true);
+            *e = *e && by_value;
+        }
+    }
+    verdict.into_iter().filter(|(_, v)| *v).map(|(k, _)| k).collect()
 }

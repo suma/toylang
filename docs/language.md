@@ -545,6 +545,13 @@ Receiver kinds are summarised in the following table:
 | `&self` | by-reference, immutable | n/a |
 | `&mut self` | by-reference, mutable | yes — Self-out-parameter writeback (REF Stage 1) |
 
+A `self: Self` method **consumes** a receiver that owns something: after
+`val s = w.finish()` with `fn finish(self: Self) -> String { self.out }`,
+`w` has been moved (reading it is `[E0014]`) and `s` owns the string.
+This holds when every impl of that method name takes `self: Self`; a
+name some impl declares `&self` keeps the receiver a read, since the
+call site cannot tell which one it reaches.
+
 ### Concrete-args impl dispatch
 
 A `(struct, method)` pair may have **multiple impls** with distinct

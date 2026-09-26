@@ -2526,10 +2526,6 @@
   (2026-09-01 に **match の arm 束縛** と **`return` する arm**、
   2026-09-06 に **block を挟んだ形**は解消。残っているのは method call
   の枝だけ。)
-  同じ理由で、block の先頭束縛から enum を引く `pending_enum_id` も
-  **注釈か素の call** しか読まない — `val t = Foo::open(p)` を注釈なしで
-  書いて `match t { .. }` を tail に置くと従来どおり検出されない。
-  `?` / `??` は自分で注釈を書くのでこの穴に落ちない。
 
 - **TREE-WALKER-CONCRETE-IMPL** ★ — `impl C<u8>` と `impl C<i64>` の
   両方に同名の associated function があると tree-walker が spec を
@@ -2590,14 +2586,14 @@
 > **A 反復子の終端操作 (`fold`/`any`/`all`/`count`/`sum`) →
 > B `Ordering` と汎用 `min`/`max`/`clamp` → F CRC-32**。
 > どれも純 toylang か extern 1 行で書ける。処理系側が要るのは
-> **ファイルハンドル (`open`/`seek`/`pread`/`fsync`)** と
-> **シグナル捕捉**の 2 つで、これは同節の H に分けてある。
+> **シグナル捕捉**で、これは同節の H にある (もう 1 つのファイルハンドルは
+> STDLIB-FS-HANDLE で landing 済み)。
 
 - **並行性 (CONCURRENCY)** は分野としては stdlib だが、本体が move /
   Drop モデルとの接合なので「検討中の機能」節に置いてある (★★★)。
   RUNTIME_LIBRARY P3 も「設計文書を別に取ってから着手」と同じ判断。
-  **設計文書は 2026-09-18 に取り、2026-09-20 に §5 を決めて A1 を
-  landing した** → [`CONCURRENCY.md`](CONCURRENCY.md)
+  **設計文書は 2026-09-18 に取り、2026-09-20 に §5 を決めて A1、
+  2026-09-21 に A2-a / A2-b-1 / A2-b-2 を landing した** → [`CONCURRENCY.md`](CONCURRENCY.md)
 
 - **io.t の範囲外 `""` 既定の厳格化** ★ — `arg(i)` / `env_name(i)` /
   `env_value(i)` は範囲外で `""` を返す (ドキュメント化済みの既定)。
@@ -2631,6 +2627,9 @@
   2026-09-03 に `core/std/base64.t` の `symbol()` で踏んで、
   `'+' as u8` / `'/' as u8` で回避した (隣の 3 arm が元から `as u8`
   なので実害は小さい)。
+  2026-09-26 の棚卸しで、`if b { '+' } else { 65u8 }` の文言が
+  `expected u8, but got ()` と**実際と違う型を言う**ことも分かった
+  (`match` の arm 版は `arm 0 is u32, arm 1 is u8` と正しい)。
 
 ### コンパイル時実行 (CTFE)
 
@@ -2658,13 +2657,6 @@
 > 全プログラムで完全一致**しており、両方向 pin の
 > `assert_diagnostic_report` は現在どこからも呼ばれていない。
 
-- **DEBUG-OBS D4 の残: panic に到達しえない関数のフレームを積まない** —
-  **実測の結論: 作らない** (2026-08-27)。guard 除去が効くのは panic に
-  到達しない関数だが、そこは debug/release 差 2% で、90% が出る fib の
-  ような深い再帰は u64 減算 guard のせいで panic に到達し、かつ再帰な
-  ので深さカウンタのために結局積む必要がある。効く場面が無いので
-  条件 (「実際に効く場面を踏んでから」) が満たされないまま記録に留める。
-
 ### 型システム (NEW-TYPE-SYSTEM)
 
 - **COMPOUND-BLOCK-DROP-TIMING: compound を作るブロックの束縛の drop 時期** —
@@ -2685,7 +2677,7 @@
   - **A3: trait inheritance (`trait B: A`)** — 中。super trait 経由で `A` の method を `B` impl からも要求。
   - **A4: associated types (`trait Iterator { type Item }`)** — 中〜大。
   - **A5-P3-interp: interpreter 側 JIT の `dyn Trait`** ★ — `ScalarTy::from_type_decl` が `TypeDecl::Dyn` で `None` を返し silent fallback。correctness 問題はなく、compiler 側 JIT が実用的な高速化を担うので優先度は低い。
-  - **A5-P4: `Box<dyn Trait>`** — owned trait object + `Vec<Box<dyn Trait>>`。**前提**: `Box<T>` 自体が未実装。
+  - **A5-P4: `Box<dyn Trait>`** — owned trait object + `Vec<Box<dyn Trait>>`。`Box<T>` 自体は `core/std/box.t` にある (`Box<dyn G>` への coercion が無い)。
   - **A5 残作業** — `&dyn Trait` の return / struct field 位置 (REF-Stage-2 の escape rule が阻む)、`dyn A + B`、`dyn Iterator<T>`、generic trait の default body 内での `T` 参照。
 - **CLOSURE-CAPTURE の残: E4 / E5** ★ — 設計は
   [`CLOSURE_CAPTURE.md`](CLOSURE_CAPTURE.md)。**E0〜E3 + E6 は landing 済み**
@@ -2756,7 +2748,7 @@
 - **INCREMENTAL-COMPILATION の残** — Phase 1〜5 は完了 (設計と実測は [`INCREMENTAL_COMPILATION.md`](INCREMENTAL_COMPILATION.md))。統合パスの削減
   (placeholder 2 パス + HashMap → 1 パス + オフセット演算、シンボル翻訳キャッシュ)
   は **2026-08-18 に landing** (integrate 本体 ~43% 削減)。残るのは
-  (a) **preparse の deserialize ~1.5ms** (16 ファイルの並列 read + bincode。
+  (a) **preparse の deserialize ~1.5ms** (当時 16 ファイル、今の stdlib は 46 モジュール。並列 read + bincode。
   bundle 化 = 1 ファイルにすると invalidation が全モジュール単位になるので
   見送り)、(b) per-module IR compilation + IR linker (warm 19ms のうち ~4ms
   しか狙えないので保留 — 着手するなら、大きめの実プログラムで lowering が
@@ -2765,7 +2757,7 @@
 ### テスト・ドキュメント
 
 - **BUILD-PERF** — **ビルドはテスト実行より桁で高い**。クリーンな target で、`interpreter/src/lib.rs` を 1 行触ってからの再ビルドが **2.35s**、テストファイル 1 個なら **1.08s**、クリーンからのフルビルド (テストターゲット全部) が **23.7s** — 対して全 1999 テストの実行が 7.5s (2026-08-19 実測、20 コア)。ここは 2026-08-19 に一度片付けたので、**残っているのは運用の話**:
-  - **target を肥大させないこと — 実測 49x で、他のどの施策より大きい** ★★★ — 同じ「lib を触って再ビルド」が、**95GB / 1,248,912 ファイル**まで育った target の上では **1m55s**、`cargo clean` 直後の 1.7GB / 7,729 ファイルでは **2.35s**。消えた 125 万ファイルの 99% は過去のビルドの残骸。理由は cargo が rustc に `-L dependency=target/debug/deps` を渡すことで、**リンカが毎回 125 万エントリのディレクトリを走査する**。「user 45s に対し sys 6分」という異常な比率の正体がこれで、リンカが遅いのではなくディレクトリが大きすぎた。**古い成果物を定期的に GC すること** — **運用セットアップ済み (2026-08-20)**: `cargo-sweep` を導入し、`cargo sweep --time 30` (世代 GC) を CLAUDE.md に明記。この状態に戻ると下の施策は全部誤差に埋もれる。
+  - **target を肥大させないこと — 実測 49x で、他のどの施策より大きい** ★★★ — 同じ「lib を触って再ビルド」が、**95GB / 1,248,912 ファイル**まで育った target の上では **1m55s**、`cargo clean` 直後の 1.7GB / 7,729 ファイルでは **2.35s**。消えた 125 万ファイルの 99% は過去のビルドの残骸。理由は cargo が rustc に `-L dependency=target/debug/deps` を渡すことで、**リンカが毎回 125 万エントリのディレクトリを走査する**。「user 45s に対し sys 6分」という異常な比率の正体がこれで、リンカが遅いのではなくディレクトリが大きすぎた。**古い成果物を定期的に GC すること** — **運用セットアップ済み (2026-08-20)**: `cargo-sweep` を導入し、`cargo sweep --time 1` (世代 GC) を CLAUDE.md に明記。この状態に戻ると下の施策は全部誤差に埋もれる。
   - **テストバイナリは 1 クレート 1 本** (2026-08-19 landing、73 → 12) — cargo は `tests/*.rs` を **1 ファイル 1 バイナリ**でリンクするので、64 ファイルは ~27MB の実行ファイルを 64 回リンクすることを意味していた (各々が frontend / interpreter / cranelift を静的に抱える)。`autotests = false` + `[[test]]` 1 個 + `#[path]` でモジュール取り込み。ファイルは 1 つも移動していない。**クリーン比較で フルビルド 37.5s → 23.7s / CPU 8m45s → 3m13s、lib 変更ループ 4.33s → 2.35s**。代償はテストファイル 1 個の編集が 0.88s → 1.08s (クレートの suite 全体が再コンパイルされる) と、テスト名にファイル名が前置されること。
   - **third-party の opt-level は 0、ただし cranelift だけ 2** (2026-08-19) — 全 deps を 3 で焼くのはビルド時間の払い損だった。**テスト実行が速さを感じる dep は cranelift だけ** (各テストが小さなプログラムを JIT / AOT する) なので、そこだけ残した。**テスト実行は劣化していない** (7.5s)。綴りに 2 つ罠があり、**どちらも間違えても cargo はエラーを出さない**: キーは `overrides` ではなく **`package`** (`overrides` は 1.41 以前の名前で、`unused manifest key` として黙って無視される)、そして **`cranelift` 単体は umbrella crate にしか当たらない** (実体は `cranelift-codegen` 以下 12 crate なので個別に列挙する。一致しない package spec は警告なしで「オーバーライド無し」になる)。
   - **測って外れた仮説を 2 つ記録しておく**: (1) **デバッグ情報の削減は効かない** — `[profile.dev]` / `[profile.test]` に `debug = "line-tables-only"` を入れて 2m06s (対照 1m55s)、改善ゼロ。27MB の中身はデバッグ情報ではなく cranelift のコード。(2) **リンカ差し替え (lld) と Spotlight 除外は、上を片付けた後では測る意味がない** — 絶対値が 1〜2 秒台まで落ちているので削り代が残っていない。target が肥大していた頃の「リンクが遅い」という観察は、リンカの速度ではなくディレクトリ規模の問題だった。
@@ -2790,7 +2782,7 @@
     **「lite → full 二重パス」は 2026-08-18 に潰したが、それ自体はコストではなかった**と分かったので記録しておく: `assert_consistent` の let-chain は**最も安いレーン (no-core の tree-walker) で短絡する**ので、stdlib を使うソースが捨てられる AOT codegen / link / spawn まで到達することは元から無かった。捨てていたのは parse + no-core 型検査 ~2ms だけ。実際に効いたのは同時に入れた**フロントエンドパスの共有**の方 (下記)。
   - **core module のロードが 1 プロセスあたり 27ms** ★★★ — trivial プログラムを空 core dir と比べた実測 (2026-08-18、debug ビルド): **33.5ms → 6.1ms**。nextest は 1 テスト 1 プロセスなので、interpreter の 984 テストはそれぞれこれを払う = ~26s CPU ≈ wall 1.3s。内訳は 2026-08-15 時点の計測 (integrate ~43% 削減が landing する前) で `integrate_modules` 11.3ms / `execute_entry` の context 構築 5.2ms / stdlib 40 impl block の型検査 2.5ms / その他の型検査 1.1ms。
 
-    **測って分かった否定的な結果を 3 つ記録しておく**: (1) **free function の body は既に user 分しか検査していない** (`take(user_func_count)`) ので「stdlib 本体を型検査しない」で削れるのは impl block の 2.5ms だけ。しかも**型検査器は body を書き換える** (`?` の desugar、`Display` の `to_str` 挿入) ので、stdlib の body を検査しないと**書き換え前の AST がバックエンドに流れる** — 今の stdlib は `?` も補間も使っていないので通ってしまい、使った日に壊れる罠になる。(2) `remap_symbol` の memo 化 (module symbol → main symbol を Vec でキャッシュ) は**効果ゼロ**だった。integrate の時間は文字列ハッシュではなく AST を pool に複製する作業そのもの。(3) **「型検査済み core をプロセス内で使い回す」は unit テストには効かない** — nextest は 1 テスト 1 プロセスなので、そもそもプロセス内に 2 回目の呼び出しが無い。
+    **測って分かった否定的な結果を 3 つ記録しておく**: (1) 「stdlib 本体を型検査しない」は採らない (測定時点では free function の body を `take(user_func_count)` で user 分しか検査しておらず、削れるのは impl block の 2.5ms だけだった。2026-08-30 にその `take` も外し、今は stdlib も全部検査する)。**型検査器は body を書き換える** (`?` の desugar、`Display` の `to_str` 挿入) ので、stdlib の body を検査しないと**書き換え前の AST がバックエンドに流れる** — 今の stdlib は `?` も補間も使っていないので通ってしまい、使った日に壊れる罠になる。(2) `remap_symbol` の memo 化 (module symbol → main symbol を Vec でキャッシュ) は**効果ゼロ**だった。integrate の時間は文字列ハッシュではなく AST を pool に複製する作業そのもの。(3) **「型検査済み core をプロセス内で使い回す」は unit テストには効かない** — nextest は 1 テスト 1 プロセスなので、そもそもプロセス内に 2 回目の呼び出しが無い。
     したがって残る手は (a) stdlib を使わないテストを `test_program_no_core` に寄せる (実測: `test_program` を no-core にすると interpreter の 879 テスト中 **797 が通り**、その binary は 2.3s → 1.3s。ただし stdlib 同居時の回帰を見なくなる = coverage を実際に落とす)、(b) **プロセスを跨いで**型検査済み core を再利用する (INCREMENTAL-COMPILATION 側の仕事。`File` が `Rc` を持つので素朴な in-memory memo 化はできない — 別スレッドから clone すると refcount が壊れる)、(c) 1 プロセスで core を複数回ロードしている `consistency` を直す — **解消 (2026-08-20)**: 4 レーンが 1 フロントエンドパスを共有するようになり、AOT / JIT レーンが毎回 core をロードし直す重複が無くなった (consistency -27% CPU)。
   - **プロセス起動が ~5ms × 1999 ≈ 10s CPU (約 7%)** ★ — 起動フロアの実測は空 core dir の trivial 実行 6.1ms。nextest は 1 テスト 1 プロセス。テストを機能別に束ねれば減るが、失敗の切り分けと引き換え。
   - ~~`serial_test` (`oop_tests.rs`) の並列化~~ — **効果ゼロと分かったので却下 (2026-08-18)**。`#[serial]` が付いているのは 8 テストで合計 **0.193s CPU (suite の 0.12%)**、1 本 18〜34ms と既に起動フロア。しかも `serial_test` のロックはプロセスローカルなので、**nextest では各テストが別プロセスに散る = 元から直列化していない**。
@@ -2821,7 +2813,7 @@
 >
 > 以下は「踏んでから」で保留した分。
 
-- **`remap_statement` 249 行** ★ — `Stmt` の variant ごとにフィールドを
+- **`remap_statement` 286 行** ★ — `Stmt` の variant ごとにフィールドを
   1 つずつ写す構造コピーで、分岐ロジックではない。コレクションの
   remap ヘルパ化は済み。これ以上分けても行が移るだけ。
 
@@ -2840,8 +2832,8 @@
   [`MODULE_IMPORTS.md`](MODULE_IMPORTS.md)。**D1 の alias 束縛だけ
   2026-09-05 に landing** (`import a.b as h`)。残り (可視性の規則 P1 /
   遅延読み込み P2 / 型の名前空間化 P3) は未着手。BARE-NAME-COLLISION /
-  TYPE-NAME-COLLISION を「規則」で消し (今の rank は同 root の衝突を
-  消せない)、`pub` を実効化し、hello world の **145ms → 5.7ms**
+  TYPE-NAME-COLLISION を「規則」で消し (関数の衝突は呼び出し元優先で
+  実害が消えたが、型の衝突は残る)、`pub` を実効化し、hello world の **145ms → 5.7ms**
   (auto-load が 46 モジュール全部を読んでいる分) を取り戻す。
   計測: stdlib のモジュール間依存は 119 辺で**非循環**、prelude を引くと
   足す import は **30 行 / 21 ファイル**、example + poc 200 ファイル側は
@@ -2853,9 +2845,13 @@
   `requires` の 3 行 (§4 の #1〜#3) は 2026-09-04 に landing 済み
   ([`VEC_CONTRACTS.md`](VEC_CONTRACTS.md))。未着手は B (長さ・容量の
   `ensures` + `old`、本命、#4〜#7) / C (`never_allocates` と allocation
-  契約、#8〜#11 — #8 は §5-1 の parser の穴に塞がれている) /
+  契約、#8〜#11 — #8 を塞いでいた §5-1 の parser の穴は
+  NEVER-ALLOCATES-METHOD-STACK で解消し、`Vec::get` は `never_allocates`) /
   E (`is_sorted` helper、#12)。D (擬似 invariant) は B に吸収されるので
   不採用、要素値の契約は generic `T` に `eq` を要求するので不採用。
+* **DEBUG-OBS D4 の残: panic に到達しえない関数のフレームを積まない** —
+  実測の結論は「作らない」(2026-08-27)。効く場面を踏んだら再検討。
+  経緯は [`DEBUG_OBSERVABILITY.md`](DEBUG_OBSERVABILITY.md)。
 * FFI — P1 (静的 FFI、`from`/`as`) 完了 (2026-08-16、[`FFI_PLAN.md`](FFI_PLAN.md))。
   P2 (動的ロード / dlopen builtin) は未着手
 * AOT ランタイムの Rust 化 — R0+R1 完了、R2 (extern 一般化 = FFI_PLAN P1)
@@ -2946,8 +2942,8 @@
   B0〜B4 は landing 済み (完了済み節)。残る B5 (マニフェストと依存) は
   依存が来るまで作らない。
 * **テストの道具とライブラリ** — [`TEST_TOOL.md`](TEST_TOOL.md)。
-  T0〜T5 は landing 済み (完了済み節)。残る T4 後半 (`--backend all`
-  = レーン間の食い違い報告) は未実装節の TEST-PARALLEL P6 で追う。
+  T0〜T5 と T4 後半 (`--backend all`、TEST-PARALLEL P6) は landing 済み
+  (完了済み節)。
 * モジュール拡張 — バージョニング、リモートパッケージ
 * 言語内からの AST 取得・操作
 * LSP 対応 — 補完 / go-to-definition / hover / 診断 / フォーマット。frontend の AST・型チェッカ・`SourceLocation` を再利用できる。ただし**エージェントは LSP より CLI クエリを使いやすい**ので、LLM ループの観点では `--api` / 型ホール (P7 で landing 済み) の方が先だった
@@ -2963,11 +2959,11 @@
 > 2026-05-08 に nominal struct へ変わっていた)。
 
 ### テスト状況
-- 合計 **2601 テスト** (100% 成功、2026-08-31 時点)。
+- 合計 **3173 テスト** (100% 成功、2026-09-26 時点)。
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency。後者は interpreter / JIT / AOT の 3 経路一致を保証する。
-- テスト実行はワークスペース全体で **~12s** (2026-08-31 実測、warm、
+- テスト実行はワークスペース全体で **~25s** (2026-09-26 実測、warm、
   nextest の既定 profile 出力)。2026-08-19 頃の ~6.5s からはテスト数の
-  増加 (1999 → 2601) と stdlib の肥大 (整合性レーンの core ロード) 分。
+  増加 (1999 → 2601 → 3173) と stdlib の肥大 (整合性レーンの core ロード) 分。
   内訳と削り代は TEST-PERF、ビルド時間は BUILD-PERF。
   `compiler/build.rs` が `toylang_rt` を rustc で
   staticlib pre-build し、リンク結果は `TOY_LINK_CACHE_DIR` で
@@ -2976,21 +2972,12 @@
 
 ### 既知の不具合
 
-- **compound を返す method 呼び出しから束縛したローカルに drop glue が付く**
-  ★★ — `val e: T = v.get(i)` の `e` は要素の**別名**なのに所有として
-  扱われ、スコープを抜けるときにコンテナの持つバッファを解放する。
-  `__builtin_ptr_read::<T>` から束縛すれば付かないので、stdlib の
-  generic なコンテナ実装はそちらで書いている (`Vec::contains` /
-  `sort` / `sort_by`)。**回避策は分かっているが、規律であって検査では
-  ない** — ユーザが `Vec<String>` に対して同じ形を書けば同じことが
-  起きる。根本は「別名を返す API と所有を返す API を型で区別できない」
-  ことなので、`Vec::get` が `&T` を返せるようになる (借用の一般化) か、
-  drop flag が入るまで残る。2026-09-05 の STRING-NO-DROP で踏んだ。
-
 **直った項目をこの節に段落で残さないこと** — 常時読まれるファイルが
 changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 バックエンドで
 食い違う / `if` の条件が型検査されない / MATCH-STRUCT-ARM) はいずれも解消し、
-経緯は git log と完了済み節にある。`__getitem__` の 2 件
+経緯は git log と完了済み節にある。「compound を返す method 呼び出しから
+束縛したローカルに drop glue が付く」も ELEMENT-BORROW (`[E0028]` で
+拒否し `borrow` / `clone()` へ誘導) で解消。`__getitem__` の 2 件
 (`&self` 受理 / generic 戻り型置換) も 2026-08-30 に解消
 (POINTER P2、完了済み節)。
 
@@ -3012,36 +2999,21 @@ changelog になる。過去にここへ挙がった 3 件 (f64 の print が 3 
   回避策は窓を渡すこと (`self.buf.as_span()` を `val` に束縛して
   `Span<u8>` で渡す) で、`poc/logsearch` の行分割はこの形にしてある。
 
-- **BARE-NAME-COLLISION: auto-load される全モジュールが bare 名の
-  1 つの名前空間を共有する** ★★ — `poc/logsearch` に
-  `fn is_digit(b: u8) -> bool` (**`pub` でない**) を書いたら
-  `[E0010] ambiguous module path \`is_digit\`: it matches
-  logsearch::record::is_digit and std::json::is_digit` で落ちた。
-  `max_depth` も `std::json::max_depth` と衝突した。診断は明快で
-  「ファイル名を変えろ」と言うが、**stdlib が 1 つ関数を増やすたびに、
-  ユーザのプライベート関数が壊れうる**ということでもある。
-
-  **rank (BUILD-TOOL B0) が消したのはこの形の半分だけ** — 別 root の
-  衝突は後の root が勝つが、**同じ root の 2 モジュール**は同 rank
-  なので今も落ちる (`src/a.t` と `src/b.t` がそれぞれ private な
-  `fn helper` を持ち、**各自が自分のを呼んでいる**だけで
-  `ambiguous call` になる)。stdlib 内の `encode` / `decode`
-  (base64 / hex、どちらも `pub`) も同じ形。
-
-  **シンボル名のマングリングは解決にならない** (2026-09-05 検討)。
-  定義側の一意化は既に済んでいて (`toy_std_math__add` /
-  `function_index` の (path, rank) エントリ)、残っているのは
-  **使用側の解決規則**だから。要るのは規則 2 つ:
-  (1) **`pub` を実効化する** — 非 `pub` の module 関数は自分の module
-  からの呼び出しにしか候補にならない (今は修飾付きでも呼べてしまう。
-  `check_function_access` の `is_same_module_access` が
-  `true` 固定)。stdlib の非 pub 40 本を他 module から呼んでいる箇所は
-  **0 件**なので、この変更単体では stdlib は壊れない。
-  (2) **呼び出し元 module を rank より先に優先する**。
-  難所は「呼び出し元 module」を 3 レーンに届けること — 型検査器は
-  `type_check(func)`、lowering は関数ごとのループで既に持っているが、
-  **tree-walker は実行中の関数の module を持っていない**
-  (`CallFrame` に足すか、型検査時に解決結果を AST に焼く)。
+- **BARE-NAME-COLLISION の残り: `pub` が実効化されていない** ★★ —
+  auto-load される全モジュールが bare 名の 1 つの名前空間を共有する件は、
+  **呼び出し元 module を先に引く**規則 (STDLIB-FN-SHADOWED-BY-USER-FN) で
+  実害の形が解消した — ユーザの private `is_digit` は `std::json::is_digit`
+  に勝ち、同じ root の `src/a.t` / `src/b.t` が各自の private `helper` を
+  呼ぶ形も 3 レーンで各自のものを呼ぶ (2026-09-26 の棚卸しで確認)。
+  残りは 2 つ:
+  (1) **`pub` を実効化する** — 非 `pub` の module 関数が修飾付きで外から
+  呼べてしまう (`json::is_digit(55u64)` が通る。`check_function_access` の
+  `is_same_module_access` が `true` 固定)。stdlib の非 pub 40 本を他 module
+  から呼んでいる箇所は **0 件**なので、この変更単体では stdlib は壊れない。
+  (2) **衝突警告の文言が挙動と食い違う** — `toy` は「a bare call takes the
+  last one」と警告するが、実際は各 module が自分のものを呼ぶ。
+  シンボル名のマングリングは解決にならない (2026-09-05 検討、定義側の
+  一意化は既に済んでいる)。
 
 - **QUALIFIER-BARE-FALLBACK: 修飾付き呼び出しが別モジュールの関数に
   落ちる** ★★ — `hex::abs(-3i64)` が `std::math::abs` を呼んで `3` を

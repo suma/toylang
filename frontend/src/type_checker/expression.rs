@@ -3772,12 +3772,18 @@ impl<'a> TypeCheckerVisitor<'a> {
             | TypeDecl::Unit => Ok(()),
             TypeDecl::Vector(_) => Ok(()),
             TypeDecl::Generic(p) | TypeDecl::Identifier(p) => {
+                // ZIP-ITER-GENERIC-SCOPE: a method's own parameters
+                // (`fn zip<U>` inside `impl<T> VecIter<T>`) are in
+                // neither the inference scope nor the impl's list —
+                // only the free-function path pushes its parameters
+                // as a scope — so ask the body's declared list too.
                 if self.type_inference.lookup_generic_type(*p).is_some()
                     || self
                         .context
                         .current_impl_generic_params
                         .as_ref()
                         .is_some_and(|params| params.contains(p))
+                    || self.context.current_fn_generic_params.contains(p)
                 {
                     return Ok(());
                 }

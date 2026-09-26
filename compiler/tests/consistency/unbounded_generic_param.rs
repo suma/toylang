@@ -152,3 +152,30 @@ fn a_struct_field_types_the_value_put_in_it() {
     "#;
     assert_renders(src, "struct_field_types_value", "7 11\n");
 }
+
+/// ZIP-ITER-GENERIC-SCOPE: a method's own parameter was not a name the
+/// turbofish could use -- `__builtin_sizeof::<U>()` inside
+/// `fn sz<U>` of an `impl<T>` was `[E0010] unknown type \`U\``, while
+/// the impl's `T` and a free function's `U` both worked. The checker
+/// asked the inference scope and the impl's list, and a method pushes
+/// neither for its own parameters. `ZipIter` packed two strides into
+/// one field to get around this.
+#[test]
+fn a_methods_own_parameter_is_a_turbofish_type() {
+    let src = r#"
+        struct W<T> { v: T }
+        impl<T> W<T> {
+            fn sz<U>(self: Self, other: U) -> u64 {
+                __builtin_sizeof::<U>() * 10u64 + __builtin_sizeof::<T>()
+            }
+        }
+        fn main() -> u64 {
+            val w: W<u8> = W { v: 1u8 }
+            val a = w.sz(5u16)
+            val b = w.sz(7u64)
+            a * 100u64 + b
+        }
+    "#;
+    // 21 * 100 + 81
+    assert_consistent(src, "method_own_param_turbofish");
+}

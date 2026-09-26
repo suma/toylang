@@ -320,6 +320,8 @@ tree-walker の型引数は struct リテラルのフィールドに宣言型を
 `compute_byte_size` を定数で、tree-walker が先頭要素の値の幅を使う。
 Vec が 4 leaf → 3 leaf になり、`poc/logsearch` の `__text` は −8.2%、
 archive は AOT・IR VM とも ~6% 速くなった。)
+(2026-09-26 追記: ZIP-ITER-GENERIC-SCOPE も解消 — method 自身の型引数が
+turbofish に書ける。)
 
 移行で 2 つ出た:
 

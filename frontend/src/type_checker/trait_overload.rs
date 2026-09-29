@@ -271,11 +271,21 @@ pub fn overload_candidates(
 /// Two impls with *different* concrete target args (`impl Vec<u8>`
 /// beside `impl<T> Vec<T>`) are the specialisation the registry is
 /// built for, and are left alone.
+/// Two impls of one method on one type, as found by
+/// [`find_duplicate_impl_method`]: both declarations, so a diagnostic
+/// can point at each.
+pub struct DuplicateImplMethod {
+    pub first: std::rc::Rc<crate::ast::MethodFunction>,
+    pub second: std::rc::Rc<crate::ast::MethodFunction>,
+    pub message: String,
+}
+
 pub fn find_duplicate_impl_method(
     stmt_pool: &StmtPool,
     interner: &DefaultStringInterner,
-) -> Option<String> {
-    let mut seen: HashMap<(DefaultSymbol, DefaultSymbol, String), ()> = HashMap::new();
+) -> Option<DuplicateImplMethod> {
+    let mut seen: HashMap<(DefaultSymbol, DefaultSymbol, String), std::rc::Rc<crate::ast::MethodFunction>> =
+        HashMap::new();
     for index in 0..stmt_pool.len() {
         let stmt_ref = StmtRef(index as u32);
         let Some(Stmt::ImplBlock {
@@ -290,14 +300,14 @@ pub fn find_duplicate_impl_method(
         let args_key = overload_name("", &target_type_args, interner);
         for method in &methods {
             let key = (target_type, method.name, args_key.clone());
-            if seen.insert(key, ()).is_some() {
+            if let Some(first) = seen.insert(key, method.clone()) {
                 let type_name = interner.resolve(target_type).unwrap_or("?");
                 let method_name = interner.resolve(method.name).unwrap_or("?");
-                return Some(format!(
+                return Some(DuplicateImplMethod { first, second: method.clone(), message: format!(
                     "`{type_name}` has two impls of `{method_name}`; one of them would be \
                      silently discarded. Move the method into the trait impl rather than \
                      writing it in both places"
-                ));
+                ) });
             }
         }
     }

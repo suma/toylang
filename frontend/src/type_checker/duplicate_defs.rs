@@ -78,7 +78,8 @@ pub fn check_duplicate_definitions(
                 let name_str = interner.resolve(name).unwrap_or("?").to_string();
                 out.errors.push(
                     TypeCheckError::duplicate_definition(ns.noun(), name_str, earlier.line)
-                        .with_location(at),
+                        .with_location(at)
+                        .with_related(*earlier, "first defined here"),
                 );
                 true
             }

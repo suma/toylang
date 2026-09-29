@@ -1896,6 +1896,28 @@ impl<'a> TypeCheckerVisitor<'a> {
         error
     }
 
+    /// Add a related location at `word` inside `fun`'s declaration
+    /// (its name, or one of its parameters). The node records only
+    /// where the declaration starts; the name is found in the text
+    /// when the diagnostic is resolved.
+    pub(crate) fn at_declaration_of(
+        &self,
+        err: TypeCheckError,
+        fun: &Function,
+        word: &str,
+        message: &str,
+    ) -> TypeCheckError {
+        let Some(body) = self.core.location_pool.get_stmt_location(&fun.code) else {
+            return err;
+        };
+        if word.is_empty() {
+            return err;
+        }
+        let start = fun.node.start as u32;
+        let at = crate::type_checker::SourceLocation::new_in(body.file, 0, 0, start, start);
+        err.with_related_word(at, word, message)
+    }
+
     /// Type-check the argument list of a non-generic direct call
     /// against a resolved `Function`. Extracted from `visit_call` so
     /// the orchestrator stays focused on lookup + dispatch. The
@@ -1930,10 +1952,11 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         if args.len() != param_types.len() {
             let fn_name_str = self.resolve_symbol_name(fn_name);
-            return Err(TypeCheckError::generic_error(&format!(
+            let err = TypeCheckError::generic_error(&format!(
                 "Function '{}' argument count mismatch: expected {}, found {}",
                 fn_name_str, param_types.len(), args.len()
-            )));
+            ));
+            return Err(self.at_declaration_of(err, fun, &fn_name_str, "declared here"));
         }
 
         // Type-check each argument with the parameter type as the hint
@@ -1987,6 +2010,17 @@ impl<'a> TypeCheckerVisitor<'a> {
                         fn_name_str
                     ));
                 let err = self.error_with_location(err, arg);
+                let param = fun
+                    .parameter
+                    .get(arg_index)
+                    .map(|(name, _)| self.resolve_symbol_name(*name))
+                    .unwrap_or_default();
+                let err = self.at_declaration_of(
+                    err,
+                    fun,
+                    &param,
+                    &format!("parameter `{param}` of `{fn_name_str}` is declared here"),
+                );
                 return Err(self.suggest_numeric_cast(err, arg, &arg_type, expected_type));
             }
         }

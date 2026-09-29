@@ -269,6 +269,24 @@ pub struct TypeCheckError {
     /// see `crate::diagnostic` for why a wrong suggestion is worse than
     /// none.
     pub suggestions: Vec<crate::diagnostic::Suggestion>,
+    /// Related places and a name to narrow `location` to (LLM-TOOLING
+    /// #3). Boxed and optional: few errors have either, and every
+    /// type-checker function returns `Result<_, TypeCheckError>`.
+    pub anchors: Option<Box<ErrorAnchors>>,
+}
+
+/// See [`TypeCheckError::anchors`].
+#[derive(Debug, Clone, Default)]
+pub struct ErrorAnchors {
+    /// Other places the error is about: the first declaration of a
+    /// duplicated name, where a value was moved, the parameter an
+    /// argument failed to match.
+    pub related: Vec<crate::diagnostic::Related>,
+    /// Narrow `location` to the first occurrence of this word at or
+    /// after its start, once the text is at hand (`Diagnostic::anchor_in`).
+    /// For errors about a declaration whose node records only where it
+    /// begins.
+    pub location_word: Option<String>,
 }
 
 impl TypeCheckError {
@@ -279,6 +297,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -293,6 +312,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -306,6 +326,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -319,6 +340,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -332,6 +354,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -344,6 +367,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -358,6 +382,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -371,6 +396,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -383,6 +409,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -395,6 +422,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -408,6 +436,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -421,6 +450,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -436,6 +466,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -448,6 +479,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -459,6 +491,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -470,6 +503,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -481,6 +515,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -499,6 +534,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -531,6 +567,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -542,6 +579,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -553,6 +591,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -570,6 +609,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -581,6 +621,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -597,6 +638,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -609,6 +651,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -630,6 +673,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -641,6 +685,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -652,6 +697,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -669,6 +715,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -680,6 +727,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
@@ -693,11 +741,44 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 
     pub fn with_context(mut self, context: &str) -> Self {
         self.context = Some(context.to_string());
+        self
+    }
+
+    /// Place the error at `word` inside the declaration starting at
+    /// `location` (resolved against the text later).
+    pub fn at_word(mut self, location: SourceLocation, word: &str) -> Self {
+        self.location = Some(location);
+        self.anchors.get_or_insert_with(Default::default).location_word = Some(word.to_string());
+        self
+    }
+
+    /// Point at another place the error concerns.
+    pub fn with_related(mut self, location: SourceLocation, message: impl Into<String>) -> Self {
+        self.anchors
+            .get_or_insert_with(Default::default)
+            .related
+            .push(crate::diagnostic::Related::at(location, message));
+        self
+    }
+
+    /// As [`Self::with_related`], at the first occurrence of `word` from
+    /// `location` on — for a declaration whose AST node only records
+    /// where it starts, so the note lands on the name.
+    pub fn with_related_word(
+        mut self,
+        location: SourceLocation,
+        word: &str,
+        message: impl Into<String>,
+    ) -> Self {
+        let mut related = crate::diagnostic::Related::at(location, message);
+        related.word = Some(word.to_string());
+        self.anchors.get_or_insert_with(Default::default).related.push(related);
         self
     }
 
@@ -720,6 +801,7 @@ impl TypeCheckError {
             location: None,
             origin_module: None,
             suggestions: Vec::new(),
+            anchors: None,
         }
     }
 

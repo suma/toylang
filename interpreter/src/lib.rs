@@ -413,6 +413,7 @@ fn integrate_modules(
 fn process_impl_blocks_extracted(
     tc: &mut TypeCheckerVisitor,
     impl_blocks: &[(DefaultSymbol, Vec<frontend::type_decl::TypeDecl>, Vec<std::rc::Rc<MethodFunction>>, Option<DefaultSymbol>, Vec<frontend::type_decl::TypeDecl>)],
+    impl_locations: &[Option<frontend::type_checker::SourceLocation>],
 ) -> Vec<TypeCheckError> {
     let mut errors = Vec::new();
 
@@ -438,15 +439,22 @@ fn process_impl_blocks_extracted(
     // visitor entry so generic-trait impls
     // (`impl Iterator<i64> for Counter`) substitute `T -> i64`
     // before the conformance check compares signatures.
-    for (target_type, target_type_args, methods, trait_name, trait_type_args) in impl_blocks {
+    for (index, (target_type, target_type_args, methods, trait_name, trait_type_args)) in
+        impl_blocks.iter().enumerate()
+    {
         let started = frontend::compile_profile::timer();
-        if let Err(err) = tc.visit_impl_block_with_trait_args(
+        if let Err(mut err) = tc.visit_impl_block_with_trait_args(
             *target_type,
             target_type_args,
             methods,
             *trait_name,
             trait_type_args,
         ) {
+            let header = impl_locations.get(index).copied().flatten();
+            let name = tc.core.string_interner.resolve(trait_name.unwrap_or(*target_type));
+            if let (None, Some(at), Some(name)) = (err.location, header, name) {
+                err = err.at_word(at, name);
+            }
             errors.push(err);
         }
         frontend::compile_profile::hot(frontend::compile_profile::HotTable::Typecheck, started, || {
@@ -717,30 +725,46 @@ fn check_typing_collecting(
     // registries replace on a matching key, so one body vanishes; the
     // runtime registry builder noticed, but only once the program ran.
     // Report it here, where it is a type error like any other.
-    if let Some(message) =
+    if let Some(dup) =
         frontend::type_checker::find_duplicate_impl_method(&program.statement, string_interner)
     {
         // The same method declared twice for one type: a duplicate
-        // definition, like two `fn`s of one name (E0031).
-        errors.push(Diagnostic::from_type_check_error(
-            &frontend::type_checker::TypeCheckError::coded(
-                frontend::diagnostic::codes::DUPLICATE_DEFINITION,
-                message,
-            ),
-            diag_file,
-            Some(string_interner),
-        ));
+        // definition, like two `fn`s of one name (E0031). On the second
+        // declaration's name, pointing back at the first.
+        let name = string_interner.resolve(dup.second.name).unwrap_or("").to_string();
+        let at = |m: &MethodFunction| {
+            program.location_pool.get_stmt_location(&m.code).map(|body| {
+                let start = m.node.start as u32;
+                frontend::type_checker::SourceLocation::new_in(body.file, 0, 0, start, start)
+            })
+        };
+        let mut error = frontend::type_checker::TypeCheckError::coded(
+            frontend::diagnostic::codes::DUPLICATE_DEFINITION,
+            dup.message,
+        );
+        if let Some(second) = at(&dup.second) {
+            error = error.at_word(second, &name);
+        }
+        if let Some(first) = at(&dup.first) {
+            error = error.with_related_word(first, &name, "first defined here");
+        }
+        errors.push(Diagnostic::from_type_check_error(&error, diag_file, Some(string_interner)));
     }
 
     // The impl_blocks walk runs over all statements (user +
     // integrated module + prelude) so impl blocks from every source
     // contribute methods to `context.struct_methods`.
     let mut impl_blocks = Vec::new();
+    // Where each block starts, parallel to `impl_blocks`: an error about
+    // the block as a whole (a missing method, an unknown trait) has no
+    // expression to stand on, and lands on the header's name instead.
+    let mut impl_locations = Vec::new();
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
         if let Some(stmt) = program.statement.get(&stmt_ref) {
             if let frontend::ast::Stmt::ImplBlock { target_type, target_type_args, methods, trait_name, trait_type_args } = &stmt {
                 impl_blocks.push((*target_type, target_type_args.clone(), methods.clone(), *trait_name, trait_type_args.clone()));
+                impl_locations.push(program.location_pool.get_stmt_location(&stmt_ref).copied());
             }
         }
     }
@@ -840,7 +864,7 @@ fn check_typing_collecting(
 
     // Process impl blocks and collect errors
     let impl_phase = prof::phase("impl_blocks");
-    let impl_errors = process_impl_blocks_extracted(&mut tc, &impl_blocks);
+    let impl_errors = process_impl_blocks_extracted(&mut tc, &impl_blocks, &impl_locations);
     drop(impl_phase);
     prof::count("typecheck.impl_blocks", impl_blocks.len() as u64);
     errors.extend(
@@ -1823,6 +1847,8 @@ fn runtime_diagnostic(
         span: location.map(frontend::diagnostic::Span::from),
         origin_module: None,
         suggestions: Vec::new(),
+        related: Vec::new(),
+        span_word: None,
         backtrace: backtrace
             .iter()
             .map(|frame| frontend::diagnostic::BacktraceFrame {
@@ -1856,6 +1882,8 @@ fn ir_vm_diagnostic(failure: &ir_vm::lift::IrVmFailure, entry_file: &str) -> Dia
         span,
         origin_module: None,
         suggestions: Vec::new(),
+        related: Vec::new(),
+        span_word: None,
         backtrace: failure
             .frames
             .iter()

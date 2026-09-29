@@ -138,6 +138,14 @@ impl<'a> ErrorFormatter<'a> {
             format!("{label}: [{}] {}", diagnostic.code, diagnostic.message)
         };
 
+        for related in &diagnostic.related {
+            let place = match (&related.file, related.span) {
+                (Some(file), Some(span)) => format!("{file}:{}:{}", span.line, span.column),
+                (None, Some(span)) => format!("line {}:{}", span.line, span.column),
+                _ => continue,
+            };
+            out.push_str(&format!("\n   = note: {} at {place}", related.message));
+        }
         for suggestion in &diagnostic.suggestions {
             match suggestion.edits.as_slice() {
                 [only] => {

@@ -203,6 +203,27 @@ impl serde::Serialize for Suggestion {
     }
 }
 
+/// Another place a diagnostic is about: "first defined here", "moved
+/// here". Resolved like an edit — `file` from the span's `FileId`,
+/// line and column from the text — by `Diagnostic::anchor_in`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct Related {
+    pub file: Option<String>,
+    pub span: Option<Span>,
+    pub message: String,
+    /// Narrow `span` to the first occurrence of this word at or after
+    /// its start (a declaration's name, found from where it begins).
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub word: Option<String>,
+}
+
+impl Related {
+    pub fn at(location: SourceLocation, message: impl Into<String>) -> Self {
+        Related { file: None, span: Some(Span::from(location)), message: message.into(), word: None }
+    }
+}
+
 /// One reported problem, in the shape a tool consumes.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -226,6 +247,12 @@ pub struct Diagnostic {
     /// longer need to.
     pub origin_module: Option<String>,
     pub suggestions: Vec<Suggestion>,
+    /// Other places this diagnostic is about (LLM-TOOLING #3). Always
+    /// present in the JSON, empty when there are none.
+    pub related: Vec<Related>,
+    /// See `TypeCheckError::location_word`; consumed by `anchor_in`.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub span_word: Option<String>,
     /// How the failure was reached, innermost first (DEBUG-OBS D5).
     ///
     /// Only a *runtime* failure has one — a type error is not reached,
@@ -260,6 +287,8 @@ impl Diagnostic {
             span: None,
             origin_module: None,
             suggestions: Vec::new(),
+            related: Vec::new(),
+            span_word: None,
             backtrace: Vec::new(),
         }
     }
@@ -280,6 +309,8 @@ impl Diagnostic {
             span: error.location.map(Span::from),
             origin_module: error.origin_module.clone(),
             suggestions: error.suggestions.clone(),
+            related: error.anchors.as_ref().map(|a| a.related.clone()).unwrap_or_default(),
+            span_word: error.anchors.as_ref().and_then(|a| a.location_word.clone()),
             backtrace: Vec::new(),
         }
     }
@@ -296,6 +327,20 @@ impl Diagnostic {
     /// can open. `origin_module` still says *why* it is not the entry.
     pub fn anchor_in(&mut self, source_map: &crate::source_map::SourceMap) {
         let entry_file = self.file.clone();
+        // A span given as "this word, from here" (a declaration's
+        // name) or with offsets only (line 0) is completed from the text.
+        if let Some(span) = self.span {
+            let located = match self.span_word.take() {
+                Some(word) => source_map.find_word(span.file, span.offset as usize, usize::MAX, &word),
+                None if span.line == 0 => {
+                    source_map.location(span.file, span.offset as usize, span.end_offset as usize)
+                }
+                None => None,
+            };
+            if let Some(at) = located {
+                self.span = Some(Span::from(at));
+            }
+        }
         if let Some(span) = self.span
             && span.file != crate::source_map::FileId::ENTRY
             && let Some(path) = source_map.path(span.file)
@@ -334,6 +379,25 @@ impl Diagnostic {
                 _ => entry_file.clone(),
             });
         }
+        // Related places: the same resolution, plus line and column
+        // worked out from the text (a declaration's node has offsets
+        // only), and narrowed to a name when one was given.
+        self.related.retain_mut(|related| {
+            let Some(span) = related.span else { return false };
+            let located = match related.word.take() {
+                Some(word) => source_map.find_word(span.file, span.offset as usize, usize::MAX, &word),
+                None => source_map.location(span.file, span.offset as usize, span.end_offset as usize),
+            };
+            if let Some(at) = located {
+                related.span = Some(Span::from(at));
+            }
+            related.file = Some(if span.file == crate::source_map::FileId::ENTRY {
+                entry_file.clone()
+            } else {
+                source_map.path(span.file).map(str::to_string).unwrap_or_else(|| entry_file.clone())
+            });
+            true
+        });
         self.resolve_edits();
     }
 
@@ -341,6 +405,12 @@ impl Diagnostic {
     /// has to know the "`None` means the diagnostic's own" rule. What
     /// `anchor_in` could not name is in the diagnostic's own file.
     pub fn resolve_edits(&mut self) {
+        for related in &mut self.related {
+            related.word = None;
+            if related.file.is_none() {
+                related.file = Some(self.file.clone());
+            }
+        }
         // Nothing located a word-targeted edit (no source map reached
         // this diagnostic); applying it to the whole span would be
         // wrong, so the suggestion goes.
@@ -378,6 +448,8 @@ impl Diagnostic {
             span: Some(Span::from(error.location)),
             origin_module: None,
             suggestions: error.suggestions.clone(),
+            related: Vec::new(),
+            span_word: None,
             backtrace: Vec::new(),
         }
     }

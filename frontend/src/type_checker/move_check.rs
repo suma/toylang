@@ -1843,6 +1843,10 @@ impl MoveCheck<'_> {
             if let Some(loc) = self.location(expr_ref) {
                 error = error.with_location(loc);
             }
+            // Line 0 is the placeholder for a move with no position.
+            if moved_at.line > 0 {
+                error = error.with_related(moved_at, "moved here");
+            }
             self.errors.push(error);
             return;
         }
@@ -1891,6 +1895,12 @@ impl MoveCheck<'_> {
                     let mut error = TypeCheckError::conditional_move(self.name_of(name), reason);
                     if let Some(loc) = self.location(expr_ref) {
                         error = error.with_location(loc);
+                    }
+                    if let Some(decl_at) = owner_decl
+                        .and_then(|d| self.program.location_pool.get_stmt_location(&d).copied())
+                    {
+                        let owner_name = self.name_of(owner);
+                        error = error.with_related_word(decl_at, &owner_name, "declared here");
                     }
                     self.errors.push(error);
                     return;

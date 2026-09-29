@@ -329,6 +329,8 @@ fn a_module_flagged_diagnostic_is_never_rendered_against_the_local_file() {
         }),
         origin_module: Some("helper".to_string()),
         suggestions: Vec::new(),
+        related: Vec::new(),
+        span_word: None,
         backtrace: Vec::new(),
     };
 
@@ -762,4 +764,69 @@ fn main() -> u64 {
     let diagnostics = check_all(source);
     assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
     assert!(diagnostics[0].suggestions.is_empty(), "{diagnostics:#?}");
+}
+
+// LLM-TOOLING #3: `related` names the other place a diagnostic is
+// about, and like the primary span it resolves byte for byte.
+
+fn related_texts<'a>(source: &'a str, d: &Diagnostic) -> Vec<(&'a str, u32, String)> {
+    d.related
+        .iter()
+        .map(|r| {
+            let span = r.span.expect("related span");
+            assert_eq!(r.file.as_deref(), Some("test.t"), "{r:?}");
+            (&source[span.offset as usize..span.end_offset as usize], span.line, r.message.clone())
+        })
+        .collect()
+}
+
+#[test]
+fn a_duplicate_points_back_at_the_first_declaration() {
+    let source = "fn area() -> u64 { 1u64 }\nfn area() -> u64 { 2u64 }\nfn main() -> u64 { area() }";
+    let diagnostics = check_all(source);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(related_texts(source, &diagnostics[0]), [("area", 1, "first defined here".to_string())]);
+}
+
+#[test]
+fn a_use_after_move_points_at_the_move() {
+    let source = "struct B { v: Vec<u64> }
+fn main() -> u64 {
+    val v: Vec<u64> = Vec::new()
+    val b = B { v: v }
+    v.size()
+}";
+    let diagnostics = check_all(source);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(diagnostics[0].code, "E0014");
+    assert_eq!(related_texts(source, &diagnostics[0]), [("v", 4, "moved here".to_string())]);
+}
+
+#[test]
+fn an_argument_mismatch_points_at_the_parameter() {
+    let source = "fn g(count: u64) -> u64 { count }\nfn main() -> u64 { g(true) }";
+    let diagnostics = check_all(source);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    let related = related_texts(source, &diagnostics[0]);
+    assert_eq!(related.len(), 1, "{related:?}");
+    assert_eq!((related[0].0, related[0].1), ("count", 1));
+}
+
+#[test]
+fn an_impl_that_does_not_match_its_trait_points_at_both_methods() {
+    let source = "trait Area {
+    fn area(&self) -> u64
+}
+struct Sq { side: u64 }
+impl Area for Sq {
+    fn area(&self) -> i64 { 1i64 }
+}
+fn main() -> u64 { 0u64 }";
+    let diagnostics = check_all(source);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    let d = &diagnostics[0];
+    assert_eq!(d.code, "E0038");
+    assert_eq!((span_text(source, d), d.span.unwrap().line), ("area", 6));
+    let related = related_texts(source, d);
+    assert_eq!((related[0].0, related[0].1), ("area", 2), "{related:?}");
 }

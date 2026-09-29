@@ -79,6 +79,52 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// appear here.
     /// ITER-PROTOCOL-TRAIT-compat shim: forwards with empty
     /// `trait_type_args` so non-generic-trait callers stay unchanged.
+    /// Point `err` also at the trait's declaration of `sig`: the other
+    /// half of an impl that does not match its trait.
+    fn with_trait_signature(
+        &self,
+        trait_symbol: DefaultSymbol,
+        sig: &crate::ast::TraitMethodSignature,
+        imp: Option<&crate::ast::MethodFunction>,
+        err: TypeCheckError,
+    ) -> TypeCheckError {
+        // The error belongs on the impl's method; the trait's is the
+        // other half.
+        let err = match imp {
+            Some(m) if err.location.is_none() => {
+                match (
+                    self.core.location_pool.get_stmt_location(&m.code),
+                    self.core.string_interner.resolve(m.name),
+                ) {
+                    (Some(body), Some(name)) => {
+                        let start = m.node.start as u32;
+                        err.at_word(
+                            crate::type_checker::SourceLocation::new_in(body.file, 0, 0, start, start),
+                            name,
+                        )
+                    }
+                    _ => err,
+                }
+            }
+            _ => err,
+        };
+        let file = (0..self.core.stmt_pool.len()).find_map(|i| {
+            let stmt_ref = StmtRef(i as u32);
+            match self.core.stmt_pool.get(&stmt_ref) {
+                Some(Stmt::TraitDecl { name, .. }) if name == trait_symbol => {
+                    self.core.location_pool.get_stmt_location(&stmt_ref).map(|l| l.file)
+                }
+                _ => None,
+            }
+        });
+        let (Some(file), Some(name)) = (file, self.core.string_interner.resolve(sig.name)) else {
+            return err;
+        };
+        let start = sig.node.start as u32;
+        let at = crate::type_checker::SourceLocation::new_in(file, 0, 0, start, start);
+        err.with_related_word(at, name, format!("the trait declares `{name}` here"))
+    }
+
     pub fn check_trait_conformance(
         &mut self,
         struct_symbol: DefaultSymbol,
@@ -155,18 +201,18 @@ impl<'a> TypeCheckerVisitor<'a> {
                     let t_str = self.core.string_interner.resolve(trait_symbol).unwrap_or("?").to_string();
                     let s_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("?").to_string();
                     let m_str = self.core.string_interner.resolve(sig.name).unwrap_or("?").to_string();
-                    return Err(TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
+                    return Err(self.with_trait_signature(trait_symbol, sig, None, TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
                         "impl {t_str} for {s_str}: missing method '{m_str}' required by trait"
-                    )));
+                    ))));
                 }
             };
             if m.has_self_param != sig.has_self_param {
                 let t_str = self.core.string_interner.resolve(trait_symbol).unwrap_or("?").to_string();
                 let s_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("?").to_string();
                 let m_str = self.core.string_interner.resolve(sig.name).unwrap_or("?").to_string();
-                return Err(TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
+                return Err(self.with_trait_signature(trait_symbol, sig, Some(m), TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
                     "impl {t_str} for {s_str}: method '{m_str}' self-parameter mismatch"
-                )));
+                ))));
             }
             // Stage 1 of `&` references: receiver kind (`&mut self`
             // vs `self` / `&self`) must match exactly between the
@@ -181,18 +227,18 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let m_str = self.core.string_interner.resolve(sig.name).unwrap_or("?").to_string();
                 let want = if sig.self_is_mut { "&mut self" } else { "self / &self" };
                 let got = if m.self_is_mut { "&mut self" } else { "self / &self" };
-                return Err(TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
+                return Err(self.with_trait_signature(trait_symbol, sig, Some(m), TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
                     "impl {t_str} for {s_str}: method '{m_str}' receiver kind mismatch (trait expects {want}, impl uses {got})"
-                )));
+                ))));
             }
             if m.parameter.len() != sig.parameter.len() {
                 let t_str = self.core.string_interner.resolve(trait_symbol).unwrap_or("?").to_string();
                 let s_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("?").to_string();
                 let m_str = self.core.string_interner.resolve(sig.name).unwrap_or("?").to_string();
-                return Err(TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
+                return Err(self.with_trait_signature(trait_symbol, sig, Some(m), TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
                     "impl {t_str} for {s_str}: method '{m_str}' parameter count mismatch (expected {}, found {})",
                     sig.parameter.len(), m.parameter.len()
-                )));
+                ))));
             }
             // Compare parameter types pairwise. Resolve `Self` (in either
             // signature) to the impl's target struct so a trait method
@@ -209,12 +255,12 @@ impl<'a> TypeCheckerVisitor<'a> {
                     let t_str = self.core.string_interner.resolve(trait_symbol).unwrap_or("?").to_string();
                     let s_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("?").to_string();
                     let m_str = self.core.string_interner.resolve(sig.name).unwrap_or("?").to_string();
-                    return Err(TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
+                    return Err(self.with_trait_signature(trait_symbol, sig, Some(m), TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
                         "impl {t_str} for {s_str}: method '{m_str}' parameter #{} type mismatch (expected {}, found {})",
                         i + 1,
                         self.type_name_for_error(&s_resolved),
                         self.type_name_for_error(&p_resolved)
-                    )));
+                    ))));
                 }
             }
             // DBC-TRAIT-INHERIT: a contract is an expression written
@@ -232,9 +278,9 @@ impl<'a> TypeCheckerVisitor<'a> {
                         let m_str = self.core.string_interner.resolve(sig.name).unwrap_or("?");
                         let want = self.core.string_interner.resolve(*trait_name_sym).unwrap_or("?");
                         let got = self.core.string_interner.resolve(*impl_name).unwrap_or("?");
-                        return Err(TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
+                        return Err(self.with_trait_signature(trait_symbol, sig, Some(m), TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
                             "impl {t_str} for {s_str}: method '{m_str}' renames parameter `{want}` to `{got}`, but {t_str} declares a contract over `{want}` — rename the parameter back so the trait's `requires` / `ensures` still resolve"
-                        )));
+                        ))));
                     }
                 }
             }
@@ -280,11 +326,11 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let t_str = self.core.string_interner.resolve(trait_symbol).unwrap_or("?").to_string();
                 let s_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("?").to_string();
                 let m_str = self.core.string_interner.resolve(sig.name).unwrap_or("?").to_string();
-                return Err(TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
+                return Err(self.with_trait_signature(trait_symbol, sig, Some(m), TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
                     "impl {t_str} for {s_str}: method '{m_str}' return type mismatch (expected {}, found {})",
                     self.type_name_for_error(&s_ret),
                     self.type_name_for_error(&m_ret)
-                )));
+                ))));
             }
         }
 

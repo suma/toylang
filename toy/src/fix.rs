@@ -51,16 +51,9 @@ pub fn diagnose(pkg: &Package) -> Result<Vec<Diagnostic>, String> {
     let mut session = compiler_core::CompilerSession::new();
     let mut program = match session.parse_program_all_errors(&source, &name) {
         Ok(program) => program,
-        Err(errors) => {
-            return Ok(errors
-                .iter()
-                .map(|e| {
-                    let mut d = Diagnostic::from_parser_error(e, &name);
-                    d.resolve_edits();
-                    d
-                })
-                .collect());
-        }
+        // Parse errors and the type errors behind them: one round can
+        // then fix both.
+        Err(_) => return Ok(interpreter::diagnose_parse_failure(&source, &name, &pkg.module_roots)),
     };
     let result = interpreter::check_typing_diagnostics(
         &mut program,

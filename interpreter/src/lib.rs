@@ -1137,6 +1137,7 @@ fn check_typing_collecting(
     for d in errors.iter_mut().chain(warnings.iter_mut()) {
         d.anchor_in(&program.source_map);
     }
+    frontend::diagnostic::drop_cascades(&mut errors);
     frontend::diagnostic::normalize(&mut errors, diag_file);
     frontend::diagnostic::normalize(&mut warnings, diag_file);
     prof::count("typecheck.errors", errors.len() as u64);
@@ -2200,22 +2201,21 @@ fn parse_reporting(
     session: &mut compiler_core::CompilerSession,
     source: &str,
     filename: &str,
-    formatter: &ErrorFormatter,
     json: bool,
+    core_modules_dirs: &[std::path::PathBuf],
 ) -> Result<File, String> {
     match session.parse_program_all_errors(source, filename) {
         Ok(program) => Ok(program),
-        Err(errors) => {
+        Err(_) => {
+            // LLM-TOOLING #6: the type errors behind the parse errors
+            // too, in the same report.
+            let diagnostics = diagnose_parse_failure(source, filename, core_modules_dirs);
             if json {
-                let diagnostics: Vec<Diagnostic> = errors
-                    .iter()
-                    .map(|e| Diagnostic::from_parser_error(e, filename))
-                    .collect();
                 emit_diagnostics_json(&diagnostics);
             } else {
-                formatter.display_parse_errors(&errors);
+                display_diagnostics(source, filename, &diagnostics);
             }
-            Err(format!("{} parse error(s)", errors.len()))
+            Err(parse_failure_summary(&diagnostics))
         }
     }
 }
@@ -2311,14 +2311,13 @@ pub fn prepare_tests(
     filename: &str,
     options: &RunOptions<'_>,
 ) -> Result<PreparedTests, String> {
-    let formatter = ErrorFormatter::new(source, filename);
     let mut session = compiler_core::CompilerSession::new();
     let mut program = parse_reporting(
         &mut session,
         source,
         filename,
-        &formatter,
         options.diagnostics_json,
+        options.core_modules_dirs,
     )?;
     if let Err(diagnostics) = check_typing_diagnostics(
         &mut program,
@@ -2407,10 +2406,9 @@ pub fn effects_from_source(
     filename: &str,
     options: &RunOptions<'_>,
 ) -> Result<Vec<FunctionEffects>, String> {
-    let formatter = ErrorFormatter::new(source, filename);
     let mut session = compiler_core::CompilerSession::new();
     let mut program =
-        parse_reporting(&mut session, source, filename, &formatter, options.diagnostics_json)?;
+        parse_reporting(&mut session, source, filename, options.diagnostics_json, options.core_modules_dirs)?;
     let mut effects = Vec::new();
     if let Err(diagnostics) = check_typing_effects(
         &mut program,
@@ -2459,6 +2457,123 @@ pub struct RunOptions<'a> {
 #[derive(Debug, Clone)]
 pub struct RunOutcome {
     pub exit_code: Option<i32>,
+}
+
+/// A program that failed to parse: every parse error, and the type
+/// errors of the declarations the parser read cleanly (LLM-TOOLING #6).
+///
+/// Stopping at the parse errors meant one round trip to fix a stray
+/// `else if` and another to learn about the type errors behind it. The
+/// parser resynchronises at each declaration, so the tree it returns is
+/// sound outside the declarations that hold an error; this checks that
+/// tree and drops what it reports inside those declarations, which
+/// would be consequences of the broken code. When an error lies outside
+/// every function (a broken `struct`), or the parser gave no tree, only
+/// the parse errors are returned.
+pub fn diagnose_parse_failure(
+    source: &str,
+    filename: &str,
+    core_modules_dirs: &[std::path::PathBuf],
+) -> Vec<Diagnostic> {
+    let mut parser = frontend::ParserWithInterner::new(source);
+    parser.set_source_file(filename);
+    let outcome = parser.parse_program_recovering();
+    let mut diagnostics: Vec<Diagnostic> = outcome
+        .errors
+        .iter()
+        .map(|e| {
+            let mut d = Diagnostic::from_parser_error(e, filename);
+            d.resolve_edits();
+            d
+        })
+        .collect();
+    let Some(mut program) = outcome.result else {
+        return diagnostics;
+    };
+    if outcome.errors.is_empty() {
+        return diagnostics;
+    }
+
+    // Each declaration's byte range. A node without an end (the last
+    // one in the file) runs to the next declaration, or to the end.
+    let mut ranges: Vec<(usize, usize)> =
+        program.function.iter().map(|f| (f.node.start, f.node.end)).collect();
+    for i in 0..program.statement.len() {
+        if let Some(frontend::ast::Stmt::ImplBlock { methods, .. }) =
+            program.statement.get(&StmtRef(i as u32))
+        {
+            ranges.extend(methods.iter().map(|m| (m.node.start, m.node.end)));
+        }
+    }
+    let starts: Vec<usize> = ranges.iter().map(|(s, _)| *s).collect();
+    for r in &mut ranges {
+        if r.1 <= r.0 {
+            r.1 = starts.iter().copied().filter(|s| *s > r.0).min().unwrap_or(source.len());
+        }
+    }
+    let containing = |offset: usize| {
+        ranges
+            .iter()
+            .filter(|(s, e)| *s <= offset && offset < *e)
+            .min_by_key(|(s, e)| e - s)
+            .copied()
+    };
+    let mut broken: Vec<(usize, usize)> = Vec::new();
+    for e in &outcome.errors {
+        match containing(e.location.offset as usize) {
+            Some(range) => broken.push(range),
+            None => return diagnostics,
+        }
+    }
+
+    let interner = parser.get_string_interner();
+    // The checker has not been asked to survive a recovered tree before;
+    // if it cannot, the parse errors are still the answer.
+    let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        check_typing_diagnostics(
+            &mut program,
+            interner,
+            Some(source),
+            Some(filename),
+            core_modules_dirs,
+        )
+    }));
+    let Ok(Err(type_errors)) = checked else {
+        return diagnostics;
+    };
+    diagnostics.extend(type_errors.into_iter().filter(|d| {
+        let inside_broken = d.file == filename
+            && d.span.is_some_and(|s| {
+                broken.iter().any(|(b, e)| *b <= s.offset as usize && (s.offset as usize) < *e)
+            });
+        !inside_broken
+    }));
+    frontend::diagnostic::normalize(&mut diagnostics, filename);
+    diagnostics
+}
+
+/// Diagnostics as text, the way a type-check failure is printed.
+pub fn display_diagnostics(source: &str, filename: &str, diagnostics: &[Diagnostic]) {
+    let formatter = ErrorFormatter::new(source, filename);
+    crate::output::eprintln_text("Errors found:");
+    for d in diagnostics {
+        crate::output::eprintln_text(&format!("  {}", formatter.format_diagnostic(d)));
+    }
+}
+
+/// `N parse error(s)` or `N parse error(s), M type error(s)`: what a
+/// driver says after printing [`diagnose_parse_failure`]'s answer.
+pub fn parse_failure_summary(diagnostics: &[Diagnostic]) -> String {
+    let parse = diagnostics
+        .iter()
+        .filter(|d| matches!(d.code, "E0012" | "E0032" | "E0033" | "E0034"))
+        .count();
+    let other = diagnostics.len() - parse;
+    if other == 0 {
+        format!("{parse} parse error(s)")
+    } else {
+        format!("{parse} parse error(s), {other} type error(s)")
+    }
 }
 
 /// Diagnostics as the JSON array tools read: each one as serialised,
@@ -2530,8 +2645,8 @@ pub fn run_source(
         &mut session,
         source,
         filename,
-        &formatter,
         options.diagnostics_json,
+        options.core_modules_dirs,
     )?;
     match check_typing_diagnostics(
         &mut program,

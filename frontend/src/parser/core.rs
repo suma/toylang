@@ -103,6 +103,18 @@ impl ParserWithInterner {
         self.call_parser_with_error_copy(|parser| parser.parse_program_multiple_errors())
     }
 
+    /// As [`Self::parse_program_multiple_errors`], but with a tree even
+    /// when there are errors, as long as parsing reached the end. The
+    /// declarations that hold an error are not what was written; the
+    /// rest are, which is what lets a diagnosis type-check them in the
+    /// same run instead of stopping at the first parse error.
+    pub fn parse_program_recovering(&mut self) -> MultipleParserResult<File> {
+        self.call_parser_with_error_copy(|parser| {
+            parser.keep_tree_on_error = true;
+            parser.parse_program_multiple_errors()
+        })
+    }
+
     // Forward methods to internal parser
     pub fn peek(&mut self) -> Option<&Kind> {
         self.get_parser().peek()
@@ -178,6 +190,12 @@ pub struct Parser<'a> {
     /// Index into `errors` marking where the current top-level
     /// declaration started. See [`Parser::report_error`].
     decl_error_floor: usize,
+    /// Hand back the tree even when errors were collected (LLM-TOOLING
+    /// #6). Only for diagnosis: the tree is not what was written inside
+    /// the declarations that hold an error, so a caller may use it only
+    /// to check the declarations that do not — see
+    /// [`ParserWithInterner::parse_program_recovering`].
+    pub(crate) keep_tree_on_error: bool,
     /// The text being parsed. Also seeds the program's `SourceMap`
     /// entry slot (DEBUG-OBS D2) so an excerpt can be drawn from a
     /// module whose file is long gone.
@@ -348,6 +366,7 @@ impl<'a> Parser<'a> {
             builtin_symbols,
             errors: Vec::with_capacity(4),
             decl_error_floor: 0,
+            keep_tree_on_error: false,
             input,
             recursion_depth: 0,
             max_recursion_depth: 500,

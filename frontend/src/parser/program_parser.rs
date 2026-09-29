@@ -323,7 +323,9 @@ impl<'a> Parser<'a> {
         // bad `else if` was reported as "Function 'main' not found") or
         // not at all until runtime.
         self.merge_lex_errors();
-        if let Some(error) = self.errors.first() {
+        if let Some(error) = self.errors.first()
+            && !self.keep_tree_on_error
+        {
             return Err(error.clone());
         }
 

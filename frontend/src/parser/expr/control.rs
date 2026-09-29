@@ -6,7 +6,8 @@ use crate::parser::error::{ParserResult, ParserError};
 use crate::type_checker::SourceLocation;
 use super::{parse_logical_expr, parse_block, parse_match_pattern};
 
-/// Reject `else if`, which is not toylang syntax — `elif` is.
+/// Report `else if`, which is not toylang syntax — `elif` is. Returns
+/// whether it was one; the caller then reads it as `elif`.
 ///
 /// Called with the `else` already consumed and `else_location` pointing
 /// at it. Without this check the `else` arm hands an `if` token to
@@ -22,9 +23,9 @@ use super::{parse_logical_expr, parse_block, parse_match_pattern};
 ///
 /// The span covers `else if` as a unit so the caret marks exactly what
 /// has to be replaced.
-fn reject_else_if(parser: &mut Parser, else_location: SourceLocation) -> ParserResult<()> {
+fn report_else_if(parser: &mut Parser, else_location: SourceLocation) -> bool {
     if !matches!(parser.peek(), Some(Kind::If)) {
-        return Ok(());
+        return false;
     }
     let if_location = parser.current_source_location();
     let span = SourceLocation::new(
@@ -33,14 +34,12 @@ fn reject_else_if(parser: &mut Parser, else_location: SourceLocation) -> ParserR
         else_location.offset,
         if_location.end_offset,
     );
-    let error = ParserError::else_if(span);
-    // Recorded as well as returned. Expression parsing has recovery
-    // paths that swallow a returned `Err` and carry on, which would put
-    // us right back to a silent mis-parse; `parse_program` refuses to
-    // hand back a tree while `errors` is non-empty, so this is what
-    // makes the rejection stick.
-    parser.report_error(error.clone());
-    Err(error)
+    // A recovered error: the parse continues exactly as for `elif`, so
+    // nothing later is a consequence of it. `parse_program` still
+    // refuses to hand back a tree while any error is recorded, which is
+    // what keeps the program from running as if it were fine.
+    parser.report_recovered_error(ParserError::else_if(span));
+    true
 }
 
 /// Parse `dict{key: value, ...}` literal.
@@ -98,25 +97,32 @@ pub fn parse_if(parser: &mut Parser) -> ParserResult<ExprRef> {
     parser.pop_context();
     let if_block = parse_block(parser)?;
     let mut elif_pairs = Vec::new();
-    while let Some(Kind::Elif) = parser.peek() {
-        parser.next();
+    let else_block: ExprRef = loop {
+        match parser.peek() {
+            Some(Kind::Elif) => {
+                parser.next();
+            }
+            Some(Kind::Else) => {
+                let else_location = parser.current_source_location();
+                parser.next();
+                // `else if` is reported, then read as the `elif` it
+                // means, so the rest of the chain — and of the file —
+                // parses as written (LLM-TOOLING #6).
+                if !report_else_if(parser, else_location) {
+                    break parse_block(parser)?;
+                }
+                parser.next(); // `if`
+            }
+            _ => {
+                let location = parser.current_source_location();
+                break parser.ast_builder.block_expr(vec![], Some(location));
+            }
+        }
         parser.push_context(crate::parser::core::ParseContext::Condition);
         let elif_cond = parse_logical_expr(parser)?;
         parser.pop_context();
         let elif_block = parse_block(parser)?;
         elif_pairs.push((elif_cond, elif_block));
-    }
-    let else_block: ExprRef = match parser.peek() {
-        Some(Kind::Else) => {
-            let else_location = parser.current_source_location();
-            parser.next();
-            reject_else_if(parser, else_location)?;
-            parse_block(parser)?
-        }
-        _ => {
-            let location = parser.current_source_location();
-            parser.ast_builder.block_expr(vec![], Some(location))
-        }
     };
     let location = parser.current_source_location();
     Ok(parser.ast_builder.if_elif_else_expr(cond, if_block, elif_pairs, else_block, Some(location)))
@@ -138,8 +144,12 @@ fn parse_if_val(parser: &mut Parser) -> ParserResult<ExprRef> {
         Some(Kind::Else) => {
             let else_location = parser.current_source_location();
             parser.next();
-            reject_else_if(parser, else_location)?;
-            let else_block = parse_block(parser)?;
+            let else_block = if report_else_if(parser, else_location) {
+                parser.next(); // `if`: read the rest as the `elif` it means
+                parse_if(parser)?
+            } else {
+                parse_block(parser)?
+            };
             (then_block, else_block)
         }
         _ => {

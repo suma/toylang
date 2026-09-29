@@ -830,3 +830,56 @@ fn main() -> u64 { 0u64 }";
     let related = related_texts(source, d);
     assert_eq!((related[0].0, related[0].1), ("area", 2), "{related:?}");
 }
+
+// LLM-TOOLING #6: one run reports what one run can see.
+
+fn diagnose_failed_parse(source: &str) -> Vec<Diagnostic> {
+    let core = core_modules_dir();
+    interpreter::diagnose_parse_failure(source, "test.t", std::slice::from_ref(&core))
+}
+
+#[test]
+fn parse_errors_come_with_the_type_errors_of_what_parsed() {
+    let source = "struct P { x: u64 }
+fn f(a: u64) -> u64 {
+    val b: bool = a
+    if a > 1u64 { 1u64 } else if a > 0u64 { 2u64 } else { 3u64 }
+}
+fn g() -> u64 { calculate_totl(1u64) }
+fn calculate_total(a: u64) -> u64 { a }
+fn h() -> u64 { val p = P { x: 1u64, z: 2u64 }
+    p.x }
+fn main() -> u64 { val z = 1.5
+    0u64 }";
+    let diagnostics = diagnose_failed_parse(source);
+    let codes: Vec<&str> = diagnostics.iter().map(|d| d.code).collect();
+    // `val b: bool = a` sits in `f`, which holds the `else if`: its
+    // errors are not reported, whatever they are.
+    assert_eq!(codes, ["E0033", "E0003", "E0010", "E0034"], "{diagnostics:#?}");
+}
+
+#[test]
+fn a_parse_error_outside_every_function_reports_the_parse_errors_alone() {
+    let source = "struct P { x: u64 y: u64 }
+fn g() -> u64 { calculate_totl(1u64) }
+fn main() -> u64 { 0u64 }";
+    let diagnostics = diagnose_failed_parse(source);
+    assert!(diagnostics.iter().all(|d| d.code == "E0032"), "{diagnostics:#?}");
+    assert!(!diagnostics.is_empty());
+}
+
+#[test]
+fn an_error_downstream_of_another_is_not_reported() {
+    // `p` is Unknown after the bad literal; `p.w` and `p ?? 3u64` would
+    // each report about that, not about anything written wrong.
+    let source = "struct P { x: u64 }
+fn main() -> u64 {
+    val p = P { x: 1u64, z: 2u64 }
+    val a = p.w
+    val o = p ?? 3u64
+    0u64
+}";
+    let diagnostics = check_all(source);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert!(diagnostics[0].message.starts_with("Unknown field 'z'"));
+}

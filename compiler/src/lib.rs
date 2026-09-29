@@ -87,24 +87,20 @@ pub(crate) fn parse_for(
     source: &str,
     options: &CompilerOptions,
 ) -> Result<File, String> {
-    if options.diagnostics_json {
-        let name = options.entry_name();
-        return session.parse_program_all_errors(source, &name).map_err(|errors| {
-            let diagnostics: Vec<_> = errors
-                .iter()
-                .map(|e| frontend::diagnostic::Diagnostic::from_parser_error(e, &name))
-                .collect();
+    let name = options.entry_name();
+    session.parse_program_all_errors(source, &name).map_err(|_| {
+        // Every parse error, and the type errors of what parsed
+        // (LLM-TOOLING #6). The text form used to stop at the first
+        // parse error.
+        let diagnostics =
+            interpreter::diagnose_parse_failure(source, &name, &options.core_modules_dirs);
+        if options.diagnostics_json {
             interpreter::emit_diagnostics_json(&diagnostics);
-            format!("{} parse error(s)", errors.len())
-        });
-    }
-    session
-        .parse_program(source)
-        // DIAG-SYMBOL-NAME-LOWER: `ParserError` has a `Display` that
-        // says what went wrong and where; `{:?}` handed the reader the
-        // struct instead (`ParserError { kind: UnexpectedToken { .. },
-        // location: SourceLocation { file: FileId(0), .. } }`).
-        .map_err(|e| format!("parse error: {e}"))
+        } else {
+            interpreter::display_diagnostics(source, &name, &diagnostics);
+        }
+        interpreter::parse_failure_summary(&diagnostics)
+    })
 }
 
 /// Top-level entry point used by both the CLI and the integration tests.

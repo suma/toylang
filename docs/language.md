@@ -704,6 +704,11 @@ makes, applied together, each with its own `file` and `span` (byte
 A suggestion with one edit also carries it as `replacement` / `span`
 at the top level. `toy fix` applies them all and checks again.
 
+A program that fails to parse is still type-checked where it parsed
+cleanly: the report has every parse error and the type errors of the
+functions that hold none. Errors that only follow from an earlier one
+(an expression whose type could not be worked out) are left out.
+
 Diagnostics come in one order — the file being compiled first, then
 the others by name, each by position — so the same input gives the
 same output, byte for byte.

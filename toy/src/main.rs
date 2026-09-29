@@ -980,18 +980,15 @@ fn cmd_check(args: &Args) -> Result<(), String> {
     let mut session = compiler_core::CompilerSession::new();
     let mut program = match session.parse_program_all_errors(&source, &name) {
         Ok(program) => program,
-        Err(errors) => {
+        Err(_) => {
+            let diagnostics =
+                interpreter::diagnose_parse_failure(&source, &name, &pkg.module_roots);
             if args.json {
-                let diagnostics: Vec<_> = errors
-                    .iter()
-                    .map(|e| frontend::diagnostic::Diagnostic::from_parser_error(e, &name))
-                    .collect();
                 interpreter::emit_diagnostics_json(&diagnostics);
             } else {
-                interpreter::error_formatter::ErrorFormatter::new(&source, &name)
-                    .display_parse_errors(&errors);
+                interpreter::display_diagnostics(&source, &name, &diagnostics);
             }
-            return Err(format!("{} parse error(s)", errors.len()));
+            return Err(interpreter::parse_failure_summary(&diagnostics));
         }
     };
     if args.json {

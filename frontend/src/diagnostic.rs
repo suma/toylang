@@ -455,6 +455,41 @@ impl Diagnostic {
     }
 }
 
+/// Drop the errors that are consequences of another one (LLM-TOOLING
+/// #6).
+///
+/// A failed expression is typed `Unknown`, and checks downstream of it
+/// are meant to stay quiet about it (the poison rule). The ones that do
+/// not are recognisable: they name the type `Unknown`, which a program
+/// cannot write, or report an operand that was never typed. Each check
+/// used to be fixed one at a time (LLM-LOOP P1 / P3); this is the net
+/// under all of them.
+///
+/// Only when a real error remains: an `Unknown` with nothing to explain
+/// it is the checker's own bug, and hiding it would hide that.
+pub fn drop_cascades(errors: &mut Vec<Diagnostic>) {
+    let is_cascade = |d: &Diagnostic| {
+        names_unknown_type(&d.message) || d.message.starts_with("desugar_null_coalesce:")
+    };
+    if errors.iter().any(|d| !is_cascade(d)) {
+        errors.retain(|d| !is_cascade(d));
+    }
+}
+
+/// Whether `message` spells the type `Unknown`: the whole word, where a
+/// type goes (`got Unknown`, `Vec<Unknown>`), not the adjective that
+/// starts a sentence (`Unknown field 'z'`).
+fn names_unknown_type(message: &str) -> bool {
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    message.match_indices("Unknown").any(|(i, w)| {
+        let before = message[..i].chars().next_back();
+        let rest = &message[i + w.len()..];
+        let whole = !before.is_some_and(is_ident) && !rest.chars().next().is_some_and(is_ident);
+        let adjective = rest.strip_prefix(' ').and_then(|r| r.chars().next()).is_some_and(|c| c.is_ascii_lowercase());
+        whole && i > 0 && !adjective
+    })
+}
+
 /// Put diagnostics in their one reported order and drop exact repeats
 /// (LLM-TOOLING #5).
 ///
@@ -825,5 +860,17 @@ mod tests {
         for (i, code) in codes::ALL.iter().enumerate() {
             assert_eq!(*code, format!("E{:04}", i + 1), "codes::ALL[{i}]");
         }
+    }
+
+    #[test]
+    fn a_cascade_is_dropped_only_next_to_a_real_error() {
+        let d = |m: &str| Diagnostic::message_only(m.to_string(), "t.t");
+        let mut both = vec![d("Unknown field 'z' in struct 'P'"), d("field access 'w' for type Unknown")];
+        drop_cascades(&mut both);
+        assert_eq!(both.len(), 1);
+        assert!(both[0].message.starts_with("Unknown field"), "`Unknown field` is a word in a sentence, not the type");
+        let mut alone = vec![d("match scrutinee must be an enum, got Unknown")];
+        drop_cascades(&mut alone);
+        assert_eq!(alone.len(), 1, "an unexplained Unknown is kept");
     }
 }

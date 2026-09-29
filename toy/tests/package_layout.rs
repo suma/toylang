@@ -1291,7 +1291,7 @@ fn an_unknown_format_is_refused() {
 }
 
 #[test]
-fn build_can_profile_the_compile_and_only_build() {
+fn build_and_check_can_profile_the_compile_and_nothing_else() {
     let pkg = scratch("compile_profile");
     write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
     let path = pkg.0.to_str().unwrap();
@@ -1301,9 +1301,18 @@ fn build_can_profile_the_compile_and_only_build() {
     assert!(stderr.starts_with("compile profile:"), "{stderr}");
     assert!(stderr.lines().any(|l| l.starts_with("codegen ")), "{stderr}");
 
-    let out = run(&pkg, &["check", path, "--profile=compile"]);
+    // LLM-TOOLING #7: `check` reports the phases it runs — through the
+    // type checker and lowering, never codegen.
+    let out = run(&pkg, &["check", path, "--profile=compile", "--no-warn-collisions"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(stderr.starts_with("compile profile:"), "{stderr}");
+    assert!(stderr.lines().any(|l| l.starts_with("typecheck ")), "{stderr}");
+    assert!(!stderr.lines().any(|l| l.starts_with("codegen ")), "{stderr}");
+
+    let out = run(&pkg, &["run", path, "--profile=compile"]);
     assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("only `toy build`"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("only `toy build` and `toy check`"));
 }
 
 #[test]

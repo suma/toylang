@@ -170,6 +170,7 @@ TOY_HEAP_CHECK=report ./compiled_binary
 cargo run -q -p compiler -- <source_file.t> --profile=compile
 cargo run -q -p compiler -- <source_file.t> --profile=compile --format=json   # 1 文書
 cargo run -q -p toy -- build mypkg --profile=compile
+cargo run -q -p toy -- check mypkg --profile=compile   # check も (lowering まで、codegen なし)
 
 # 自分のモジュールを持つプログラム (BUILD-TOOL B0/B1)。
 # `--core-modules` は**繰り返せて、後の root が勝つ** — stdlib を
@@ -266,6 +267,13 @@ echo 'fn main() -> u64 { 7u64 }' | cargo run -q -p compiler -- - --all-backends
   `toy: N type-check error(s)` のような 1 行要約が続くことがあるので、
   `[` から対応する `]` までを読む
 - **`--profile=mem` のレポート**を stderr に JSON で出す
+
+**toylang のプログラムを何度も check / test するループでは、`cargo run`
+ではなく release の `toy` を 1 回ビルドして直接叩くこと**
+(`cargo build --release -p toy` → `target/release/toy check mypkg`)。
+`cargo run` は毎回の鮮度確認と debug ビルドの遅さを払う (実測は
+[`design-docs/LLM_TOOLING.md`](design-docs/LLM_TOOLING.md) §7)。
+処理系のソースを変えたら release も作り直すこと。
 
 **`toy` / `compiler` を使うときは `--format=json` を指定すること**
 (機械的に読む場面、LLM ループではこちら)。

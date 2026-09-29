@@ -27,6 +27,7 @@
 | **L5** | 出力順序の明示的な正規化 + 決定性のテスト | ✅ 2026-09-30 |
 | **L6** | `toy query` (型 / 定義 / 参照 / 呼び出し関係) | ✅ 2026-09-30 |
 | — | インクリメンタル型検査 | **非目標** (§7) |
+| **#7** | 速度: 実測の見直し、`toy check --profile=compile`、運用指針 | ✅ 2026-09-30 |
 
 ---
 
@@ -256,6 +257,24 @@ char narrowing)。「位置 → 型」は**ユーザが書いた式のうち、�
 書き換え前の `ExprRef` → 型の対応を残すかを L6 で決める。
 
 ### 論点 E: インクリメンタル検査をやるか
+
+**2026-09-30 の再計測** (`toy new` の雛形、stdlib 込み):
+
+| 呼び方 | `toy check` | `toy test` |
+|---|---|---|
+| `target/release/toy` | 30 ms | 130 ms (AOT) / 50 ms (`--backend vm`) |
+| `target/debug/toy` | 140 ms | 330 ms |
+| `cargo run -q -p toy --` (debug + cargo の鮮度確認) | 250 ms | 490 ms |
+
+debug ビルドの check の内訳は型検査 71 ms (うち事後検査 32 ms)、
+モジュール 30 ms、lowering 15 ms。release では全体で 30 ms。
+**1 往復を最も縮めるのは処理系を差分化することではなく、`cargo run`
+をやめて release バイナリを叩くこと** (8 倍)。これを CLAUDE.md の
+指針にした。frontend の dev プロファイルを最適化する案は、処理系開発
+側の再ビルドを遅くするので採らない。遅いパッケージの内訳を聞けるよう
+`toy check --profile=compile` を足した (以前は `build` だけ)。
+`toy test --backend vm` は AOT の 1/2.6 で、「まず通るか」を見る周回に
+向く (出荷レーンの検査は既定の AOT のまま)。
 
 **推奨: やらない (非目標)。** §7 の実測どおり `toy check` は 26 ms で、
 型検査は 15 ms。差分化の複雑さ (依存追跡、キャッシュ無効化、

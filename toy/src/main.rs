@@ -36,7 +36,7 @@ toy — build and run toylang programs
 usage:
   toy build [PATH] [--release] [--backend aot|jit] [-o OUT] [--profile=compile] [--heap-check=MODE] [--format=text|json] [-v]
   toy run   [PATH] [--release] [--backend aot|jit|vm|tree|all] [--heap-check=MODE] [--format=text|json] [-v] [-- ARGS...]
-  toy check [PATH] [--format=text|json] [-v]
+  toy check [PATH] [--backend aot|vm] [--profile=compile] [--format=text|json] [-v]
   toy fix   [PATH] [--dry-run] [--format=text|json]
   toy query type|def|refs FILE:LINE:COL... [--in PATH] [--format=text|json]
   toy query callers|callees NAME... [--in PATH] [--format=text|json]
@@ -74,7 +74,7 @@ options:
                        and parse / type / runtime errors as a JSON array
                        on stderr. `run` leaves the program's own output
                        alone and reshapes only the errors. Default text
-  --profile=compile    build: time each compile phase, report on stderr
+  --profile=compile    build / check: time each compile phase, report on stderr
   --heap-check=MODE    report: count double frees (run only)
                        poison: stop at a freed block, past a block's end,
                          or at a double free (build, run, test)
@@ -240,8 +240,8 @@ fn main() {
         Err(e) => fail(&e),
     };
 
-    if args.compile_profile && command != "build" {
-        fail("--profile=compile times an AOT build; only `toy build` takes it");
+    if args.compile_profile && command != "build" && command != "check" {
+        fail("--profile=compile times a build or a check; only `toy build` and `toy check` take it");
     }
     if (args.check_contracts || args.seed.is_some()) && command != "test" {
         fail("--check / --seed property-check contracts; only `toy test` takes them");
@@ -951,6 +951,25 @@ fn cmd_fix(args: &Args) -> Result<(), String> {
 }
 
 fn cmd_check(args: &Args) -> Result<(), String> {
+    // LLM-TOOLING #7: where a slow check spends its time, the same
+    // report `toy build --profile=compile` gives (the phases stop at
+    // lowering; `--backend vm` stops at the type checker).
+    if !args.compile_profile {
+        return check_package(args);
+    }
+    frontend::compile_profile::enable();
+    let result = check_package(args);
+    if let Some(recorded) = frontend::compile_profile::finish() {
+        let pkg = locate(args)?;
+        let mut options = CompilerOptions::new(pkg.entry.clone());
+        options.emit = EmitKind::Ir;
+        options.core_modules_dirs = pkg.module_roots.clone();
+        eprint!("{}", compiler::compile_profile::render(&recorded, &options, args.json));
+    }
+    result
+}
+
+fn check_package(args: &Args) -> Result<(), String> {
     if args.backend == Some(Backend::All) {
         return Err(
             "`toy check` answers for one lane (aot lowers too, vm stops at the type \

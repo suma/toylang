@@ -12,6 +12,9 @@
 
 ### 2026-09-30
 
+- **LLM-TOOLING #7 — 速度** — 再計測で 1 往復を支配するのは `cargo run` と debug
+  ビルドと確認 (release バイナリ直叩きで 8 倍)。CLAUDE.md の指針にし、
+  `toy check --profile=compile` を足した。インクリメンタル型検査は非目標のまま。
 - **LLM-TOOLING #6 — 回復** — パースエラーがあっても、壊れていない関数は型検査して
   同じ回に報告する。`else if` は `elif` として読み進める。`Unknown` 由来の連鎖を
   出力段で落とす。
@@ -2948,12 +2951,10 @@
 
 ## 検討中の機能
 
-* **LLM 向け道具の第 2 ラウンド (LLM-TOOLING)** — 修正提案 / 安定コード /
-  関連箇所 / 意味情報の問い合わせ / 決定性 / 回復 / 速度の 7 性質を実測で
-  棚卸しした。L0 (重複定義の ICE) は 2026-09-29 に landing。
-  `E0010` が全パースエラー + `generic_error`
-  274 か所の catch-all (L1)、パースエラー 1 件で型検査に進まない (L4)
-  が優先。インクリメンタル型検査は `toy check` 26 ms の実測から非目標。
+* **LLM 向け道具の第 2 ラウンド (LLM-TOOLING) の残り** — 7 性質は 2026-09-29/30 に
+  landing (完了済み節)。残りは `E0010` の汎用 211 か所の分類、位置のない
+  `Type 'X' not found` / E0016 / E0017、パスの相対化 (マシン間比較)、
+  `maybe-incorrect` の提案、`toy query` のブロックスコープ。
   [`LLM_TOOLING.md`](LLM_TOOLING.md)。
 * **ヒープ検査モード (HEAP-CHECK) の残り** — H0 (`--heap-check=report`、
   二重 free の棚卸し) と H0b (報告に二重 drop を起こした関数名) は 2026-09-26 に

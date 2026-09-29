@@ -9,6 +9,7 @@ pub mod heap;
 #[cfg(feature = "jit")]
 pub mod jit;
 pub mod module_integration;
+pub mod query;
 pub mod output;
 pub mod property;
 pub mod runtime_state;
@@ -525,7 +526,30 @@ pub fn check_typing_diagnostics(
     filename: Option<&str>,
     core_modules_dirs: &[std::path::PathBuf],
 ) -> Result<Vec<Diagnostic>, Vec<Diagnostic>> {
-    check_typing_collecting(program, string_interner, source_code, filename, core_modules_dirs, None)
+    check_typing_collecting(program, string_interner, source_code, filename, core_modules_dirs, None, None)
+}
+
+/// As [`check_typing_diagnostics`], and additionally hand back the type
+/// the checker gave every expression — what `toy query` answers from
+/// (LLM-TOOLING #4). Filled as far as checking got, so a program with
+/// errors still has types for the parts that checked.
+pub fn check_typing_with_types(
+    program: &mut File,
+    string_interner: &mut DefaultStringInterner,
+    source_code: Option<&str>,
+    filename: Option<&str>,
+    core_modules_dirs: &[std::path::PathBuf],
+    types: &mut HashMap<frontend::ast::ExprRef, frontend::type_decl::TypeDecl>,
+) -> Result<Vec<Diagnostic>, Vec<Diagnostic>> {
+    check_typing_collecting(
+        program,
+        string_interner,
+        source_code,
+        filename,
+        core_modules_dirs,
+        None,
+        Some(types),
+    )
 }
 
 /// What one declaration in the entry file can do (EFFECTS, `--effects`).
@@ -557,6 +581,7 @@ pub fn check_typing_effects(
         filename,
         core_modules_dirs,
         Some(effects),
+        None,
     )
 }
 
@@ -567,6 +592,7 @@ fn check_typing_collecting(
     filename: Option<&str>,
     core_modules_dirs: &[std::path::PathBuf],
     mut collect_effects: Option<&mut Vec<FunctionEffects>>,
+    collect_types: Option<&mut HashMap<frontend::ast::ExprRef, frontend::type_decl::TypeDecl>>,
 ) -> Result<Vec<Diagnostic>, Vec<Diagnostic>> {
     let diag_file = filename.unwrap_or("<input>");
     // DEBUG-OBS D2: name the entry file. The parser seeded the slot
@@ -943,6 +969,9 @@ fn check_typing_collecting(
     drop(rewrites_phase);
     let post_checks_phase = prof::phase("post_checks");
     let expr_types = tc.get_expr_types();
+    if let Some(sink) = collect_types {
+        sink.clone_from(&expr_types);
+    }
     drop(tc);
     let mut analysis = frontend::type_checker::check_moves(program, string_interner, &expr_types);
     // NEVER-ALLOCATES: a function declared `never_allocates` must not

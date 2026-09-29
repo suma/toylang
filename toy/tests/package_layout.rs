@@ -2221,3 +2221,105 @@ fn fix_fails_while_an_unfixable_error_remains() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("applied 0 edit(s)"), "{stdout}");
 }
+
+// LLM-TOOLING #4: `toy query` answers from the checked program.
+
+fn query(pkg: &Pkg, args: &[&str]) -> serde_json::Value {
+    let mut full = vec!["query"];
+    full.extend_from_slice(args);
+    let path = pkg.0.to_str().unwrap().to_string();
+    full.extend_from_slice(&["--in", &path, "--format=json"]);
+    let out = run(pkg, &full);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    serde_json::from_slice(&out.stdout).expect("json")
+}
+
+fn query_pkg() -> Pkg {
+    let pkg = scratch("query");
+    write(&pkg, "src/shapes.t", "pub fn double(n: u64) -> u64 {\n    n * 2u64\n}\n");
+    write(
+        &pkg,
+        "main.t",
+        "struct Point { x: u64, y: u64 }
+impl Point {
+    fn norm(&self) -> u64 { self.x + self.y }
+}
+fn twice(n: u64) -> u64 { n * 2u64 }
+fn total(p: Point) -> u64 {
+    val a = twice(p.x)
+    val b = p.norm()
+    a + b + shapes::double(a)
+}
+fn main() -> u64 {
+    val p = Point { x: 1u64, y: 2u64 }
+    total(p)
+}
+",
+    );
+    pkg
+}
+
+fn at(v: &serde_json::Value) -> (String, u64, u64) {
+    (v["file"].as_str().unwrap().to_string(), v["line"].as_u64().unwrap(), v["column"].as_u64().unwrap())
+}
+
+#[test]
+fn query_type_answers_expressions_and_bindings() {
+    let pkg = query_pkg();
+    let main = pkg.0.join("main.t");
+    let m = main.to_str().unwrap();
+    let r = query(&pkg, &["type", &format!("{m}:7:13"), &format!("{m}:8:13"), &format!("{m}:12:9")]);
+    let types: Vec<&str> = r["answers"].as_array().unwrap().iter().map(|a| a["type"].as_str().unwrap()).collect();
+    assert_eq!(types, ["u64", "Point", "Point"], "{r:#}");
+}
+
+#[test]
+fn query_def_and_refs_follow_functions_methods_modules_and_locals() {
+    let pkg = query_pkg();
+    let m = pkg.0.join("main.t").to_str().unwrap().to_string();
+    let r = query(&pkg, &["def", &format!("{m}:7:13"), &format!("{m}:8:15"), &format!("{m}:9:22"), &format!("{m}:9:9")]);
+    let defs: Vec<(String, u64, u64)> =
+        r["answers"].as_array().unwrap().iter().map(|a| at(&a["definition"])).collect();
+    assert_eq!(
+        defs,
+        [
+            ("main.t".to_string(), 5, 4),       // twice
+            ("main.t".to_string(), 3, 8),       // Point::norm
+            ("src/shapes.t".to_string(), 1, 8), // shapes::double
+            ("main.t".to_string(), 8, 9),       // local b
+        ],
+        "{r:#}"
+    );
+
+    let r = query(&pkg, &["refs", &format!("{m}:5:4"), &format!("{m}:7:9")]);
+    let refs: Vec<Vec<(String, u64, u64)>> = r["answers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["references"].as_array().unwrap().iter().map(at).collect())
+        .collect();
+    assert_eq!(refs[0], [("main.t".to_string(), 7, 13)], "{r:#}");
+    assert_eq!(refs[1], [("main.t".to_string(), 9, 5), ("main.t".to_string(), 9, 28)], "{r:#}");
+}
+
+#[test]
+fn query_callers_and_callees() {
+    let pkg = query_pkg();
+    let r = query(&pkg, &["callees", "total"]);
+    let callees: Vec<&str> = r["answers"][0]["results"][0]["callees"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["function"].as_str().unwrap())
+        .collect();
+    assert_eq!(callees, ["twice", "Point::norm", "shapes::double"], "{r:#}");
+
+    let r = query(&pkg, &["callers", "double"]);
+    let callers: Vec<&str> = r["answers"][0]["results"][0]["callers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["function"].as_str().unwrap())
+        .collect();
+    assert_eq!(callers, ["total"], "{r:#}");
+}

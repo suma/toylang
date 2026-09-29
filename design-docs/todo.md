@@ -12,6 +12,8 @@
 
 ### 2026-09-30
 
+- **LLM-TOOLING #4 — `toy query`** — 型 / 定義 / 参照 / callers / callees を検査済みの
+  プログラムから答える (`interpreter/src/query.rs`)。複数の位置を 1 回で聞ける。
 - **LLM-TOOLING #3 — 関連箇所と主スパンの欠落** — 診断に `related` を足し、重複定義・
   移動・引数不一致・impl 不一致で埋めた。impl 適合 / 未定義トレイト / 同名 method の
   エラーに主スパンを付けた。

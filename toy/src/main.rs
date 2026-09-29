@@ -38,6 +38,8 @@ usage:
   toy run   [PATH] [--release] [--backend aot|jit|vm|tree|all] [--heap-check=MODE] [--format=text|json] [-v] [-- ARGS...]
   toy check [PATH] [--format=text|json] [-v]
   toy fix   [PATH] [--dry-run] [--format=text|json]
+  toy query type|def|refs FILE:LINE:COL... [--in PATH] [--format=text|json]
+  toy query callers|callees NAME... [--in PATH] [--format=text|json]
   toy clean [PATH] [--all] [--format=text|json] [-v]
   toy new   <DIR> [--format=text|json] [-v]
   toy init  [DIR] [--format=text|json] [-v]
@@ -224,6 +226,13 @@ fn main() {
     }
     let command = argv[0].clone();
     let rest = &argv[1..];
+
+    if command == "query" {
+        if let Err(e) = cmd_query(rest) {
+            fail(&e);
+        }
+        return;
+    }
 
     let takes_subject = matches!(command.as_str(), "api" | "explain" | "test" | "new");
     let args = match parse_args(rest, takes_subject) {
@@ -708,6 +717,160 @@ fn run_in_process(
         process::exit(code);
     }
     Ok(())
+}
+
+/// `toy query KIND SUBJECT... [--in PATH]` (LLM-TOOLING #4): ask the
+/// checked program about types, definitions, references and calls.
+/// Several subjects are answered from one check, which is the point of
+/// taking a list: the stdlib is loaded and checked once.
+fn cmd_query(argv: &[String]) -> Result<(), String> {
+    let Some((kind, rest)) = argv.split_first() else {
+        return Err("usage: toy query type|def|refs|callers|callees SUBJECT... [--in PATH]".to_string());
+    };
+    let mut subjects: Vec<String> = Vec::new();
+    let mut flags: Vec<String> = Vec::new();
+    let mut place: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        let arg = &rest[i];
+        if arg == "--in" {
+            place = rest.get(i + 1).cloned();
+            i += 2;
+            continue;
+        }
+        if arg.starts_with('-') {
+            flags.push(arg.clone());
+            if arg == "--core-modules"
+                && let Some(v) = rest.get(i + 1)
+            {
+                flags.push(v.clone());
+                i += 1;
+            }
+        } else {
+            subjects.push(arg.clone());
+        }
+        i += 1;
+    }
+    if subjects.is_empty() {
+        return Err(format!("toy query {kind}: nothing to ask about"));
+    }
+    // Where the package is: `--in`, else the file a position names.
+    let by_position = matches!(kind.as_str(), "type" | "def" | "refs");
+    let path = place.or_else(|| {
+        by_position
+            .then(|| subjects[0].rsplitn(3, ':').nth(2).map(str::to_string))
+            .flatten()
+    });
+    if let Some(p) = path {
+        flags.push(p);
+    }
+    let args = parse_args(&flags, false)?;
+    let pkg = locate(&args)?;
+    let source = read_entry(&pkg)?;
+    let name = pkg.entry.to_string_lossy().into_owned();
+    let mut session = compiler_core::CompilerSession::new();
+    let mut program = session
+        .parse_program_all_errors(&source, &name)
+        .map_err(|errors| format!("{} parse error(s); `toy check` shows them", errors.len()))?;
+    let mut types = std::collections::HashMap::new();
+    let checked = interpreter::check_typing_with_types(
+        &mut program,
+        session.string_interner_mut(),
+        Some(&source),
+        Some(&name),
+        &pkg.module_roots,
+        &mut types,
+    );
+    let errors = checked.as_ref().err().map(Vec::len).unwrap_or(0);
+    let index = interpreter::query::Index::new(&program, session.string_interner(), &types);
+    let root = pkg.root.canonicalize().unwrap_or_else(|_| pkg.root.clone());
+    let mut answers: Vec<serde_json::Value> =
+        subjects.iter().map(|s| interpreter::query::answer(&index, kind, s)).collect();
+    for a in &mut answers {
+        relativize_files(a, &root);
+    }
+    if args.json {
+        print_json(&serde_json::json!({
+            "query": kind,
+            "answers": answers,
+            // Answers from a program with errors cover what checked.
+            "type_errors": errors,
+        }));
+    } else {
+        for a in &answers {
+            print!("{}", render_answer(kind, a));
+        }
+        if errors > 0 {
+            eprintln!("toy: the program has {errors} type error(s); answers cover what checked");
+        }
+    }
+    Ok(())
+}
+
+/// Every `"file"` in a query answer, relative to the package root —
+/// the entry is recorded as given (often absolute) and modules
+/// relative to their root; one convention reads better and compares.
+fn relativize_files(value: &mut serde_json::Value, root: &Path) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, v) in map.iter_mut() {
+                if key == "file"
+                    && let serde_json::Value::String(path) = v
+                {
+                    let canonical = Path::new(path.as_str()).canonicalize().ok();
+                    if let Some(rel) = canonical.as_deref().and_then(|p| p.strip_prefix(root).ok()) {
+                        *path = rel.to_string_lossy().into_owned();
+                    }
+                } else {
+                    relativize_files(v, root);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                relativize_files(item, root);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// One answer as text: a line per fact, `file:line:column` for places.
+fn render_answer(kind: &str, a: &serde_json::Value) -> String {
+    let place = |p: &serde_json::Value| {
+        format!("{}:{}:{}", p["file"].as_str().unwrap_or("?"), p["line"], p["column"])
+    };
+    let subject = a["subject"].as_str().unwrap_or("?");
+    if let Some(e) = a["error"].as_str() {
+        return format!("{subject}: error: {e}\n");
+    }
+    match kind {
+        "type" => format!("{subject}: {}\n", a["type"].as_str().unwrap_or("?")),
+        "def" => format!(
+            "{subject}: {} at {}\n",
+            a["name"].as_str().unwrap_or("?"),
+            if a["definition"].is_null() { "?".to_string() } else { place(&a["definition"]) }
+        ),
+        "refs" => {
+            let mut out = format!("{subject}: {}\n", a["name"].as_str().unwrap_or("?"));
+            for r in a["references"].as_array().into_iter().flatten() {
+                out.push_str(&format!("  {}\n", place(r)));
+            }
+            out
+        }
+        _ => {
+            let mut out = String::new();
+            let arrow = if kind == "callees" { "->" } else { "<-" };
+            for r in a["results"].as_array().into_iter().flatten() {
+                out.push_str(&format!("{}\n", r["function"].as_str().unwrap_or("?")));
+                for e in r[kind].as_array().into_iter().flatten() {
+                    let who = e["function"].as_str().unwrap_or("(a call this cannot follow)");
+                    out.push_str(&format!("  {arrow} {who} at {}\n", place(&e["at"])));
+                }
+            }
+            out
+        }
+    }
 }
 
 /// `toy fix`: apply the machine-applicable suggestions, check again,

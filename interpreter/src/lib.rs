@@ -49,13 +49,23 @@ use crate::module_integration::load_and_integrate_module;
 pub use crate::module_integration::integrate_module_into_program;
 
 /// Common setup for TypeCheckerVisitor with struct and impl registration
-fn setup_type_checker<'a>(program: &'a mut File, string_interner: &'a mut DefaultStringInterner) -> TypeCheckerVisitor<'a> {
+///
+/// `skipped_decls` are declarations reported as duplicates (E0031);
+/// the first of each name is the one registered.
+fn setup_type_checker<'a>(
+    program: &'a mut File,
+    string_interner: &'a mut DefaultStringInterner,
+    skipped_decls: &std::collections::HashSet<StmtRef>,
+) -> TypeCheckerVisitor<'a> {
     // First, collect and register struct definitions (including generic params)
     let mut struct_definitions = Vec::new();
     let mut generic_struct_info = Vec::new();
     
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
+        if skipped_decls.contains(&stmt_ref) {
+            continue;
+        }
         if let Some(stmt) = program.statement.get(&stmt_ref) {
             if let frontend::ast::Stmt::StructDecl { name, generic_params, generic_bounds: _, fields, visibility } = &stmt {
                 struct_definitions.push((*name, fields.clone(), *visibility));
@@ -618,6 +628,20 @@ fn check_typing_collecting(
     // was gone — the process aborted (exit 134) with no diagnostic at
     // all. Placed right after alias resolution: `type L = List` is
     // substituted by then, and every later pass is spared the shape.
+    // LLM-TOOLING L0: one name declared twice in one file. A second
+    // `fn` used to pass here and panic in `compiler_ir`; a second
+    // `struct` / `const` silently replaced the first. The first
+    // declaration wins and later type declarations are left out of
+    // registration below, so the rest of the file checks against one.
+    let duplicates = frontend::type_checker::check_duplicate_definitions(program, string_interner);
+    errors.extend(
+        duplicates
+            .errors
+            .iter()
+            .map(|e| Diagnostic::from_type_check_error(e, diag_file, Some(&*string_interner))),
+    );
+    let skipped_decls = duplicates.skipped_decls;
+
     let recursive_phase = prof::phase("recursive_types");
     errors.extend(
         frontend::type_checker::check_recursive_types(program, string_interner)
@@ -696,7 +720,7 @@ fn check_typing_collecting(
     }
 
     // Setup TypeChecker now that imports and prelude are integrated.
-    let mut tc = setup_type_checker(program, string_interner);
+    let mut tc = setup_type_checker(program, string_interner, &skipped_decls);
     // LLM-LOOP P3: a fix suggestion has to quote the text it replaces,
     // so the checker needs the source to build one.
     tc.source_code = source_code;
@@ -712,6 +736,9 @@ fn check_typing_collecting(
         let stmt_count = tc.core.stmt_pool.len();
         for i in 0..stmt_count {
             let stmt_ref = StmtRef(i as u32);
+            if skipped_decls.contains(&stmt_ref) {
+                continue;
+            }
             let should_visit = tc.core.stmt_pool.get(&stmt_ref)
                 .map(|s| matches!(
                     s,

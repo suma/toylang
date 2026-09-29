@@ -172,6 +172,10 @@ pub enum TypeCheckErrorKind {
     /// no module. `written` is what was typed, `name` the function,
     /// `known` the paths that do define it.
     UnknownModulePath { written: String, name: String, known: Vec<String> },
+    /// LLM-TOOLING L0: a name declared twice in one file. `what` is
+    /// the namespace ("function", "type", ...), `first_line` where the
+    /// declaration that wins is.
+    DuplicateDefinition { what: &'static str, name: String, first_line: u32 },
     /// MUST-USE: a statement produced a `Result` and threw it away.
     /// `ty` is how the value was spelled, `what` names what produced
     /// it when that is knowable (`the call \`write_file(...)\``).
@@ -494,6 +498,17 @@ impl TypeCheckError {
         }
     }
 
+    /// LLM-TOOLING L0: a second declaration of one name in one file.
+    pub fn duplicate_definition(what: &'static str, name: String, first_line: u32) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::DuplicateDefinition { what, name, first_line }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
+
     /// MODULE-SYSTEM P3: a call's module path does not exist.
     pub fn unknown_module_path(written: String, name: String, known: Vec<String>) -> Self {
         Self {
@@ -780,6 +795,12 @@ impl TypeCheckError {
                     "no module is called `{written}`, so `{written}::{name}` names nothing — \
                      {where_it_is}. A path is checked from the end, so the last segments are \
                      enough as long as they pick one module"
+                )
+            }
+            TypeCheckErrorKind::DuplicateDefinition { what, name, first_line } => {
+                format!(
+                    "{what} `{name}` is already defined on line {first_line} of this file; \
+                     a name can be declared once per file, so rename or remove one of them"
                 )
             }
             TypeCheckErrorKind::UnusedResult { ty, what } => {

@@ -80,6 +80,8 @@ pub use region_check::check_regions;
 
 mod recursive_type;
 pub use recursive_type::check_recursive_types;
+mod duplicate_defs;
+pub use duplicate_defs::{check_duplicate_definitions, DuplicateDefinitions};
 
 mod move_check;
 pub use move_check::check_moves;

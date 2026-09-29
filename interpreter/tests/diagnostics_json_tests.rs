@@ -549,3 +549,58 @@ fn a_parallel_body_may_assign_to_what_it_declares() {
     );
     assert!(result.is_ok(), "a binding made inside the body is the body's own: {result:?}");
 }
+
+// LLM-TOOLING L0: a name declared twice in one file. A second `fn`
+// used to pass the checker and panic in `compiler_ir`; a second
+// `struct` / `const` silently replaced the first.
+
+#[test]
+fn a_second_declaration_of_a_name_is_e0031_on_the_name() {
+    for (source, noun) in [
+        ("fn f() -> u64 { 1u64 }\nfn f() -> u64 { 2u64 }\nfn main() -> u64 { f() }", "function"),
+        ("struct S { a: u64 }\nstruct S { b: u64 }\nfn main() -> u64 { 0u64 }", "type"),
+        ("struct S { a: u64 }\nenum S { B }\nfn main() -> u64 { 0u64 }", "type"),
+        ("enum S { A }\nenum S { B }\nfn main() -> u64 { 0u64 }", "type"),
+        ("trait S { fn m(&self) -> u64 }\ntrait S { fn n(&self) -> u64 }\nfn main() -> u64 { 0u64 }", "trait"),
+        ("const S: u64 = 1u64\nconst S: u64 = 2u64\nfn main() -> u64 { S }", "constant"),
+    ] {
+        let diagnostics = diagnose(source);
+        assert_eq!(diagnostics.len(), 1, "{source}\n{diagnostics:#?}");
+        let d = &diagnostics[0];
+        assert_eq!(d.code, "E0031", "{source}");
+        assert_eq!(d.span.unwrap().line, 2, "{source}");
+        let name = if noun == "function" { "f" } else { "S" };
+        assert_eq!(span_text(source, d), name, "{source}");
+        assert!(d.message.contains(noun) && d.message.contains("line 1"), "{}", d.message);
+    }
+}
+
+#[test]
+fn the_first_declaration_wins_and_the_rest_of_the_file_is_still_checked() {
+    // `S { a: .. }` matches the first struct, so it is not a second
+    // error; the unrelated mismatch in `main` is still reported.
+    let source = "struct S { a: u64 }
+fn g() -> u64 { 0u64 }
+struct S { b: u64 }
+fn main() -> u64 {
+    val s = S { a: 1u64 }
+    val x: bool = 1u64
+    s.a
+}";
+    let diagnostics = diagnose(source);
+    let codes: Vec<&str> = diagnostics.iter().map(|d| d.code).collect();
+    assert_eq!(codes, ["E0031", "E0001"], "{diagnostics:#?}");
+}
+
+#[test]
+fn a_function_named_like_a_type_is_not_a_duplicate() {
+    // Functions and types are different namespaces.
+    let source = "struct P { a: u64 }
+fn P() -> u64 { 0u64 }
+fn main() -> u64 {
+    val x: bool = 1u64
+    0u64
+}";
+    let diagnostics = diagnose(source);
+    assert!(diagnostics.iter().all(|d| d.code != "E0031"), "{diagnostics:#?}");
+}

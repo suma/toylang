@@ -10,6 +10,12 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-09-29
+
+- **LLM-TOOLING L0 — 同一ファイル内の重複宣言を `[E0031]` に** — 2 つ目の `fn` が
+  `compiler_ir` で panic し、`struct` / `const` は黙って置き換わっていた。
+  fn / 型 / trait / const をファイル単位で検査し、1 つ目を残して検査を続ける。
+
 ### 2026-09-26
 
 - **HEAP-CHECK — `toy` の `--heap-check`** — `toy build` / `run` / `test` が
@@ -2918,8 +2924,8 @@
 
 * **LLM 向け道具の第 2 ラウンド (LLM-TOOLING)** — 修正提案 / 安定コード /
   関連箇所 / 意味情報の問い合わせ / 決定性 / 回復 / 速度の 7 性質を実測で
-  棚卸しした。**重複定義 (`fn f` ×2) が型検査を通り `compiler_ir` で
-  panic する** (L0、バグ)、`E0010` が全パースエラー + `generic_error`
+  棚卸しした。L0 (重複定義の ICE) は 2026-09-29 に landing。
+  `E0010` が全パースエラー + `generic_error`
   274 か所の catch-all (L1)、パースエラー 1 件で型検査に進まない (L4)
   が優先。インクリメンタル型検査は `toy check` 26 ms の実測から非目標。
   [`LLM_TOOLING.md`](LLM_TOOLING.md)。

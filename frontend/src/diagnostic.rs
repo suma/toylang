@@ -328,6 +328,9 @@ pub mod codes {
     /// MODULE-SYSTEM P3: a call names a module path no module has.
     pub const UNKNOWN_MODULE_PATH: &str = "E0030";
 
+    /// LLM-TOOLING L0: one name declared twice in one file.
+    pub const DUPLICATE_DEFINITION: &str = "E0031";
+
     /// Every code, in order. `crate::explain` is checked against this
     /// list by a test, so a new code cannot ship without prose.
     pub const ALL: &[&str] = &[
@@ -361,6 +364,7 @@ pub mod codes {
         OWNING_ELEMENT_COPY,
         PARALLEL_BODY,
         UNKNOWN_MODULE_PATH,
+        DUPLICATE_DEFINITION,
     ];
 }
 
@@ -397,6 +401,7 @@ fn code_for(kind: &TypeCheckErrorKind) -> &'static str {
         TypeCheckErrorKind::OwningElementCopy { .. } => codes::OWNING_ELEMENT_COPY,
         TypeCheckErrorKind::ParallelBody { .. } => codes::PARALLEL_BODY,
         TypeCheckErrorKind::UnknownModulePath { .. } => codes::UNKNOWN_MODULE_PATH,
+        TypeCheckErrorKind::DuplicateDefinition { .. } => codes::DUPLICATE_DEFINITION,
     }
 }
 

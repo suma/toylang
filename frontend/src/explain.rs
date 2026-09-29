@@ -76,6 +76,7 @@ const ENTRIES: &[Entry] = &[
     (codes::OWNING_ELEMENT_COPY, E0028),
     (codes::PARALLEL_BODY, E0029),
     (codes::UNKNOWN_MODULE_PATH, E0030),
+    (codes::DUPLICATE_DEFINITION, E0031),
 ];
 
 const E0001: &str = "\
@@ -964,6 +965,27 @@ something else grows a `math`.
 a bare name is ambiguous, `[E0010]` lists the competing paths;
 writing more of one of them is the fix it suggests, and that half is
 still to come (`design-docs/MODULE_SYSTEM.md` P3).";
+
+const E0031: &str = "\
+E0031: a name is declared twice in one file
+
+    fn area(w: u64, h: u64) -> u64 { w * h }
+    fn area(r: u64) -> u64 { 3u64 * r * r }   # E0031: `area` is already defined on line 1
+
+Each file has one namespace per kind of declaration: functions,
+types (`struct` and `enum` share it), traits and constants. There is
+no overloading by parameter list, so the second `area` can only
+replace the first or be ambiguous with it, and neither is what was
+meant.
+
+The first declaration is the one the rest of the file is checked
+against; every later one is reported. Rename the one you want to
+keep separate (`circle_area`), or delete the one you do not want —
+a copy pasted while restructuring a file is the usual cause.
+
+Two **modules** declaring the same name is not this error: a function
+is chosen by its module path, and a clash between type names in
+different modules is reported when the modules are loaded.";
 
 const E0029: &str = "\
 E0029: a parallel loop body depends on the order of its iterations

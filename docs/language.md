@@ -476,6 +476,11 @@ can underline the offending token.
    conformance is checked structurally: an `impl Trait for Type` must
    provide every method the trait declared, with matching parameter
    and return types (modulo `Self` / generic substitution).
+   A name may be declared **once per file** in each namespace —
+   functions, types (`struct` and `enum` share one), traits, and
+   constants. A second declaration is `[E0031]`; the first is the one
+   the rest of the file is checked against. (Two *modules* declaring
+   one name are resolved by module path instead.)
 2. **Function bodies** — each `fn` is type-checked top-down. Parameter
    types annotate the symbol table; the body's tail expression must
    match the return type (or `()` if none).

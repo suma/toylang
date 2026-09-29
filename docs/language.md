@@ -704,6 +704,10 @@ makes, applied together, each with its own `file` and `span` (byte
 A suggestion with one edit also carries it as `replacement` / `span`
 at the top level. `toy fix` applies them all and checks again.
 
+Diagnostics come in one order — the file being compiled first, then
+the others by name, each by position — so the same input gives the
+same output, byte for byte.
+
 `related` lists the other places a diagnostic is about — the first
 declaration of a name declared twice (`E0031`), where a value was
 moved (`E0014`), the parameter an argument does not match (`E0001`),

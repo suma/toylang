@@ -2323,3 +2323,56 @@ fn query_callers_and_callees() {
         .collect();
     assert_eq!(callers, ["total"], "{r:#}");
 }
+
+// LLM-TOOLING #5: the same input gives the same bytes. Each run is its
+// own process, so hash-map iteration order differs between them; a
+// report whose order came from one would differ here.
+
+#[test]
+fn diagnostics_and_answers_are_byte_identical_across_runs_and_in_source_order() {
+    let pkg = scratch("determinism");
+    write(
+        &pkg,
+        "src/geo.t",
+        "pub fn area(w: u64, h: u64) -> u64 { w * h }\npub fn area(w: u64) -> u64 { w }\n\
+         pub fn bad() -> bool { 1u64 }\n",
+    );
+    let mut main = String::from("struct P { x: u64 }\n");
+    for i in 0..12 {
+        main.push_str(&format!(
+            "struct S{i} {{ v: u64 }}\nimpl S{i} {{ fn m(&self) -> u64 {{ self.w{i} }} }}\n\
+             fn f{i}(p: P) -> u64 {{ val q = p\n    p.x + missing{i}() }}\n"
+        ));
+    }
+    main.push_str("fn main() -> u64 { 0u64 }\n");
+    write(&pkg, "main.t", &main);
+    let path = pkg.0.to_str().unwrap().to_string();
+
+    for args in [
+        vec!["check", path.as_str(), "--format=json"],
+        vec!["check", path.as_str()],
+        vec!["query", "callees", "f3", "--in", path.as_str(), "--format=json"],
+    ] {
+        let a = run(&pkg, &args);
+        let b = run(&pkg, &args);
+        assert_eq!(a.stdout, b.stdout, "stdout differs for {args:?}");
+        assert_eq!(a.stderr, b.stderr, "stderr differs for {args:?}");
+    }
+
+    // Source order: the entry file first, then by position.
+    let out = run(&pkg, &["check", path.as_str(), "--format=json"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let json = &stderr[stderr.find('[').unwrap()..=stderr.rfind(']').unwrap()];
+    let diags: Vec<serde_json::Value> = serde_json::from_str(json).expect("json");
+    assert!(diags.len() > 12, "{stderr}");
+    let keys: Vec<(bool, String, u64)> = diags
+        .iter()
+        .map(|d| {
+            let file = d["file"].as_str().unwrap().to_string();
+            (!file.ends_with("main.t"), file, d["span"]["offset"].as_u64().unwrap_or(u64::MAX))
+        })
+        .collect();
+    let mut sorted = keys.clone();
+    sorted.sort();
+    assert_eq!(keys, sorted, "{stderr}");
+}

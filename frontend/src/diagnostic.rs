@@ -455,6 +455,29 @@ impl Diagnostic {
     }
 }
 
+/// Put diagnostics in their one reported order and drop exact repeats
+/// (LLM-TOOLING #5).
+///
+/// The order is the entry file's first, then other files by name, and
+/// within a file by position, code and message; a diagnostic without a
+/// span keeps its place after the positioned ones of its file. Checks
+/// run in whatever order the checker walks, and some of that order
+/// comes from hash maps, whose iteration differs from one process to
+/// the next — sorting here, once, is what makes the same input give
+/// the same bytes.
+pub fn normalize(diagnostics: &mut Vec<Diagnostic>, entry_file: &str) {
+    diagnostics.sort_by(|a, b| {
+        let key = |d: &Diagnostic| {
+            let span = d.span.map(|s| (s.offset, s.end_offset)).unwrap_or((u32::MAX, u32::MAX));
+            (d.file != entry_file, d.file.clone(), span, d.code, d.message.clone())
+        };
+        key(a).cmp(&key(b))
+    });
+    diagnostics.dedup_by(|a, b| {
+        a.file == b.file && a.span == b.span && a.code == b.code && a.message == b.message
+    });
+}
+
 pub mod codes {
     pub const TYPE_MISMATCH: &str = "E0001";
     pub const TYPE_MISMATCH_OPERATION: &str = "E0002";

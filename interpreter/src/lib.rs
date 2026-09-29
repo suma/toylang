@@ -654,6 +654,7 @@ fn check_typing_collecting(
         if let Err(module_errors) = integrated {
             errors.extend(module_errors.into_iter().map(|m| Diagnostic::message_only(m, diag_file)));
         }
+        frontend::diagnostic::normalize(&mut errors, diag_file);
         return Err(errors);
     }
 
@@ -1136,6 +1137,8 @@ fn check_typing_collecting(
     for d in errors.iter_mut().chain(warnings.iter_mut()) {
         d.anchor_in(&program.source_map);
     }
+    frontend::diagnostic::normalize(&mut errors, diag_file);
+    frontend::diagnostic::normalize(&mut warnings, diag_file);
     prof::count("typecheck.errors", errors.len() as u64);
     prof::count("typecheck.warnings", warnings.len() as u64);
     if errors.is_empty() {

@@ -634,7 +634,9 @@ impl<'a> Parser<'a> {
         self.expect_err(&Kind::Colon)?;
         let const_ty = self.parse_type_declaration()?;
         self.expect_err(&Kind::Equal)?;
+        let errors_before = self.errors.len();
         let value = self.parse_expr_impl()?;
+        self.retarget_float_suffix(errors_before, &const_ty, value);
         let const_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
         out.saw_end(const_end_pos);
 
@@ -1279,7 +1281,10 @@ impl<'a> Parser<'a> {
         // is the coarsest unit that still separates mistakes a reader
         // would fix separately; two errors on one line collapse into the
         // first, which is the one that says what is actually wrong.
-        errors.dedup_by(|a, b| a.location.line == b.location.line);
+        // An error the parser recovered from cleanly is its own
+        // mistake wherever it sits, so it neither absorbs nor is
+        // absorbed by a neighbour.
+        errors.dedup_by(|a, b| a.location.line == b.location.line && !a.recovered && !b.recovered);
         errors
     }
 }

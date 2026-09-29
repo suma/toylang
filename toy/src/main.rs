@@ -18,6 +18,7 @@
 
 mod clean;
 mod collide;
+mod fix;
 mod package;
 mod scaffold;
 mod test_runner;
@@ -36,6 +37,7 @@ usage:
   toy build [PATH] [--release] [--backend aot|jit] [-o OUT] [--profile=compile] [--heap-check=MODE] [--format=text|json] [-v]
   toy run   [PATH] [--release] [--backend aot|jit|vm|tree|all] [--heap-check=MODE] [--format=text|json] [-v] [-- ARGS...]
   toy check [PATH] [--format=text|json] [-v]
+  toy fix   [PATH] [--dry-run] [--format=text|json]
   toy clean [PATH] [--all] [--format=text|json] [-v]
   toy new   <DIR> [--format=text|json] [-v]
   toy init  [DIR] [--format=text|json] [-v]
@@ -61,6 +63,7 @@ options:
   -v, --verbose        print the equivalent compiler/interpreter call
   -j, --jobs N         test: run N jobs at once (default: cores; 1 = serial)
   --list               list the tests instead of running them
+  --dry-run            fix: report the edits without writing them
   --bless              test: record the golden files instead of checking
   --check              test: property-check the contracts (requires /
                        ensures) instead of running the test blocks
@@ -145,6 +148,8 @@ struct Args {
     heap_check: Option<HeapMode>,
     /// `--heap-quarantine=` for reuse mode.
     heap_quarantine: Option<u64>,
+    /// `toy fix --dry-run`: report the edits without writing them.
+    dry_run: bool,
 }
 
 /// `--heap-check=` (HEAP-CHECK): what `compiler` and `interpreter`
@@ -235,6 +240,9 @@ fn main() {
     if args.seed.is_some() && !args.check_contracts {
         fail("--seed picks the inputs `--check` generates; add --check");
     }
+    if args.dry_run && command != "fix" {
+        fail("--dry-run reports the edits `toy fix` would make; only `toy fix` takes it");
+    }
     if let Err(e) = check_heap_flags(&command, &args) {
         fail(&e);
     }
@@ -242,6 +250,7 @@ fn main() {
         "build" => cmd_build(&args),
         "run" => cmd_run(&args),
         "check" => cmd_check(&args),
+        "fix" => cmd_fix(&args),
         "test" => cmd_test(&args),
         "clean" => cmd_clean(&args),
         "new" => cmd_new(&args),
@@ -321,6 +330,7 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
         seed: None,
         heap_check: None,
         heap_quarantine: None,
+        dry_run: false,
     };
     let mut i = 0usize;
     while i < argv.len() {
@@ -340,6 +350,7 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
             "--all" => a.all = true,
             "--profile=compile" => a.compile_profile = true,
             "--check" => a.check_contracts = true,
+            "--dry-run" => a.dry_run = true,
             _ if arg.starts_with("--heap-check=") => {
                 a.heap_check = Some(HeapMode::parse(&arg["--heap-check=".len()..])?);
             }
@@ -695,6 +706,83 @@ fn run_in_process(
     };
     if let Some(code) = outcome.exit_code {
         process::exit(code);
+    }
+    Ok(())
+}
+
+/// `toy fix`: apply the machine-applicable suggestions, check again,
+/// repeat. Fails (exit 1) while diagnostics remain, like `check`.
+fn cmd_fix(args: &Args) -> Result<(), String> {
+    let pkg = locate(args)?;
+    let mut outcome = fix::run(&pkg, args.dry_run)?;
+    outcome.sort();
+    let shown = |p: &Path| {
+        p.strip_prefix(&pkg.root).unwrap_or(p).to_string_lossy().into_owned()
+    };
+    if args.json {
+        let applied: Vec<serde_json::Value> = outcome
+            .applied
+            .iter()
+            .map(|a| {
+                serde_json::json!({
+                    "file": shown(&a.file),
+                    "line": a.line,
+                    "column": a.column,
+                    "written": a.written,
+                    "replacement": a.replacement,
+                    "code": a.code,
+                    "message": a.message,
+                })
+            })
+            .collect();
+        print_json(&serde_json::json!({
+            "ok": outcome.remaining.iter().all(|d| d.severity.as_str() != "error"),
+            "dry_run": args.dry_run,
+            "rounds": outcome.rounds,
+            "applied": applied,
+            "outside_package": outcome.outside,
+            "remaining": serde_json::to_value(&outcome.remaining).unwrap_or_default(),
+        }));
+    } else {
+        let verb = if args.dry_run { "would apply" } else { "applied" };
+        for a in &outcome.applied {
+            println!(
+                "{}:{}:{}: [{}] `{}` -> `{}` ({})",
+                shown(&a.file),
+                a.line,
+                a.column,
+                a.code,
+                a.written,
+                a.replacement,
+                a.message
+            );
+        }
+        for o in &outcome.outside {
+            println!("not applied (outside the package): {o}");
+        }
+        if args.dry_run {
+            // Nothing was written, so the count is the program's as it
+            // stands, before these edits.
+            println!(
+                "{verb} {} edit(s); nothing written ({} diagnostic(s) before the edits)",
+                outcome.applied.len(),
+                outcome.remaining.len()
+            );
+        } else {
+            println!(
+                "{verb} {} edit(s) in {} round(s); {} diagnostic(s) remain",
+                outcome.applied.len(),
+                outcome.rounds,
+                outcome.remaining.len()
+            );
+            if !outcome.remaining.is_empty() {
+                println!("run `toy check` to see them");
+            }
+        }
+    }
+    let errors = outcome.remaining.iter().filter(|d| d.severity.as_str() == "error").count();
+    if errors > 0 && !args.dry_run {
+        return Err(format!("{errors} error(s) remain after fixing"));
     }
     Ok(())
 }

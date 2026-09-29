@@ -82,43 +82,124 @@ impl From<SourceLocation> for Span {
     }
 }
 
-/// An edit that resolves the diagnostic: replace `span` with
-/// `replacement`.
+/// One change to one file: replace `span` with `replacement`.
+///
+/// An insertion is a span whose `offset == end_offset`; a deletion is
+/// an empty `replacement`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub struct Suggestion {
-    pub message: String,
-    pub replacement: String,
+pub struct Edit {
+    /// The file the edit applies to. `None` until the diagnostic is
+    /// resolved (`Diagnostic::resolve_edits`), which names it from the
+    /// span's `FileId` — so an edit can land in a file other than the
+    /// one the diagnostic is reported in.
+    pub file: Option<String>,
     /// Range to replace. `None` means "the diagnostic's own span" --
     /// used by suggestions built before the error has been anchored,
     /// which is the normal order for name-resolution failures.
     pub span: Option<Span>,
+    pub replacement: String,
+    /// Where `span` is to be found, when the producer could not say:
+    /// the given word inside the diagnostic's own span. The type
+    /// checker knows *what* was misspelled but not the text around
+    /// it; `Diagnostic::anchor_in`, which has the text, turns this
+    /// into `span`. A suggestion whose word is not found is dropped
+    /// rather than applied to the whole primary span.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub word: Option<WordInSpan>,
+}
+
+/// A word to locate inside a diagnostic's primary span.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WordInSpan {
+    pub word: String,
+    /// Only search at or after this offset (the end of a receiver, so
+    /// `xpoz.xpoz` finds the member, not the variable).
+    pub after: Option<u32>,
+    /// Search up to this offset instead of the span's end (the start
+    /// of an argument list or a field's value, so `q.nrom(nrom)` finds
+    /// the method). May lie past the span: a qualified call's span is
+    /// its qualifier, and the name follows it.
+    pub before: Option<u32>,
+    /// Take the last occurrence in the window rather than the first.
+    pub last: bool,
+}
+
+/// A fix for the diagnostic: every edit in `edits`, applied together.
+///
+/// Serialised with `edits` as the complete description. A suggestion
+/// with exactly one edit also carries that edit's `replacement` and
+/// `span` at the top level, the shape the JSON had before a
+/// suggestion could make more than one change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Suggestion {
+    pub message: String,
     pub applicability: Applicability,
+    pub edits: Vec<Edit>,
 }
 
 impl Suggestion {
     pub fn machine_applicable(message: &str, replacement: String, span: Span) -> Self {
-        Suggestion {
-            message: message.to_string(),
-            replacement,
-            span: Some(span),
-            applicability: Applicability::MachineApplicable,
-        }
+        Suggestion::with_edits(
+            message,
+            Applicability::MachineApplicable,
+            vec![Edit { file: None, span: Some(span), replacement, word: None }],
+        )
     }
 
     /// A replacement for whatever the diagnostic itself points at.
     pub fn over_primary_span(message: &str, replacement: String) -> Self {
-        Suggestion {
-            message: message.to_string(),
-            replacement,
-            span: None,
-            applicability: Applicability::MachineApplicable,
-        }
+        Suggestion::with_edits(
+            message,
+            Applicability::MachineApplicable,
+            vec![Edit { file: None, span: None, replacement, word: None }],
+        )
     }
 
-    /// Resolve `span`, defaulting to the diagnostic's primary span.
-    pub fn effective_span(&self, primary: Option<Span>) -> Option<Span> {
-        self.span.or(primary)
+    /// Several edits that only make sense together (both ends of a
+    /// signature change, say).
+    pub fn with_edits(message: &str, applicability: Applicability, edits: Vec<Edit>) -> Self {
+        Suggestion { message: message.to_string(), applicability, edits }
+    }
+
+    /// Replace the word `old` inside the diagnostic's span with `new`
+    /// — a misspelled member or field, found by name because the
+    /// producer does not have the text.
+    pub fn rename_in_primary(message: &str, new: &str, target: WordInSpan) -> Self {
+        Suggestion::with_edits(
+            message,
+            Applicability::MachineApplicable,
+            vec![Edit { file: None, span: None, replacement: new.to_string(), word: Some(target) }],
+        )
+    }
+
+    /// The replacement text of a single-edit suggestion.
+    pub fn replacement(&self) -> Option<&str> {
+        match self.edits.as_slice() {
+            [only] => Some(only.replacement.as_str()),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for Suggestion {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let single = match self.edits.as_slice() {
+            [only] => Some(only),
+            _ => None,
+        };
+        let mut st = serializer
+            .serialize_struct("Suggestion", if single.is_some() { 5 } else { 3 })?;
+        st.serialize_field("message", &self.message)?;
+        if let Some(only) = single {
+            st.serialize_field("replacement", &only.replacement)?;
+            st.serialize_field("span", &only.span)?;
+        }
+        st.serialize_field("applicability", &self.applicability)?;
+        st.serialize_field("edits", &self.edits)?;
+        st.end()
     }
 }
 
@@ -214,11 +295,65 @@ impl Diagnostic {
     /// the path on the wire, so `file` + `span` is a position a tool
     /// can open. `origin_module` still says *why* it is not the entry.
     pub fn anchor_in(&mut self, source_map: &crate::source_map::SourceMap) {
+        let entry_file = self.file.clone();
         if let Some(span) = self.span
             && span.file != crate::source_map::FileId::ENTRY
             && let Some(path) = source_map.path(span.file)
         {
             self.file = path.to_string();
+        }
+        // Locate the words the checker named but could not place.
+        let primary = self.span;
+        self.suggestions.retain_mut(|suggestion| {
+            suggestion.edits.iter_mut().all(|edit| {
+                let Some(target) = edit.word.take() else { return true };
+                let Some(p) = primary else { return false };
+                let from = p.offset.max(target.after.unwrap_or(0)) as usize;
+                let to = target.before.unwrap_or(p.end_offset) as usize;
+                let found = if target.last {
+                    source_map.rfind_word(p.file, from, to, &target.word)
+                } else {
+                    source_map.find_word(p.file, from, to, &target.word)
+                };
+                edit.span = found.map(Span::from);
+                edit.span.is_some()
+            })
+        });
+        // Each edit names its own file: a fix for a call's error can
+        // be in the callee's module, and vice versa.
+        for edit in self.suggestions.iter_mut().flat_map(|s| s.edits.iter_mut()) {
+            if edit.file.is_some() {
+                continue;
+            }
+            let span = edit.span.or(primary);
+            edit.file = Some(match span {
+                Some(span) if span.file != crate::source_map::FileId::ENTRY => source_map
+                    .path(span.file)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| entry_file.clone()),
+                _ => entry_file.clone(),
+            });
+        }
+        self.resolve_edits();
+    }
+
+    /// Give every edit an explicit file and span, so a consumer never
+    /// has to know the "`None` means the diagnostic's own" rule. What
+    /// `anchor_in` could not name is in the diagnostic's own file.
+    pub fn resolve_edits(&mut self) {
+        // Nothing located a word-targeted edit (no source map reached
+        // this diagnostic); applying it to the whole span would be
+        // wrong, so the suggestion goes.
+        self.suggestions
+            .retain(|s| s.edits.iter().all(|e| e.word.is_none()));
+        let primary = self.span;
+        for edit in self.suggestions.iter_mut().flat_map(|s| s.edits.iter_mut()) {
+            if edit.file.is_none() {
+                edit.file = Some(self.file.clone());
+            }
+            if edit.span.is_none() {
+                edit.span = primary;
+            }
         }
     }
 
@@ -236,7 +371,7 @@ impl Diagnostic {
             file: file.to_string(),
             span: Some(Span::from(error.location)),
             origin_module: None,
-            suggestions: Vec::new(),
+            suggestions: error.suggestions.clone(),
             backtrace: Vec::new(),
         }
     }

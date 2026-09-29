@@ -139,10 +139,35 @@ impl<'a> ErrorFormatter<'a> {
         };
 
         for suggestion in &diagnostic.suggestions {
-            out.push_str(&format!(
-                "\n   = help: {} — replace with `{}`",
-                suggestion.message, suggestion.replacement
-            ));
+            match suggestion.edits.as_slice() {
+                [only] => {
+                    let empty_span = only.span.is_some_and(|s| s.offset == s.end_offset);
+                    let action = if empty_span {
+                        format!("insert `{}`", only.replacement)
+                    } else if only.replacement.is_empty() {
+                        "delete it".to_string()
+                    } else {
+                        format!("replace with `{}`", only.replacement)
+                    };
+                    out.push_str(&format!("\n   = help: {} — {action}", suggestion.message));
+                }
+                _ => {
+                    out.push_str(&format!("\n   = help: {}:", suggestion.message));
+                    for edit in &suggestion.edits {
+                        let place = match (&edit.file, edit.span) {
+                            (Some(file), Some(span)) => {
+                                format!("{file}:{}:{}", span.line, span.column)
+                            }
+                            (None, Some(span)) => format!("line {}:{}", span.line, span.column),
+                            _ => "here".to_string(),
+                        };
+                        out.push_str(&format!(
+                            "\n       {place}: `{}`",
+                            edit.replacement
+                        ));
+                    }
+                }
+            }
         }
         out
     }

@@ -756,11 +756,14 @@ pub fn parse_var_def(parser: &mut Parser) -> ParserResult<StmtRef> {
     let rhs = match parser.peek() {
         Some(Kind::Equal) => {
             parser.next();
+            let errors_before = parser.errors.len();
             let expr = super::expr::parse_range_expr(parser);
             if expr.is_err() {
                 return Err(expr.err().unwrap());
             }
-            Some(expr?)
+            let expr = expr?;
+            parser.retarget_float_suffix(errors_before, &ty, expr);
+            Some(expr)
         }
         Some(Kind::NewLine) => None,
         _ => {

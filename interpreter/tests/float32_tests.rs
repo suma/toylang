@@ -123,12 +123,18 @@ fn f32_rejects_mixed_width_arithmetic() {
 #[test]
 fn f32_rejects_bare_suffixless_literal() {
     // Floats keep the mandatory-suffix rule (`1.5` still lexes as
-    // tuple access `1 . 5`); `1.5f32` is required.
+    // `1 . 5`); `1.5f32` is required. The parser says so, and since
+    // the declaration is `f32` the suggested suffix is `f32`.
     let src = r#"
         fn main() -> u64 {
             val a: f32 = 1.5
             0u64
         }
     "#;
-    assert_type_error_message(src, "non-tuple");
+    let mut parser = frontend::ParserWithInterner::new(src);
+    let outcome = parser.parse_program_multiple_errors();
+    assert_eq!(outcome.errors.len(), 1, "{:?}", outcome.errors);
+    let error = &outcome.errors[0];
+    assert!(error.to_string().contains("write `1.5f32`"), "{error}");
+    assert_eq!(error.suggestions[0].replacement(), Some("1.5f32"));
 }

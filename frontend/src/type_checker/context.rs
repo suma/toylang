@@ -623,6 +623,62 @@ impl TypeCheckContext {
     
     pub fn validate_struct_fields(&self, struct_name: DefaultSymbol, provided_fields: &Vec<(DefaultSymbol, crate::ast::ExprRef)>, string_interner: &CoreReferences) -> Result<(), TypeCheckError> {
         if let Some(definition) = self.get_struct_fields(struct_name) {
+            // Unknown fields first: a misspelled field is also a
+            // missing one, and the misspelling is the mistake to name.
+            for (provided_field_name, value) in provided_fields {
+                let field_valid = definition.iter().any(|def| {
+                    // A declared name the interner does not know cannot
+                    // equal a name the parser interned, so it simply
+                    // does not match — the same reasoning as the
+                    // missing-field loop above, which had its own
+                    // `panic!` removed for turning a diagnostic into a
+                    // compiler crash.
+                    string_interner.string_interner.get(&def.name)
+                        == Some(*provided_field_name)
+                });
+                if !field_valid {
+                    // Spell both names. `{:?}` on a symbol printed
+                    // `SymbolU32 { value: 47 }`, which tells a reader
+                    // nothing about which field they misspelled.
+                    let field_name_str = string_interner
+                        .string_interner
+                        .resolve(*provided_field_name)
+                        .unwrap_or("<unknown>");
+                    let struct_name_str = string_interner
+                        .string_interner
+                        .resolve(struct_name)
+                        .unwrap_or("<unknown>");
+                    // The misspelling is usually one of the fields not
+                    // yet given, so offer the close one among those.
+                    let missing = definition.iter().map(|d| d.name.as_str()).filter(|name| {
+                        !provided_fields.iter().any(|(given, _)| {
+                            string_interner.string_interner.resolve(*given) == Some(*name)
+                        })
+                    });
+                    // The field's name is the last occurrence before its
+                    // value (`xpos: ypoz, ypoz: 2` must find the second).
+                    let before = string_interner
+                        .location_pool
+                        .get_expr_location(value)
+                        .map(|l| l.offset);
+                    let field_name_owned = field_name_str.to_string();
+                    return Err(TypeCheckError::generic_error(&format!(
+                        "Unknown field '{field_name_str}' in struct '{struct_name_str}'"
+                    ))
+                    .suggest_name(
+                        "a field",
+                        &field_name_owned,
+                        missing,
+                        crate::diagnostic::WordInSpan {
+                            word: field_name_owned.clone(),
+                            after: None,
+                            before,
+                            last: true,
+                        },
+                    ));
+                }
+            }
+
             // Check if all required fields are provided
             for required_field in definition {
                 // A declared field name that was never interned cannot
@@ -646,36 +702,6 @@ impl TypeCheckContext {
                     return Err(TypeCheckError::generic_error(&format!(
                         "Missing required field '{}' in struct '{struct_name_str}'",
                         required_field.name
-                    )));
-                }
-            }
-            
-            // Check if any extra fields are provided
-            for (provided_field_name, _) in provided_fields {
-                let field_valid = definition.iter().any(|def| {
-                    // A declared name the interner does not know cannot
-                    // equal a name the parser interned, so it simply
-                    // does not match — the same reasoning as the
-                    // missing-field loop above, which had its own
-                    // `panic!` removed for turning a diagnostic into a
-                    // compiler crash.
-                    string_interner.string_interner.get(&def.name)
-                        == Some(*provided_field_name)
-                });
-                if !field_valid {
-                    // Spell both names. `{:?}` on a symbol printed
-                    // `SymbolU32 { value: 47 }`, which tells a reader
-                    // nothing about which field they misspelled.
-                    let field_name_str = string_interner
-                        .string_interner
-                        .resolve(*provided_field_name)
-                        .unwrap_or("<unknown>");
-                    let struct_name_str = string_interner
-                        .string_interner
-                        .resolve(struct_name)
-                        .unwrap_or("<unknown>");
-                    return Err(TypeCheckError::generic_error(&format!(
-                        "Unknown field '{field_name_str}' in struct '{struct_name_str}'"
                     )));
                 }
             }

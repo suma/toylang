@@ -705,8 +705,18 @@ fn parse_postfix_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                         }
                     }
                     Some(Kind::Integer(index_str)) => {
-                        // Handle tuple access like tuple.0, tuple.1
                         let index_str = index_str.to_string();
+                        // `1.5` lexes as `1` `.` `5`: a tuple index on a
+                        // suffix-less integer literal, which no program
+                        // means. Say what it is and how to write it,
+                        // instead of "Cannot access index 5 on non-tuple
+                        // type" from the checker.
+                        if let Some(float) = unsuffixed_float(parser, &expr) {
+                            parser.report_recovered_error(float);
+                            parser.next();
+                            continue;
+                        }
+                        // Handle tuple access like tuple.0, tuple.1
                         if let Ok(index) = index_str.parse::<usize>() {
                             parser.next();
                             let location = parser.current_source_location();
@@ -851,4 +861,23 @@ fn parse_expr_list_impl(parser: &mut Parser, mut args: Vec<ExprRef>) -> ParserRe
             }
         }
     }
+}
+/// `expr . <integer>` where `expr` is a suffix-less decimal integer
+/// literal written right against the dot: a float literal missing its
+/// `f64` suffix. Returns the error to report, with the fix; the parser
+/// is left on the index token.
+fn unsuffixed_float(parser: &mut Parser, expr: &ExprRef) -> Option<ParserError> {
+    if !matches!(parser.ast_builder.expr_pool.get(expr), Some(Expr::Number(_))) {
+        return None;
+    }
+    let base = *parser.ast_builder.location_pool.get_expr_location(expr)?;
+    let index = parser.current_source_location();
+    let written = parser.input.get(base.offset as usize..index.end_offset as usize)?;
+    let (whole, fraction) = written.split_once('.')?;
+    let decimal = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit() || b == b'_');
+    if !decimal(whole) || !decimal(fraction) || !whole.as_bytes()[0].is_ascii_digit() {
+        return None;
+    }
+    let span = crate::type_checker::SourceLocation::new(base.line, base.column, base.offset, index.end_offset);
+    Some(ParserError::unsuffixed_float(span, written.to_string()))
 }

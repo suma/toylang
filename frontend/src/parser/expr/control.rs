@@ -35,7 +35,12 @@ fn reject_else_if(parser: &mut Parser, else_location: SourceLocation) -> ParserR
     let error = ParserError::generic_error(
         span,
         "`else if` is not supported; write `elif` instead (`} elif cond {`)".to_string(),
-    );
+    )
+    .with_suggestion(crate::diagnostic::Suggestion::machine_applicable(
+        "use `elif`",
+        "elif".to_string(),
+        crate::diagnostic::Span::from(span),
+    ));
     // Recorded as well as returned. Expression parsing has recovery
     // paths that swallow a returned `Err` and carry on, which would put
     // us right back to a silent mis-parse; `parse_program` refuses to

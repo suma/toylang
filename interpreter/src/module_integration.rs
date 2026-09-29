@@ -1552,6 +1552,21 @@ pub fn discover_core_modules_multi(
 ///   `core/math/math.t -> ["math"]`.
 /// - `dir/<a>/<b>/.../<last>/mod.t` — Rust-style `mod.rs` form.
 ///   Same `segments` shape.
+type DiscoveredCache =
+    std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, Vec<DiscoveredCoreModule>>>;
+
+fn discovered_cache() -> &'static DiscoveredCache {
+    static CACHE: std::sync::OnceLock<DiscoveredCache> = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// Drop what [`discover_core_modules`] remembered, so the next call
+/// reads the module files again. For a process that edits them and
+/// checks again (`toy fix`); everything else reads each once.
+pub fn forget_discovered_modules() {
+    discovered_cache().lock().unwrap().clear();
+}
+
 pub fn discover_core_modules(
     dir: &std::path::Path,
 ) -> Result<Vec<DiscoveredCoreModule>, String> {
@@ -1561,11 +1576,7 @@ pub fn discover_core_modules(
     // walk + read once per process. Each consumer still gets its own
     // owned Vec via clone; mutating a discovered module's source is
     // not exposed in the public API.
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-    static CACHE: OnceLock<Mutex<HashMap<std::path::PathBuf, Vec<DiscoveredCoreModule>>>> =
-        OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache = discovered_cache();
     let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
     if let Some(hit) = cache.lock().unwrap().get(&key).cloned() {
         return Ok(hit);
@@ -2012,6 +2023,15 @@ pub(crate) enum PreparsedPayload {
 }
 
 /// Bundle produced by `preparse_core_modules` for one module.
+/// Why a module could not be pre-parsed. `diagnostics` holds every
+/// parse error, positioned in the module's own file and carrying any
+/// fix — what a tool needs to act on it (LLM-TOOLING #1). Empty for a
+/// failure that is not a parse error.
+pub(crate) struct PreparseError {
+    pub message: String,
+    pub diagnostics: Vec<frontend::diagnostic::Diagnostic>,
+}
+
 pub(crate) struct PreparsedCoreModule {
     pub source: String,
     pub payload: PreparsedPayload,
@@ -2027,7 +2047,7 @@ pub(crate) struct PreparsedCoreModule {
 /// pass.
 pub(crate) fn preparse_core_modules(
     modules: &[DiscoveredCoreModule],
-) -> Vec<Result<PreparsedCoreModule, String>> {
+) -> Vec<Result<PreparsedCoreModule, PreparseError>> {
     use rayon::prelude::*;
 
     let cache_dir = frontend::cache::default_cache_dir();
@@ -2064,9 +2084,35 @@ pub(crate) fn preparse_core_modules(
 
             // --- Cold parse ---
             let mut parser = frontend::ParserWithInterner::new(&module.source);
-            let file = parser
-                .parse_program()
-                .map_err(|e| format!("Parse error in module: {}", e))?;
+            let outcome = parser.parse_program_multiple_errors();
+            let file = match (outcome.result, outcome.errors) {
+                (Some(file), errors) if errors.is_empty() => file,
+                (_, errors) => {
+                    return Err(PreparseError {
+                        message: format!(
+                            "Parse error in module: {}",
+                            errors.first().map(|e| e.to_string()).unwrap_or_default()
+                        ),
+                        diagnostics: errors
+                            .iter()
+                            .map(|e| {
+                                let mut d = frontend::diagnostic::Diagnostic::from_parser_error(
+                                    e,
+                                    &module.display_path,
+                                );
+                                // The span is in the module's text, which
+                                // no source map holds (the module never
+                                // integrated): say where it came from so a
+                                // renderer does not draw it against the
+                                // entry file.
+                                d.origin_module = Some(module.segments.join("."));
+                                d.resolve_edits();
+                                d
+                            })
+                            .collect(),
+                    });
+                }
+            };
             let interner = parser.get_string_interner().clone();
             let type_names = collect_top_level_type_names(&file, &interner);
             let cache_use = if cache_disabled { prof::CacheUse::Off } else { prof::CacheUse::Miss };

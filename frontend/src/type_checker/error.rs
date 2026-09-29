@@ -498,6 +498,27 @@ impl TypeCheckError {
         }
     }
 
+    /// Offer the one close name among `candidates` for the misspelled
+    /// `written`, as an edit of that word inside the error's span
+    /// (`target` narrows where). Nothing is offered when no candidate
+    /// is close or two are equally close — see `closest_candidate`.
+    pub fn suggest_name<'c>(
+        mut self,
+        what: &str,
+        written: &str,
+        candidates: impl IntoIterator<Item = &'c str>,
+        target: crate::diagnostic::WordInSpan,
+    ) -> Self {
+        if let Some(best) = crate::diagnostic::closest_candidate(written, candidates) {
+            self.suggestions.push(crate::diagnostic::Suggestion::rename_in_primary(
+                &format!("{what} named `{best}` exists"),
+                best,
+                target,
+            ));
+        }
+        self
+    }
+
     /// LLM-TOOLING L0: a second declaration of one name in one file.
     pub fn duplicate_definition(what: &'static str, name: String, first_line: u32) -> Self {
         Self {

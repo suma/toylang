@@ -646,7 +646,7 @@ front-end driver (`interpreter::check_typing*` /
 `compile_file`) routes errors through `ErrorFormatter` for the
 caret-pointer formatting visible in test output.
 
-Every diagnostic carries a stable code (`E0001`…`E0021`). These are
+Every diagnostic carries a stable code (`E0001`…`E0031`). These are
 toylang's own numbering, not Rust's — identical-looking identifiers with
 different meanings would be worse than none. `interpreter --explain
 <CODE>` prints the category, a program that triggers it, and the fix;
@@ -677,6 +677,26 @@ called from, innermost first, with no `line` on the entry frame:
 
 `file` is the *failure's* file, which is not necessarily the one being
 run: a panic inside the stdlib names the stdlib.
+
+A fix is offered only when applying it resolves the diagnostic, and
+nothing is offered when it would be a guess (two names equally close
+to a misspelling). Each suggestion lists its `edits` — every change it
+makes, applied together, each with its own `file` and `span` (byte
+`offset` / `end_offset`; an insertion has them equal):
+
+```json
+"suggestions": [
+  { "message": "name the element with `borrow`",
+    "applicability": "machine-applicable",
+    "edits": [
+      { "file": "main.t", "span": { "line": 4, "column": 23, "offset": 97, "end_offset": 100 },
+        "replacement": "borrow" },
+      { "file": "main.t", "span": { "line": 4, "column": 12, "offset": 86, "end_offset": 86 },
+        "replacement": "&" } ] } ]
+```
+
+A suggestion with one edit also carries it as `replacement` / `span`
+at the top level. `toy fix` applies them all and checks again.
 
 ---
 
@@ -804,7 +824,10 @@ disambiguate them from tuple-access syntax (`outer.0.1`):
 The decimal text is parsed as f64 then narrowed to f32 by rounding;
 a value outside f32's range becomes ±inf, matching Rust's `1e40f32`.
 
-A bare `1.5` is **not** a valid token in this language. Exponent
+A bare `1.5` is **not** a valid token in this language; the parser
+reports it (with the fix `1.5f64`, or `1.5f32` when it initialises a
+declaration typed `f32`) rather than reading it as a tuple index on
+`1`. Exponent
 notation is not part of the grammar either — `1.0e300f64` is a lex
 error (`E0012`), so write the digits out or compute the value.
 

@@ -12,6 +12,9 @@
 
 ### 2026-09-29
 
+- **LLM-TOOLING #1 — 機械適用できる修正提案と `toy fix`** — 提案を `edits` (ファイル付き・
+  複数) で表し、`elif` / `f64` サフィックス / `unsafe` / `borrow` / フィールド・メソッド・
+  モジュール関数の did-you-mean を足した。`toy fix` が当てて再検査を繰り返す。
 - **LLM-TOOLING L0 — 同一ファイル内の重複宣言を `[E0031]` に** — 2 つ目の `fn` が
   `compiler_ir` で panic し、`struct` / `const` は黙って置き換わっていた。
   fn / 型 / trait / const をファイル単位で検査し、1 つ目を残して検査を続ける。

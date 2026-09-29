@@ -96,7 +96,8 @@ the value could not be represented, not merely that the names differ.
 
 When both sides are numeric the diagnostic carries a machine-applicable
 suggestion holding the exact replacement text -- `--format=json`
-exposes it as `suggestions[].replacement`. When they are not (`u64`
+exposes it as `suggestions[].edits` (file, span and replacement of
+each change). When they are not (`u64`
 reaching a `bool`, as above) no suggestion is offered, because no cast
 would fix it: the value itself is wrong.
 

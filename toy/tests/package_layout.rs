@@ -2163,3 +2163,61 @@ fn heap_check_modes_are_refused_where_they_mean_nothing() {
     assert!(out.status.success(), "{err}");
     assert!(err.contains("blocks reused"), "{err}");
 }
+
+// LLM-TOOLING #1: `toy fix` applies the machine-applicable suggestions
+// and checks again until none are left — here across a parse error
+// (which hides the type errors behind it) and into a module file.
+
+#[test]
+fn fix_applies_suggestions_across_rounds_and_into_modules() {
+    let pkg = scratch("fix");
+    write(&pkg, "src/shapes.t", "pub fn area(w: u64, h: u64) -> u64 {\n    val s = 1.5\n    w * h\n}\n");
+    write(
+        &pkg,
+        "main.t",
+        "struct P { xpos: u64 }
+fn pick(a: u64) -> u64 {
+    if a > 1u64 { 1u64 } else if a > 0u64 { 2u64 } else { 3u64 }
+}
+fn main() -> u64 {
+    val p = P { xpos: 2u64 }
+    shapes::area(pick(p.xpoz), 3u64)
+}
+",
+    );
+    let path = pkg.0.to_str().unwrap();
+
+    // --dry-run reports the first round and writes nothing.
+    let before = std::fs::read_to_string(pkg.0.join("main.t")).unwrap();
+    let out = run(&pkg, &["fix", path, "--dry-run"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(std::fs::read_to_string(pkg.0.join("main.t")).unwrap(), before);
+
+    let out = run(&pkg, &["fix", path, "--format=json"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
+    let report: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    assert_eq!(report["ok"], true, "{report:#}");
+    assert!(report["rounds"].as_u64().unwrap() >= 2, "{report:#}");
+    let files: Vec<&str> =
+        report["applied"].as_array().unwrap().iter().map(|a| a["file"].as_str().unwrap()).collect();
+    assert!(files.contains(&"main.t") && files.contains(&"src/shapes.t"), "{report:#}");
+
+    let main = std::fs::read_to_string(pkg.0.join("main.t")).unwrap();
+    assert!(main.contains("} elif a > 0u64 {") && main.contains("p.xpos"), "{main}");
+    let module = std::fs::read_to_string(pkg.0.join("src/shapes.t")).unwrap();
+    assert!(module.contains("val s = 1.5f64"), "{module}");
+
+    let out = run(&pkg, &["check", path]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn fix_fails_while_an_unfixable_error_remains() {
+    let pkg = scratch("fix_unfixable");
+    write(&pkg, "main.t", "fn main() -> u64 {\n    val b: bool = 1u64\n    0u64\n}\n");
+    let out = run(&pkg, &["fix", pkg.0.to_str().unwrap()]);
+    assert!(!out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("applied 0 edit(s)"), "{stdout}");
+}

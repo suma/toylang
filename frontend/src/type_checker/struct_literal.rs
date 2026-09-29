@@ -235,6 +235,22 @@ impl<'a> TypeCheckerVisitor<'a> {
         Ok(TypeDecl::Struct(column, vec![field_type]))
     }
 
+    /// `obj.name` names no field: say so, and offer the close one.
+    fn unknown_field<'c>(
+        &self,
+        obj: &ExprRef,
+        written: &str,
+        fields: impl IntoIterator<Item = &'c str>,
+    ) -> TypeCheckError {
+        let after = self.get_expr_location(obj).map(|l| l.end_offset);
+        TypeCheckError::not_found("field", written).suggest_name(
+            "a field",
+            written,
+            fields,
+            crate::diagnostic::WordInSpan { word: written.to_string(), after, before: None, last: false },
+        )
+    }
+
     pub fn visit_field_access_impl(&mut self, obj: &ExprRef, field: &DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
         // Check recursion depth to prevent stack overflow
         if self.type_inference.recursion_depth >= self.type_inference.max_recursion_depth {
@@ -300,7 +316,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                             return Ok(struct_field.type_decl.clone());
                         }
                     }
-                    Err(TypeCheckError::not_found("field", &field_name))
+                    Err(self.unknown_field(obj, &field_name, struct_fields.iter().map(|f| f.name.as_str())))
                 } else {
                     let struct_name_str = self.resolve_symbol_name(struct_name);
                     Err(TypeCheckError::not_found("struct", &struct_name_str))
@@ -328,7 +344,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     if self.resolve_symbol_name(struct_symbol) == "SoaVec" {
                         return self.column_window_type(type_params.first(), *field);
                     }
-                    Err(TypeCheckError::not_found("field", &field_name))
+                    Err(self.unknown_field(obj, &field_name, struct_fields.iter().map(|f| f.name.as_str())))
                 } else {
                     let struct_name_str = self.resolve_symbol_name(struct_symbol);
                     Err(TypeCheckError::not_found("struct", &struct_name_str))

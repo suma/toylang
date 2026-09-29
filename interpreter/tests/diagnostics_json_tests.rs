@@ -50,8 +50,10 @@ fn apply_suggestions(source: &str, diagnostics: &[Diagnostic]) -> String {
             if s.applicability != Applicability::MachineApplicable {
                 continue;
             }
-            let span = s.effective_span(d.span).expect("suggestion needs a span");
-            edits.push((span.offset as usize, span.end_offset as usize, &s.replacement));
+            for edit in &s.edits {
+                let span = edit.span.or(d.span).expect("suggestion needs a span");
+                edits.push((span.offset as usize, span.end_offset as usize, &edit.replacement));
+            }
         }
     }
     edits.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
@@ -133,7 +135,7 @@ fn main() -> u64 {
         .first()
         .unwrap_or_else(|| panic!("expected a cast suggestion:\n{:#?}", diagnostics[0]));
     assert_eq!(suggestion.applicability, Applicability::MachineApplicable);
-    assert_eq!(suggestion.replacement, "1u64 as i64");
+    assert_eq!(suggestion.replacement().unwrap(), "1u64 as i64");
 
     // The point of `machine-applicable`: applying it resolves the error.
     let fixed = apply_suggestions(source, &diagnostics);
@@ -228,7 +230,7 @@ fn binding_annotation_mismatch_suggests_a_cast_that_compiles() {
         .suggestions
         .first()
         .unwrap_or_else(|| panic!("expected a cast suggestion:\n{:#?}", diagnostics[0]));
-    assert_eq!(suggestion.replacement, "5u64 as f64");
+    assert_eq!(suggestion.replacement().unwrap(), "5u64 as f64");
 
     let fixed = apply_suggestions(source, &diagnostics);
     test_program(&fixed).unwrap_or_else(|e| panic!("suggested fix did not compile: {e}\n{fixed}"));
@@ -243,9 +245,12 @@ fn main() -> u64 { calculate_totl(3u64) }";
         .suggestions
         .first()
         .unwrap_or_else(|| panic!("expected a did-you-mean suggestion:\n{:#?}", diagnostics[0]));
-    assert_eq!(suggestion.replacement, "calculate_total");
-    // Built before the error was anchored, so it inherits the primary span.
-    assert!(suggestion.span.is_none());
+    assert_eq!(suggestion.replacement().unwrap(), "calculate_total");
+    // Built before the error was anchored; resolution fills in the
+    // primary span and the file, so a consumer never sees `None`.
+    let edit = &suggestion.edits[0];
+    assert_eq!(edit.span, diagnostics[0].span);
+    assert_eq!(edit.file.as_deref(), Some("test.t"));
 
     let fixed = apply_suggestions(source, &diagnostics);
     test_program(&fixed).unwrap_or_else(|e| panic!("suggested fix did not compile: {e}\n{fixed}"));
@@ -603,4 +608,158 @@ fn main() -> u64 {
 }";
     let diagnostics = diagnose(source);
     assert!(diagnostics.iter().all(|d| d.code != "E0031"), "{diagnostics:#?}");
+}
+
+// LLM-TOOLING #1: every machine-applicable suggestion, applied, gives a
+// program that checks. Each entry below has only fixable mistakes, so
+// the property is "apply everything once, then no diagnostics at all".
+// A new suggestion belongs here with the smallest program that shows it.
+
+/// Parse, then type check. The diagnostics of whichever stage failed,
+/// with their edits resolved; empty when the program is fine.
+fn check_all(source: &str) -> Vec<Diagnostic> {
+    let mut parser = frontend::ParserWithInterner::new(source);
+    parser.set_source_file("test.t");
+    let outcome = parser.parse_program_multiple_errors();
+    if !outcome.errors.is_empty() {
+        return outcome
+            .errors
+            .iter()
+            .map(|e| {
+                let mut d = Diagnostic::from_parser_error(e, "test.t");
+                d.resolve_edits();
+                d
+            })
+            .collect();
+    }
+    let mut program = outcome.result.expect("a program when there are no errors");
+    let string_interner = parser.get_string_interner();
+    let core = core_modules_dir();
+    match interpreter::check_typing_diagnostics(
+        &mut program,
+        string_interner,
+        Some(source),
+        Some("test.t"),
+        std::slice::from_ref(&core),
+    ) {
+        Ok(_) => Vec::new(),
+        Err(diagnostics) => diagnostics,
+    }
+}
+
+const FIXABLE: &[(&str, &str)] = &[
+    (
+        "else if -> elif",
+        "fn f(a: u64) -> u64 {
+    if a > 1u64 { 1u64 } else if a > 0u64 { 2u64 } else { 3u64 }
+}
+fn main() -> u64 { f(1u64) }",
+    ),
+    (
+        "float literal suffix, several on one line",
+        "fn f(a: u64) -> f64 {
+    if a > 1u64 { 1.5 } else { 1_000.25 }
+}
+fn main() -> u64 { val x = f(1u64)
+    0u64 }",
+    ),
+    (
+        "float literal suffix follows an `f32` declaration",
+        "const K: f32 = 2.5
+fn main() -> u64 {
+    val a: f32 = 1.5
+    val b = 0.25
+    0u64
+}",
+    ),
+    (
+        "unsafe fn, free function and method",
+        "struct B { p: ptr }
+impl B {
+    fn first(&self) -> u64 { __builtin_ptr_read::<u64>(self.p, 0u64) }
+}
+pub never_allocates fn peek(p: ptr) -> u64 {
+    __builtin_ptr_read::<u64>(p, 0u64)
+}
+fn main() -> u64 { 0u64 }",
+    ),
+    (
+        "owning element: borrow, with and without an annotation",
+        "fn main() -> u64 {
+    var v: Vec<String> = Vec::new()
+    v.push(String::from_str(\"a\"))
+    val e: String = v.get(0u64)
+    val g = v.get(0u64)
+    e.len() + g.len()
+}",
+    ),
+    (
+        "misspelled field in a literal, a field access and a method",
+        "struct Point { xpos: u64, ypos: u64 }
+impl Point { fn magnitude(&self) -> u64 { self.xpos } }
+fn main() -> u64 {
+    val ypoz = 3u64
+    val p = Point { xpos: ypoz, ypoz: 2u64 }
+    val q = Point { xpos: 1u64, ypos: 2u64 }
+    val a = q.xpoz
+    val b = q.magnitdue()
+    a + b
+}",
+    ),
+    (
+        "misspelled function and a numeric cast",
+        "fn calculate_total(a: u64) -> u64 { a }
+fn main() -> u64 {
+    val n = calculate_totl(3u64)
+    val c: u8 = n
+    0u64
+}",
+    ),
+];
+
+#[test]
+fn applying_every_machine_applicable_suggestion_gives_a_program_that_checks() {
+    for (what, source) in FIXABLE {
+        let mut current = source.to_string();
+        // A fix can reveal a mistake the first one hid (a parse error
+        // stops type checking), so apply until nothing is offered.
+        for _round in 0..4 {
+            let diagnostics = check_all(&current);
+            if diagnostics.is_empty() {
+                break;
+            }
+            let fixable = diagnostics.iter().filter(|d| {
+                d.suggestions.iter().any(|s| s.applicability == Applicability::MachineApplicable)
+            });
+            assert!(
+                fixable.count() == diagnostics.len(),
+                "{what}: a diagnostic without a fix:\n{diagnostics:#?}\n---\n{current}"
+            );
+            for d in &diagnostics {
+                for s in &d.suggestions {
+                    for e in &s.edits {
+                        assert_eq!(e.file.as_deref(), Some("test.t"), "{what}: {e:?}");
+                        assert!(e.span.is_some(), "{what}: unresolved edit {e:?}");
+                    }
+                }
+            }
+            current = apply_suggestions(&current, &diagnostics);
+        }
+        let remaining = check_all(&current);
+        assert!(remaining.is_empty(), "{what}: still failing after the fixes:\n{remaining:#?}\n---\n{current}");
+    }
+}
+
+#[test]
+fn a_misspelling_is_not_offered_when_two_names_are_equally_close() {
+    // `magnitude_a` and `magnitude_b` are both one edit from
+    // `magnitude_c`: picking one would be a guess.
+    let source = "struct P { magnitude_a: u64, magnitude_b: u64 }
+fn main() -> u64 {
+    val p = P { magnitude_a: 1u64, magnitude_b: 2u64 }
+    p.magnitude_c
+}";
+    let diagnostics = check_all(source);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert!(diagnostics[0].suggestions.is_empty(), "{diagnostics:#?}");
 }

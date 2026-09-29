@@ -185,6 +185,10 @@ cargo run -q -p toy -- run   mypkg [--backend aot|jit|vm] [--format=text|json] [
 cargo run -q -p toy -- run   mypkg --backend all      # 3 レーン突き合わせ (compiler --all-backends をパッケージで)
 cargo run -q -p toy -- test  mypkg --check [--seed=N] # 契約のプロパティテスト (interpreter --check をパッケージで)
 cargo run -q -p toy -- check mypkg [--format=text|json]
+# 診断の machine-applicable な提案を当てて再検査、を提案が尽きるまで
+# (LLM-TOOLING #1)。書き換えるのはパッケージ内のファイルだけ。
+# --dry-run は 1 巡目の編集を出すだけで書かない。エラーが残れば exit 1
+cargo run -q -p toy -- fix   mypkg [--dry-run] [--format=text|json]
 cargo run -q -p toy -- clean mypkg [--all] [--format=text|json]   # 出力を消す (--all は build/ ごと)
 cargo run -q -p toy -- version [-v] [--format=text|json]         # 各部の version / git rev / パス
 # パスが無い行は同じ行に色つきで警告する。stdlib の revision は実行時に
@@ -248,7 +252,8 @@ echo 'fn main() -> u64 { 7u64 }' | cargo run -q -p compiler -- - --all-backends
 - **診断 (エラー)** を stderr に JSON 配列で出す
   (各要素は `severity` / `code` / `message` / `file` / `span` (`line`・`column`・
   `offset`・`end_offset`) / `origin_module` / `suggestions`、実行時エラーは
-  `backtrace` も持つ)。text はスニペット付きで 1 エラーあたり ~11 行。
+  `backtrace` も持つ)。提案は `edits` (各編集が `file` / `span` /
+  `replacement` を持ち、全部まとめて当てる) で表す。text はスニペット付きで 1 エラーあたり ~11 行。
   パース・型・実行時 (IR VM) のエラーが対象。JSON 配列の後に
   `toy: N type-check error(s)` のような 1 行要約が続くことがあるので、
   `[` から対応する `]` までを読む

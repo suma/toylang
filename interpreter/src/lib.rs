@@ -161,6 +161,7 @@ fn integrate_modules(
     string_interner: &mut DefaultStringInterner,
     core_modules_dirs: &[std::path::PathBuf],
     entry: Option<&std::path::Path>,
+    parse_diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<(), Vec<String>> {
     let mut errors: Vec<String> = Vec::new();
     use frontend::compile_profile as prof;
@@ -245,7 +246,9 @@ fn integrate_modules(
     // because each module gets its own `ParserWithInterner` which is
     // created, used, and dropped on the same rayon worker thread.
     let preparse_phase = prof::phase("preparse");
-    let mut preparsed_results: Vec<Result<module_integration::PreparsedCoreModule, String>> =
+    let mut preparsed_results: Vec<
+        Result<module_integration::PreparsedCoreModule, module_integration::PreparseError>,
+    > =
         if let Some(ref modules) = discovered_modules {
             module_integration::preparse_core_modules(modules)
         } else {
@@ -263,12 +266,18 @@ fn integrate_modules(
                     }
                 }
             }
+            // A parse error is reported as itself, in the module's
+            // file; only a failure without one falls back to a line of
+            // text.
+            Err(err) if !err.diagnostics.is_empty() => {
+                parse_diagnostics.extend(err.diagnostics.iter().cloned());
+            }
             Err(err) => {
                 if let Some(ref modules) = discovered_modules {
                     let dotted = modules[idx].segments.join(".");
                     errors.push(format!(
                         "Core module `{}` pre-parse error: {}",
-                        dotted, err
+                        dotted, err.message
                     ));
                 }
             }
@@ -323,7 +332,10 @@ fn integrate_modules(
 
             let preparsed = match std::mem::replace(
                 &mut preparsed_results[idx],
-                Err(String::new()),
+                Err(module_integration::PreparseError {
+                    message: String::new(),
+                    diagnostics: Vec::new(),
+                }),
             ) {
                 Ok(p) => p,
                 Err(_) => continue, // error already recorded above
@@ -588,8 +600,14 @@ fn check_typing_collecting(
         .map(std::path::PathBuf::from);
     use frontend::compile_profile as prof;
     let modules_phase = prof::phase("modules");
-    let integrated =
-        integrate_modules(program, string_interner, core_modules_dirs, entry_path.as_deref());
+    let mut module_parse_errors: Vec<Diagnostic> = Vec::new();
+    let integrated = integrate_modules(
+        program,
+        string_interner,
+        core_modules_dirs,
+        entry_path.as_deref(),
+        &mut module_parse_errors,
+    );
     drop(modules_phase);
     if prof::is_enabled() {
         // COMPILE-PROFILE C: the size of what every later pass walks.
@@ -597,8 +615,11 @@ fn check_typing_collecting(
         prof::count("ast.statements", program.statement.len() as u64);
         prof::count("ast.expressions", program.expression.len() as u64);
     }
-    if let Err(module_errors) = integrated {
-        errors.extend(module_errors.into_iter().map(|m| Diagnostic::message_only(m, diag_file)));
+    if !module_parse_errors.is_empty() || integrated.is_err() {
+        errors.extend(module_parse_errors);
+        if let Err(module_errors) = integrated {
+            errors.extend(module_errors.into_iter().map(|m| Diagnostic::message_only(m, diag_file)));
+        }
         return Err(errors);
     }
 
@@ -2380,7 +2401,17 @@ pub struct RunOutcome {
 /// LLM-LOOP P3: stderr, not stdout, so a program's own `print` output
 /// stays usable in the same run.
 pub fn emit_diagnostics_json(diagnostics: &[Diagnostic]) {
-    match serde_json::to_string_pretty(diagnostics) {
+    // Parse and runtime diagnostics never pass through `anchor_in`;
+    // their edits still need an explicit file and span on the wire.
+    let diagnostics: Vec<Diagnostic> = diagnostics
+        .iter()
+        .cloned()
+        .map(|mut d| {
+            d.resolve_edits();
+            d
+        })
+        .collect();
+    match serde_json::to_string_pretty(&diagnostics) {
         Ok(json) => crate::output::eprintln_text(&json),
         // Serialisation cannot realistically fail for these types, but
         // swallowing the diagnostics entirely would be the worst

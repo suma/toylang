@@ -10,6 +10,10 @@ pub enum ParserErrorKind {
     /// read. Carries its diagnostic code ([`crate::diagnostic::codes::LEXICAL`])
     /// so `--explain` can answer it like any other code.
     LexError { message: String },
+    /// `1.5`: a float literal without its type suffix, which reads as
+    /// a tuple index on `1`. `suffix` is the one to add — `f64` unless
+    /// the declaration it initialises says `f32`.
+    UnsuffixedFloat { written: String, suffix: &'static str },
 }
 
 #[derive(Debug)]
@@ -48,6 +52,14 @@ impl<T> MultipleParserResult<T> {
 pub struct ParserError {
     pub kind: ParserErrorKind,
     pub location: SourceLocation,
+    /// Fixes carried into the diagnostic (LLM-TOOLING #1). Empty for
+    /// most parse errors: only a mistake whose correction is certain
+    /// gets one.
+    pub suggestions: Vec<crate::diagnostic::Suggestion>,
+    /// Reported through [`crate::parser::core::Parser::report_recovered_error`]:
+    /// not a consequence of anything else, so never folded into
+    /// another error on the same line.
+    pub recovered: bool,
 }
 
 impl ParserError {
@@ -55,6 +67,8 @@ impl ParserError {
         Self {
             kind: ParserErrorKind::UnexpectedToken { expected },
             location,
+            suggestions: Vec::new(),
+            recovered: false,
         }
     }
     
@@ -62,6 +76,8 @@ impl ParserError {
         Self {
             kind: ParserErrorKind::RecursionLimitExceeded,
             location,
+            suggestions: Vec::new(),
+            recovered: false,
         }
     }
     
@@ -69,6 +85,8 @@ impl ParserError {
         Self {
             kind: ParserErrorKind::GenericError { message },
             location,
+            suggestions: Vec::new(),
+            recovered: false,
         }
     }
     
@@ -76,6 +94,8 @@ impl ParserError {
         Self {
             kind: ParserErrorKind::IoError { message },
             location,
+            suggestions: Vec::new(),
+            recovered: false,
         }
     }
 
@@ -86,9 +106,47 @@ impl ParserError {
         Self {
             kind: ParserErrorKind::LexError { message },
             location,
+            suggestions: Vec::new(),
+            recovered: false,
         }
     }
 }
+impl ParserError {
+    /// A float literal written without its suffix, with the fix.
+    pub fn unsuffixed_float(location: SourceLocation, written: String) -> Self {
+        let fixed = format!("{written}f64");
+        Self {
+            kind: ParserErrorKind::UnsuffixedFloat { written, suffix: "f64" },
+            location,
+            suggestions: vec![crate::diagnostic::Suggestion::machine_applicable(
+                "add the `f64` suffix",
+                fixed,
+                crate::diagnostic::Span::from(location),
+            )],
+            recovered: false,
+        }
+    }
+
+    /// Make an [`ParserErrorKind::UnsuffixedFloat`] ask for `f32`.
+    pub fn use_f32_suffix(&mut self) {
+        if let ParserErrorKind::UnsuffixedFloat { written, suffix } = &mut self.kind {
+            *suffix = "f32";
+            let fixed = format!("{written}f32");
+            self.suggestions = vec![crate::diagnostic::Suggestion::machine_applicable(
+                "add the `f32` suffix",
+                fixed,
+                crate::diagnostic::Span::from(self.location),
+            )];
+        }
+    }
+
+    /// The same error, carrying a fix.
+    pub fn with_suggestion(mut self, suggestion: crate::diagnostic::Suggestion) -> Self {
+        self.suggestions.push(suggestion);
+        self
+    }
+}
+
 impl std::fmt::Display for ParserError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let base_message = match &self.kind {
@@ -107,6 +165,10 @@ impl std::fmt::Display for ParserError {
             ParserErrorKind::IoError { message } => {
                 format!("IO error: {}", message)
             }
+            ParserErrorKind::UnsuffixedFloat { written, suffix } => format!(
+                "a float literal needs a type suffix: write `{written}{suffix}` \
+                 (a bare `{written}` would read as a tuple index)"
+            ),
             ParserErrorKind::LexError { message } => {
                 // The code travels in the message so every rendering —
                 // the interpreter's formatter, `{:?}` in test helpers,

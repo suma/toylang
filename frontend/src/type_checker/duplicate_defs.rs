@@ -129,7 +129,7 @@ pub fn check_duplicate_definitions(
 /// The span of `name` as written in the declaration that starts at
 /// `from` — the name, not the whole item, so a caret lands on the
 /// thing to rename. Falls back to the declaration's start when the
-/// text is not there to search (a program built without sources).
+/// name is not found there.
 fn name_location(
     program: &File,
     file: FileId,
@@ -137,50 +137,7 @@ fn name_location(
     name: DefaultSymbol,
     interner: &DefaultStringInterner,
 ) -> Option<SourceLocation> {
-    let source = program.source_map.source(file)?;
     let name = interner.resolve(name)?;
-    let (start, end) = match find_word(source, from, name) {
-        Some(start) => (start, start + name.len()),
-        None => (from, from),
-    };
-    let (line, column) = line_column(source, start);
-    let mut loc = SourceLocation::new(line, column, start as u32, end as u32);
-    loc.file = file;
-    Some(loc)
-}
-
-/// The first occurrence of `word` at or after `from` that is not part
-/// of a longer identifier.
-fn find_word(source: &str, from: usize, word: &str) -> Option<usize> {
-    let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
-    let bytes = source.as_bytes();
-    let mut at = from.min(source.len());
-    while let Some(found) = source.get(at..)?.find(word) {
-        let start = at + found;
-        let end = start + word.len();
-        let before_ok = start == 0 || !is_ident(bytes[start - 1]);
-        let after_ok = end >= bytes.len() || !is_ident(bytes[end]);
-        if before_ok && after_ok {
-            return Some(start);
-        }
-        at = end;
-    }
-    None
-}
-
-fn line_column(source: &str, offset: usize) -> (u32, u32) {
-    let mut line = 1u32;
-    let mut column = 1u32;
-    for (i, ch) in source.char_indices() {
-        if i >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            column = 1;
-        } else {
-            column += 1;
-        }
-    }
-    (line, column)
+    let map = &program.source_map;
+    map.find_word(file, from, usize::MAX, name).or_else(|| map.location(file, from, from))
 }

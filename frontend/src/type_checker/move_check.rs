@@ -1173,8 +1173,75 @@ impl MoveCheck<'_> {
         );
         if let Some(loc) = self.location(rhs) {
             error = error.with_location(loc);
+            if let Some(fix) = self.borrow_fix(stmt_ref, name, receiver, loc) {
+                error.suggestions.push(fix);
+            }
         }
         self.element_copies.push((stmt_ref, error));
+    }
+
+    /// The E0028 fix, as edits to the source: `get` becomes `borrow`,
+    /// and a written annotation `T` becomes `&T` (without one, the
+    /// binding takes `&T` from `borrow`). `None` when a place cannot be
+    /// found in the text — half of this fix does not compile, so it is
+    /// offered whole or not at all.
+    ///
+    /// Whether an annotation was *written* is read from the text: by
+    /// now the checker may have filled the statement's annotation in.
+    fn borrow_fix(
+        &self,
+        stmt_ref: StmtRef,
+        name: DefaultSymbol,
+        receiver: ExprRef,
+        rhs_at: SourceLocation,
+    ) -> Option<crate::diagnostic::Suggestion> {
+        use crate::diagnostic::{Applicability, Edit, Span, Suggestion};
+        let map = &self.program.source_map;
+        let file = rhs_at.file;
+        let after_receiver = self
+            .program
+            .location_pool
+            .get_expr_location(&receiver)
+            .map(|l| l.end_offset as usize)
+            .unwrap_or(rhs_at.offset as usize);
+        let get_at = map.find_word(file, after_receiver, rhs_at.end_offset as usize, "get")?;
+        let mut edits = vec![Edit {
+            file: None,
+            span: Some(Span::from(get_at)),
+            replacement: "borrow".to_string(),
+            word: None,
+        }];
+        // Between the binding's name and the initializer: ` = ` or
+        // `: T = `.
+        let stmt_at = self.program.location_pool.get_stmt_location(&stmt_ref)?;
+        let name_at = map.find_word(
+            file,
+            stmt_at.offset as usize,
+            rhs_at.offset as usize,
+            self.interner.resolve(name)?,
+        )?;
+        let between = map
+            .source(file)?
+            .get(name_at.end_offset as usize..rhs_at.offset as usize)?;
+        if let Some(colon) = between.find(':') {
+            let after_colon = &between[colon + 1..];
+            let ty_start = name_at.end_offset as usize
+                + colon
+                + 1
+                + (after_colon.len() - after_colon.trim_start().len());
+            let insert_at = map.location(file, ty_start, ty_start)?;
+            edits.push(Edit {
+                file: None,
+                span: Some(Span::from(insert_at)),
+                replacement: "&".to_string(),
+                word: None,
+            });
+        }
+        Some(Suggestion::with_edits(
+            "name the element with `borrow`",
+            Applicability::MachineApplicable,
+            edits,
+        ))
     }
 
     /// Whether this binding names a borrow rather than a value.

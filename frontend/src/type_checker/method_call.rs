@@ -1027,7 +1027,23 @@ impl<'a> TypeCheckerVisitor<'a> {
         } else {
             "method not found"
         };
-        Err(TypeCheckError::method_error(&method_name, obj_type.clone(), reason))
+        // The method name is the last occurrence before the arguments:
+        // earlier ones may be the receiver's (`nrom.nrom()`).
+        let before = args.first().and_then(|a| self.get_expr_location(a)).map(|l| l.offset);
+        let receiver_type = match obj_type {
+            TypeDecl::Identifier(sym) | TypeDecl::Struct(sym, _) | TypeDecl::Enum(sym, _) => Some(*sym),
+            _ => None,
+        };
+        let methods: Vec<&str> = receiver_type
+            .and_then(|sym| self.context.struct_methods.get(&sym))
+            .map(|m| m.keys().filter_map(|k| self.core.string_interner.resolve(*k)).collect())
+            .unwrap_or_default();
+        Err(TypeCheckError::method_error(&method_name, obj_type.clone(), reason).suggest_name(
+            "a method",
+            &method_name,
+            methods,
+            crate::diagnostic::WordInSpan { word: method_name.clone(), after: None, before, last: true },
+        ))
     }
 
     /// Dispatch a `module::func(args)` qualified call. The qualifier
@@ -1351,10 +1367,31 @@ impl<'a> TypeCheckerVisitor<'a> {
             // fallback.
             let module_str = self.resolve_symbol_name(struct_name);
             let func_str = self.resolve_symbol_name(function_name);
+            let exported: Vec<&str> = self
+                .context
+                .module_functions
+                .iter()
+                .filter(|(_, defs)| {
+                    defs.iter().any(|d| {
+                        crate::type_checker::path_ends_with(&d.path, &qualifier)
+                            && d.func.visibility == crate::ast::Visibility::Public
+                    })
+                })
+                .filter_map(|(name, _)| self.core.string_interner.resolve(*name))
+                .collect();
+            // The span is the qualifier; the name follows it, before
+            // the arguments.
+            let before = args.first().and_then(|a| self.get_expr_location(a)).map(|l| l.offset);
             return Err(TypeCheckError::generic_error(&format!(
                 "module '{}' has no exported function '{}'",
                 module_str, func_str
-            )));
+            ))
+            .suggest_name(
+                "an exported function",
+                &func_str,
+                exported,
+                crate::diagnostic::WordInSpan { word: func_str.clone(), after: None, before, last: true },
+            ));
         }
 
         // Verify the struct exists — generic and non-generic both count.

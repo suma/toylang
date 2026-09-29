@@ -130,6 +130,78 @@ impl SourceMap {
         self.files.is_empty()
     }
 
+    /// A position in `file` for the byte range `offset..end`, with its
+    /// line and column worked out from the text. `None` when the file
+    /// has no text here (a program built without sources).
+    pub fn location(
+        &self,
+        file: FileId,
+        offset: usize,
+        end: usize,
+    ) -> Option<crate::type_checker::SourceLocation> {
+        let source = self.source(file)?;
+        if offset > source.len() {
+            return None;
+        }
+        let before = &source[..offset];
+        let line = before.bytes().filter(|&b| b == b'\n').count() as u32 + 1;
+        let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let column = source[line_start..offset].chars().count() as u32 + 1;
+        Some(crate::type_checker::SourceLocation::new_in(
+            file,
+            line,
+            column,
+            offset as u32,
+            end as u32,
+        ))
+    }
+
+    /// The first occurrence of the identifier `word` in `file` within
+    /// `from..to` that is not part of a longer identifier — how a
+    /// diagnostic finds a name inside a declaration whose AST node
+    /// only records where the declaration starts.
+    pub fn find_word(
+        &self,
+        file: FileId,
+        from: usize,
+        to: usize,
+        word: &str,
+    ) -> Option<crate::type_checker::SourceLocation> {
+        let source = self.source(file)?;
+        let to = to.min(source.len());
+        let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+        let bytes = source.as_bytes();
+        let mut at = from.min(to);
+        while let Some(found) = source.get(at..to)?.find(word) {
+            let start = at + found;
+            let end = start + word.len();
+            let before_ok = start == 0 || !is_ident(bytes[start - 1]);
+            let after_ok = end >= bytes.len() || !is_ident(bytes[end]);
+            if before_ok && after_ok {
+                return self.location(file, start, end);
+            }
+            at = end;
+        }
+        None
+    }
+
+    /// As [`Self::find_word`], the last occurrence.
+    pub fn rfind_word(
+        &self,
+        file: FileId,
+        from: usize,
+        to: usize,
+        word: &str,
+    ) -> Option<crate::type_checker::SourceLocation> {
+        let mut last = None;
+        let mut at = from;
+        while let Some(found) = self.find_word(file, at, to, word) {
+            at = found.end_offset as usize;
+            last = Some(found);
+        }
+        last
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (FileId, &SourceFile)> {
         self.files
             .iter()

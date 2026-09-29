@@ -664,6 +664,40 @@ impl<'a> Parser<'a> {
         self.errors.push(error);
     }
 
+    /// Record a parse error the parser has fully recovered from — one
+    /// found by the shape of a few tokens, after which parsing goes on
+    /// exactly as if the code had been right. It cannot be a
+    /// consequence of an earlier mistake nor cause a later one, so it
+    /// is always kept and does not use up the declaration's one report.
+    pub fn report_recovered_error(&mut self, mut error: ParserError) {
+        error.recovered = true;
+        let nothing_reported_yet = self.errors.len() == self.decl_error_floor;
+        self.errors.push(error);
+        if nothing_reported_yet {
+            self.decl_error_floor = self.errors.len();
+        }
+    }
+
+    /// A declaration typed `f32` whose initializer is a suffix-less
+    /// float literal (`val a: f32 = 1.5`): the fix is `1.5f32`, not
+    /// the `f64` a literal gets by default. Only the literal that *is*
+    /// the initializer — inside a larger expression the annotation
+    /// says nothing about it.
+    pub fn retarget_float_suffix(&mut self, since: usize, declared: &TypeDecl, value: ExprRef) {
+        if !matches!(declared, TypeDecl::Float32) {
+            return;
+        }
+        let Some(start) = self.ast_builder.location_pool.get_expr_location(&value).map(|l| l.offset)
+        else {
+            return;
+        };
+        for error in self.errors.iter_mut().skip(since) {
+            if error.location.offset == start {
+                error.use_f32_suffix();
+            }
+        }
+    }
+
     pub fn collect_error(&mut self, error_msg: &str) {
         let location = self.current_source_location();
         let error = ParserError::unexpected_token(location, error_msg.to_string());

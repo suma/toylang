@@ -1300,7 +1300,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         } else {
             format!("declare `{root}` as `&mut` to write through it")
         };
-        TypeCheckError::generic_error(&format!(
+        TypeCheckError::coded(crate::diagnostic::codes::SHARED_BORROW_WRITE, format!(
             "cannot assign to `{target}`: `{root}` is a shared borrow, and a write through it \
              would reach a copy and be lost; {fix}"
         ))
@@ -2883,7 +2883,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             TypeDecl::Identifier(name) if self.context.enum_definitions.contains_key(name) => *name,
             TypeDecl::Struct(name, _) if self.context.enum_definitions.contains_key(name) => *name,
             _ => {
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::TRY_OPERAND, format!(
                     "`?` requires Result<T, E> or Option<T>, got {}",
                     self.type_name_for_error(&inner_ty)
                 )));
@@ -2900,7 +2900,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             "Result" => ("Ok", "Err", false),
             "Option" => ("Some", "None", true),
             _ => {
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::TRY_OPERAND, format!(
                     "`?` requires Result or Option, got enum `{}`",
                     enum_name_str
                 )));
@@ -3251,7 +3251,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             TypeDecl::Identifier(name) if self.context.enum_definitions.contains_key(name) => *name,
             TypeDecl::Struct(name, _) if self.context.enum_definitions.contains_key(name) => *name,
             _ => {
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::TRY_OPERAND, format!(
                     "`??` requires Option<T> or Result<T, E>, got `{}`",
                     self.type_name_for_error(&lhs_ty)
                 )));
@@ -3268,7 +3268,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             "Option" => ("Some", "None", true),
             "Result" => ("Ok", "Err", false),
             _ => {
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::TRY_OPERAND, format!(
                     "`??` requires Option or Result, got enum `{}`",
                     enum_name_str
                 )));
@@ -3446,7 +3446,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             TypeDecl::Identifier(name) if self.context.enum_definitions.contains_key(name) => *name,
             TypeDecl::Struct(name, _) if self.context.enum_definitions.contains_key(name) => *name,
             _ => {
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::TRY_OPERAND, format!(
                     "`??` requires Option<T> or Result<T, E>, got `{}`",
                     self.type_name_for_error(&lhs_ty)
                 )));
@@ -3462,7 +3462,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         match enum_name_str.as_str() {
             "Option" | "Result" => {}
             _ => {
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::TRY_OPERAND, format!(
                     "`??` requires Option or Result, got enum `{}`",
                     enum_name_str
                 )));

@@ -1,3 +1,4 @@
+use crate::token::DescribeToken;
 use std::rc::Rc;
 use crate::ast::*;
 use crate::type_decl::*;
@@ -122,7 +123,7 @@ fn parse_labelled_loop(parser: &mut Parser) -> ParserResult<StmtRef> {
             let location = parser.current_source_location();
             return Err(ParserError::generic_error(
                 location,
-                format!("expected loop label identifier after `@`, got {:?}", other),
+                format!("expected a loop label after `@`, found {}", other.describe_token()),
             ));
         }
     };
@@ -136,7 +137,7 @@ fn parse_labelled_loop(parser: &mut Parser) -> ParserResult<StmtRef> {
             let location = parser.current_source_location();
             Err(ParserError::generic_error(
                 location,
-                format!("`@label:` must be followed by `while`, `loop`, or `for`, got {:?}", other_clone),
+                format!("`@label:` must be followed by `while`, `loop`, or `for`, found {}", other_clone.describe_token()),
             ))
         }
     }
@@ -159,7 +160,7 @@ fn parse_optional_loop_label(parser: &mut Parser) -> ParserResult<Option<Default
             let location = parser.current_source_location();
             Err(ParserError::generic_error(
                 location,
-                format!("expected loop label identifier after `@`, got {:?}", other),
+                format!("expected a loop label after `@`, found {}", other.describe_token()),
             ))
         }
     }
@@ -521,7 +522,7 @@ fn parse_for_with_label(
                     Ok(desugar_for_in_iterator(parser, label, ident, start, body, location))
                 }
                 other => {
-                    let other_str = format!("{:?}", other);
+                    let other_str = other.describe_token();
                     let location = parser.current_source_location();
                     Err(ParserError::generic_error(
                         location,
@@ -532,7 +533,7 @@ fn parse_for_with_label(
         }
         x => {
             let location = parser.current_source_location();
-            Err(ParserError::generic_error(location, format!("parse_stmt for: expected identifier but {:?}", x)))
+            Err(ParserError::generic_error(location, format!("expected a loop variable after `for`, found {}", x.describe_token())))
         },
     }
 }
@@ -728,7 +729,7 @@ pub fn parse_var_def(parser: &mut Parser) -> ParserResult<StmtRef> {
         }
         x => {
             let location = parser.current_source_location();
-            return Err(ParserError::generic_error(location, format!("parse_var_def: expected identifier but {:?}", x)))
+            return Err(ParserError::generic_error(location, format!("expected a name after `val` / `var`, found {}", x.describe_token())))
         },
     };
 
@@ -768,7 +769,7 @@ pub fn parse_var_def(parser: &mut Parser) -> ParserResult<StmtRef> {
         Some(Kind::NewLine) => None,
         _ => {
             let location = parser.current_source_location();
-            return Err(ParserError::generic_error(location, format!("parse_var_def: expected expression but {:?}", parser.peek())))
+            return Err(ParserError::generic_error(location, format!("expected `=` and an initializer, found {}", parser.peek().describe_token())))
         },
     };
     if is_val {
@@ -803,7 +804,7 @@ fn parse_destruct_sub(parser: &mut Parser, context: &str) -> ParserResult<Destru
             let loc = parser.current_source_location();
             Err(ParserError::generic_error(
                 loc,
-                format!("expected identifier, `(` or `Name {{` in {context}, got {:?}", other),
+                format!("expected identifier, `(` or `Name {{` in {context}, found {}", other.describe_token()),
             ))
         }
     }
@@ -852,7 +853,7 @@ fn parse_destruct_struct(parser: &mut Parser) -> ParserResult<DestructPat> {
                 let loc = parser.current_source_location();
                 return Err(ParserError::generic_error(
                     loc,
-                    format!("expected a field name in struct pattern, got {:?}", other),
+                    format!("expected a field name in struct pattern, found {}", other.describe_token()),
                 ));
             }
         }
@@ -867,7 +868,7 @@ fn parse_destruct_struct(parser: &mut Parser) -> ParserResult<DestructPat> {
                 let loc = parser.current_source_location();
                 return Err(ParserError::generic_error(
                     loc,
-                    format!("expected `,` or `}}` in struct pattern, got {:?}", other),
+                    format!("expected `,` or `}}` in struct pattern, found {}", other.describe_token()),
                 ));
             }
         }
@@ -917,7 +918,7 @@ fn parse_destruct_tuple(parser: &mut Parser) -> ParserResult<DestructPat> {
                 let loc = parser.current_source_location();
                 return Err(ParserError::generic_error(
                     loc,
-                    format!("expected `,` or `)` in tuple pattern, got {:?}", other),
+                    format!("expected `,` or `)` in tuple pattern, found {}", other.describe_token()),
                 ));
             }
         }
@@ -1189,7 +1190,7 @@ pub fn parse_struct_fields_with_generic_context(parser: &mut Parser, mut fields:
             }
             _ => {
                 let current_token = parser.peek().cloned();
-                parser.collect_error(&format!("expected ',' or '}}' after struct field, found {:?}", current_token));
+                parser.collect_error(&format!("expected `,` or `}}` after struct field, found {}", current_token.describe_token()));
                 return Ok(fields);
             }
         }

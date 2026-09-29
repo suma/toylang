@@ -358,14 +358,20 @@ impl Diagnostic {
     }
 
     /// A parse error as a structured diagnostic. Lex errors carry
-    /// their own code (E0012); the parser's other failures have no
-    /// category yet and share the catch-all.
+    /// their own code (E0012), the two traps with a known fix theirs
+    /// (E0033 / E0034), and every other failure to read the program
+    /// is a syntax error (E0032).
     pub fn from_parser_error(error: &ParserError, file: &str) -> Self {
         Diagnostic {
             severity: Severity::Error,
             code: match &error.kind {
                 ParserErrorKind::LexError { .. } => codes::LEXICAL,
-                _ => codes::UNCATEGORISED,
+                ParserErrorKind::ElseIf => codes::ELSE_IF,
+                ParserErrorKind::UnsuffixedFloat { .. } => codes::UNSUFFIXED_FLOAT,
+                ParserErrorKind::UnexpectedToken { .. }
+                | ParserErrorKind::GenericError { .. }
+                | ParserErrorKind::RecursionLimitExceeded => codes::SYNTAX,
+                ParserErrorKind::IoError { .. } => codes::UNCATEGORISED,
             },
             message: error.to_string(),
             file: file.to_string(),
@@ -466,6 +472,34 @@ pub mod codes {
     /// LLM-TOOLING L0: one name declared twice in one file.
     pub const DUPLICATE_DEFINITION: &str = "E0031";
 
+    // LLM-TOOLING #2: codes carved out of the E0010 catch-all, so a
+    // tool can act on the code instead of parsing the message.
+
+    /// The parser could not read the program here.
+    pub const SYNTAX: &str = "E0032";
+
+    /// `else if`; the language spells it `elif`.
+    pub const ELSE_IF: &str = "E0033";
+
+    /// `1.5`: a float literal without its `f64` / `f32` suffix.
+    pub const UNSUFFIXED_FLOAT: &str = "E0034";
+
+    /// A `match` leaves values uncovered, or an arm can never run.
+    pub const MATCH_COVERAGE: &str = "E0035";
+
+    /// A pattern does not fit the value it is matched against.
+    pub const PATTERN_SHAPE: &str = "E0036";
+
+    /// `?` / `??` applied to something that is not `Option` / `Result`.
+    pub const TRY_OPERAND: &str = "E0037";
+
+    /// A type does not satisfy a trait: a generic bound, an impl that
+    /// does not match its trait, or a trait that does not exist.
+    pub const TRAIT_BOUND: &str = "E0038";
+
+    /// A write through a shared borrow (`&T`), which would reach a copy.
+    pub const SHARED_BORROW_WRITE: &str = "E0039";
+
     /// Every code, in order. `crate::explain` is checked against this
     /// list by a test, so a new code cannot ship without prose.
     pub const ALL: &[&str] = &[
@@ -500,6 +534,14 @@ pub mod codes {
         PARALLEL_BODY,
         UNKNOWN_MODULE_PATH,
         DUPLICATE_DEFINITION,
+        SYNTAX,
+        ELSE_IF,
+        UNSUFFIXED_FLOAT,
+        MATCH_COVERAGE,
+        PATTERN_SHAPE,
+        TRY_OPERAND,
+        TRAIT_BOUND,
+        SHARED_BORROW_WRITE,
     ];
 }
 
@@ -515,6 +557,7 @@ fn code_for(kind: &TypeCheckErrorKind) -> &'static str {
         TypeCheckErrorKind::InvalidLiteral { .. } => codes::INVALID_LITERAL,
         TypeCheckErrorKind::AccessDenied { .. } => codes::ACCESS_DENIED,
         TypeCheckErrorKind::GenericError { .. } => codes::UNCATEGORISED,
+        TypeCheckErrorKind::Coded { code, .. } => code,
         TypeCheckErrorKind::TypeHole { .. } => codes::TYPE_HOLE,
         TypeCheckErrorKind::RecursiveType { .. } => codes::RECURSIVE_TYPE,
         TypeCheckErrorKind::UseAfterMove { .. }
@@ -658,5 +701,34 @@ mod tests {
     #[test]
     fn ignores_an_exact_match() {
         assert_eq!(closest_candidate("print", ["print"]), None);
+    }
+
+    /// Every code that has shipped, in order. A tool keys its handling
+    /// on a code, so a released code keeps its number and meaning: a
+    /// new code is appended to `codes::ALL` (and here, once it ships),
+    /// and a retired one stays in both, its `--explain` entry saying
+    /// it is retired.
+    const RELEASED: &[&str] = &[
+        "E0001", "E0002", "E0003", "E0004", "E0005", "E0006", "E0007", "E0008", "E0009",
+        "E0010", "E0011", "E0012", "E0013", "E0014", "E0015", "E0016", "E0017", "E0018",
+        "E0019", "E0020", "E0021", "E0022", "E0023", "E0024", "E0025", "E0026", "E0027",
+        "E0028", "E0029", "E0030", "E0031", "E0032", "E0033", "E0034", "E0035", "E0036",
+        "E0037", "E0038", "E0039",
+    ];
+
+    #[test]
+    fn released_codes_are_never_renumbered_or_removed() {
+        assert!(
+            codes::ALL.starts_with(RELEASED),
+            "codes::ALL must begin with every released code, in order -- append new \
+             codes at the end, never reuse or remove one"
+        );
+    }
+
+    #[test]
+    fn codes_are_consecutive_and_distinct() {
+        for (i, code) in codes::ALL.iter().enumerate() {
+            assert_eq!(*code, format!("E{:04}", i + 1), "codes::ALL[{i}]");
+        }
     }
 }

@@ -720,8 +720,13 @@ fn check_typing_collecting(
     if let Some(message) =
         frontend::type_checker::find_duplicate_impl_method(&program.statement, string_interner)
     {
+        // The same method declared twice for one type: a duplicate
+        // definition, like two `fn`s of one name (E0031).
         errors.push(Diagnostic::from_type_check_error(
-            &frontend::type_checker::TypeCheckError::generic_error(&message),
+            &frontend::type_checker::TypeCheckError::coded(
+                frontend::diagnostic::codes::DUPLICATE_DEFINITION,
+                message,
+            ),
             diag_file,
             Some(string_interner),
         ));
@@ -2396,6 +2401,30 @@ pub struct RunOutcome {
     pub exit_code: Option<i32>,
 }
 
+/// Diagnostics as the JSON array tools read: each one as serialised,
+/// plus `explain` — the command that prints its code's explanation
+/// (LLM-TOOLING #2), a reference that works offline and matches the
+/// version that produced the code.
+pub fn diagnostics_json(diagnostics: &[Diagnostic]) -> serde_json::Value {
+    serde_json::Value::Array(
+        diagnostics
+            .iter()
+            .map(|d| {
+                let mut value = serde_json::to_value(d).unwrap_or(serde_json::Value::Null);
+                if let serde_json::Value::Object(map) = &mut value {
+                    if frontend::explain::explain(d.code).is_some() {
+                        map.insert(
+                            "explain".to_string(),
+                            serde_json::Value::String(format!("toy explain {}", d.code)),
+                        );
+                    }
+                }
+                value
+            })
+            .collect(),
+    )
+}
+
 /// Write diagnostics to stderr as a JSON array.
 ///
 /// LLM-LOOP P3: stderr, not stdout, so a program's own `print` output
@@ -2411,7 +2440,7 @@ pub fn emit_diagnostics_json(diagnostics: &[Diagnostic]) {
             d
         })
         .collect();
-    match serde_json::to_string_pretty(&diagnostics) {
+    match serde_json::to_string_pretty(&diagnostics_json(&diagnostics)) {
         Ok(json) => crate::output::eprintln_text(&json),
         // Serialisation cannot realistically fail for these types, but
         // swallowing the diagnostics entirely would be the worst

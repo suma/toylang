@@ -741,7 +741,7 @@ fn cmd_fix(args: &Args) -> Result<(), String> {
             "rounds": outcome.rounds,
             "applied": applied,
             "outside_package": outcome.outside,
-            "remaining": serde_json::to_value(&outcome.remaining).unwrap_or_default(),
+            "remaining": interpreter::diagnostics_json(&outcome.remaining),
         }));
     } else {
         let verb = if args.dry_run { "would apply" } else { "applied" };

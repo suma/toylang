@@ -1,3 +1,4 @@
+use crate::token::DescribeToken;
 use crate::ast::*;
 use crate::token::Kind;
 use crate::parser::core::Parser;
@@ -32,15 +33,7 @@ fn reject_else_if(parser: &mut Parser, else_location: SourceLocation) -> ParserR
         else_location.offset,
         if_location.end_offset,
     );
-    let error = ParserError::generic_error(
-        span,
-        "`else if` is not supported; write `elif` instead (`} elif cond {`)".to_string(),
-    )
-    .with_suggestion(crate::diagnostic::Suggestion::machine_applicable(
-        "use `elif`",
-        "elif".to_string(),
-        crate::diagnostic::Span::from(span),
-    ));
+    let error = ParserError::else_if(span);
     // Recorded as well as returned. Expression parsing has recovery
     // paths that swallow a returned `Err` and carry on, which would put
     // us right back to a silent mis-parse; `parse_program` refuses to
@@ -200,7 +193,7 @@ pub fn parse_with(parser: &mut Parser) -> ParserResult<ExprRef> {
             let other_cloned = other.cloned();
             return Err(ParserError::generic_error(
                 location,
-                format!("expected `allocator` after `with`, found {:?}", other_cloned),
+                format!("expected `allocator` after `with`, found {}", other_cloned.describe_token()),
             ));
         }
     }

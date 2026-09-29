@@ -1,3 +1,4 @@
+use crate::token::DescribeToken;
 use std::rc::Rc;
 use std::collections::HashSet;
 use string_interner::DefaultSymbol;
@@ -308,7 +309,7 @@ impl<'a> Parser<'a> {
                             }
                         }
                     }
-                    self.collect_error(&format!("unexpected token: {:?}", x_cloned));
+                    self.collect_error(&format!("unexpected {} at the top level", x_cloned.describe_token()));
                     self.next(); // Skip invalid token and continue
                 }
             }
@@ -854,7 +855,7 @@ impl<'a> Parser<'a> {
                                         Some(Kind::BraceClose) => break,
                                         Some(Kind::Identifier(f)) => f.clone(),
                                         other => {
-                                            let other_str = format!("{:?}", other);
+                                            let other_str = other.describe_token();
                                             self.collect_error(&format!(
                                                 "expected a field name in variant `{variant_name}`, got {other_str}"
                                             ));
@@ -920,7 +921,7 @@ impl<'a> Parser<'a> {
                                 match self.parse_discriminant_literal() {
                                     Some(v) => discriminant = Some(v),
                                     None => {
-                                        let other_str = format!("{:?}", self.peek());
+                                        let other_str = self.peek().describe_token();
                                         self.collect_error(&format!(
                                             "expected an integer literal after `{variant_name} =`, got {other_str}"
                                         ));
@@ -941,7 +942,7 @@ impl<'a> Parser<'a> {
                             }
                         }
                         other => {
-                            let other_str = format!("{:?}", other);
+                            let other_str = other.describe_token();
                             self.collect_error(&format!(
                                 "expected variant name in enum body, got {}", other_str
                             ));

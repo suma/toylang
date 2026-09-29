@@ -1,3 +1,4 @@
+use crate::token::DescribeToken;
 use crate::ast::*;
 use crate::token::Kind;
 use crate::parser::core::Parser;
@@ -261,7 +262,7 @@ fn parse_one_pattern(parser: &mut Parser) -> ParserResult<Vec<crate::ast::Patter
             sym
         }
         other => {
-            let other_str = format!("{:?}", other);
+            let other_str = other.describe_token();
             let location = parser.current_source_location();
             return Err(ParserError::generic_error(
                 location,
@@ -380,7 +381,7 @@ fn parse_pattern_struct(
                 parser.string_interner.get_or_intern(s)
             }
             other => {
-                let other_str = format!("{:?}", other);
+                let other_str = other.describe_token();
                 let location = parser.current_source_location();
                 return Err(ParserError::generic_error(
                     location,
@@ -549,7 +550,7 @@ fn parse_pattern_enum_variant_tail(
             sym
         }
         other => {
-            let other_str = format!("{:?}", other);
+            let other_str = other.describe_token();
             let location = parser.current_source_location();
             return Err(ParserError::generic_error(
                 location,

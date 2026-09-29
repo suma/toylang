@@ -77,6 +77,14 @@ const ENTRIES: &[Entry] = &[
     (codes::PARALLEL_BODY, E0029),
     (codes::UNKNOWN_MODULE_PATH, E0030),
     (codes::DUPLICATE_DEFINITION, E0031),
+    (codes::SYNTAX, E0032),
+    (codes::ELSE_IF, E0033),
+    (codes::UNSUFFIXED_FLOAT, E0034),
+    (codes::MATCH_COVERAGE, E0035),
+    (codes::PATTERN_SHAPE, E0036),
+    (codes::TRY_OPERAND, E0037),
+    (codes::TRAIT_BOUND, E0038),
+    (codes::SHARED_BORROW_WRITE, E0039),
 ];
 
 const E0001: &str = "\
@@ -987,6 +995,131 @@ a copy pasted while restructuring a file is the usual cause.
 Two **modules** declaring the same name is not this error: a function
 is chosen by its module path, and a clash between type names in
 different modules is reported when the modules are loaded.";
+
+const E0032: &str = "\
+E0032: the parser could not read the program here
+
+    fn main() -> u64 {
+        val a: = 1u64          # E0032: expected a type, found `=`
+        a
+    }
+
+The message says what the parser expected and what it found instead,
+at the token it stopped on. The mistake is usually at that token or
+just before it: a missing type, an unclosed bracket, a stray
+punctuation mark.
+
+The parser reports one syntax error per declaration: after the first,
+it resynchronises at the next `fn` / `struct` / `impl`, so what follows
+in the same declaration would be consequences of the same mistake.
+Fix the first and check again.
+
+No semicolons: statements end at a newline, so a `;` is itself a
+syntax error.";
+
+const E0033: &str = "\
+E0033: `else if` is written `elif`
+
+    if x > 10u64 { 1u64 } else if x > 5u64 { 2u64 } else { 3u64 }   # E0033
+    if x > 10u64 { 1u64 } elif x > 5u64 { 2u64 } else { 3u64 }      # ok
+
+toylang has a keyword for the chained branch and does not accept the
+two-word form. The diagnostic carries the machine-applicable edit
+(`else if` -> `elif`); `toy fix` applies it.";
+
+const E0034: &str = "\
+E0034: a float literal needs its suffix
+
+    val a = 1.5          # E0034
+    val a = 1.5f64       # ok
+    val b: f32 = 0.25f32
+
+A bare `1.5` is not a float literal: the lexer reads `1`, `.`, `5`,
+which would be the tuple index `.5` on the integer `1`. Floats always
+carry `f64` or `f32` (integers may omit their suffix; floats may not,
+because `t.0.1` has to stay a tuple access).
+
+The suggested fix is `f64`, or `f32` when the literal is the whole
+initializer of a `val` / `var` / `const` declared `f32`. There is no
+implicit conversion between the two, so in any other `f32` position
+write `f32` yourself.";
+
+const E0035: &str = "\
+E0035: a `match` leaves values uncovered, or an arm can never run
+
+    enum Color { Red, Green }
+    match c {
+        Color::Red => 1u64,       # E0035: missing variant(s) Green
+    }
+
+Every `match` must cover every value of its scrutinee. The message
+lists what is missing: add an arm for each, or a wildcard `_` arm
+when the rest share an answer.
+
+The same code reports the opposite mistake: an arm no value can reach,
+because an earlier arm (or a `_`) already takes everything it would.
+Delete it or move it above the arm that shadows it.
+
+Literal and range arms count towards coverage (ranges are half-open,
+`0u8..128u8`), but on a wide integer type they rarely cover every
+value, so such a match usually ends in `_`.";
+
+const E0036: &str = "\
+E0036: a pattern does not fit the value it is matched against
+
+    val pair = (1u64, 2u64)
+    match pair {
+        (a, b, c) => a,           # E0036: tuple pattern has 3 element(s), expected 2
+    }
+
+The pattern's shape — tuple arity, the enum it names, a struct's
+fields, a literal's type, a range on a non-integer — has to be the
+scrutinee's. The message names both sides.
+
+Also here: a scrutinee of a type `match` does not take (it must be an
+enum, a struct, a tuple, `bool`, an integer or `str`), and arms whose
+values have different types.";
+
+const E0037: &str = "\
+E0037: `?` or `??` on something that is not `Option` or `Result`
+
+    val n = 5u64
+    n ?? 0u64                    # E0037: `??` requires Option<T> or Result<T, E>
+
+`expr?` returns early on `None` / `Err`, and `a ?? b` falls back to `b`
+on them; both need a value that can be absent. For a plain value
+there is nothing to unwrap: use it directly.
+
+`?` also needs the enclosing function to return an `Option` or a
+`Result` to propagate into.";
+
+const E0038: &str = "\
+E0038: a type does not satisfy a trait
+
+    fn smallest<T: Ord>(a: T, b: T) -> T { .. }
+    smallest(P { n: 1u64 }, P { n: 2u64 })   # E0038: struct `P` does not implement trait `Ord`
+
+Three shapes share this code:
+
+* a generic bound: the type given for `T: Trait` has no
+  `impl Trait for ..`. Add the impl, or pass a type that has one.
+* an impl that does not match its trait: a missing method, or one
+  whose receiver, parameters or return type differ from the trait's
+  signature. The message names the method and both types.
+* a trait name that is not declared anywhere.";
+
+const E0039: &str = "\
+E0039: a write through a shared borrow
+
+    fn bump(c: &Counter) {
+        c.n = c.n + 1u64          # E0039: `c` is a shared borrow
+    }
+
+A `&T` parameter lends the value for reading. A write through it
+would land in a copy and be lost when the function returns, so it is
+refused. Declare the parameter `&mut T` (and pass `&mut c`), or the
+method `&mut self` when the write is to `self`. The same holds for
+calling a `&mut self` method through a shared borrow.";
 
 const E0029: &str = "\
 E0029: a parallel loop body depends on the order of its iterations

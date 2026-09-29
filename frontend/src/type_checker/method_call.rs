@@ -122,7 +122,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     format!("declare `{root}` as `&mut`")
                 };
                 return Err(self.error_with_location(
-                    TypeCheckError::generic_error(&format!(
+                    TypeCheckError::coded(crate::diagnostic::codes::SHARED_BORROW_WRITE, format!(
                         "cannot call `{method_name}` on `{target}`: it takes `&mut self`, and \
                          `{root}` is a shared borrow -- the change would reach a copy and be \
                          lost; {fix}"

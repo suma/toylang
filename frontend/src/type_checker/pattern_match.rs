@@ -155,21 +155,21 @@ impl<'a> TypeCheckerVisitor<'a> {
         let value_name = match expected_ty {
             TypeDecl::Struct(name, _) | TypeDecl::Identifier(name) => *name,
             _ => {
-                return Err(TypeCheckError::new(format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                     "struct pattern requires a struct value, got {}",
                     self.type_name_for_error(expected_ty)
                 )));
             }
         };
         if value_name != struct_name {
-            return Err(TypeCheckError::new(format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                 "struct pattern names `{}`, but the value is `{}`",
                 self.resolve_symbol_name(struct_name),
                 self.resolve_symbol_name(value_name)
             )));
         }
         let Some(declared) = self.context.get_struct_fields(struct_name).cloned() else {
-            return Err(TypeCheckError::new(format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                 "struct `{}` is not defined",
                 self.resolve_symbol_name(struct_name)
             )));
@@ -178,7 +178,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         for (field, sub) in field_patterns {
             let field_name = self.resolve_symbol_name(*field);
             let Some(decl) = declared.iter().find(|f| f.name == field_name) else {
-                return Err(TypeCheckError::new(format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                     "struct `{}` has no field `{}`",
                     self.resolve_symbol_name(struct_name),
                     field_name
@@ -206,7 +206,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 } else {
                     ""
                 };
-                return Err(TypeCheckError::new(format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                     "struct pattern for `{}` does not mention {}{} — list {} or end the pattern with `..`",
                     self.resolve_symbol_name(struct_name),
                     noun,
@@ -230,7 +230,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
             Pattern::Literal(lit_expr) => {
                 if !matches!(expected_ty, TypeDecl::Bool | TypeDecl::String) && !is_matchable_integer(expected_ty) {
-                    return Err(TypeCheckError::new(format!(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                         "literal pattern is only valid where a primitive value is expected, got {}",
                         self.type_name_for_error(expected_ty)
                     )));
@@ -242,13 +242,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let lit_ty = self.coerce_char_literal(lit_expr, expected_ty)?.unwrap_or(lit_ty);
                 if !lit_ty.is_equivalent(expected_ty) {
                     if let Some(name) = self.const_pattern_origin(lit_expr) {
-                        return Err(TypeCheckError::new(format!(
+                        return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                             "const `{name}` has type {}, but this position holds {}",
                             self.type_name_for_error(&lit_ty),
                             self.type_name_for_error(expected_ty)
                         )));
                     }
-                    return Err(TypeCheckError::new(format!(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                         "literal pattern type {} does not match expected {}",
                         self.type_name_for_error(&lit_ty),
                         self.type_name_for_error(expected_ty)
@@ -260,14 +260,14 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let element_types = match expected_ty {
                     TypeDecl::Tuple(ts) => ts,
                     _ => {
-                        return Err(TypeCheckError::new(format!(
+                        return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                             "tuple pattern requires a tuple value, got {}",
                             self.type_name_for_error(expected_ty)
                         )));
                     }
                 };
                 if sub_patterns.len() != element_types.len() {
-                    return Err(TypeCheckError::new(format!(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                         "tuple pattern has {} element(s), expected {}",
                         sub_patterns.len(),
                         element_types.len()
@@ -308,7 +308,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     TypeDecl::Identifier(name)
                         if self.context.enum_definitions.contains_key(name) => (*name, Vec::new()),
                     _ => {
-                        return Err(TypeCheckError::new(format!(
+                        return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                             "enum-variant sub-pattern expects an enum payload, got {}",
                             self.type_name_for_error(expected_ty)
                         )));
@@ -317,23 +317,23 @@ impl<'a> TypeCheckerVisitor<'a> {
                 if *pat_enum != enum_name {
                     let expected = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
                     let got = self.core.string_interner.resolve(*pat_enum).unwrap_or("?").to_string();
-                    return Err(TypeCheckError::new(format!(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                         "nested pattern refers to enum '{}', but payload type is enum '{}'", got, expected
                     )));
                 }
                 let variants = self.context.enum_definitions.get(&enum_name).cloned()
-                    .ok_or_else(|| TypeCheckError::new("nested match on unknown enum".to_string()))?;
+                    .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, "nested match on unknown enum".to_string()))?;
                 let variant_def = variants.iter().find(|v| v.name == *pat_variant)
                     .cloned()
                     .ok_or_else(|| {
                         let enum_str = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
                         let v_str = self.core.string_interner.resolve(*pat_variant).unwrap_or("?").to_string();
-                        TypeCheckError::new(format!("'{}' is not a variant of enum '{}'", v_str, enum_str))
+                        TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!("'{}' is not a variant of enum '{}'", v_str, enum_str))
                     })?;
                 if sub_patterns.len() != variant_def.payload_types.len() {
                     let enum_str = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
                     let v_str = self.core.string_interner.resolve(*pat_variant).unwrap_or("?").to_string();
-                    return Err(TypeCheckError::new(format!(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                         "variant '{}::{}' has {} payload field(s) but pattern bound {}",
                         enum_str, v_str, variant_def.payload_types.len(), sub_patterns.len()
                     )));
@@ -366,7 +366,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         expected_ty: &TypeDecl,
     ) -> Result<(i128, i128), TypeCheckError> {
         if integer_type_span(expected_ty).is_none() {
-            return Err(TypeCheckError::new(format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                 "range pattern is only valid where an integer is expected, got {}",
                 self.type_name_for_error(expected_ty)
             )));
@@ -397,7 +397,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.type_inference.type_hint = saved_hint;
         let ty = self.coerce_char_literal(endpoint, expected_ty)?.unwrap_or(ty);
         if !ty.is_equivalent(expected_ty) {
-            return Err(TypeCheckError::new(format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                 "range endpoint type {} does not match {}",
                 self.type_name_for_error(&ty),
                 self.type_name_for_error(expected_ty)
@@ -407,7 +407,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             .expr_pool
             .get(endpoint)
             .and_then(|e| integer_literal_value(&e, self.core.string_interner))
-            .ok_or_else(|| TypeCheckError::new("range endpoints must be integer literals".to_string()))
+            .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, "range endpoints must be integer literals".to_string()))
     }
 
     /// Entry point for `Expr::Match`. Classifies the scrutinee, walks arms
@@ -419,7 +419,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         arms: &Vec<MatchArm>,
     ) -> Result<TypeDecl, TypeCheckError> {
         if arms.is_empty() {
-            return Err(TypeCheckError::new("match expression must have at least one arm".to_string()));
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, "match expression must have at least one arm".to_string()));
         }
         let scrutinee_ty = self.visit_expr(scrutinee)?;
 
@@ -462,7 +462,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             TypeDecl::Enum(name, args) => {
                 let variants = self.context.enum_definitions.get(name)
                     .cloned()
-                    .ok_or_else(|| TypeCheckError::new("match on unknown enum".to_string()))?;
+                    .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, "match on unknown enum".to_string()))?;
                 ScrutineeKind::Enum { name: *name, type_args: args.clone(), variants }
             }
             TypeDecl::Identifier(name) if self.context.enum_definitions.contains_key(name) => {
@@ -484,7 +484,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 ScrutineeKind::Struct
             }
             _ => {
-                return Err(TypeCheckError::new(format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                     "match scrutinee must be an enum, struct, primitive (bool / an integer / str), or tuple, got {}",
                     self.type_name_for_error(&scrutinee_ty)
                 )));
@@ -522,7 +522,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             let body = &arm.body;
             let is_guarded = arm.guard.is_some();
             if has_wildcard {
-                return Err(TypeCheckError::new(format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::MATCH_COVERAGE, format!(
                     "unreachable match arm at position {}: a wildcard `_` arm already covers every value",
                     arm_index
                 )));
@@ -575,17 +575,17 @@ impl<'a> TypeCheckerVisitor<'a> {
                     let prim_ty = match &kind {
                         ScrutineeKind::Primitive(t) => t.clone(),
                         ScrutineeKind::Enum { .. } => {
-                            return Err(TypeCheckError::new(
+                            return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, 
                                 "literal pattern cannot be used in a match on an enum".to_string()
                             ));
                         }
                         ScrutineeKind::Struct => {
-                            return Err(TypeCheckError::new(
+                            return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, 
                                 "literal pattern cannot be used in a match on a struct — match its fields instead".to_string()
                             ));
                         }
                         ScrutineeKind::Tuple(_) => {
-                            return Err(TypeCheckError::new(
+                            return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, 
                                 "literal pattern cannot be used in a match on a tuple".to_string()
                             ));
                         }
@@ -602,13 +602,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                     let lit_ty = self.coerce_char_literal(literal_expr, &prim_ty)?.unwrap_or(lit_ty);
                     if !lit_ty.is_equivalent(&prim_ty) {
                         if let Some(name) = self.const_pattern_origin(literal_expr) {
-                            return Err(TypeCheckError::new(format!(
+                            return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                                 "const `{name}` has type {}, but the match is on {}",
                                 self.type_name_for_error(&lit_ty),
                                 self.type_name_for_error(&prim_ty)
                             )));
                         }
-                        return Err(TypeCheckError::new(format!(
+                        return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                             "literal pattern type {} does not match scrutinee type {}",
                             self.type_name_for_error(&lit_ty),
                             self.type_name_for_error(&prim_ty)
@@ -623,7 +623,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                             match lit_expr {
                                 ref e if let Some(v) = integer_literal_value(e, self.core.string_interner) => {
                                     if covered_ints.contains(v, v) {
-                                        return Err(TypeCheckError::new(format!(
+                                        return Err(TypeCheckError::coded(crate::diagnostic::codes::MATCH_COVERAGE, format!(
                                             "unreachable match arm: literal {} already handled by an earlier arm", v
                                         )));
                                     }
@@ -631,13 +631,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                                 }
                                 Expr::True
                                     if !covered_bool.insert(true) => {
-                                        return Err(TypeCheckError::new(
+                                        return Err(TypeCheckError::coded(crate::diagnostic::codes::MATCH_COVERAGE, 
                                             "unreachable match arm: literal `true` already handled by an earlier arm".to_string()
                                         ));
                                     }
                                 Expr::False
                                     if !covered_bool.insert(false) => {
-                                        return Err(TypeCheckError::new(
+                                        return Err(TypeCheckError::coded(crate::diagnostic::codes::MATCH_COVERAGE, 
                                             "unreachable match arm: literal `false` already handled by an earlier arm".to_string()
                                         ));
                                     }
@@ -649,7 +649,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                                         // it re-quotes the text so the message
                                         // shows the arm as it was written
                                         // (`literal "hello"`).
-                                        return Err(TypeCheckError::new(format!(
+                                        return Err(TypeCheckError::coded(crate::diagnostic::codes::MATCH_COVERAGE, format!(
                                             "unreachable match arm: literal {:?} already handled by an earlier arm",
                                             s
                                         )));
@@ -664,7 +664,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 Pattern::Range(low, high) => {
                     let ScrutineeKind::Primitive(prim_ty) = &kind else {
                         self.context.vars.pop();
-                        return Err(TypeCheckError::new(
+                        return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, 
                             "range pattern is only valid in a match on an integer".to_string(),
                         ));
                     };
@@ -672,7 +672,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     let (lo, hi) = self.check_range_endpoints(low, high, &prim_ty)?;
                     if !is_guarded {
                         if covered_ints.contains(lo, hi) {
-                            return Err(TypeCheckError::new(format!(
+                            return Err(TypeCheckError::coded(crate::diagnostic::codes::MATCH_COVERAGE, format!(
                                 "unreachable match arm: {}..{} is already handled by earlier arms",
                                 lo,
                                 hi + 1
@@ -690,14 +690,14 @@ impl<'a> TypeCheckerVisitor<'a> {
                     let element_types = match &scrutinee_ty {
                         TypeDecl::Tuple(ts) => ts.clone(),
                         _ => {
-                            return Err(TypeCheckError::new(format!(
+                            return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                                 "tuple pattern requires a tuple scrutinee, got {}",
                                 self.type_name_for_error(&scrutinee_ty)
                             )));
                         }
                     };
                     if sub_patterns.len() != element_types.len() {
-                        return Err(TypeCheckError::new(format!(
+                        return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                             "tuple pattern has {} element(s), expected {}",
                             sub_patterns.len(),
                             element_types.len()
@@ -718,18 +718,18 @@ impl<'a> TypeCheckerVisitor<'a> {
                     let (enum_name, enum_type_args, variants) = match &kind {
                         ScrutineeKind::Enum { name, type_args, variants } => (*name, type_args.clone(), variants.clone()),
                         ScrutineeKind::Primitive(t) => {
-                            return Err(TypeCheckError::new(format!(
+                            return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                                 "enum-variant pattern cannot be used in a match on {}",
                                 self.type_name_for_error(t)
                             )));
                         }
                         ScrutineeKind::Struct => {
-                            return Err(TypeCheckError::new(
+                            return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, 
                                 "enum-variant pattern cannot be used in a match on a struct".to_string()
                             ));
                         }
                         ScrutineeKind::Tuple(_) => {
-                            return Err(TypeCheckError::new(
+                            return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, 
                                 "enum-variant pattern cannot be used in a match on a tuple".to_string()
                             ));
                         }
@@ -737,7 +737,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     if *pat_enum != enum_name {
                         let expected = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
                         let got = self.core.string_interner.resolve(*pat_enum).unwrap_or("?").to_string();
-                        return Err(TypeCheckError::new(format!(
+                        return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                             "match pattern refers to enum '{}', but scrutinee is '{}'", got, expected
                         )));
                     }
@@ -747,7 +747,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         None => {
                             let enum_str = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
                             let v_str = self.core.string_interner.resolve(*pat_variant).unwrap_or("?").to_string();
-                            return Err(TypeCheckError::new(format!(
+                            return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                                 "'{}' is not a variant of enum '{}'", v_str, enum_str
                             )));
                         }
@@ -760,7 +760,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     if fully_covered_variants.contains(pat_variant) {
                         let enum_str = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
                         let v_str = self.core.string_interner.resolve(*pat_variant).unwrap_or("?").to_string();
-                        return Err(TypeCheckError::new(format!(
+                        return Err(TypeCheckError::coded(crate::diagnostic::codes::MATCH_COVERAGE, format!(
                             "unreachable match arm: variant '{}::{}' already fully covered by an earlier arm",
                             enum_str, v_str
                         )));
@@ -768,7 +768,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     if bindings.len() != variant_def.payload_types.len() {
                         let enum_str = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
                         let v_str = self.core.string_interner.resolve(*pat_variant).unwrap_or("?").to_string();
-                        return Err(TypeCheckError::new(format!(
+                        return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                             "variant '{}::{}' has {} payload field(s) but pattern bound {}",
                             enum_str, v_str, variant_def.payload_types.len(), bindings.len()
                         )));
@@ -817,7 +817,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 self.type_inference.type_hint = saved_hint;
                 if !guard_ty.is_equivalent(&TypeDecl::Bool) {
                     self.context.vars.pop();
-                    return Err(TypeCheckError::new(format!(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                         "match arm guard must be of type bool, got {}",
                         self.type_name_for_error(&guard_ty)
                     )));
@@ -850,7 +850,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 // sets `has_wildcard`. Reaching here means every arm
                 // was refutable, so the match can fall through.
                 ScrutineeKind::Struct => {
-                    return Err(TypeCheckError::new(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::MATCH_COVERAGE, 
                         "non-exhaustive match on a struct: every arm can fail, so add one whose field patterns always match (or a wildcard `_`)"
                             .to_string(),
                     ));
@@ -865,7 +865,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         let missing_strs: Vec<String> = missing.iter()
                             .map(|s| self.core.string_interner.resolve(*s).unwrap_or("?").to_string())
                             .collect();
-                        return Err(TypeCheckError::new(format!(
+                        return Err(TypeCheckError::coded(crate::diagnostic::codes::MATCH_COVERAGE, format!(
                             "non-exhaustive match on enum '{}': missing variant(s) {} — add an arm for each or a wildcard `_`",
                             enum_str,
                             missing_strs.join(", ")
@@ -874,7 +874,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
                 ScrutineeKind::Primitive(TypeDecl::Bool) => {
                     if !covered_bool.contains(&true) || !covered_bool.contains(&false) {
-                        return Err(TypeCheckError::new(
+                        return Err(TypeCheckError::coded(crate::diagnostic::codes::MATCH_COVERAGE, 
                             "non-exhaustive match on bool: cover both `true` and `false` or add a wildcard `_`".to_string()
                         ));
                     }
@@ -901,7 +901,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     // Tuple value space is unbounded along each element;
                     // the user must include either an irrefutable tuple
                     // pattern (`(x, y)`) or a wildcard `_` arm.
-                    return Err(TypeCheckError::new(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::MATCH_COVERAGE, 
                         "non-exhaustive match on tuple: add an arm with an irrefutable tuple pattern or a wildcard `_`".to_string()
                     ));
                 }
@@ -954,7 +954,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let first = arm_types[0].clone();
         for (i, t) in arm_types.iter().enumerate().skip(1) {
             if !first.is_equivalent(t) {
-                return Err(TypeCheckError::new(format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                     "match arms have incompatible types: arm 0 is {}, arm {} is {}",
                     self.type_name_for_error(&first),
                     i,
@@ -1025,7 +1025,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 // Non-enum position with no irrefutable pattern means
                 // the position can hide unmatched values. Be
                 // conservative and reject.
-                return Err(TypeCheckError::new(format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::MATCH_COVERAGE, format!(
                     "non-exhaustive match {}: position type {} is not fully covered — add a wildcard `_` or a bare name",
                     context, self.type_name_for_error(position_type)
                 )));
@@ -1065,7 +1065,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 .iter()
                 .map(|s| self.core.string_interner.resolve(*s).unwrap_or("?").to_string())
                 .collect();
-            return Err(TypeCheckError::new(format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::MATCH_COVERAGE, format!(
                 "non-exhaustive match {}: missing nested variant(s) {}::{{{}}} — add an arm for each or a wildcard / bare name",
                 context,
                 enum_str,

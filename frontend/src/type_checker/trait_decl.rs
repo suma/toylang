@@ -109,7 +109,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             Some(ms) => ms,
             None => {
                 let t_str = self.core.string_interner.resolve(trait_symbol).unwrap_or("?").to_string();
-                return Err(TypeCheckError::new(format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
                     "trait '{t_str}' is not defined"
                 )));
             }
@@ -155,7 +155,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     let t_str = self.core.string_interner.resolve(trait_symbol).unwrap_or("?").to_string();
                     let s_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("?").to_string();
                     let m_str = self.core.string_interner.resolve(sig.name).unwrap_or("?").to_string();
-                    return Err(TypeCheckError::new(format!(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
                         "impl {t_str} for {s_str}: missing method '{m_str}' required by trait"
                     )));
                 }
@@ -164,7 +164,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let t_str = self.core.string_interner.resolve(trait_symbol).unwrap_or("?").to_string();
                 let s_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("?").to_string();
                 let m_str = self.core.string_interner.resolve(sig.name).unwrap_or("?").to_string();
-                return Err(TypeCheckError::new(format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
                     "impl {t_str} for {s_str}: method '{m_str}' self-parameter mismatch"
                 )));
             }
@@ -181,7 +181,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let m_str = self.core.string_interner.resolve(sig.name).unwrap_or("?").to_string();
                 let want = if sig.self_is_mut { "&mut self" } else { "self / &self" };
                 let got = if m.self_is_mut { "&mut self" } else { "self / &self" };
-                return Err(TypeCheckError::new(format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
                     "impl {t_str} for {s_str}: method '{m_str}' receiver kind mismatch (trait expects {want}, impl uses {got})"
                 )));
             }
@@ -189,7 +189,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let t_str = self.core.string_interner.resolve(trait_symbol).unwrap_or("?").to_string();
                 let s_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("?").to_string();
                 let m_str = self.core.string_interner.resolve(sig.name).unwrap_or("?").to_string();
-                return Err(TypeCheckError::new(format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
                     "impl {t_str} for {s_str}: method '{m_str}' parameter count mismatch (expected {}, found {})",
                     sig.parameter.len(), m.parameter.len()
                 )));
@@ -209,7 +209,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     let t_str = self.core.string_interner.resolve(trait_symbol).unwrap_or("?").to_string();
                     let s_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("?").to_string();
                     let m_str = self.core.string_interner.resolve(sig.name).unwrap_or("?").to_string();
-                    return Err(TypeCheckError::new(format!(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
                         "impl {t_str} for {s_str}: method '{m_str}' parameter #{} type mismatch (expected {}, found {})",
                         i + 1,
                         self.type_name_for_error(&s_resolved),
@@ -232,7 +232,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         let m_str = self.core.string_interner.resolve(sig.name).unwrap_or("?");
                         let want = self.core.string_interner.resolve(*trait_name_sym).unwrap_or("?");
                         let got = self.core.string_interner.resolve(*impl_name).unwrap_or("?");
-                        return Err(TypeCheckError::new(format!(
+                        return Err(TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
                             "impl {t_str} for {s_str}: method '{m_str}' renames parameter `{want}` to `{got}`, but {t_str} declares a contract over `{want}` — rename the parameter back so the trait's `requires` / `ensures` still resolve"
                         )));
                     }
@@ -280,7 +280,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let t_str = self.core.string_interner.resolve(trait_symbol).unwrap_or("?").to_string();
                 let s_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("?").to_string();
                 let m_str = self.core.string_interner.resolve(sig.name).unwrap_or("?").to_string();
-                return Err(TypeCheckError::new(format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
                     "impl {t_str} for {s_str}: method '{m_str}' return type mismatch (expected {}, found {})",
                     self.type_name_for_error(&s_ret),
                     self.type_name_for_error(&m_ret)

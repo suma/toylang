@@ -1,3 +1,4 @@
+use crate::token::DescribeToken;
 use crate::ast::*;
 use crate::token::Kind;
 use super::core::Parser;
@@ -41,10 +42,9 @@ impl<'a> Parser<'a> {
                 // These tokens should not start an expression
                 // Don't consume them - let the parent handle them
                 let token = self.peek().cloned();
-                let line = self.line_count();
                 let location = self.current_source_location();
                 return Err(ParserError::generic_error(location, 
-                    format!("unexpected token {:?} at line {}, expected expression", token, line)));
+                    format!("expected an expression, found {}", token.describe_token())));
             }
             _ => {}
         }
@@ -74,8 +74,7 @@ impl<'a> Parser<'a> {
             }
             Some(x) => {
                 let x = x.clone();
-                let line = self.line_count();
-                self.collect_error(&format!("expected expression but found {:?} at line {}", x, line));
+                self.collect_error(&format!("expected an expression, found {}", x.describe_token()));
                 // Skip the problematic token to avoid infinite loop
                 self.next();
                 // Return a dummy expression to continue parsing
@@ -856,7 +855,7 @@ fn parse_expr_list_impl(parser: &mut Parser, mut args: Vec<ExprRef>) -> ParserRe
             }
             x => {
                 let x_cloned = x.cloned();
-                parser.collect_error(&format!("unexpected token in expression list: {:?}", x_cloned));
+                parser.collect_error(&format!("expected `,` or `)` in an argument list, found {}", x_cloned.describe_token()));
                 return Ok(args); // Return current args and stop
             }
         }

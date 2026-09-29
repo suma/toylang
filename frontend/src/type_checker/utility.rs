@@ -219,7 +219,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             let bound_str = self.named_type_for_error(bound);
             let inferred_str = self.named_type_for_error(inferred);
             let note = self.bound_violation_note(inferred, &trait_bounds, substitutions);
-            return Err(TypeCheckError::generic_error(&format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
                 "{} '{}' generic parameter '{}' bound violation: expected {}, got {}{}",
                 owner_kind, owner_name, param_name, bound_str, inferred_str, note
             )));

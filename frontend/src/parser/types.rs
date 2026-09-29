@@ -1,3 +1,4 @@
+use crate::token::DescribeToken;
 use std::collections::HashSet;
 use string_interner::DefaultSymbol;
 use crate::token::Kind;
@@ -501,7 +502,7 @@ impl<'a> Parser<'a> {
             }
             Some(_) | None => {
                 let location = self.current_source_location();
-                Err(ParserError::generic_error(location, format!("parse_type_declaration: unexpected token {:?}", self.peek())))
+                Err(ParserError::generic_error(location, format!("expected a type, found {}", self.peek().describe_token())))
             }
         }
     }

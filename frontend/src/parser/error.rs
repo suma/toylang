@@ -14,6 +14,8 @@ pub enum ParserErrorKind {
     /// a tuple index on `1`. `suffix` is the one to add — `f64` unless
     /// the declaration it initialises says `f32`.
     UnsuffixedFloat { written: String, suffix: &'static str },
+    /// `else if`, which the language spells `elif`.
+    ElseIf,
 }
 
 #[derive(Debug)]
@@ -140,6 +142,20 @@ impl ParserError {
         }
     }
 
+    /// `else if` at `location`, with the fix.
+    pub fn else_if(location: SourceLocation) -> Self {
+        Self {
+            kind: ParserErrorKind::ElseIf,
+            location,
+            suggestions: vec![crate::diagnostic::Suggestion::machine_applicable(
+                "use `elif`",
+                "elif".to_string(),
+                crate::diagnostic::Span::from(location),
+            )],
+            recovered: false,
+        }
+    }
+
     /// The same error, carrying a fix.
     pub fn with_suggestion(mut self, suggestion: crate::diagnostic::Suggestion) -> Self {
         self.suggestions.push(suggestion);
@@ -164,6 +180,9 @@ impl std::fmt::Display for ParserError {
             }
             ParserErrorKind::IoError { message } => {
                 format!("IO error: {}", message)
+            }
+            ParserErrorKind::ElseIf => {
+                "`else if` is not supported; write `elif` instead (`} elif cond {`)".to_string()
             }
             ParserErrorKind::UnsuffixedFloat { written, suffix } => format!(
                 "a float literal needs a type suffix: write `{written}{suffix}` \

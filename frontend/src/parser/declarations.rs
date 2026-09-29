@@ -1,3 +1,4 @@
+use crate::token::DescribeToken;
 use std::collections::{HashMap, HashSet};
 use string_interner::DefaultSymbol;
 use crate::ast::{EnsuresKind, ExprRef, Parameter, PackageDecl, ImportDecl};
@@ -47,7 +48,7 @@ impl<'a> Parser<'a> {
                     self.collect_error(&message);
                     return Err(ParserError::generic_error(location, message));
                 }
-                Err(ParserError::generic_error(location, format!("expect type parameter of function but: {:?}", x)))
+                Err(ParserError::generic_error(location, format!("expected a parameter name, found {}", x.describe_token())))
             },
         }
     }
@@ -297,8 +298,8 @@ impl<'a> Parser<'a> {
                                     return Err(ParserError::generic_error(
                                         location,
                                         format!(
-                                            "'+' bound list requires trait names; got {:?}",
-                                            other
+                                            "a `+` bound list takes trait names, found `{}`",
+                                            other.spell_with(Some(&*self.string_interner))
                                         ),
                                     ));
                                 }

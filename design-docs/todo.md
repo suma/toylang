@@ -10,6 +10,12 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-09-30
+
+- **LLM-TOOLING #2 — エラーコードの分割** — パースエラーに `E0032`〜`E0034`、match /
+  `?`・`??` / トレイト / 共有借用の系統に `E0035`〜`E0039`。台帳は append-only を
+  テストで固定、JSON に `explain` を載せた。パーサの文言から `Debug` 表記を除いた。
+
 ### 2026-09-29
 
 - **LLM-TOOLING #1 — 機械適用できる修正提案と `toy fix`** — 提案を `edits` (ファイル付き・
@@ -2549,6 +2555,13 @@
   `function_index collision` panic が、候補を名指しする型エラーに
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
+
+- **EXAMPLE-TEMP-PATH-RACE** — `interpreter/example/fs_file.t`
+  (`$TMPDIR/toylang_example_fs_file.bin`) と `error_model.t`
+  (`/tmp/toylang_error_model_demo.txt`) が固定パスに書くので、
+  `example_consistency` の通常レーンと poison レーンが並列に走ると
+  互いのファイルを書き換えてフレークする (2026-09-29/30 に全体実行で
+  数回に 1 回観測)。パスをレーンごとに変えるか、両テストを直列にする。
 
 - **TREE-WALKER-DYNAMIC-GENERIC-SCOPE — 呼び出し先が呼び出し元の型引数を
   見る** — tree-walker の `merged_generic_scope` は**実行中の全呼び出し**の

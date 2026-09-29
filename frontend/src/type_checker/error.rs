@@ -123,6 +123,10 @@ pub enum TypeCheckErrorKind {
     InvalidLiteral { value: String, expected_type: String },
     AccessDenied { message: String },
     GenericError { message: String },
+    /// A message with its own diagnostic code (LLM-TOOLING #2): a
+    /// family of checks that shares a code but not a structured
+    /// payload. Rendered like `GenericError`.
+    Coded { code: &'static str, message: String },
     /// LLM-LOOP P7: the answer to a `val x: _ = expr` type hole.
     ///
     /// Reported as an error rather than a note because a hole is a
@@ -707,6 +711,18 @@ impl TypeCheckError {
         self
     }
 
+    /// An error in one of the families that has a code of its own
+    /// (`crate::diagnostic::codes`) but no structured payload.
+    pub fn coded(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::Coded { code, message: message.into() }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
+
     pub fn new(msg: String) -> Self {
         Self::generic_error(&msg)
     }
@@ -750,9 +766,8 @@ impl TypeCheckError {
             TypeCheckErrorKind::AccessDenied { message } => {
                 format!("Access denied: {}", message)
             }
-            TypeCheckErrorKind::GenericError { message } => {
-                message.clone()
-            }
+            TypeCheckErrorKind::GenericError { message }
+            | TypeCheckErrorKind::Coded { message, .. } => message.clone(),
             TypeCheckErrorKind::TypeHole { name, inferred } => {
                 format!("type hole: `{}` has type `{}`", name, inferred)
             }

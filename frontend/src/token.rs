@@ -307,3 +307,177 @@ impl Kind {
         )
     }
 }
+
+impl Kind {
+    /// The token as a reader would name it in a diagnostic: `` `}` ``,
+    /// `` identifier `foo` ``, `a newline`. Parse errors used to print
+    /// the `Debug` form (`Some(BraceClose)`), which names the lexer's
+    /// enum rather than anything in the program.
+    pub fn describe(&self) -> String {
+        let quoted = |s: &str| format!("`{s}`");
+        match self {
+            Kind::Identifier(name) => format!("identifier `{name}`"),
+            Kind::Integer(text) => format!("number `{text}`"),
+            Kind::Int64(v) => format!("number `{v}i64`"),
+            Kind::UInt64(v) => format!("number `{v}u64`"),
+            Kind::Int8(v) => format!("number `{v}i8`"),
+            Kind::Int16(v) => format!("number `{v}i16`"),
+            Kind::Int32(v) => format!("number `{v}i32`"),
+            Kind::UInt8(v) => format!("number `{v}u8`"),
+            Kind::UInt16(v) => format!("number `{v}u16`"),
+            Kind::UInt32(v) => format!("number `{v}u32`"),
+            Kind::Float64(v) => format!("number `{v}f64`"),
+            Kind::Float32(v) => format!("number `{v}f32`"),
+            Kind::CharLiteral(_) => "a character literal".to_string(),
+            Kind::String(_) | Kind::InterpolatedString(_) => "a string literal".to_string(),
+            Kind::Comment(_) => "a comment".to_string(),
+            Kind::NewLine => "a newline".to_string(),
+            Kind::EOF => "end of input".to_string(),
+            Kind::Vector(v) => quoted(v.source_name()),
+            other => quoted(other.spelling()),
+        }
+    }
+
+    /// Source spelling of a keyword or punctuation token.
+    fn spelling(&self) -> &'static str {
+        match self {
+            Kind::If => "if",
+            Kind::Elif => "elif",
+            Kind::Else => "else",
+            Kind::For => "for",
+            Kind::In => "in",
+            Kind::To => "to",
+            Kind::While => "while",
+            Kind::Loop => "loop",
+            Kind::Break => "break",
+            Kind::Continue => "continue",
+            Kind::Class => "class",
+            Kind::Struct => "struct",
+            Kind::Trait => "trait",
+            Kind::Impl => "impl",
+            Kind::Dyn => "dyn",
+            Kind::Function => "fn",
+            Kind::Return => "return",
+            Kind::Extern => "extern",
+            Kind::Public => "pub",
+            Kind::Package => "package",
+            Kind::Import => "import",
+            Kind::As => "as",
+            Kind::Val => "val",
+            Kind::Var => "var",
+            Kind::Mut => "mut",
+            Kind::Const => "const",
+            Kind::With => "with",
+            Kind::Ambient => "ambient",
+            Kind::Enum => "enum",
+            Kind::Match => "match",
+            Kind::Requires => "requires",
+            Kind::Ensures => "ensures",
+            Kind::Type => "type",
+            Kind::Bool => "bool",
+            Kind::U64 => "u64",
+            Kind::I64 => "i64",
+            Kind::F64 => "f64",
+            Kind::F32 => "f32",
+            Kind::USize => "usize",
+            Kind::U8 => "u8",
+            Kind::U16 => "u16",
+            Kind::U32 => "u32",
+            Kind::I8 => "i8",
+            Kind::I16 => "i16",
+            Kind::I32 => "i32",
+            Kind::Str => "str",
+            Kind::Ptr => "ptr",
+            Kind::Null => "null",
+            Kind::Dict => "dict",
+            Kind::Self_ => "Self",
+            Kind::True => "true",
+            Kind::False => "false",
+            Kind::ParenOpen => "(",
+            Kind::ParenClose => ")",
+            Kind::BraceOpen => "{",
+            Kind::BraceClose => "}",
+            Kind::BracketOpen => "[",
+            Kind::BracketClose => "]",
+            Kind::Comma => ",",
+            Kind::Dot => ".",
+            Kind::DotDot => "..",
+            Kind::DoubleColon => "::",
+            Kind::Colon => ":",
+            Kind::Semicolon => ";",
+            Kind::Arrow => "->",
+            Kind::FatArrow => "=>",
+            Kind::Exclamation => "!",
+            Kind::At => "@",
+            Kind::Question => "?",
+            Kind::DoubleQuestion => "??",
+            Kind::Equal => "=",
+            Kind::DoubleEqual => "==",
+            Kind::NotEqual => "!=",
+            Kind::LT => "<",
+            Kind::LE => "<=",
+            Kind::GT => ">",
+            Kind::GE => ">=",
+            Kind::DoubleAnd => "&&",
+            Kind::DoubleOr => "||",
+            Kind::And => "&",
+            Kind::Or => "|",
+            Kind::Xor => "^",
+            Kind::Tilde => "~",
+            Kind::LeftShift => "<<",
+            Kind::RightShift => ">>",
+            Kind::IAdd | Kind::FAdd => "+",
+            Kind::ISub | Kind::FSub => "-",
+            Kind::IMul | Kind::FMul => "*",
+            Kind::IDiv | Kind::FDiv => "/",
+            Kind::IMod => "%",
+            Kind::PlusEqual => "+=",
+            Kind::MinusEqual => "-=",
+            Kind::StarEqual => "*=",
+            Kind::SlashEqual => "/=",
+            Kind::PercentEqual => "%=",
+            Kind::AndEqual => "&=",
+            Kind::OrEqual => "|=",
+            Kind::XorEqual => "^=",
+            Kind::LeftShiftEqual => "<<=",
+            Kind::RightShiftEqual => ">>=",
+            _ => "?",
+        }
+    }
+}
+
+/// [`Kind::describe`] for a peeked token, where `None` is the end of
+/// the input.
+pub fn describe_token(kind: Option<&Kind>) -> String {
+    kind.map(Kind::describe).unwrap_or_else(|| "end of input".to_string())
+}
+
+/// [`Kind::describe`] for the shapes a parser holds a token in — the
+/// token itself, a peeked `Option<&Kind>`, or a cloned `Option<Kind>`.
+pub trait DescribeToken {
+    fn describe_token(&self) -> String;
+}
+
+impl DescribeToken for Kind {
+    fn describe_token(&self) -> String {
+        self.describe()
+    }
+}
+
+impl DescribeToken for Option<Kind> {
+    fn describe_token(&self) -> String {
+        describe_token(self.as_ref())
+    }
+}
+
+impl DescribeToken for Option<&Kind> {
+    fn describe_token(&self) -> String {
+        describe_token(*self)
+    }
+}
+
+impl<T: DescribeToken + ?Sized> DescribeToken for &T {
+    fn describe_token(&self) -> String {
+        (**self).describe_token()
+    }
+}

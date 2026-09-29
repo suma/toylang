@@ -1,3 +1,4 @@
+use crate::token::DescribeToken;
 use std::collections::HashMap;
 use string_interner::DefaultSymbol;
 
@@ -623,7 +624,7 @@ impl<'a> Parser<'a> {
             let current = self.peek().cloned().unwrap_or(Kind::EOF);
             let location = self.current_source_location();
             Err(ParserError::generic_error(location,
-                format!("Expected {:?} but found {:?}", accept, current)))
+                format!("expected {}, found {}", accept.describe_token(), current.describe_token())))
         }
     }
 
@@ -633,8 +634,12 @@ impl<'a> Parser<'a> {
             self.next();
             Ok(())
         } else {
+            let found = self.peek().describe_token();
             let location = self.current_source_location();
-            let error = ParserError::unexpected_token(location, format!("{:?}", accept));
+            let error = ParserError::unexpected_token(
+                location,
+                format!("expected {}, found {found}", accept.describe_token()),
+            );
             self.report_error(error);
             self.next();
             Ok(())

@@ -657,7 +657,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         self.type_inference.pop_generic_scope();
                         let param_name = self.resolve_symbol_name(*generic_param);
                         let struct_name_str = self.resolve_symbol_name(*struct_name);
-                        return Err(TypeCheckError::generic_error(&format!(
+                        return Err(TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
                             "Struct '{}' generic parameter '{}' bound violation: expected {}, got {}",
                             struct_name_str,
                             param_name,

@@ -1,3 +1,4 @@
+use crate::token::DescribeToken;
 use crate::ast::*;
 use crate::token::{Kind, StringPart};
 use crate::format_spec::FormatSpec;
@@ -864,7 +865,7 @@ fn parse_primary_keyword_form(parser: &mut Parser) -> ParserResult<ExprRef> {
         Some(Kind::Loop) => crate::parser::stmt::parse_loop_expr(parser, None),
         _ => {
             let x_cloned = x.cloned();
-            parser.collect_error(&format!("unexpected token in primary expression: {:?}", x_cloned));
+            parser.collect_error(&format!("expected an expression, found {}", x_cloned.describe_token()));
             Ok(parser.ast_builder.null_expr(None))
         }
     }
@@ -950,7 +951,7 @@ pub fn parse_array_elements(parser: &mut Parser, mut elements: Vec<ExprRef>) -> 
             }
             x => {
                 let x_cloned = x.cloned();
-                parser.collect_error(&format!("unexpected token in array elements: {:?}", x_cloned));
+                parser.collect_error(&format!("expected `,` or `]` in an array literal, found {}", x_cloned.describe_token()));
                 parser.exit_nested_structure(false);
                 return Ok(elements);
             }
@@ -1066,7 +1067,7 @@ fn parse_struct_literal_fields_impl(parser: &mut Parser, mut fields: Vec<(Defaul
             }
             x => {
                 let x_cloned = x.cloned();
-                parser.collect_error(&format!("expected field name in struct literal, got {:?}", x_cloned));
+                parser.collect_error(&format!("expected a field name in struct literal, found {}", x_cloned.describe_token()));
                 return Ok((fields, None));
             }
         };

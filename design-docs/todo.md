@@ -12,6 +12,8 @@
 
 ### 2026-09-30
 
+- **CLAUDE-CODE C1 / C2 — 権限とスキル** — `.claude/settings.json` で toy の読むだけの
+  コマンドを許可、`.claude/skills/toylang/SKILL.md` に手順と文法の罠 (例は実行確認済み)。
 - **CLAUDE-CODE T1 — stdlib が見つからないことを言う** — `toy` は型エラーに進まず、
   探した場所と直し方を示して止まる (`compiler::stdlib_problem`)。
 - **LLM-TOOLING-PARSE-RECOVERY-HEURISTIC — 壊れた宣言の範囲をパーサが記録** —
@@ -2617,6 +2619,12 @@
   `function_index collision` panic が、候補を名指しする型エラーに
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
+
+- **INTERP-STRING-LITERAL — 補間の `{...}` の中に文字列リテラルを書けない** —
+  `println("{f("a")}")` は `[E0012] unterminated interpolation`、`\"` で
+  エスケープすると E0032。先に `val` に束縛すれば書ける (toylang スキルにそう
+  書いた)。あわせて、この E0012 の文言は `[E0012] [E0012]` とコードが二重に出る
+  (2026-09-30 に C2 のスキルを書いていて発見)。
 
 以下 LLM-TOOLING-* は 2026-09-29/30 の LLM 向け道具の第 2 ラウンド
 ([`LLM_TOOLING.md`](LLM_TOOLING.md)) で残ったもの。

@@ -84,6 +84,11 @@ documentSymbol は `toy api`、goToImplementation は trait メソッド → imp
   `.gitignore` は `.claude/` 全体から、`settings.json` と `skills/` 以外を
   無視する形に変えた (`settings.local.json` は個人用のまま)
 
+- **C2 (✅ 2026-09-30)** — `.claude/skills/toylang/SKILL.md`。`toy` の手順
+  (check → fix → query → run / test)、パッケージ単位で動くこと (単独の `.t`
+  では「no package found」)、文法の罠 12 項目、検査・実行・テストが通る例。
+  例と罠の主張は書いた時点で実行して確かめた
+
 ### 優先順
 
 1. **T1** — 誤った場所に誘導する不具合なので最初に。小さい

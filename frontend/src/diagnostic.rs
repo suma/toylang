@@ -507,7 +507,12 @@ impl Diagnostic {
                 | ParserErrorKind::RecursionLimitExceeded => codes::SYNTAX,
                 ParserErrorKind::IoError { .. } => codes::UNCATEGORISED,
             },
-            message: error.to_string(),
+            // The formatter prints the code; a lex error's `Display` carries
+            // it too (for renderings without a code), which printed it twice.
+            message: match &error.kind {
+                ParserErrorKind::LexError { message } => message.clone(),
+                _ => error.to_string(),
+            },
             file: file.to_string(),
             span: Some(Span::from(error.location)),
             origin_module: None,

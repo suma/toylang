@@ -1061,6 +1061,12 @@ val n: i64 = 42i64
 #       .concat(__builtin_to_string(n * 2i64))
 ```
 
+The expression inside `{...}` may contain string, raw string and
+character literals of its own — `"{greet("b")}"`, `"{f("}")}"`,
+`"{q('"')}"` — including interpolated ones (`"{greet("{x}")}"`); their
+quotes and braces belong to them, not to the outer literal. A `{` whose
+expression never closes is `[E0012] unterminated interpolation`.
+
 `__builtin_to_string(value)` produces the same display string
 `print` / `println` would emit (powered by
 `Object::to_display_string` in the interpreter), so every

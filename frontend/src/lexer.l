@@ -160,7 +160,18 @@ impl LexErrorKind {
 /// is >= 0x80 and so never looks like `"`.
 #[allow(dead_code)]
 fn find_string_close(input: &str, from: usize) -> Option<usize> {
-    let bytes = input.as_bytes();
+    // INTERP-STRING-LITERAL: an interpolation's expression may hold a
+    // string literal of its own (`"{f("a")}"`), whose quotes do not
+    // close the outer one. Skip each `{...}` whole. When one never
+    // closes, fall back to the first quote, so the literal still ends
+    // and the segment is reported as an unterminated interpolation
+    // rather than swallowing the rest of the file.
+    find_string_close_skipping_interpolation(input.as_bytes(), from)
+        .or_else(|| find_plain_string_close(input.as_bytes(), from))
+}
+
+/// The first unescaped `"` at or after `from`.
+fn find_plain_string_close(bytes: &[u8], from: usize) -> Option<usize> {
     let mut i = from;
     while i < bytes.len() {
         match bytes[i] {
@@ -168,6 +179,75 @@ fn find_string_close(input: &str, from: usize) -> Option<usize> {
             b'"' => return Some(i),
             _ => i += 1,
         }
+    }
+    None
+}
+
+/// The closing `"` of a literal whose body starts at `from`, stepping
+/// over every `{...}` interpolation (`{{` is a literal brace).
+fn find_string_close_skipping_interpolation(bytes: &[u8], from: usize) -> Option<usize> {
+    let mut i = from;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'"' => return Some(i),
+            b'{' if bytes.get(i + 1) == Some(&b'{') => i += 2,
+            b'{' => i = interpolation_end(bytes, i + 1)? + 1,
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Index of the `}` closing an interpolation whose expression starts at
+/// `from`: braces are counted, and string, raw string and character
+/// literals in the expression are stepped over whole, so a `"`, `{` or
+/// `}` inside one does not count. `None` when it never closes.
+fn interpolation_end(bytes: &[u8], from: usize) -> Option<usize> {
+    let mut depth: usize = 1;
+    let mut i = from;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            b'"' => {
+                i = find_string_close_skipping_interpolation(bytes, i + 1)?;
+            }
+            b'r' if matches!(bytes.get(i + 1), Some(b'"') | Some(b'#'))
+                && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_')) =>
+            {
+                let mut j = i + 1;
+                while bytes.get(j) == Some(&b'#') {
+                    j += 1;
+                }
+                if bytes.get(j) == Some(&b'"') {
+                    let hashes = j - (i + 1);
+                    let text = std::str::from_utf8(bytes).ok()?;
+                    let close = find_raw_string_close(text, j + 1, hashes)?;
+                    i = close + hashes;
+                }
+            }
+            b'\'' => {
+                // A character literal: `'x'`, `'\n'`, `'\u{1F600}'`.
+                let mut j = i + 1;
+                if bytes.get(j) == Some(&b'\\') {
+                    j += 2;
+                }
+                while j < bytes.len() && bytes[j] != b'\'' && j - i <= 12 {
+                    j += 1;
+                }
+                if bytes.get(j) == Some(&b'\'') {
+                    i = j;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
     }
     None
 }
@@ -741,32 +821,17 @@ r"#"*["]            {
                                 // far (may be empty if interpolation
                                 // appears at the very start).
                                 parts.push(StringPart::Literal(std::mem::take(&mut out)));
-                                // Find matching `}` honoring brace
-                                // depth. Nested string literals inside
-                                // the expression are not supported (the
-                                // outer `"` would have terminated the
-                                // regex match anyway).
+                                // Find the matching `}`.
                                 let expr_start = i + 1;
-                                let mut depth: usize = 1;
-                                let mut j = expr_start;
-                                while j < bytes.len() {
-                                    match bytes[j] {
-                                        b'{' => depth += 1,
-                                        b'}' => {
-                                            depth -= 1;
-                                            if depth == 0 {
-                                                break;
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                    j += 1;
-                                }
-                                if depth != 0 {
+                                // INTERP-STRING-LITERAL: the same scan
+                                // `find_string_close` used, so a string
+                                // literal in the expression (`{f("a")}`)
+                                // keeps its quotes and braces to itself.
+                                let Some(j) = interpolation_end(bytes, expr_start) else {
                                     self.get_last_lex_error()
                                         .replace(LexErrorKind::UnterminatedInterpolation);
                                     return Err(Error::Unmatch);
-                                }
+                                };
                                 let segment = match std::str::from_utf8(&bytes[expr_start..j]) {
                                     Ok(s) => s,
                                     // Unreachable: `inner` is a `&str` and

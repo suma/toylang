@@ -1111,3 +1111,15 @@ fn main() -> u64 { broken(1u64) }",
         assert!(type_errors[0].contains("calculate_totl"), "{diagnostics:#?}");
     }
 }
+
+// INTERP-STRING-LITERAL: an interpolation that never closes is still
+// reported as such, and a lex error's message no longer repeats its
+// code (the renderer prints it).
+#[test]
+fn an_unterminated_interpolation_is_named_once() {
+    let source = "fn main() -> u64 {\n    println(\"a { b\")\n    0u64\n}";
+    let diagnostics = check_all(source);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(diagnostics[0].code, "E0012");
+    assert!(diagnostics[0].message.starts_with("unterminated interpolation"), "{diagnostics:#?}");
+}

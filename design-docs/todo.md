@@ -12,6 +12,9 @@
 
 ### 2026-10-01
 
+- **INTERP-STRING-LITERAL — 補間の中の文字列リテラル** — `"{f("a")}"` が書けるように
+  (字句解析器が `{...}` の中の文字列・raw 文字列・文字リテラルを読み飛ばす)。字句エラーの
+  文言にコードが二重に出る (`[E0012] [E0012]`) のも直した。
 - **CLAUDE-CODE T2 / T3 — 編集直後の自動検査** — `toy hook` と PostToolUse フック、
   `toy check --format=short`。
 
@@ -2624,15 +2627,6 @@
   `function_index collision` panic が、候補を名指しする型エラーに
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
-
-- **INTERP-STRING-LITERAL — 補間の `{...}` の中に文字列リテラルを書けない** —
-  `println("{f("a")}")` は `[E0012] unterminated interpolation`、`\"` で
-  エスケープすると E0032。先に `val` に束縛すれば書ける (toylang スキルにそう
-  書いた)。あわせて、この E0012 の文言は `[E0012] [E0012]` とコードが二重に出る
-  (2026-09-30 に C2 のスキルを書いていて発見)。
-
-以下 LLM-TOOLING-* は 2026-09-29/30 の LLM 向け道具の第 2 ラウンド
-([`LLM_TOOLING.md`](LLM_TOOLING.md)) で残ったもの。
 
 - **LLM-TOOLING-QUERY-TEXT — `toy query` の本文頼みの部分** — match パターンの
   variant (`Owner::Variant` の本文検索)、パターンの束縛 (同じ行の `=>` / `if val`

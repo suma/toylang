@@ -1181,3 +1181,29 @@ fn a_printed_literal_containing_a_nul_survives_the_rodata_path() {
     assert_jit_compiled_and_matches(src, "literal_with_nul");
     assert_stdout_consistent(src, "literal_with_nul_all");
 }
+
+// INTERP-STRING-LITERAL: an interpolation's expression may hold string,
+// raw string and character literals. The lexer used to close the outer
+// literal at the first `"` inside `{...}`, so `"{f("a")}"` was an
+// unterminated interpolation. Quotes and braces inside a nested literal
+// now belong to it.
+#[test]
+fn interpolation_can_hold_string_and_char_literals() {
+    assert_renders(
+        r##"fn greet(s: str) -> str { s }
+fn quote(c: u32) -> bool { c == 34u32 }
+fn main() -> u64 {
+    val x = 7u64
+    println("a {greet("b")} c")
+    println("{greet("{x}")} nested")
+    println("brace {greet("}")} in a string")
+    println("char {quote('"')}")
+    println("{{literal}} {x}")
+    println("raw {greet(r#"q"x"#)}")
+    0u64
+}
+"##,
+        "interp_string_literal",
+        "a b c\n7 nested\nbrace } in a string\nchar true\n{literal} 7\nraw q\"x\n",
+    );
+}

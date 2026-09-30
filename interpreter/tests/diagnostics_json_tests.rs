@@ -1087,3 +1087,27 @@ fn returning_a_borrow_of_a_by_value_parameter_is_refused() {
         assert_eq!(diagnostics.iter().any(|d| d.code == "E0026"), refused, "{source}\n{diagnostics:#?}");
     }
 }
+
+// LLM-TOOLING-PARSE-RECOVERY-HEURISTIC: the parser records each
+// declaration's range, broken ones included, so a broken declaration is
+// found without guessing from the text — indented, or one whose parse
+// failed outright.
+#[test]
+fn broken_declarations_are_found_from_the_parser_not_the_text() {
+    for source in [
+        "fn helper(a: u64) -> u64 { a }
+    struct Q { a: u64 b: u64 }
+fn g() -> u64 { calculate_totl(1u64) }
+fn main() -> u64 { helper(1u64) }",
+        "fn broken(a u64) -> u64 { a }
+fn g() -> u64 { calculate_totl(1u64) }
+fn main() -> u64 { broken(1u64) }",
+    ] {
+        let diagnostics = diagnose_failed_parse(source);
+        let type_errors: Vec<&str> =
+            diagnostics.iter().filter(|d| d.code != "E0032").map(|d| d.message.as_str()).collect();
+        assert!(diagnostics.iter().any(|d| d.code == "E0032"), "{diagnostics:#?}");
+        assert_eq!(type_errors.len(), 1, "{source}\n{diagnostics:#?}");
+        assert!(type_errors[0].contains("calculate_totl"), "{diagnostics:#?}");
+    }
+}

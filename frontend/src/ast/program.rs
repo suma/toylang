@@ -141,6 +141,12 @@ pub struct File {
     /// MODULE-SYSTEM P3: the full qualifier of every call written with
     /// more than one module segment. See `Parser::call_paths`.
     pub call_paths: std::collections::HashMap<ExprRef, Vec<DefaultSymbol>>,
+    /// Every top-level declaration the parser met, with the byte range
+    /// it spans and the name it declares — the ones that failed to parse
+    /// included, which the tree cannot hold. A diagnosis after a parse
+    /// error uses it to leave a broken declaration, and what only fails
+    /// because of it, out of the type errors it reports.
+    pub declaration_spans: Vec<DeclarationSpan>,
 
     pub statement: StmtPool,
     pub expression: ExprPool,
@@ -153,6 +159,16 @@ pub struct File {
     /// entry per module it copies in. Anything drawing an excerpt
     /// resolves a location's `file` here.
     pub source_map: SourceMap,
+}
+
+/// See [`File::declaration_spans`].
+#[derive(Debug, PartialEq, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DeclarationSpan {
+    pub start: usize,
+    pub end: usize,
+    /// What it declares, when it names something (`fn f`, `struct P`).
+    pub name: Option<String>,
 }
 
 /// A `test "name" { ... }` block, paired with the synthesized function

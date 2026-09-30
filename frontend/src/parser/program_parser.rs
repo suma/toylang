@@ -128,6 +128,9 @@ impl<'a> Parser<'a> {
             ) {
                 self.begin_declaration();
             }
+            // Where this declaration starts and what it names, recorded
+            // whether or not it parses (`File::declaration_spans`).
+            let decl_start = self.declaration_start();
 
             // Check for visibility modifier first
             let visibility = if matches!(self.peek(), Some(Kind::Public)) {
@@ -277,15 +280,35 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
+            let parsed = match self.peek() {
+                Some(Kind::Extern) => Some(self.parse_toplevel_extern_decl(&mut out, visibility, never_allocates, is_unsafe)),
+                Some(Kind::Function) => Some(self.parse_toplevel_function(&mut out, visibility, never_allocates, is_unsafe, const_fn)),
+                Some(Kind::Const) => Some(self.parse_toplevel_const_decl(&mut out, visibility)),
+                Some(Kind::Type) => Some(self.parse_toplevel_type_alias(&mut out, visibility)),
+                Some(Kind::Struct) => Some(self.parse_toplevel_struct_decl(&mut out, visibility)),
+                Some(Kind::Enum) => Some(self.parse_toplevel_enum_decl(&mut out, visibility)),
+                Some(Kind::Impl) => Some(self.parse_toplevel_impl_block(&mut out)),
+                Some(Kind::Trait) => Some(self.parse_toplevel_trait_decl(&mut out, visibility)),
+                _ => None,
+            };
+            if let Some(result) = parsed {
+                if let Err(error) = result {
+                    // Diagnosis only: report it, skip to the next
+                    // declaration, and keep the tree. A normal parse
+                    // fails here as it always did.
+                    if !self.keep_tree_on_error {
+                        return Err(error);
+                    }
+                    self.report_error(error);
+                    self.skip_to_next_declaration();
+                }
+                if let Some(span) = decl_start {
+                    let end = self.declaration_end_before_next();
+                    self.declaration_spans.push(crate::ast::DeclarationSpan { end, ..span });
+                }
+                continue;
+            }
             match self.peek() {
-                Some(Kind::Extern) => self.parse_toplevel_extern_decl(&mut out, visibility, never_allocates, is_unsafe)?,
-                Some(Kind::Function) => self.parse_toplevel_function(&mut out, visibility, never_allocates, is_unsafe, const_fn)?,
-                Some(Kind::Const) => self.parse_toplevel_const_decl(&mut out, visibility)?,
-                Some(Kind::Type) => self.parse_toplevel_type_alias(&mut out, visibility)?,
-                Some(Kind::Struct) => self.parse_toplevel_struct_decl(&mut out, visibility)?,
-                Some(Kind::Enum) => self.parse_toplevel_enum_decl(&mut out, visibility)?,
-                Some(Kind::Impl) => self.parse_toplevel_impl_block(&mut out)?,
-                Some(Kind::Trait) => self.parse_toplevel_trait_decl(&mut out, visibility)?,
                 Some(Kind::NewLine) => {
                     self.next()
                 }
@@ -348,6 +371,7 @@ impl<'a> Parser<'a> {
             drop_flags: Default::default(),
             parallel_loops: std::mem::take(&mut self.parallel_loops),
             call_paths: std::mem::take(&mut self.call_paths),
+            declaration_spans: std::mem::take(&mut self.declaration_spans),
             statement: stmt,
             expression: expr,
             location_pool,

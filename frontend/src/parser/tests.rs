@@ -1383,4 +1383,21 @@ mod parser_tests {
         assert_eq!(count("fn f() -> u64 {\n    val n = 5u64\n    &n\n    0u64\n}\nfn main() -> u64 { 0u64 }"), 3);
         assert_eq!(count("fn f() -> u64 {\n    val n = 5u64 &\n        3u64\n    n\n}\nfn main() -> u64 { 0u64 }"), 2);
     }
+
+    // LLM-TOOLING-PARSE-RECOVERY-HEURISTIC: every top-level declaration is
+    // recorded with its range and name; in the diagnosis mode a
+    // declaration that fails is recorded too and parsing goes on.
+    #[test]
+    fn declaration_spans_cover_broken_declarations_too() {
+        let source = "fn ok() -> u64 { 0u64 }\n    struct Q { a: u64 b: u64 }\nfn broken(a u64) -> u64 { a }\nfn main() -> u64 { 0u64 }";
+        let mut parser = ParserWithInterner::new(source);
+        let outcome = parser.parse_program_recovering();
+        assert!(!outcome.errors.is_empty());
+        let program = outcome.result.expect("a tree in diagnosis mode");
+        let names: Vec<Option<&str>> = program.declaration_spans.iter().map(|d| d.name.as_deref()).collect();
+        assert_eq!(names, [Some("ok"), Some("Q"), Some("broken"), Some("main")]);
+        for d in &program.declaration_spans {
+            assert!(d.start < d.end && d.end <= source.len(), "{d:?}");
+        }
+    }
 }

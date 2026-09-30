@@ -12,6 +12,9 @@
 
 ### 2026-09-30
 
+- **LLM-TOOLING-PARSE-RECOVERY-HEURISTIC — 壊れた宣言の範囲をパーサが記録** —
+  `File::declaration_spans` (壊れた宣言も含む範囲と名前)。診断モードでは宣言の `Err` を報告して
+  次の宣言まで読み飛ばし、木を返し続ける。本文の行頭キーワードによる推測をやめた。AST キャッシュ 64。
 - **LLM-TOOLING-QUERY-REST — `toy query` の残り** — trait のメソッド宣言 (refs は全 impl
   への呼び出し)、match パターンの variant と束縛、値として渡した関数名。
 - **NEWLINE-BINARY-AMP — 行頭の `&` は新しい式** — `-` と同じ規則。`val n = 5u64` の次行の
@@ -2621,12 +2624,6 @@
   の `=` より前の同名の語)、値として渡した関数名 (呼び出しでない語) は本文から
   探している (コメントと文字列は除く)。パターンに位置がないため。パーサが
   パターンの位置を位置プールに載せれば木から引ける。
-- **LLM-TOOLING-PARSE-RECOVERY-HEURISTIC** — 関数の外で壊れた宣言の範囲は
-  **本文の行頭のキーワード**で求め、その宣言の名前を名指す型エラーを捨てる
-  (`interpreter::top_level_declarations`)。字下げした宣言や、名前を
-  含まない連鎖 (壊れた struct の variant 経由の誤り等) は拾えない。
-  パーサが**壊れた宣言の**範囲も記録すれば本文に頼らずに済む。
-  宣言ごと 1 件のパースエラー抑制 (P1) はそのまま。
 - **TREE-WALKER-DYNAMIC-GENERIC-SCOPE — 呼び出し先が呼び出し元の型引数を
   見る** — tree-walker の `merged_generic_scope` は**実行中の全呼び出し**の
   scope を合わせたもの (動的スコープ) なので、generic でない関数の中でも
@@ -3004,8 +3001,7 @@
 
 * **LLM 向け道具の第 2 ラウンド (LLM-TOOLING)** — 7 性質と残りタスクは
   2026-09-29/30 に landing (完了済み節)。残りは未実装節の
-  `LLM-TOOLING-QUERY-REST` / `LLM-TOOLING-PARSE-RECOVERY-HEURISTIC` と
-  `REBORROW-CHECK-GAPS`。[`LLM_TOOLING.md`](LLM_TOOLING.md)。
+  `LLM-TOOLING-QUERY-TEXT` (パターンに位置が無いので本文から探している部分)。[`LLM_TOOLING.md`](LLM_TOOLING.md)。
 * **ヒープ検査モード (HEAP-CHECK) の残り** — H0 (`--heap-check=report`、
   二重 free の棚卸し) と H0b (報告に二重 drop を起こした関数名) は 2026-09-26 に
   landing (完了済み節)、棚卸しで見つかった二重 drop も全部潰した

@@ -196,6 +196,8 @@ pub struct Parser<'a> {
     /// to check the declarations that do not — see
     /// [`ParserWithInterner::parse_program_recovering`].
     pub(crate) keep_tree_on_error: bool,
+    /// See [`crate::ast::File::declaration_spans`].
+    pub(crate) declaration_spans: Vec<crate::ast::DeclarationSpan>,
     /// The text being parsed. Also seeds the program's `SourceMap`
     /// entry slot (DEBUG-OBS D2) so an excerpt can be drawn from a
     /// module whose file is long gone.
@@ -375,6 +377,7 @@ impl<'a> Parser<'a> {
             pending_prelude_stmts: Vec::new(),
             loop_stack: Vec::new(),
             parallel_loops: std::collections::HashMap::new(),
+            declaration_spans: Vec::new(),
             call_paths: std::collections::HashMap::new(),
             synthetic_counter: 0,
             in_ensures_clause: false,
@@ -674,6 +677,65 @@ impl<'a> Parser<'a> {
         match self.peek_position_n(0) {
             Some(position) => position.end,
             None => self.input.len(),
+        }
+    }
+
+    /// The start of the declaration at the cursor and the name it
+    /// declares, read ahead over modifiers (`pub`, `unsafe`, ...). `None`
+    /// when the cursor is not at a declaration.
+    pub(crate) fn declaration_start(&mut self) -> Option<crate::ast::DeclarationSpan> {
+        let start = self.peek_position_n(0)?.start;
+        let mut n = 0;
+        loop {
+            let here = self.peek_n(n).cloned();
+            let next = self.peek_n(n + 1).cloned();
+            match here {
+                Some(Kind::Public) | Some(Kind::Extern) => n += 1,
+                Some(Kind::Identifier(s)) if s == "unsafe" || s == "never_allocates" => n += 1,
+                Some(Kind::Const) if matches!(next, Some(Kind::Function) | Some(Kind::Extern)) => n += 1,
+                _ => break,
+            }
+        }
+        let named = matches!(
+            self.peek_n(n),
+            Some(Kind::Function) | Some(Kind::Struct) | Some(Kind::Enum) | Some(Kind::Trait) | Some(Kind::Const) | Some(Kind::Type)
+        );
+        let is_decl = named || matches!(self.peek_n(n), Some(Kind::Impl));
+        if !is_decl {
+            return None;
+        }
+        let name = match (named, self.peek_n(n + 1)) {
+            (true, Some(Kind::Identifier(s))) => Some(s.clone()),
+            _ => None,
+        };
+        Some(crate::ast::DeclarationSpan { start, end: start, name })
+    }
+
+    /// Where the declaration just parsed ends: the start of the next
+    /// token, or the end of the input.
+    pub(crate) fn declaration_end_before_next(&mut self) -> usize {
+        match self.peek_position_n(0) {
+            Some(position) => position.start,
+            None => self.input.len(),
+        }
+    }
+
+    /// After a declaration failed to parse (diagnosis mode only): skip
+    /// to the next token that starts a line with a declaration keyword,
+    /// or to the end.
+    pub(crate) fn skip_to_next_declaration(&mut self) {
+        loop {
+            let starts_declaration = match self.peek() {
+                None | Some(Kind::EOF) => return,
+                Some(Kind::Function) | Some(Kind::Struct) | Some(Kind::Enum) | Some(Kind::Trait)
+                | Some(Kind::Impl) | Some(Kind::Const) | Some(Kind::Type) | Some(Kind::Public)
+                | Some(Kind::Extern) => true,
+                _ => false,
+            };
+            if starts_declaration && self.has_newline_before_current_token() {
+                return;
+            }
+            self.next();
         }
     }
 

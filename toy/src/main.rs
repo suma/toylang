@@ -36,7 +36,7 @@ toy — build and run toylang programs
 usage:
   toy build [PATH] [--release] [--backend aot|jit] [-o OUT] [--profile=compile] [--heap-check=MODE] [--format=text|json] [-v]
   toy run   [PATH] [--release] [--backend aot|jit|vm|tree|all] [--heap-check=MODE] [--format=text|json] [-v] [-- ARGS...]
-  toy check [PATH] [--backend aot|vm] [--profile=compile] [--format=text|json] [-v]
+  toy check [PATH] [--backend aot|vm] [--profile=compile] [--format=text|json|short] [-v]
   toy fix   [PATH] [--dry-run] [--format=text|json]
   toy query type|def|refs FILE:LINE:COL... [--in PATH] [--format=text|json]
   toy query callers|callees NAME... [--in PATH] [--format=text|json]
@@ -152,6 +152,8 @@ struct Args {
     heap_quarantine: Option<u64>,
     /// `toy fix --dry-run`: report the edits without writing them.
     dry_run: bool,
+    /// `--format=short`: one diagnostic per line (`toy check` only).
+    short: bool,
 }
 
 /// `--heap-check=` (HEAP-CHECK): what `compiler` and `interpreter`
@@ -249,6 +251,9 @@ fn main() {
     if args.seed.is_some() && !args.check_contracts {
         fail("--seed picks the inputs `--check` generates; add --check");
     }
+    if args.short && command != "check" {
+        fail("--format=short prints one diagnostic per line; only `toy check` takes it");
+    }
     if args.dry_run && command != "fix" {
         fail("--dry-run reports the edits `toy fix` would make; only `toy fix` takes it");
     }
@@ -340,6 +345,7 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
         heap_check: None,
         heap_quarantine: None,
         dry_run: false,
+        short: false,
     };
     let mut i = 0usize;
     while i < argv.len() {
@@ -382,10 +388,10 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
             "--format" => {
                 i += 1;
                 let v = argv.get(i).ok_or("--format needs a value (text or json)")?;
-                a.json = parse_format(v)?;
+                (a.json, a.short) = parse_format(v)?;
             }
             _ if arg.starts_with("--format=") => {
-                a.json = parse_format(&arg["--format=".len()..])?;
+                (a.json, a.short) = parse_format(&arg["--format=".len()..])?;
             }
             // Folded into `--format`. Named rather than reported as
             // unknown, so a command copied from an old note says what
@@ -461,11 +467,13 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
 /// `--format`: `json` makes the command's result one JSON document on
 /// stdout and its diagnostics a JSON array on stderr. The same spelling
 /// `compiler` and `interpreter` take.
-fn parse_format(value: &str) -> Result<bool, String> {
+/// `--format=`: `(json, short)`.
+fn parse_format(value: &str) -> Result<(bool, bool), String> {
     match value {
-        "json" => Ok(true),
-        "text" => Ok(false),
-        other => Err(format!("--format expects `text` or `json`, got `{other}`")),
+        "json" => Ok((true, false)),
+        "text" => Ok((false, false)),
+        "short" => Ok((false, true)),
+        other => Err(format!("--format expects `text`, `json` or `short`, got `{other}`")),
     }
 }
 
@@ -984,6 +992,8 @@ fn check_package(args: &Args) -> Result<(), String> {
                 interpreter::diagnose_parse_failure(&source, &name, &pkg.module_roots);
             if args.json {
                 interpreter::emit_diagnostics_json(&diagnostics);
+            } else if args.short {
+                eprint!("{}", interpreter::diagnostics_short(&diagnostics));
             } else {
                 interpreter::display_diagnostics(&source, &name, &diagnostics);
             }
@@ -1002,6 +1012,19 @@ fn check_package(args: &Args) -> Result<(), String> {
             interpreter::emit_diagnostics_json(&diagnostics);
             format!("{} type-check error(s)", diagnostics.len())
         })?;
+    } else if args.short {
+        let warnings = interpreter::check_typing_diagnostics(
+            &mut program,
+            session.string_interner_mut(),
+            Some(&source),
+            Some(&name),
+            &pkg.module_roots,
+        )
+        .map_err(|diagnostics| {
+            eprint!("{}", interpreter::diagnostics_short(&diagnostics));
+            format!("{} type-check error(s)", diagnostics.len())
+        })?;
+        eprint!("{}", interpreter::diagnostics_short(&warnings));
     } else {
         interpreter::check_typing_with_core_modules(
             &mut program,

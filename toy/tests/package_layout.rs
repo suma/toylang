@@ -1287,7 +1287,7 @@ fn an_unknown_format_is_refused() {
     write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
     let out = run(&pkg, &["check", pkg.0.to_str().unwrap(), "--format=xml"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success() && stderr.contains("`text` or `json`"), "{stderr}");
+    assert!(!out.status.success() && stderr.contains("`text`, `json` or `short`"), "{stderr}");
 }
 
 #[test]
@@ -2536,4 +2536,26 @@ fn a_missing_stdlib_is_named_as_such() {
         .output()
         .expect("spawn toy");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+// CLAUDE-CODE T3: `toy check --format=short`, one diagnostic per line.
+#[test]
+fn check_short_prints_one_line_per_diagnostic() {
+    let pkg = scratch("short_format");
+    write(
+        &pkg,
+        "main.t",
+        "fn f(a: u64) -> u64 {\n    if a > 1u64 { 1u64 } else if a > 0u64 { 2u64 } else { 3u64 }\n}\nfn main() -> u64 {\n    val b: bool = 1u64\n    f(1u64)\n}\n",
+    );
+    let path = pkg.0.to_str().unwrap();
+    let out = run(&pkg, &["check", path, "--format=short"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let lines: Vec<&str> = stderr.lines().filter(|l| !l.starts_with("toy:")).collect();
+    assert_eq!(lines.len(), 2, "{stderr}");
+    assert!(lines[0].starts_with("main.t:2:26: E0033 ") && lines[0].ends_with("(fix: `elif`)"), "{stderr}");
+    assert!(lines[1].starts_with("main.t:5:19: E0001 "), "{stderr}");
+
+    let out = run(&pkg, &["test", path, "--format=short"]);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("only `toy check`"));
 }

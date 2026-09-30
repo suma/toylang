@@ -186,7 +186,7 @@ cargo run -q -p toy -- build mypkg [--release] [-o PATH] [--format=text|json]
 cargo run -q -p toy -- run   mypkg [--backend aot|jit|vm] [--format=text|json] [-- ARGS...]
 cargo run -q -p toy -- run   mypkg --backend all      # 3 レーン突き合わせ (compiler --all-backends をパッケージで)
 cargo run -q -p toy -- test  mypkg --check [--seed=N] # 契約のプロパティテスト (interpreter --check をパッケージで)
-cargo run -q -p toy -- check mypkg [--format=text|json]
+cargo run -q -p toy -- check mypkg [--format=text|json|short]   # short: 1 行 1 診断 (file:line:col: CODE 文言 (fix: ..))
 # 診断の machine-applicable な提案を当てて再検査、を提案が尽きるまで
 # (LLM-TOOLING #1)。書き換えるのはパッケージ内のファイルだけ。
 # --dry-run はパッケージの複製で全巡を回し、編集を報告するだけで書かない。

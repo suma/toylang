@@ -89,6 +89,11 @@ documentSymbol は `toy api`、goToImplementation は trait メソッド → imp
   では「no package found」)、文法の罠 12 項目、検査・実行・テストが通る例。
   例と罠の主張は書いた時点で実行して確かめた
 
+- **T3 (✅ 2026-09-30)** — `toy check --format=short`。1 行 1 診断
+  (`main.t:2:26: E0033 ... (fix: \`elif\`)`)、警告は `warning` を前置、ファイルは
+  パッケージ相対。machine-applicable な修正があれば `(fix: ..)` を添える
+  (複数行の編集なら `(fix: toy fix)`)。`check` 以外では拒否する
+
 ### 優先順
 
 1. **T1** — 誤った場所に誘導する不具合なので最初に。小さい

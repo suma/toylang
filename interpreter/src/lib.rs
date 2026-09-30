@@ -2674,6 +2674,46 @@ pub fn relativize_paths(value: &mut serde_json::Value, root: &std::path::Path) {
     }
 }
 
+/// Diagnostics one per line (CLAUDE-CODE T3):
+/// `file:line:column: CODE message` with ` (fix: ...)` when a
+/// machine-applicable fix exists, `warning` before the code of a
+/// warning. For feeding back after every edit, where the eleven-line
+/// text form and the JSON are more than the reader needs. Files are
+/// relative to the diagnostic root when one is set.
+pub fn diagnostics_short(diagnostics: &[Diagnostic]) -> String {
+    let root = diagnostic_root();
+    let mut out = String::new();
+    for d in diagnostics {
+        let mut file = d.file.clone();
+        if let Some(root) = &root {
+            let canonical = std::path::Path::new(&file).canonicalize().ok();
+            if let Some(rel) = canonical.as_deref().and_then(|c| c.strip_prefix(root).ok()) {
+                file = rel.to_string_lossy().into_owned();
+            }
+        }
+        let place = match d.span {
+            Some(span) => format!("{file}:{}:{}", span.line, span.column),
+            None => file,
+        };
+        let severity = match d.severity {
+            frontend::diagnostic::Severity::Warning => "warning ",
+            frontend::diagnostic::Severity::Error => "",
+        };
+        let message = d.message.replace('\n', " ");
+        let fix = d
+            .suggestions
+            .iter()
+            .find(|s| s.applicability == frontend::diagnostic::Applicability::MachineApplicable)
+            .map(|s| match s.replacement() {
+                Some(r) if !r.contains('\n') => format!(" (fix: `{}`)", r.trim()),
+                _ => " (fix: toy fix)".to_string(),
+            })
+            .unwrap_or_default();
+        out.push_str(&format!("{place}: {severity}{} {message}{fix}\n", d.code));
+    }
+    out
+}
+
 /// Diagnostics as the JSON array tools read: each one as serialised,
 /// plus `explain` — the command that prints its code's explanation
 /// (LLM-TOOLING #2), a reference that works offline and matches the

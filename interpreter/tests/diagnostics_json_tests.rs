@@ -1049,3 +1049,25 @@ fn main() -> u64 {
         assert!(remaining.is_empty(), "{what}:\n{fixed}\n{remaining:#?}");
     }
 }
+
+// LLM-TOOLING-FIX-REST: every repeated method is reported, each against
+// the first declaration.
+#[test]
+fn every_repeated_method_is_reported_against_the_first() {
+    let source = "struct S { a: u64 }
+impl S {
+    fn m(&self) -> u64 { 1u64 }
+    fn m(&self) -> u64 { 2u64 }
+    fn n(&self) -> u64 { 1u64 }
+    fn n(&self) -> u64 { 2u64 }
+    fn m(&self) -> u64 { 3u64 }
+}
+fn main() -> u64 { 0u64 }";
+    let diagnostics = check_all(source);
+    let found: Vec<(u32, u32)> = diagnostics
+        .iter()
+        .filter(|d| d.code == "E0031")
+        .map(|d| (d.span.unwrap().line, d.related[0].span.unwrap().line))
+        .collect();
+    assert_eq!(found, [(4, 3), (6, 5), (7, 3)], "{diagnostics:#?}");
+}

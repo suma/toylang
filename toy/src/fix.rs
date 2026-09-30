@@ -69,6 +69,90 @@ pub fn diagnose(pkg: &Package) -> Result<Vec<Diagnostic>, String> {
 }
 
 pub fn run(pkg: &Package, dry_run: bool) -> Result<Outcome, String> {
+    if dry_run {
+        return run_on_a_copy(pkg);
+    }
+    run_in_place(pkg)
+}
+
+/// `--dry-run`: every round, on a copy of the package, reported against
+/// the real one. A dry run that wrote nothing could only show the first
+/// round — the second is what the checker says once the first is in.
+fn run_on_a_copy(pkg: &Package) -> Result<Outcome, String> {
+    let root = pkg.root.canonicalize().unwrap_or_else(|_| pkg.root.clone());
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let scratch = std::env::temp_dir().join(format!("toy-fix-dry-run-{}-{nanos}", std::process::id()));
+    copy_package(&root, &scratch)
+        .map_err(|e| format!("cannot copy the package for a dry run: {e}"))?;
+    let scratch = scratch.canonicalize().unwrap_or(scratch);
+    let moved = |p: &Path| match p.canonicalize().ok().as_deref().and_then(|c| c.strip_prefix(&root).ok()) {
+        Some(rel) => scratch.join(rel),
+        None => p.to_path_buf(),
+    };
+    let copy = Package {
+        root: scratch.clone(),
+        entry: moved(&pkg.entry),
+        module_roots: pkg.module_roots.iter().map(|r| moved(r)).collect(),
+        build_dir: pkg.build_dir.clone(),
+    };
+    let result = run_in_place(&copy);
+    interpreter::module_integration::forget_discovered_modules();
+    let _ = std::fs::remove_dir_all(&scratch);
+    let mut outcome = result?;
+    // Name the package's own files, not the copy's.
+    let back = |p: &Path| match p.strip_prefix(&scratch) {
+        Ok(rel) => root.join(rel),
+        Err(_) => p.to_path_buf(),
+    };
+    for a in &mut outcome.applied {
+        a.file = back(&a.file);
+    }
+    let scratch_str = scratch.to_string_lossy().into_owned();
+    let root_str = root.to_string_lossy().into_owned();
+    let rename = |f: &mut String| {
+        if let Some(rest) = f.strip_prefix(&scratch_str) {
+            *f = format!("{root_str}{rest}");
+        }
+    };
+    for d in &mut outcome.remaining {
+        rename(&mut d.file);
+        for e in d.suggestions.iter_mut().flat_map(|s| s.edits.iter_mut()) {
+            if let Some(f) = e.file.as_mut() {
+                rename(f);
+            }
+        }
+        for r in &mut d.related {
+            if let Some(f) = r.file.as_mut() {
+                rename(f);
+            }
+        }
+    }
+    Ok(outcome)
+}
+
+/// The package's sources, without what building left behind.
+fn copy_package(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name == "build" || name == ".toycache" {
+            continue;
+        }
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            copy_package(&path, &to.join(&name))?;
+        } else {
+            std::fs::copy(&path, to.join(&name))?;
+        }
+    }
+    Ok(())
+}
+
+fn run_in_place(pkg: &Package) -> Result<Outcome, String> {
     let root = pkg.root.canonicalize().unwrap_or_else(|_| pkg.root.clone());
     let mut outcome = Outcome { applied: Vec::new(), rounds: 0, remaining: Vec::new(), outside: Vec::new() };
     for _ in 0..MAX_ROUNDS {
@@ -95,20 +179,12 @@ pub fn run(pkg: &Package, dry_run: bool) -> Result<Outcome, String> {
                 });
                 text.replace_range(edit.start..edit.end, &edit.replacement);
             }
-            if !dry_run {
-                std::fs::write(file, text)
-                    .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
-            }
+            std::fs::write(file, text)
+                .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
         }
         // The module files just changed under a process that read
         // them once and remembered the text.
         interpreter::module_integration::forget_discovered_modules();
-        if dry_run {
-            // Nothing was written, so a second round would see the
-            // same program. Report what the first would do.
-            outcome.remaining = diagnostics;
-            return Ok(outcome);
-        }
     }
     outcome.remaining = diagnose(pkg)?;
     Ok(outcome)

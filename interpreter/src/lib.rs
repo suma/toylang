@@ -752,7 +752,7 @@ fn check_typing_collecting(
     // registries replace on a matching key, so one body vanishes; the
     // runtime registry builder noticed, but only once the program ran.
     // Report it here, where it is a type error like any other.
-    if let Some(dup) =
+    for dup in
         frontend::type_checker::find_duplicate_impl_method(&program.statement, string_interner)
     {
         // The same method declared twice for one type: a duplicate

@@ -2196,11 +2196,14 @@ fn main() -> u64 {
     );
     let path = pkg.0.to_str().unwrap();
 
-    // --dry-run reports the first round and writes nothing.
+    // --dry-run runs every round on a copy and writes nothing.
     let before = std::fs::read_to_string(pkg.0.join("main.t")).unwrap();
-    let out = run(&pkg, &["fix", path, "--dry-run"]);
+    let module_before = std::fs::read_to_string(pkg.0.join("src/shapes.t")).unwrap();
+    let out = run(&pkg, &["fix", path, "--dry-run", "--format=json"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let dry: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
     assert_eq!(std::fs::read_to_string(pkg.0.join("main.t")).unwrap(), before);
+    assert_eq!(std::fs::read_to_string(pkg.0.join("src/shapes.t")).unwrap(), module_before);
 
     let out = run(&pkg, &["fix", path, "--format=json"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -2208,6 +2211,16 @@ fn main() -> u64 {
     let report: serde_json::Value = serde_json::from_str(&stdout).expect("json");
     assert_eq!(report["ok"], true, "{report:#}");
     assert!(report["rounds"].as_u64().unwrap() >= 2, "{report:#}");
+    // The dry run saw what the real one did, file for file.
+    let edits = |r: &serde_json::Value| -> Vec<(String, u64, String)> {
+        r["applied"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| (a["file"].as_str().unwrap().to_string(), a["line"].as_u64().unwrap(), a["replacement"].as_str().unwrap().to_string()))
+            .collect()
+    };
+    assert_eq!(edits(&dry), edits(&report), "dry {dry:#}\nreal {report:#}");
     let files: Vec<&str> =
         report["applied"].as_array().unwrap().iter().map(|a| a["file"].as_str().unwrap()).collect();
     assert!(files.contains(&"main.t") && files.contains(&"src/shapes.t"), "{report:#}");

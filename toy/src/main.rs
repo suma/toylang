@@ -899,11 +899,11 @@ fn cmd_fix(args: &Args) -> Result<(), String> {
             println!("not applied (outside the package): {o}");
         }
         if args.dry_run {
-            // Nothing was written, so the count is the program's as it
-            // stands, before these edits.
+            // Every round ran on a copy; the package is untouched.
             println!(
-                "{verb} {} edit(s); nothing written ({} diagnostic(s) before the edits)",
+                "{verb} {} edit(s) in {} round(s); nothing written; {} diagnostic(s) would remain",
                 outcome.applied.len(),
+                outcome.rounds,
                 outcome.remaining.len()
             );
         } else {
@@ -919,7 +919,7 @@ fn cmd_fix(args: &Args) -> Result<(), String> {
         }
     }
     let errors = outcome.remaining.iter().filter(|d| d.severity.as_str() == "error").count();
-    if errors > 0 && !args.dry_run {
+    if errors > 0 {
         return Err(format!("{errors} error(s) remain after fixing"));
     }
     Ok(())

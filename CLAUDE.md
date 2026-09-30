@@ -188,7 +188,8 @@ cargo run -q -p toy -- test  mypkg --check [--seed=N] # 契約のプロパティ
 cargo run -q -p toy -- check mypkg [--format=text|json]
 # 診断の machine-applicable な提案を当てて再検査、を提案が尽きるまで
 # (LLM-TOOLING #1)。書き換えるのはパッケージ内のファイルだけ。
-# --dry-run は 1 巡目の編集を出すだけで書かない。エラーが残れば exit 1
+# --dry-run はパッケージの複製で全巡を回し、編集を報告するだけで書かない。
+# エラーが残れば exit 1
 cargo run -q -p toy -- fix   mypkg [--dry-run] [--format=text|json]
 # 検査済みプログラムへの問い合わせ (LLM-TOOLING #4)。位置は FILE:LINE:COL、
 # 複数を 1 回で聞ける (stdlib の検査が 1 回で済む)。ローカルはブロック

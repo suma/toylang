@@ -12,6 +12,9 @@
 
 ### 2026-09-30
 
+- **LLM-TOOLING-FIX-REST** — `toy fix --dry-run` はパッケージの複製で全巡を回して報告する
+  (元のファイルは触らない)。同 impl の同名 method は全組を最初の宣言に対して報告。
+  呼び出し式への数値キャスト提案 (`f() as u8`) は既存方針どおり出さない (閉じる)。
 - **PARSER-DECL-END — 宣言ノードの終わり** — ファイル末尾の宣言の `node.end` が 0 だった
   (次のトークンが無いとき)。入力末尾にし、`toy query` / `diagnose_parse_failure` の補いを外した。
   AST キャッシュのスキーマを 62 に。
@@ -2623,13 +2626,6 @@
   含まない連鎖 (壊れた struct の variant 経由の誤り等) は拾えない。
   パーサが**壊れた宣言の**範囲も記録すれば本文に頼らずに済む。
   宣言ごと 1 件のパースエラー抑制 (P1) はそのまま。
-- **LLM-TOOLING-FIX-REST — `toy fix` の細部** — `--dry-run` は書き込まない
-  ので 1 巡目の編集しか出せない (2 巡目は 1 巡目を当てた後にしか
-  見えない)。`find_duplicate_impl_method` は最初の 1 組しか報告しない
-  ので、同名 method が複数組あると 1 回の検査で 1 件ずつになる。
-  呼び出し式への数値キャスト提案 (`f() as u8`) は既存方針で出さない。
-
-
 - **EXAMPLE-TEMP-PATH-RACE** — `interpreter/example/fs_file.t`
   (`$TMPDIR/toylang_example_fs_file.bin`) と `error_model.t`
   (`/tmp/toylang_error_model_demo.txt`) が固定パスに書くので、
@@ -3012,9 +3008,10 @@
 
 ## 検討中の機能
 
-* **LLM 向け道具の第 2 ラウンド (LLM-TOOLING)** — 7 性質は 2026-09-29/30 に
-  landing (完了済み節)。残りは未実装節の `LLM-TOOLING-*` と
-  `PARSER-DECL-END`。[`LLM_TOOLING.md`](LLM_TOOLING.md)。
+* **LLM 向け道具の第 2 ラウンド (LLM-TOOLING)** — 7 性質と残りタスクは
+  2026-09-29/30 に landing (完了済み節)。残りは未実装節の
+  `LLM-TOOLING-QUERY-REST` / `LLM-TOOLING-PARSE-RECOVERY-HEURISTIC` と
+  `REBORROW-CHECK-GAPS`。[`LLM_TOOLING.md`](LLM_TOOLING.md)。
 * **ヒープ検査モード (HEAP-CHECK) の残り** — H0 (`--heap-check=report`、
   二重 free の棚卸し) と H0b (報告に二重 drop を起こした関数名) は 2026-09-26 に
   landing (完了済み節)、棚卸しで見つかった二重 drop も全部潰した

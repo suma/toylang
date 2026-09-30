@@ -283,7 +283,8 @@ pub struct DuplicateImplMethod {
 pub fn find_duplicate_impl_method(
     stmt_pool: &StmtPool,
     interner: &DefaultStringInterner,
-) -> Option<DuplicateImplMethod> {
+) -> Vec<DuplicateImplMethod> {
+    let mut found = Vec::new();
     let mut seen: HashMap<(DefaultSymbol, DefaultSymbol, String), std::rc::Rc<crate::ast::MethodFunction>> =
         HashMap::new();
     for index in 0..stmt_pool.len() {
@@ -300,16 +301,19 @@ pub fn find_duplicate_impl_method(
         let args_key = overload_name("", &target_type_args, interner);
         for method in &methods {
             let key = (target_type, method.name, args_key.clone());
-            if let Some(first) = seen.insert(key, method.clone()) {
+            // Every later declaration is reported against the first.
+            if let Some(first) = seen.get(&key) {
                 let type_name = interner.resolve(target_type).unwrap_or("?");
                 let method_name = interner.resolve(method.name).unwrap_or("?");
-                return Some(DuplicateImplMethod { first, second: method.clone(), message: format!(
+                found.push(DuplicateImplMethod { first: first.clone(), second: method.clone(), message: format!(
                     "`{type_name}` has two impls of `{method_name}`; one of them would be \
                      silently discarded. Move the method into the trait impl rather than \
                      writing it in both places"
                 ) });
+            } else {
+                seen.insert(key, method.clone());
             }
         }
     }
-    None
+    found
 }

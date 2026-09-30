@@ -1049,3 +1049,208 @@ fn main() -> u64 {
          drop 4\nafter match\n4\n",
     );
 }
+
+// MATCH-TEMP-EXIT-LEAK: a `match` over a call used to leave its payload
+// with no owner but the arm, whose drop ran only when the arm fell off
+// its end. The parser now binds the call to a `val` first, so the
+// payload is an alias of a binding and every exit drops it once.
+const MAKE_VEC: &str = r#"
+    fn mk(i: u64) -> Option<Vec<u64>> {
+        var v: Vec<u64> = Vec::new()
+        v.push(i)
+        Option::Some(v)
+    }
+"#;
+
+#[test]
+fn continue_out_of_an_arm_over_a_call_drops_the_payload() {
+    let src = format!(
+        "{MAKE_VEC}{}",
+        r#"
+        fn run() -> u64 {
+            val before = __builtin_live_bytes()
+            var i = 0u64
+            var s = 0u64
+            while i < 5u64 {
+                i = i + 1u64
+                if val Option::Some(v) = mk(i) {
+                    if v.get(0u64) % 2u64 == 0u64 { continue }
+                    s = s + v.get(0u64)
+                }
+            }
+            if __builtin_live_bytes() != before { return 1u64 }
+            s
+        }
+        fn main() -> u64 {
+            println(run())
+            0u64
+        }
+    "#
+    );
+    assert_renders(&src, "continue_out_of_an_arm_over_a_call_drops_the_payload", "9\n");
+}
+
+#[test]
+fn return_out_of_an_arm_over_a_call_drops_the_payload() {
+    let src = format!(
+        "{MAKE_VEC}{}",
+        r#"
+        fn first(i: u64) -> u64 {
+            match mk(i) {
+                Option::Some(v) => { if v.get(0u64) > 0u64 { return v.get(0u64) } }
+                Option::None => { }
+            }
+            0u64
+        }
+        fn run() -> u64 {
+            val before = __builtin_live_bytes()
+            val a = first(3u64)
+            val b = first(4u64)
+            if __builtin_live_bytes() != before { return 1u64 }
+            a + b
+        }
+        fn main() -> u64 {
+            println(run())
+            0u64
+        }
+    "#
+    );
+    assert_renders(&src, "return_out_of_an_arm_over_a_call_drops_the_payload", "7\n");
+}
+
+#[test]
+fn a_match_nested_in_an_arm_over_a_call_keeps_the_outer_drop() {
+    // The arm drops lived in one list that every arm cleared on entry,
+    // so an inner `match` wiped the outer arm's.
+    let src = format!(
+        "{MAKE_VEC}{}",
+        r#"
+        fn run() -> u64 {
+            val before = __builtin_live_bytes()
+            var s = 0u64
+            match mk(1u64) {
+                Option::Some(v) => {
+                    match mk(2u64) {
+                        Option::Some(w) => { s = s + w.get(0u64) }
+                        Option::None => { }
+                    }
+                    s = s + v.get(0u64)
+                }
+                Option::None => { }
+            }
+            if __builtin_live_bytes() != before { return 1u64 }
+            s
+        }
+        fn main() -> u64 {
+            println(run())
+            0u64
+        }
+    "#
+    );
+    assert_renders(&src, "a_match_nested_in_an_arm_over_a_call_keeps_the_outer_drop", "3\n");
+}
+
+#[test]
+fn a_payload_handed_on_from_an_arm_over_a_call_stays_alive() {
+    // `keep.push(v)` moved the payload into `keep`, and the arm then
+    // freed it anyway: `keep` held a freed buffer (invisible on a heap
+    // that never reuses an address, but not on the counters). Over a
+    // call it must cost what it costs over a named value.
+    let src = format!(
+        "{MAKE_VEC}{}",
+        r#"
+        fn over_call() -> u64 {
+            var keep: Vec<Vec<u64>> = Vec::new()
+            val before = __builtin_live_bytes()
+            match mk(5u64) {
+                Option::Some(v) => { keep.push(v) }
+                Option::None => { }
+            }
+            __builtin_live_bytes() - before
+        }
+        fn over_name() -> u64 {
+            var keep: Vec<Vec<u64>> = Vec::new()
+            val before = __builtin_live_bytes()
+            val m = mk(5u64)
+            match m {
+                Option::Some(v) => { keep.push(v) }
+                Option::None => { }
+            }
+            __builtin_live_bytes() - before
+        }
+        fn run() -> u64 {
+            val a = over_call()
+            val b = over_name()
+            if a != b { return 1u64 }
+            7u64
+        }
+        fn main() -> u64 {
+            println(run())
+            0u64
+        }
+    "#
+    );
+    assert_renders(&src, "a_payload_handed_on_from_an_arm_over_a_call_stays_alive", "7\n");
+}
+
+#[test]
+fn a_match_over_a_call_can_yield_an_owned_payload() {
+    // Bound first, this is `val x = match m { .. }`, which the compiled
+    // lanes lower; over the bare call they reported "val/var rhs
+    // produced no value".
+    let src = format!(
+        "{MAKE_VEC}{}",
+        r#"
+        fn run() -> u64 {
+            val before = __builtin_live_bytes()
+            val n = {
+                val x = match mk(9u64) {
+                    Option::Some(v) => v,
+                    Option::None => panic("none"),
+                }
+                x.get(0u64)
+            }
+            if __builtin_live_bytes() != before { return 1u64 }
+            n
+        }
+        fn main() -> u64 {
+            println(run())
+            0u64
+        }
+    "#
+    );
+    assert_renders(&src, "a_match_over_a_call_can_yield_an_owned_payload", "9\n");
+}
+
+#[test]
+fn for_in_over_owning_elements_does_not_free_them() {
+    // `next()` is not bound: an iterator over a container hands each
+    // element out as a shallow copy, and binding it would give the
+    // copy an owner that frees the container's element -- which the
+    // IR VM lane reports as an invalid access when `t` is read.
+    //
+    // No live-byte check: the tree-walker frees the items of this loop
+    // today and the compiled lanes do not (NEXT-ITEM-ALIAS in todo.md).
+    let src = r#"
+        fn run() -> u64 {
+            var v: Vec<String> = Vec::new()
+            v.push(String::from_str("ab"))
+            v.push(String::from_str("cd"))
+            var n = 0u64
+            for s in v.iter() {
+                n = n + s.len()
+            }
+            var it = v.iter()
+            while val Option::Some(s) = it.next() {
+                n = n + s.len()
+            }
+            val t: &String = v.borrow(1u64)
+            n + (t.get(1u64) as u64)
+        }
+        fn main() -> u64 {
+            println(run())
+            0u64
+        }
+    "#;
+    assert_renders(src, "for_in_over_owning_elements_does_not_free_them", "108\n");
+}

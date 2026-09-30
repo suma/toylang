@@ -1194,14 +1194,37 @@ fn a_string_matches_string_literals() {
     assert_renders(src, "string_literal_arms", "30 1 2 0\n");
 }
 
-/// The guard names the scrutinee again, so a computed `String` is
-/// refused with the fix rather than evaluated once per arm.
+/// MATCH-TEMP-EXIT-LEAK: a call as the scrutinee is bound to a `val`
+/// by the parser, so a `String` returned by a call takes string-literal
+/// arms like a named one (it used to ask for the `val`).
+#[test]
+fn a_called_string_scrutinee_takes_literal_arms() {
+    let src = r#"
+        fn mk() -> String {
+            val s = String::from_str("a")
+            s
+        }
+        fn main() -> u64 {
+            val r = match mk() {
+                "a" => 1u64,
+                _ => 0u64,
+            }
+            r
+        }
+    "#;
+    assert_consistent(src, "a_called_string_scrutinee_takes_literal_arms");
+}
+
+/// The guard names the scrutinee again, so a computed `String` that is
+/// not a call (and so is not bound for it) is refused with the fix
+/// rather than evaluated once per arm.
 #[test]
 fn a_computed_string_scrutinee_asks_for_a_val() {
     let src = r#"
-        fn mk() -> String { String::from_str("a") }
+        struct P { s: String }
+        fn mk() -> P { P { s: String::from_str("a") } }
         fn main() -> u64 {
-            val r = match mk() {
+            val r = match mk().s {
                 "a" => 1u64,
                 _ => 0u64,
             }

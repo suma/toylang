@@ -12,6 +12,11 @@
 
 ### 2026-10-01
 
+- **MATCH-TEMP-EXIT-LEAK — 呼び出しを直接 scrutinee にした `match` の payload** — パーサが
+  `match f(x)` / `if val` / `while val` / `for x in` の呼び出しを `val __match_N` に束縛する
+  (`next()` を除く)。腕から `continue` / `return` で抜けたときの漏れ、入れ子の `match` で外側の
+  drop が消える漏れ、腕から渡した payload の解放済み参照が消え、一時値から値を持ち出す `match` と
+  `if val Ok(n) = parse::to_u64(s)` が compiled レーンで動くようになった。
 - **FRONTEND-DEAD-CODE — frontend の死にコード ~1050 行を削除** — 実装が 1 つの拡張 trait
   (`GenericTypeChecking` / `MethodProcessing`) を inherent impl にして dead-code lint を効かせ、
   同名の inherent method に隠れていた重複 2 つと、呼ばれない trait・関数を消した。
@@ -2634,19 +2639,16 @@
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
 
-- **MATCH-TEMP-EXIT-LEAK — 呼び出しを直接 scrutinee にして腕から抜けると
-  payload が漏れる** — `match m.mk(i) { Option::Some(v) => { .. continue } .. }`
-  (`if val Option::Some(v) = m.mk(i)` も同じ) で、腕の中の `continue` /
-  `return` が所有 payload (`Vec` 等) を drop しない。腕の末尾まで走れば
-  解放される。`val r = m.mk(i)` に束縛してから `match r` にすると漏れない
-  ので、**名前の無い一時値に drop flag / 出口の drop が付いていない**。
-  AOT と JIT で一致して再現 (`--profile=mem` の `leaks`)。
-  2026-10-01 に poc/logsearch を `if val` へ移していて発覚 (POC の右辺は
-  所有しない payload だけなので実害なし)。同じ移行で、自由関数の呼び出しを
-  右辺に書くと AOT が `compiler MVP match on scalar scrutinee only supports
-  i64 / u64 / bool, got enum#N` を**位置なし**で出すことも踏んだ
-  (既知の「function-call enum scrutinee は val-bind 経由」の制約。
-  少なくとも位置は出すべき)。
+- **NEXT-ITEM-ALIAS — iterator の item は別名なのに所有者が付く形がある** —
+  `VecIter<T>::next` は要素を浅いコピーで返す (`get` と同じ、ELEMENT-BORROW)。
+  for-in / `while val` は腕が必ず `continue` で抜けるので item を drop しないが、
+  `val m = it.next()` と束縛する形、腕の末尾まで走る `match it.next() { .. }` は
+  compiled レーンで**コンテナの要素を解放する** (`Vec<String>` で `--heap-check=poison`
+  が止める)。逆に **tree-walker は for-in の item も解放する** (live バイトが減る、
+  compiled レーンと割れる)。E0028 が `get` にしか効かないのと同根で、直すなら
+  `next` の戻りを借用として扱う (`&T` を返す iterator) か、名前で E0028 と同じ扱いにする。
+  MATCH-TEMP-EXIT-LEAK で呼び出しの scrutinee を束縛したとき、`next()` だけはこのため
+  除外した (2026-10-01)。
 
 - **TREE-WALKER-DYNAMIC-GENERIC-SCOPE — 呼び出し先が呼び出し元の型引数を
   見る** — tree-walker の `merged_generic_scope` は**実行中の全呼び出し**の

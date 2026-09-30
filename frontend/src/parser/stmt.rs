@@ -448,10 +448,7 @@ fn parse_while_val(parser: &mut Parser, outer_label: Option<DefaultSymbol>) -> P
         body: break_block,
     });
 
-    let match_expr = parser.ast_builder.add_expr_with_location(
-        Expr::Match(scrutinee, arms),
-        Some(location),
-    );
+    let match_expr = super::expr::match_expr(parser, scrutinee, arms, location);
     let match_stmt = parser
         .ast_builder
         .add_stmt_with_location(Stmt::Expression(match_expr), Some(location));
@@ -653,10 +650,8 @@ fn desugar_for_in_iterator(
     };
 
     // match __iter.next() { Some(x) => body, None => { break } }
-    let match_expr = parser.ast_builder.add_expr_with_location(
-        Expr::Match(next_call, vec![some_arm, none_arm]),
-        Some(location),
-    );
+    let match_expr =
+        super::expr::match_expr(parser, next_call, vec![some_arm, none_arm], location);
 
     // while true { <match-stmt> }
     let true_expr = parser.ast_builder.bool_true_expr(Some(location));

@@ -569,7 +569,8 @@ of an owned value.」 **この 1 行のために関数全体が 1 段深い。**
   漏れない。`if val` 固有ではなく、呼び出しを直接 scrutinee にした
   `match` でも同じ)。この POC の右辺は `Span` / `Line` / 整数 / payload
   の無いエラー enum だけなので踏んでいない。→ todo の
-  **MATCH-TEMP-EXIT-LEAK**
+  **MATCH-TEMP-EXIT-LEAK** — **同日に解消**: パーサが呼び出しの scrutinee を
+  `val` に束縛するようになり、1 つ目の穴 (AOT が落ちる) も同じ修正で消えた
 
 ### 6. 小さな穴 (どれも回避できるが、書き方が 1 段遠くなる)
 

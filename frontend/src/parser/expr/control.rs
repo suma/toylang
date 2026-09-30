@@ -188,11 +188,7 @@ fn parse_if_val(parser: &mut Parser) -> ParserResult<ExprRef> {
         guard: None,
         body: else_arm_body,
     });
-    let match_expr = parser.ast_builder.add_expr_with_location(
-        crate::ast::Expr::Match(scrutinee, arms),
-        Some(start_location),
-    );
-    Ok(match_expr)
+    Ok(super::match_expr(parser, scrutinee, arms, start_location))
 }
 
 /// Parse `with allocator = expr { body }`.

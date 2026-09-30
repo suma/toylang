@@ -3,6 +3,7 @@ use crate::ast::*;
 use crate::token::Kind;
 use crate::parser::core::Parser;
 use crate::parser::error::{ParserResult, ParserError};
+use crate::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
 use super::parse_logical_expr;
 
@@ -49,11 +50,69 @@ pub fn parse_match(parser: &mut Parser) -> ParserResult<ExprRef> {
     }
     parser.expect_err(&Kind::BraceClose)?;
 
-    let expr_ref = parser.ast_builder.add_expr_with_location(
-        crate::ast::Expr::Match(scrutinee, arms),
-        Some(start_location),
-    );
-    Ok(expr_ref)
+    Ok(match_expr(parser, scrutinee, arms, start_location))
+}
+
+/// MATCH-TEMP-EXIT-LEAK: build `match scrutinee { arms }`, binding a
+/// call's result to a synthetic `val` first:
+///
+/// ```text
+/// match f(x) { arms }   =>   { val __match_N = f(x)  match __match_N { arms } }
+/// ```
+///
+/// A payload name over a *binding* is an alias of that binding's value
+/// (MATCH-MOVE-OUT-DOUBLE-DROP), so the ownership machinery that
+/// already handles bindings -- the move check, drop flags, the drops
+/// on `return` / `break` / `continue`, a callee's element aliases --
+/// covers the payload too. Over a bare call nothing owned the payload
+/// but the arm, which dropped it only on falling off its end: a
+/// `continue` or `return` out of the arm leaked it, handing it on
+/// (`keep.push(v)`) freed it under the new owner, and a nested `match`
+/// in the arm lost the outer arm's drop.
+///
+/// Only calls are bound. A place (`x`, `a.b`, `t.0`) is already a
+/// binding; a literal or unit variant owns nothing; a tuple literal
+/// `(a, b)` is a tuple of places, and binding it would move them; a
+/// `__builtin_*` read out of raw memory names memory someone else owns.
+/// Every desugar that matches over an expression (`if val`,
+/// `while val`, `for x in`) comes through here too.
+///
+/// Nor is `next()`. An iterator over a container hands out each element
+/// as a shallow copy -- a lend, like `get` (ELEMENT-BORROW) -- and
+/// `for x in v.iter()` has always relied on its arm never dropping the
+/// item (the arm leaves by `continue`, and the arm's drop ran only on
+/// falling off its end). Bound, the item would get an owner and free
+/// the container's element. The name decides, as it does for `get`.
+pub(crate) fn match_expr(
+    parser: &mut Parser,
+    scrutinee: ExprRef,
+    arms: Vec<MatchArm>,
+    location: crate::type_checker::SourceLocation,
+) -> ExprRef {
+    let bound = match parser.ast_builder.get_expr_pool().get(&scrutinee) {
+        Some(Expr::Call(..) | Expr::AssociatedFunctionCall(..)) => true,
+        Some(Expr::MethodCall(_, method, _)) => {
+            parser.string_interner.resolve(method) != Some("next")
+        }
+        _ => false,
+    };
+    if !bound {
+        return parser
+            .ast_builder
+            .add_expr_with_location(Expr::Match(scrutinee, arms), Some(location));
+    }
+    let counter = parser.synthetic_counter;
+    parser.synthetic_counter += 1;
+    let name = parser.string_interner.get_or_intern(format!("__match_{counter}"));
+    let bind = parser
+        .ast_builder
+        .val_stmt(name, Some(TypeDecl::Unknown), scrutinee, Some(location));
+    let ident = parser.ast_builder.identifier_expr(name, Some(location));
+    let matched = parser
+        .ast_builder
+        .add_expr_with_location(Expr::Match(ident, arms), Some(location));
+    let matched_stmt = parser.ast_builder.expression_stmt(matched, Some(location));
+    parser.ast_builder.block_expr(vec![bind, matched_stmt], Some(location))
 }
 
 /// The most alternatives one pattern may expand into. Slots multiply

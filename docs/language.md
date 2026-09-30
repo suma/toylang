@@ -4023,6 +4023,19 @@ Patterns:
 
 Each arm is an expression; all arms must produce the same type.
 
+A scrutinee that is a **call** — `match f(x)`, `match o.m()`,
+`match File::open(p)`, and the same in `if val` / `while val` — is
+evaluated once and bound to a hidden `val` before the arms are tried,
+so it behaves exactly like `val t = f(x)` followed by `match t`. In
+particular a payload the arms bind is owned by that binding: it is
+dropped once on every way out of the `match` (falling off the arm,
+`return`, `break`, `continue`), and an arm may hand it on
+(`keep.push(v)`, `return v`) under the ownership rules for any
+binding. The exception is a call named `next`: an iterator hands out
+each element of a container as a shallow copy, as `get` does, so its
+item is not given an owner (`for x in v.iter()` never frees `v`'s
+elements).
+
 #### Alternatives, ranges, and `@` bindings
 
 ```rust
@@ -4201,9 +4214,10 @@ the arm is a guard:
 - an arm's own guard is kept (`"POST" if n > 5u64 =>`);
 - a binding arm (`other => other.len()`) binds the `String` itself.
 
-The scrutinee is read again by each guard, so it must be a name or a
-field path (`r.method`). A computed one (`match make() { "a" => .. }`)
-is an error asking for a `val`. A literal *inside* another pattern
+The scrutinee is read again by each guard, so it must be a name, a
+field path (`r.method`) or a call (which is bound to a `val` first —
+see [`match`](#match)). Any other computed one (`match make().s
+{ "a" => .. }`) is an error asking for a `val`. A literal *inside* another pattern
 (`Option::Some("a")` on an `Option<String>`) is not rewritten yet.
 
 ### Guards
@@ -4997,7 +5011,7 @@ misspelled `reason == "not found"` silently took the else branch).
 `IoError` implements `Display`, so `println(err)` prints the reason
 text (`not found`, ...). Because these functions return a compound,
 bind the result with `val` — see
-[Known limitations](#known-limitations) for the two positions where an
+[Known limitations](#known-limitations) for the positions where an
 enum-returning call needs no binding.
 
 `write_file` replaces what the file held and `append_file` adds to
@@ -5650,7 +5664,7 @@ Conversions live in the module that owns the target type (e.g.
 converts through `E2::from(e)` — see the [`?` operator](#-operator-early-return).
 
 Because `from` on an enum target returns a compound, bind the result
-with `val` — see [Known limitations](#known-limitations) for the two
+with `val` — see [Known limitations](#known-limitations) for the
 positions where an enum-returning call needs no binding.
 
 ### `Display`
@@ -6998,12 +7012,14 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   setting — see "Operational guidance" above.)
 - **Compound-returning calls in expression position** — a compound
   never travels as one SSA value, so a call producing one needs
-  locals to write its leaves into. Two positions have those:
+  locals to write its leaves into. Three positions have those:
 
   - an **argument** — `take(mk(3i64))`, `take(o.twin())`,
     `take(P::origin())`, `count(Vec::new())`, for a struct, a tuple
     or an enum alike, in any of the three call shapes;
-  - an enum's **payload** — `Option::Some(mk(2i64))`.
+  - an enum's **payload** — `Option::Some(mk(2i64))`;
+  - a **`match` / `if val` / `while val` scrutinee** — the parser
+    binds the call to a `val` first (see [`match`](#match)).
 
   An enum-producing position (an `if` or `match` arm, a block tail, an
   enum payload) also takes an **associated function that returns that

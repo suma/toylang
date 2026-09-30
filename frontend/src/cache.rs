@@ -32,7 +32,7 @@ use crate::ast::module_interface::ModuleInterface;
 ///
 /// Mismatched versions are treated as a cache miss by
 /// [`load_full_module`].
-pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 65;
+pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 66;
 // v2: `File` gained `id` (JIT cache key) and `tests` (LLM-LOOP P4).
 // v3: `BuiltinFunctionSymbols` interns the MEMORY_PROFILING M4 counter
 // names, shifting every later symbol id.
@@ -114,6 +114,8 @@ pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 65;
 // unchanged module would be read back against the old intern order
 // (the same reason convert.t bumped v9). See
 // `design-docs/MODULE_SYSTEM.md`.
+// v66: MATCH-TEMP-EXIT-LEAK -- a `match` / `if val` / `while val` /
+//      `for x in` over a call binds the call to `__match_N` first.
 // v61: HEAP-CHECK H4 — `__builtin_heap_poison` interned last.
 // v60: LEND-FREEING-CALLEE — `DropFlags::param_drops`.
 // v59: MOVE-REINIT — `DropFlags::reinit`.

@@ -12,6 +12,8 @@
 
 ### 2026-09-30
 
+- **LLM-TOOLING-RELATED-REST — 関連箇所の残り** — E0003 の did-you-mean (候補の宣言)、
+  E0023 (trait 側の契約)、E0022 (scoped allocator)、E0026 (窓を取った元)、E0028 (コンテナ) を埋めた。
 - **LLM-TOOLING-NO-SPAN — 位置のない型エラー** — 宣言の検査 (未定義の型・重複 variant 等)、
   `never_allocates` / `const fn` / `extern fn` の ABI、`?` の被演算子、`return` の不一致、
   `??` の連鎖に位置を付けた。テスト全体の位置なしは 174 → 3 件 (単体テストが直接作る 1 件と
@@ -2587,10 +2589,6 @@
   `fn bad() -> &u64 { val n = 5u64 \n &n }` は E0026 ではなく
   **`[E0003] Identifier 'n' not found`** になる (誤った診断)。
   どちらも E0026 の例として説明文に載せようとして見つけた。
-- **LLM-TOOLING-RELATED-REST — 関連箇所を埋めていない診断** — `related`
-  を埋めたのは E0031 / E0014 / E0001 (引数) / E0038 / 条件付き移動だけ。
-  E0003 の did-you-mean (候補の定義位置)、E0023 (trait 側の契約)、
-  E0022 / E0026 (allocator・コンテナの束縛位置)、E0028 (コンテナ) は空。
 - **LLM-TOOLING-CASCADE-BY-KIND — 連鎖の判定が文言頼み** —
   `diagnostic::drop_cascades` は「文言が型 `Unknown` を名指すか」を
   文字列で判定している (文頭の `Unknown field` は除外する程度の

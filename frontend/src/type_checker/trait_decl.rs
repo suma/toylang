@@ -308,10 +308,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                     m_str.to_string(),
                     !sig.requires.is_empty(),
                 );
-                strengthened = Some(match self.get_expr_location(extra) {
+                let error = match self.get_expr_location(extra) {
                     Some(location) => error.with_location(location),
                     None => error,
-                });
+                };
+                // The trait's declaration is the contract the impl must
+                // not add to.
+                strengthened = Some(self.with_trait_signature(trait_symbol, sig, None, error));
             }
 
             // Compare return types. Both sides resolve `Self`; the

@@ -1177,6 +1177,9 @@ impl MoveCheck<'_> {
                 error.suggestions.push(fix);
             }
         }
+        if let Some(container) = self.program.location_pool.get_expr_location(&receiver).copied() {
+            error = error.with_related(container, "the container that keeps owning the element");
+        }
         self.element_copies.push((stmt_ref, error));
     }
 

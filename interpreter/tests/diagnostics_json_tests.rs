@@ -905,3 +905,65 @@ fn declaration_level_errors_have_a_span_on_the_name() {
         assert_eq!(span_text(source, d), text, "{source}\n{d:#?}");
     }
 }
+
+// LLM-TOOLING-RELATED-REST: the rest of the codes that name a second place.
+
+#[test]
+fn more_diagnostics_name_their_second_place() {
+    let cases: [(&str, &str, &str); 5] = [
+        (
+            "fn leak() -> ptr {
+    val arena = Arena::new()
+    with allocator = arena { __builtin_heap_alloc(8u64) }
+}
+fn main() -> u64 { 0u64 }",
+            "E0022",
+            "arena",
+        ),
+        (
+            "struct B { n: u64 }
+trait Shrink {
+    fn shrink(&self, by: u64) -> u64
+        requires by > 0u64
+}
+impl Shrink for B {
+    fn shrink(&self, by: u64) -> u64
+        requires by < 100u64
+    { self.n - by }
+}
+fn main() -> u64 { 0u64 }",
+            "E0023",
+            "shrink",
+        ),
+        (
+            "fn dangling() -> Option<Span<u8>> {
+    var v: Vec<u8> = Vec::new()
+    v.push(1u8)
+    v.as_span()
+}
+fn main() -> u64 { 0u64 }",
+            "E0026",
+            "v",
+        ),
+        (
+            "fn main() -> u64 {
+    var list: Vec<String> = Vec::new()
+    list.push(String::from_str(\"a\"))
+    val e: String = list.get(0u64)
+    e.len()
+}",
+            "E0028",
+            "list",
+        ),
+        ("fn calculate_total(a: u64) -> u64 { a }\nfn main() -> u64 { calculate_totl(1u64) }", "E0003", "calculate_total"),
+    ];
+    for (source, code, text) in cases {
+        let diagnostics = check_all(source);
+        let d = diagnostics
+            .iter()
+            .find(|d| d.code == code)
+            .unwrap_or_else(|| panic!("{code} in {diagnostics:#?}"));
+        let related = related_texts(source, d);
+        assert!(related.iter().any(|(t, _, _)| *t == text), "{code}: {related:?}\n{d:#?}");
+    }
+}

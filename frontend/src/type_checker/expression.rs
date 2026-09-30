@@ -1893,7 +1893,17 @@ impl<'a> TypeCheckerVisitor<'a> {
             &format!("a function named `{best}` exists"),
             best.to_string(),
         ));
-        error
+        // And where it is, so a reader can check it is the one meant.
+        let declared = self
+            .core
+            .string_interner
+            .get(best)
+            .and_then(|sym| self.context.functions.get(&sym))
+            .cloned();
+        match declared {
+            Some(fun) => self.at_declaration_of(error, &fun, best, &format!("`{best}` is declared here")),
+            None => error,
+        }
     }
 
     /// Add a related location at `word` inside `fun`'s declaration

@@ -720,7 +720,10 @@ same output, byte for byte.
 `related` lists the other places a diagnostic is about — the first
 declaration of a name declared twice (`E0031`), where a value was
 moved (`E0014`), the parameter an argument does not match (`E0001`),
-the trait's side of an impl that does not match it (`E0038`) — each
+the trait's side of an impl that does not match it (`E0038`) or that
+adds a precondition (`E0023`), the function a did-you-mean offers
+(`E0003`), the scoped allocator or buffer a value escapes (`E0022` /
+`E0026`), the container an element is copied out of (`E0028`) — each
 with `file`, `span` and a `message` ("first defined here"). It is
 present, possibly empty, on every diagnostic.
 

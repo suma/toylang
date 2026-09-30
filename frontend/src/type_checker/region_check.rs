@@ -100,6 +100,9 @@ struct Region {
     /// reaching a place shallower than this outlives it.
     depth: usize,
     kind: RegionKind,
+    /// Where the region comes from — the scoped allocator, or the
+    /// binding a window was taken off — reported as the related place.
+    origin: Option<SourceLocation>,
 }
 
 /// What owns the memory, which decides how the escape reads.
@@ -249,6 +252,11 @@ impl RegionCheck<'_> {
         let error = match self.regions[index].kind {
             RegionKind::Allocator => TypeCheckError::region_escape(region, place.to_string()),
             RegionKind::Buffer => TypeCheckError::window_escape(region, place.to_string()),
+        };
+        let error = match (self.regions[index].origin, self.regions[index].kind) {
+            (Some(at), RegionKind::Allocator) => error.with_related(at, "the scoped allocator"),
+            (Some(at), RegionKind::Buffer) => error.with_related(at, "the window is taken from this buffer"),
+            (None, _) => error,
         };
         self.errors.push(match location {
             Some(location) => error.with_location(location),
@@ -510,7 +518,8 @@ impl RegionCheck<'_> {
             // whatever regions are already active.
             return self.walk_expr(body);
         };
-        self.regions.push(Region { name, depth, kind: RegionKind::Allocator });
+        let origin = self.program.location_pool.get_expr_location(allocator).copied();
+        self.regions.push(Region { name, depth, kind: RegionKind::Allocator, origin });
         let index = self.regions.len() - 1;
         self.active.push(index);
         let taint = self.walk_expr(body);
@@ -579,6 +588,7 @@ impl RegionCheck<'_> {
             name: format!("`{text}`"),
             depth,
             kind: RegionKind::Buffer,
+            origin: self.program.location_pool.get_expr_location(owner).copied(),
         });
         Some(self.regions.len() - 1)
     }

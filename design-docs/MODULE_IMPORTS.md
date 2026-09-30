@@ -210,7 +210,9 @@ import で届くのは `pub` だけ。`check_function_access` の
 ### D7. 循環 import は禁止しない
 
 統合後は 1 つの `File` に畳まれ、初期化順という概念が無いので、循環は
-実害を持たない (`ModuleResolver::detect_cycles` は診断のために残す)。
+実害を持たない。循環を報告する経路は今は無い (`ModuleResolver::detect_cycles`
+はどこからも呼ばれないまま 2026-10-01 に削除した。診断に要るなら
+`dependency_graph` から作り直せる)。
 現状の依存グラフは非循環なので、禁止しても今は通るが、**禁止すると
 `trait` と `impl` を別ファイルに置く自由が消える**ので採らない。
 

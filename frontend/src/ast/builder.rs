@@ -46,12 +46,6 @@ impl AstBuilder {
         expr_ref
     }
 
-    pub fn add_stmt(&mut self, stmt: Stmt) -> StmtRef {
-        let stmt_ref = self.stmt_pool.add(stmt);
-        self.location_pool.add_stmt_location(None);
-        stmt_ref
-    }
-
     // New methods with location support
     pub fn add_expr_with_location(&mut self, expr: Expr, location: Option<SourceLocation>) -> ExprRef {
         let expr_ref = self.expr_pool.add(expr);
@@ -75,10 +69,6 @@ impl AstBuilder {
 
     pub fn get_expr_pool_mut(&mut self) -> &mut ExprPool {
         &mut self.expr_pool
-    }
-
-    pub fn get_stmt_pool_mut(&mut self) -> &mut StmtPool {
-        &mut self.stmt_pool
     }
 
     pub fn get_location_pool(&self) -> &LocationPool {
@@ -220,30 +210,6 @@ impl AstBuilder {
         stmt_ref
     }
 
-    pub fn impl_block_stmt(&mut self, target_type: DefaultSymbol, methods: Vec<Rc<MethodFunction>>, location: Option<SourceLocation>) -> StmtRef {
-        self.impl_block_stmt_with_trait(target_type, Vec::new(), methods, None, location)
-    }
-
-    pub fn impl_block_stmt_with_trait(
-        &mut self,
-        target_type: DefaultSymbol,
-        target_type_args: Vec<crate::type_decl::TypeDecl>,
-        methods: Vec<Rc<MethodFunction>>,
-        trait_name: Option<DefaultSymbol>,
-        location: Option<SourceLocation>,
-    ) -> StmtRef {
-        // Default no trait_type_args; callers that supply concrete
-        // generic-trait args go through the explicit-args helper.
-        self.impl_block_stmt_with_trait_args(
-            target_type,
-            target_type_args,
-            methods,
-            trait_name,
-            Vec::new(),
-            location,
-        )
-    }
-
     /// ITER-PROTOCOL-TRAIT: full-shape builder used when the trait
     /// itself carries concrete type args at the impl site
     /// (`impl Iterator<i64> for Counter` → `trait_type_args = [i64]`).
@@ -265,17 +231,6 @@ impl AstBuilder {
         });
         self.location_pool.add_stmt_location(location);
         stmt_ref
-    }
-
-    pub fn trait_decl_stmt(
-        &mut self,
-        name: DefaultSymbol,
-        methods: Vec<crate::ast::TraitMethodSignature>,
-        visibility: Visibility,
-        location: Option<SourceLocation>,
-    ) -> StmtRef {
-        // Backward compat for non-generic traits: empty generic_params.
-        self.trait_decl_stmt_with_generics(name, Vec::new(), methods, visibility, location)
     }
 
     /// ITER-PROTOCOL-TRAIT: generic-aware trait declaration builder.
@@ -439,10 +394,6 @@ impl AstBuilder {
 
     pub fn continue_stmt(&mut self, location: Option<SourceLocation>) -> StmtRef {
         self.continue_stmt_with_label(None, location)
-    }
-
-    pub fn for_stmt(&mut self, var: DefaultSymbol, start: ExprRef, end: ExprRef, block: ExprRef, location: Option<SourceLocation>) -> StmtRef {
-        self.for_stmt_with_label(None, var, start, end, block, location)
     }
 
     pub fn while_stmt(&mut self, cond: ExprRef, block: ExprRef, location: Option<SourceLocation>) -> StmtRef {

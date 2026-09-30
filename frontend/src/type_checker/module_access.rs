@@ -95,11 +95,6 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
     }
 
-    /// Clear collected errors
-    pub fn clear_errors(&mut self) {
-        self.errors.clear();
-    }
-
     // Module management methods (Phase 1: Basic namespace management)
 
     /// Set the current package context

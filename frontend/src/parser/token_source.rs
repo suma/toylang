@@ -110,15 +110,6 @@ impl<T: TokenSource> TokenProvider<T> {
         }
     }
 
-    /// Create a new token provider with custom buffer settings
-    pub fn with_buffer_capacity(source: T, max_size: usize, min_size: usize) -> Self {
-        TokenProvider {
-            source,
-            buffer: LookaheadBuffer::with_capacity(max_size, min_size),
-            normalize_formatting: false,
-        }
-    }
-
     /// Create a new token provider with format normalization enabled
     pub fn with_format_normalization(source: T, max_size: usize, min_size: usize) -> Self {
         TokenProvider {
@@ -204,11 +195,6 @@ impl<T: TokenSource> TokenProvider<T> {
     /// Get buffer statistics for monitoring
     pub fn buffer_stats(&self) -> super::lookahead::BufferStats {
         self.buffer.stats()
-    }
-
-    /// Force buffer cleanup (useful for memory management)
-    pub fn cleanup_buffer(&mut self) {
-        self.buffer.force_cleanup();
     }
 
     /// Reset the provider (clears buffer, keeps source)

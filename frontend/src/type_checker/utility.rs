@@ -577,14 +577,6 @@ impl<'a> TypeCheckerVisitor<'a> {
             .is_empty()
     }
 
-    /// From/Into: the trait and method names the `.into()` rewrite and
-    /// the `?` cross-error conversion look up. `FROM_TRAIT` is the
-    /// `From` trait declared in `core/std/convert.t`; `FROM_METHOD` is
-    /// its `fn from` method.
-    pub fn from_trait_symbol(&self) -> Option<DefaultSymbol> {
-        self.core.string_interner.get(FROM_TRAIT)
-    }
-
     pub fn from_method_symbol(&self) -> Option<DefaultSymbol> {
         self.core.string_interner.get(FROM_METHOD)
     }

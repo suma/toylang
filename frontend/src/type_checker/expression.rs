@@ -3,9 +3,8 @@ use crate::ast::*;
 use crate::type_decl::*;
 use crate::type_checker::{
     TypeCheckerVisitor, TypeCheckError,
-    AcceptableExpr, AcceptableStmt, TypeInferenceManager
+    AcceptableExpr, AcceptableStmt
 };
-use crate::type_checker::generics::GenericTypeChecking;
 
 /// The name `?` and `??` should classify an enum by.
 ///
@@ -88,8 +87,8 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Main entry point for expression type checking
     pub fn visit_expr(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         // Check cache first
-        if let Some(cached_type) = self.get_cached_type(expr) {
-            return Ok(cached_type.clone());
+        if let Some(cached_type) = self.optimization.get_cached_type(expr) {
+            return Ok(cached_type);
         }
 
         // Set up context hint for nested expressions
@@ -200,7 +199,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         
         // Cache result and record type if successful
         if let Ok(ref result_type) = result {
-            self.cache_type(expr, result_type.clone());
+            self.optimization.cache_type(*expr, result_type.clone());
             self.type_inference.set_expr_type(*expr, result_type.clone());
             self.note_visited_number(expr, result_type);
             
@@ -3332,7 +3331,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // anyway. The resolved pair is recorded for the post-pass,
         // which re-derives nothing on its own.
         let rhs_ty_in_revisit = if revisit {
-            self.get_cached_type(&rhs).cloned().unwrap_or(TypeDecl::Unknown)
+            self.optimization.get_cached_type(&rhs).unwrap_or(TypeDecl::Unknown)
         } else {
             TypeDecl::Unknown
         };

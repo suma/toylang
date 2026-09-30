@@ -53,10 +53,6 @@ impl ModuleResolver {
         }
     }
     
-    /// Add a search path for module resolution
-    pub fn add_search_path<P: AsRef<Path>>(&mut self, path: P) {
-        self.search_paths.push(path.as_ref().to_path_buf());
-    }
     
     /// Resolve an import declaration to a module
     pub fn resolve_import(&mut self, import: &ImportDecl, current_dir: Option<&Path>, string_interner: &mut DefaultStringInterner) -> Result<ResolvedModule, TypeCheckError> {
@@ -222,68 +218,13 @@ impl ModuleResolver {
             .join(".")
     }
     
-    /// Check for circular dependencies in the dependency graph
-    pub fn detect_cycles(&self, _string_interner: &mut DefaultStringInterner) -> Option<Vec<Vec<Vec<DefaultSymbol>>>> {
-        let mut visited = HashMap::new();
-        let mut rec_stack = HashMap::new();
-        let mut cycles = Vec::new();
-        
-        for module in self.dependency_graph.keys() {
-            if !visited.get(module).unwrap_or(&false) {
-                self.dfs_detect_cycle(module, &mut visited, &mut rec_stack, &mut cycles, &mut Vec::new());
-            }
-        }
-        
-        if cycles.is_empty() {
-            None
-        } else {
-            Some(cycles)
-        }
-    }
     
-    /// DFS helper for cycle detection
-    fn dfs_detect_cycle(
-        &self,
-        module: &Vec<DefaultSymbol>,
-        visited: &mut HashMap<Vec<DefaultSymbol>, bool>,
-        rec_stack: &mut HashMap<Vec<DefaultSymbol>, bool>,
-        cycles: &mut Vec<Vec<Vec<DefaultSymbol>>>,
-        current_path: &mut Vec<Vec<DefaultSymbol>>,
-    ) {
-        visited.insert(module.clone(), true);
-        rec_stack.insert(module.clone(), true);
-        current_path.push(module.clone());
-        
-        if let Some(dependencies) = self.dependency_graph.get(module) {
-            for dep in dependencies {
-                if !visited.get(dep).unwrap_or(&false) {
-                    self.dfs_detect_cycle(dep, visited, rec_stack, cycles, current_path);
-                } else if *rec_stack.get(dep).unwrap_or(&false) {
-                    // Found a cycle - store the cycle starting from the dependency
-                    if let Some(cycle_start) = current_path.iter().position(|m| m == dep) {
-                        let mut cycle = current_path[cycle_start..].to_vec();
-                        cycle.push(dep.clone()); // Complete the cycle
-                        cycles.push(cycle);
-                    }
-                }
-            }
-        }
-        
-        current_path.pop();
-        rec_stack.insert(module.clone(), false);
-    }
     
     /// Get all loaded modules
     pub fn get_loaded_modules(&self) -> &HashMap<Vec<DefaultSymbol>, ResolvedModule> {
         &self.loaded_modules
     }
     
-    /// Clear all cached modules (useful for testing)
-    pub fn clear_cache(&mut self) {
-        self.loaded_modules.clear();
-        self.dependency_graph.clear();
-        self.resolving_stack.clear();
-    }
 }
 
 impl Default for ModuleResolver {

@@ -615,9 +615,6 @@ impl Node {
         Self { start, end }
     }
 
-    pub fn to_source_location(&self, line: u32, column: u32) -> SourceLocation {
-        SourceLocation::new(line, column, self.start as u32, self.end as u32)
-    }
 }
 
 /// AST node with optional source location metadata.

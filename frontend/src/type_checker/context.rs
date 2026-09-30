@@ -343,18 +343,6 @@ impl TypeCheckContext {
         None
     }
 
-    /// CLOSURE-CAPTURE E1: is `name` a binding the closure currently
-    /// being checked captured from an enclosing scope?
-    ///
-    /// False when no closure body is open, and false for the closure's
-    /// own parameters and for anything it binds itself — those live at
-    /// or above the floor. A name that resolves nowhere is not a
-    /// capture either; the caller's own "unknown identifier" path
-    /// reports that.
-    pub fn is_captured_binding(&self, name: DefaultSymbol) -> bool {
-        self.capture_of_open_closure(name).is_some()
-    }
-
     /// The capture, with the mode of the closure that holds it.
     /// `Some(true)` means the closure shares the binding, so a write
     /// through it is an ordinary write (CLOSURE-CAPTURE E3).
@@ -569,13 +557,7 @@ impl TypeCheckContext {
         self.struct_definitions.get(&name).map(|def| &def.fields)
     }
     
-    pub fn get_struct_visibility(&self, name: DefaultSymbol) -> Option<&Visibility> {
-        self.struct_definitions.get(&name).map(|def| &def.visibility)
-    }
     
-    pub fn is_struct_public(&self, name: DefaultSymbol) -> bool {
-        matches!(self.get_struct_visibility(name), Some(Visibility::Public))
-    }
     
     pub fn set_struct_generic_params(&mut self, struct_name: DefaultSymbol, generic_params: Vec<DefaultSymbol>) {
         self.struct_generic_params.insert(struct_name, generic_params);
@@ -599,27 +581,7 @@ impl TypeCheckContext {
             .unwrap_or(false)
     }
     
-    pub fn get_method_visibility(&self, struct_name: DefaultSymbol, method_name: DefaultSymbol) -> Option<&Visibility> {
-        // Specs for one (struct, method) may carry different
-        // visibilities; the first spec's answer is used. Access is
-        // not enforced across modules today anyway (see E0009), so
-        // the precision does not matter yet.
-        self.struct_methods.get(&struct_name)
-            .and_then(|methods| methods.get(&method_name))
-            .and_then(|specs| specs.first())
-            .map(|spec| &spec.method.visibility)
-    }
     
-    pub fn is_method_accessible(&self, struct_name: DefaultSymbol, method_name: DefaultSymbol, _same_module: bool) -> bool {
-        // For now, always allow access within the same module (as requested)
-        // In the future, this can be extended for cross-module access control
-        if _same_module {
-            return true;
-        }
-        
-        // For cross-module access, check if method is public
-        matches!(self.get_method_visibility(struct_name, method_name), Some(Visibility::Public))
-    }
     
     pub fn validate_struct_fields(&self, struct_name: DefaultSymbol, provided_fields: &Vec<(DefaultSymbol, crate::ast::ExprRef)>, string_interner: &CoreReferences) -> Result<(), TypeCheckError> {
         if let Some(definition) = self.get_struct_fields(struct_name) {
@@ -824,13 +786,6 @@ impl TypeCheckContext {
         self.get_struct_method(struct_symbol, method_symbol, &[])
     }
 
-    pub fn get_method_return_type(&self, struct_name: &str, method_name: &str, string_interner: &DefaultStringInterner) -> Option<TypeDecl> {
-        // Find the method function for this struct and method name
-        let method_function = self.get_method_function_by_name(struct_name, method_name, string_interner)?;
-        
-        // Return the return type if it exists
-        method_function.return_type.clone()
-    }
     
     // Type parameter mapping management
     pub fn set_var_type_mapping(&mut self, var_name: DefaultSymbol, type_param_mappings: HashMap<DefaultSymbol, TypeDecl>) {
@@ -838,20 +793,5 @@ impl TypeCheckContext {
         last.insert(var_name, type_param_mappings);
     }
     
-    pub fn get_var_type_mapping(&self, var_name: DefaultSymbol) -> Option<&HashMap<DefaultSymbol, TypeDecl>> {
-        for mappings in self.var_type_mappings.iter().rev() {
-            if let Some(mapping) = mappings.get(&var_name) {
-                return Some(mapping);
-            }
-        }
-        None
-    }
     
-    pub fn resolve_generic_type(&self, var_name: DefaultSymbol, generic_param: DefaultSymbol) -> Option<TypeDecl> {
-        if let Some(mappings) = self.get_var_type_mapping(var_name) {
-            mappings.get(&generic_param).cloned()
-        } else {
-            None
-        }
-    }
 }

@@ -332,7 +332,8 @@ capture の書き込みについて、**何が起きるべきか**を先に表�
   その closure の**パラメータが載っているスコープの index** を積む。
   本体は enclosing スコープの上で検査される (capture の型を引けるのは
   そのおかげ) ので、**深さだけが local と capture を分ける**。
-  `is_captured_binding` が名前を解決したフレームの index と床を比べる。
+  `capture_of_open_closure` (当初は `is_captured_binding`。E3 で共有かコピーかも
+  返す形になった) が名前を解決したフレームの index と床を比べる。
 - 新コード **`E0021`** + `--explain`。caret は代入対象に付ける
   (`error_with_location` に lhs を渡す。付けないと文の recovery が
   ブロックの末尾式に打つ)。

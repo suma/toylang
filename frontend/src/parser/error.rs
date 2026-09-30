@@ -156,11 +156,6 @@ impl ParserError {
         }
     }
 
-    /// The same error, carrying a fix.
-    pub fn with_suggestion(mut self, suggestion: crate::diagnostic::Suggestion) -> Self {
-        self.suggestions.push(suggestion);
-        self
-    }
 }
 
 impl std::fmt::Display for ParserError {

@@ -71,11 +71,6 @@ impl LookaheadBuffer {
         self.buffer.insert(self.position, token);
     }
 
-    /// Check if we have enough tokens available for the given relative position
-    pub fn has_token_at(&self, relative_pos: usize) -> bool {
-        self.position + relative_pos < self.buffer.len()
-    }
-
     /// Get the number of available tokens from current position
     pub fn available_tokens(&self) -> usize {
         self.buffer.len().saturating_sub(self.position)

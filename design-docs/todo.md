@@ -12,6 +12,9 @@
 
 ### 2026-10-01
 
+- **FRONTEND-DEAD-CODE — frontend の死にコード ~1050 行を削除** — 実装が 1 つの拡張 trait
+  (`GenericTypeChecking` / `MethodProcessing`) を inherent impl にして dead-code lint を効かせ、
+  同名の inherent method に隠れていた重複 2 つと、呼ばれない trait・関数を消した。
 - **LLM-TOOLING-QUERY-TEXT — `toy query` がパターンと関数値を木から引く** — パーサが
   パターンに書かれた variant と束縛を位置・スコープつきで残し (`File::pattern_sites`)、
   値として渡した関数名は型検査器の closure 書き換えから数える。本文検索を撤去。
@@ -2965,7 +2968,7 @@
     したがって残る手は (a) stdlib を使わないテストを `test_program_no_core` に寄せる (実測: `test_program` を no-core にすると interpreter の 879 テスト中 **797 が通り**、その binary は 2.3s → 1.3s。ただし stdlib 同居時の回帰を見なくなる = coverage を実際に落とす)、(b) **プロセスを跨いで**型検査済み core を再利用する (INCREMENTAL-COMPILATION 側の仕事。`File` が `Rc` を持つので素朴な in-memory memo 化はできない — 別スレッドから clone すると refcount が壊れる)、(c) 1 プロセスで core を複数回ロードしている `consistency` を直す — **解消 (2026-08-20)**: 4 レーンが 1 フロントエンドパスを共有するようになり、AOT / JIT レーンが毎回 core をロードし直す重複が無くなった (consistency -27% CPU)。
   - **プロセス起動が ~5ms × 1999 ≈ 10s CPU (約 7%)** ★ — 起動フロアの実測は空 core dir の trivial 実行 6.1ms。nextest は 1 テスト 1 プロセス。テストを機能別に束ねれば減るが、失敗の切り分けと引き換え。
   - ~~`serial_test` (`oop_tests.rs`) の並列化~~ — **効果ゼロと分かったので却下 (2026-08-18)**。`#[serial]` が付いているのは 8 テストで合計 **0.193s CPU (suite の 0.12%)**、1 本 18〜34ms と既に起動フロア。しかも `serial_test` のロックはプロセスローカルなので、**nextest では各テストが別プロセスに散る = 元から直列化していない**。
-- **65. frontend リファクタリング** — (a)〜(g) は完了。残: doc コメント拡充、プロパティベーステスト追加。
+- **65. frontend リファクタリング** — (a)〜(g) と死にコードの削除 (2026-10-01) は完了。残: doc コメント拡充、プロパティベーステスト追加。
 - **property test の generator が仕様と drift しないか** — `valid_identifier()` は lexer に問い合わせる形にした (2026-08-10)。他の generator (リテラル / 演算子) はまだ手書きなので、同種の drift が起きうる。
 - **26. ドキュメント整備** — 残: API リファレンス、advanced topics。
 

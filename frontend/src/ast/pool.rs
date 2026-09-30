@@ -1265,9 +1265,4 @@ impl LocationPool {
         }
     }
 
-    pub fn set_stmt_location(&mut self, stmt_ref: &StmtRef, location: SourceLocation) {
-        if let Some(loc) = self.stmt_locations.get_mut(stmt_ref.to_index()) {
-            *loc = Some(location);
-        }
-    }
 }

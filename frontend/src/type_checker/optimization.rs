@@ -27,16 +27,4 @@ impl PerformanceOptimization {
     pub fn get_cached_type(&self, expr_ref: &ExprRef) -> Option<TypeDecl> {
         self.type_cache.get(expr_ref).cloned()
     }
-
-    pub fn clear_cache(&mut self) {
-        self.type_cache.clear();
-    }
-
-    pub fn cache_size(&self) -> usize {
-        self.type_cache.len()
-    }
-
-    pub fn has_cached_type(&self, expr_ref: &ExprRef) -> bool {
-        self.type_cache.contains_key(expr_ref)
-    }
 }

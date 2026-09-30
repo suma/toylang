@@ -11,8 +11,6 @@ use std::collections::HashMap;
 use crate::ast::*;
 use crate::type_decl::*;
 use crate::type_checker::{TypeCheckerVisitor, TypeCheckError};
-use crate::type_checker::generics::GenericTypeChecking;
-use crate::type_checker::method::MethodProcessing;
 
 impl<'a> TypeCheckerVisitor<'a> {
     /// Walk a declared `TypeDecl` against the actual `arg_ty`, populating

@@ -3,7 +3,6 @@ use crate::type_decl::*;
 use crate::type_checker::{
     TypeCheckerVisitor, TypeCheckError
 };
-use crate::type_checker::method::MethodProcessing;
 use string_interner::DefaultSymbol;
 
 /// Collections type checking implementation (arrays, dictionaries, tuples, slices)

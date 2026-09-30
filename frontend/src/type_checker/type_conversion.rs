@@ -65,21 +65,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         old_hint
     }
 
-    /// Update variable-expression mapping for type inference
-    pub fn update_variable_expr_mapping(&mut self, name: DefaultSymbol, expr_ref: &ExprRef) {
-        let expr_ty = if let Ok(ty) = self.visit_expr(expr_ref) { ty } else { return };
-        self.update_variable_expr_mapping_internal(name, expr_ref, &expr_ty);
-    }
     
-    /// Apply type transformations for numeric expressions
-    pub fn apply_type_transformations(&mut self, name: DefaultSymbol, type_decl: &TypeDecl) -> Result<(), TypeCheckError> {
-        self.apply_type_transformations_internal(name, type_decl)
-    }
     
-    /// Determine final type for variable declarations
-    pub fn determine_final_type(&mut self, name: DefaultSymbol, inferred_type: TypeDecl, declared_type: &Option<TypeDecl>) -> Result<TypeDecl, TypeCheckError> {
-        self.determine_final_type_internal(name, inferred_type, declared_type)
-    }
 
     /// Updates variable-expression mapping for type inference (internal implementation)
     pub fn update_variable_expr_mapping_internal(&mut self, name: DefaultSymbol, expr_ref: &ExprRef, expr_ty: &TypeDecl) {
@@ -108,11 +95,6 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
     }
 
-    /// Applies type transformations for numeric expressions (internal implementation)
-    pub fn apply_type_transformations_internal(&mut self, _name: DefaultSymbol, _type_decl: &TypeDecl) -> Result<(), TypeCheckError> {
-        // Implementation for trait method - delegating to existing logic
-        Ok(())
-    }
     
     /// Applies type transformations for numeric expressions based on context
     pub fn apply_type_transformations_for_expr(&mut self, type_decl: &Option<TypeDecl>, expr_ty: &TypeDecl, expr_ref: &ExprRef) -> Result<(), TypeCheckError> {
@@ -141,11 +123,6 @@ impl<'a> TypeCheckerVisitor<'a> {
         Ok(())
     }
 
-    /// Determines the final type for a variable declaration
-    pub fn determine_final_type_internal(&mut self, _name: DefaultSymbol, inferred_type: TypeDecl, declared_type: &Option<TypeDecl>) -> Result<TypeDecl, TypeCheckError> {
-        // Implementation for trait method - delegating to existing logic
-        Ok(self.determine_final_type_for_expr(declared_type, &inferred_type))
-    }
     
     /// Determine final type for expressions
     pub fn determine_final_type_for_expr(&self, type_decl: &Option<TypeDecl>, expr_ty: &TypeDecl) -> TypeDecl {

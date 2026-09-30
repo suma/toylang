@@ -152,10 +152,6 @@ impl EffectSet {
         self.0 & effect.bit() != 0
     }
 
-    pub fn intersects(self, other: EffectSet) -> bool {
-        self.0 & other.0 != 0
-    }
-
     pub fn is_empty(self) -> bool {
         self.0 == 0
     }

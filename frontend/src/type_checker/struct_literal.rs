@@ -4,7 +4,6 @@ use crate::type_decl::*;
 use crate::type_checker::{
     TypeCheckerVisitor, TypeCheckError
 };
-use crate::type_checker::method::MethodProcessing;
 
 /// Struct declaration type checking implementation
 impl<'a> TypeCheckerVisitor<'a> {
@@ -679,8 +678,6 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         self.type_inference.pop_generic_scope();
 
-        let _instantiated_name_str = self.generate_instantiated_struct_name(*struct_name, &substitutions);
-
         let mut type_params = Vec::new();
         for generic_param in generic_params {
             if let Some(concrete_type) = substitutions.get(generic_param) {
@@ -695,29 +692,6 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
 
         Ok(TypeDecl::Struct(*struct_name, type_params))
-    }
-
-    /// Generate a unique name for instantiated generic struct
-    pub fn generate_instantiated_struct_name(&self, struct_name: DefaultSymbol, substitutions: &std::collections::HashMap<DefaultSymbol, TypeDecl>) -> String {
-        let base_name = self.resolve_symbol_name(struct_name);
-
-        let mut sorted_subs: Vec<_> = substitutions.iter().collect();
-        sorted_subs.sort_by_key(|(k, _)| *k);
-
-        let mut name_parts = vec![base_name.to_string()];
-        for (param, concrete_type) in sorted_subs {
-            let param_name = self.resolve_symbol_name(*param);
-            let type_name = match concrete_type {
-                TypeDecl::UInt64 => "u64",
-                TypeDecl::Int64 => "i64",
-                TypeDecl::Bool => "bool",
-                TypeDecl::String => "str",
-                _ => "unknown"
-            };
-            name_parts.push(format!("{}_{}", param_name, type_name));
-        }
-
-        name_parts.join("_")
     }
 
     /// Helper method to check __getslice__ on a struct

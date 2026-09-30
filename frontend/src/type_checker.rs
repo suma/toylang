@@ -30,14 +30,12 @@ pub use core::CoreReferences;
 pub use context::{is_wildcard_spec, path_ends_with, FnLookup, ModuleFunction, TypeCheckContext, VarState};
 pub use error::{SourceLocation, TypeCheckError, TypeCheckErrorKind};
 pub use function::FunctionCheckingState;
-pub use generics::GenericTypeChecking;
 pub use inference::TypeInferenceState;
 pub use optimization::PerformanceOptimization;
 
 mod traits;
 pub use traits::*;
 
-mod literal_checker;
 mod expression;
 mod statement;
 mod struct_literal;

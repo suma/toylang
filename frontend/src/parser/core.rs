@@ -412,11 +412,6 @@ impl<'a> Parser<'a> {
         &self.input[range]
     }
 
-    /// Create a new parser with owned string interner (for backward compatibility/testing)
-    pub fn new_standalone(input: &str) -> ParserWithInterner {
-        ParserWithInterner::new(input)
-    }
-
     /// Push a new parsing context onto the stack
     pub fn push_context(&mut self, context: ParseContext) {
         self.context_stack.push(context);
@@ -826,16 +821,6 @@ impl<'a> Parser<'a> {
         self.report_error(error);
     }
 
-    /// Check condition and collect error if failed, continue parsing
-    pub fn expect_or_collect(&mut self, condition: bool, error_msg: &str) -> bool {
-        if !condition {
-            self.collect_error(error_msg);
-            false
-        } else {
-            true
-        }
-    }
-
     /// Check recursion depth using normalized complexity scoring
     pub fn check_and_increment_recursion(&mut self) -> ParserResult<()> {
         // Use significantly more aggressive depth management for format-independent parsing
@@ -875,10 +860,6 @@ impl<'a> Parser<'a> {
     /// Get current parsing complexity score
     pub fn get_complexity_score(&self) -> usize {
         self.normalization_context.complexity_score()
-    }
-
-    pub fn next_expr(&self) -> u32 {
-        self.ast_builder.get_expr_pool().len() as u32
     }
 
     pub fn get_expr_pool(&self) -> &ExprPool {

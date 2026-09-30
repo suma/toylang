@@ -40,38 +40,10 @@ fn is_supported_impl_signature_shape(ty: &TypeDecl) -> bool {
     || matches!(ty, TypeDecl::Ref { inner, .. } if is_supported_impl_signature_shape(inner))
 }
 
-/// Method processing and Self type handling for type checker
-pub trait MethodProcessing {
-    /// Resolve Self type to the actual struct type in impl block context
-    fn resolve_self_type(&self, type_decl: &TypeDecl) -> TypeDecl;
-    
-    /// Check method arguments against parameter types, handling Self type specially.
-    /// Currently unused — kept for future callers once method-call type checking
-    /// goes through the trait directly.
-    #[allow(dead_code)]
-    fn check_method_arguments(&self, obj_type: &TypeDecl, method: &Rc<MethodFunction>,
-                             _args: &Vec<ExprRef>, arg_types: &Vec<TypeDecl>, method_name: &str) -> Result<(), TypeCheckError>;
-    
-    /// Process builtin method calls
-    fn visit_builtin_method_call(&mut self, receiver: &ExprRef, method: &BuiltinMethod, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError>;
-    
-    /// Process impl block method validation
-    fn process_impl_method_validation(&mut self, target_type: DefaultSymbol, method: &Rc<MethodFunction>, has_generics: bool) -> Result<(), TypeCheckError>;
-    
-    /// Setup method parameter context for type checking
-    fn setup_method_parameter_context(&mut self, method: &Rc<MethodFunction>);
-    
-    /// Restore method parameter context after type checking
-    fn restore_method_parameter_context(&mut self);
-    
-    /// Validate method return type compatibility
-    fn validate_method_return_type(&mut self, method: &Rc<MethodFunction>, body_result: Result<TypeDecl, TypeCheckError>, has_generics: bool) -> Result<(), TypeCheckError>;
-}
-
 /// Implementation of method processing for TypeCheckerVisitor
-impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
+impl<'a> TypeCheckerVisitor<'a> {
     /// Resolve Self type to the actual struct type in impl block context
-    fn resolve_self_type(&self, type_decl: &TypeDecl) -> TypeDecl {
+    pub(crate) fn resolve_self_type(&self, type_decl: &TypeDecl) -> TypeDecl {
         match type_decl {
             TypeDecl::Self_ => {
                 if let Some(target_symbol) = self.context.current_impl_target {
@@ -132,76 +104,11 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
         }
     }
 
-    /// Check method arguments against parameter types, handling Self type specially
-    fn check_method_arguments(&self, obj_type: &TypeDecl, method: &Rc<MethodFunction>, 
-                             _args: &Vec<ExprRef>, arg_types: &Vec<TypeDecl>, method_name: &str) -> Result<(), TypeCheckError> {
-        // Check argument count
-        if arg_types.len() + 1 != method.parameter.len() {
-            return Err(TypeCheckError::method_error(
-                method_name, 
-                obj_type.clone(),
-                &format!("expected {} arguments, found {}", method.parameter.len() - 1, arg_types.len())
-            ));
-        }
-
-        // Check the first parameter (self parameter)
-        if !method.parameter.is_empty() {
-            let (_, first_param_type) = &method.parameter[0];
-            
-            // For Self type, we need to match it with the actual struct type
-            let expected_self_type = match first_param_type {
-                TypeDecl::Self_ => obj_type.clone(), // Self should match the object type
-                _ => first_param_type.clone()
-            };
-            
-            // Check if obj_type is compatible with the first parameter type
-            if !self.are_types_compatible(&expected_self_type, obj_type) {
-                return Err(TypeCheckError::method_error(
-                    method_name,
-                    obj_type.clone(),
-                    &format!(
-                        "self parameter type mismatch: expected {}, found {}",
-                        self.type_name_for_error(&expected_self_type),
-                        self.type_name_for_error(obj_type)
-                    )
-                ));
-            }
-        }
-
-        // Check remaining arguments (starting from index 1 since index 0 is self)
-        for (i, arg_type) in arg_types.iter().enumerate() {
-            if i + 1 < method.parameter.len() {
-                let (_, param_type) = &method.parameter[i + 1];
-                
-                // For Self type in method parameters, resolve to object type
-                let resolved_param_type = match param_type {
-                    TypeDecl::Self_ => obj_type.clone(),
-                    _ => param_type.clone()
-                };
-                
-                if !self.are_types_compatible(&resolved_param_type, arg_type) {
-                    return Err(TypeCheckError::method_error(
-                        method_name,
-                        obj_type.clone(),
-                        &format!(
-                            "argument {} type mismatch: expected {}, found {}",
-                            i + 1,
-                            self.type_name_for_error(&resolved_param_type),
-                            self.type_name_for_error(arg_type)
-                        )
-                    ));
-                }
-            }
-        }
-        
-        Ok(())
-    }
-
     /// Process builtin method calls. Each variant returns the
     /// declared type of the method per `BuiltinMethod`'s docstring;
     /// the receiver and args are still visited so any nested
     /// type-check error inside them surfaces here.
-    fn visit_builtin_method_call(&mut self, receiver: &ExprRef, method: &BuiltinMethod, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+    pub(crate) fn visit_builtin_method_call(&mut self, receiver: &ExprRef, method: &BuiltinMethod, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         // Visit receiver and args for side effects — earlier type
         // errors deeper in the expression tree must propagate even
         // when the method's return type is fixed.
@@ -234,7 +141,7 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
     }
 
     /// Process impl block method validation
-    fn process_impl_method_validation(&mut self, target_type: DefaultSymbol, method: &Rc<MethodFunction>, has_generics: bool) -> Result<(), TypeCheckError> {
+    pub(crate) fn process_impl_method_validation(&mut self, target_type: DefaultSymbol, method: &Rc<MethodFunction>, has_generics: bool) -> Result<(), TypeCheckError> {
         // Check method parameter types
         for (_, param_type) in &method.parameter {
             // Resolve Self type to the actual struct type
@@ -287,7 +194,7 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
     }
 
     /// Setup method parameter context for type checking
-    fn setup_method_parameter_context(&mut self, method: &Rc<MethodFunction>) {
+    pub(crate) fn setup_method_parameter_context(&mut self, method: &Rc<MethodFunction>) {
         self.context.push_scope();
         self.context.shared_self.push(method.has_self_param && !method.self_is_mut);
         // Stage 1 of `&` references: implicit `&self` / `&mut self`
@@ -336,13 +243,13 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
     }
 
     /// Restore method parameter context after type checking
-    fn restore_method_parameter_context(&mut self) {
+    pub(crate) fn restore_method_parameter_context(&mut self) {
         self.context.pop_scope();
         self.context.shared_self.pop();
     }
 
     /// Validate method return type compatibility
-    fn validate_method_return_type(&mut self, method: &Rc<MethodFunction>, body_result: Result<TypeDecl, TypeCheckError>, has_generics: bool) -> Result<(), TypeCheckError> {
+    pub(crate) fn validate_method_return_type(&mut self, method: &Rc<MethodFunction>, body_result: Result<TypeDecl, TypeCheckError>, has_generics: bool) -> Result<(), TypeCheckError> {
         if let Some(ref expected_return_type) = method.return_type {
             let resolved_expected_type = self.resolve_self_type(expected_return_type);
             match body_result {

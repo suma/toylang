@@ -399,21 +399,6 @@ impl TypeCheckError {
         }
     }
 
-    pub fn invalid_literal(value: &str, expected_type: &str) -> Self {
-        Self {
-            kind: Box::new(TypeCheckErrorKind::InvalidLiteral {
-                value: value.to_string(),
-                expected_type: expected_type.to_string(),
-            }),
-            context: None,
-            location: None,
-            origin_module: None,
-            suggestions: Vec::new(),
-            anchors: None,
-            cascade: false,
-        }
-    }
-
     pub fn access_denied(message: &str) -> Self {
         Self {
             kind: Box::new(TypeCheckErrorKind::AccessDenied {
@@ -866,11 +851,6 @@ impl TypeCheckError {
 
     pub fn with_location(mut self, location: SourceLocation) -> Self {
         self.location = Some(location);
-        self
-    }
-
-    pub fn with_suggestion(mut self, suggestion: crate::diagnostic::Suggestion) -> Self {
-        self.suggestions.push(suggestion);
         self
     }
 

@@ -3,11 +3,8 @@ use string_interner::DefaultSymbol;
 use crate::ast::*;
 use crate::type_decl::*;
 use crate::visitor::{ExprVisitor, StmtVisitor, DeclVisitor, ProgramVisitor};
-use crate::type_checker::{
-    TypeCheckerVisitor, TypeCheckError, TypeCheckContext, TypeInferenceState,
-    CoreReferences, method,
-};
-use crate::type_checker::{AcceptableExpr, AcceptableStmt, AcceptableDecl, TypeCheckerCore, TypeInferenceManager};
+use crate::type_checker::{TypeCheckerVisitor, TypeCheckError};
+use crate::type_checker::{AcceptableExpr, AcceptableStmt, AcceptableDecl};
 
 impl AcceptableExpr for Expr {
     fn accept_expr(&mut self, visitor: &mut dyn ExprVisitor) -> Result<TypeDecl, TypeCheckError> {
@@ -535,7 +532,7 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
     }
 
     fn visit_builtin_method_call(&mut self, receiver: &ExprRef, method: &BuiltinMethod, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
-        <Self as method::MethodProcessing>::visit_builtin_method_call(self, receiver, method, args)
+        TypeCheckerVisitor::visit_builtin_method_call(self, receiver, method, args)
     }
 
     fn visit_builtin_call(&mut self, func: &BuiltinFunction, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
@@ -873,62 +870,4 @@ impl<'a> DeclVisitor for TypeCheckerVisitor<'a> {
         Ok(TypeDecl::Unit)
     }
 
-}
-
-
-// Core trait implementations
-impl<'a> TypeCheckerCore<'a> for TypeCheckerVisitor<'a> {
-    fn get_core_refs(&self) -> &CoreReferences<'a> {
-        &self.core
-    }
-
-    fn get_core_refs_mut(&mut self) -> &mut CoreReferences<'a> {
-        &mut self.core
-    }
-
-    fn get_context(&self) -> &TypeCheckContext {
-        &self.context
-    }
-
-    fn get_context_mut(&mut self) -> &mut TypeCheckContext {
-        &mut self.context
-    }
-
-    fn get_type_inference(&self) -> &TypeInferenceState {
-        &self.type_inference
-    }
-
-    fn get_type_inference_mut(&mut self) -> &mut TypeInferenceState {
-        &mut self.type_inference
-    }
-}
-
-impl<'a> TypeInferenceManager for TypeCheckerVisitor<'a> {
-    fn get_cached_type(&self, expr_ref: &ExprRef) -> Option<&TypeDecl> {
-        self.optimization.type_cache.get(expr_ref)
-    }
-
-    fn cache_type(&mut self, expr_ref: &ExprRef, type_decl: TypeDecl) {
-        self.optimization.type_cache.insert(*expr_ref, type_decl);
-    }
-
-    fn clear_type_cache(&mut self) {
-        self.optimization.type_cache.clear();
-    }
-
-    fn setup_type_hint_for_val(&mut self, type_decl: &Option<TypeDecl>) -> Option<TypeDecl> {
-        self.setup_type_hint_for_val(type_decl)
-    }
-
-    fn update_variable_expr_mapping(&mut self, name: DefaultSymbol, expr_ref: &ExprRef) {
-        self.update_variable_expr_mapping(name, expr_ref)
-    }
-
-    fn apply_type_transformations(&mut self, name: DefaultSymbol, type_decl: &TypeDecl) -> Result<(), TypeCheckError> {
-        self.apply_type_transformations(name, type_decl)
-    }
-
-    fn determine_final_type(&mut self, name: DefaultSymbol, inferred_type: TypeDecl, declared_type: &Option<TypeDecl>) -> Result<TypeDecl, TypeCheckError> {
-        self.determine_final_type(name, inferred_type, declared_type)
-    }
 }

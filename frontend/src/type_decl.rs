@@ -78,10 +78,6 @@ impl VectorType {
         }
     }
 
-    pub fn from_source_name(name: &str) -> Option<VectorType> {
-        VectorType::ALL.into_iter().find(|v| v.source_name() == name)
-    }
-
     /// Stable selector for the synthetic argument that carries a
     /// vector type through the AST (see
     /// `type_checker::simd::stamp_simd_result_types`). Every backend

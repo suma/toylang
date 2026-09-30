@@ -1118,10 +1118,6 @@ pub fn parse_tuple_struct_fields(
     Ok(fields)
 }
 
-pub fn parse_struct_fields(parser: &mut Parser, fields: Vec<StructField>) -> ParserResult<Vec<StructField>> {
-    parse_struct_fields_with_generic_context(parser, fields, &[])
-}
-
 pub fn parse_struct_fields_with_generic_context(parser: &mut Parser, mut fields: Vec<StructField>, generic_params: &[string_interner::DefaultSymbol]) -> ParserResult<Vec<StructField>> {
     // Limit maximum number of fields to prevent infinite loops
     const MAX_FIELDS: usize = 1000;
@@ -1198,24 +1194,6 @@ pub fn parse_struct_fields_with_generic_context(parser: &mut Parser, mut fields:
             }
         }
     }
-}
-
-pub fn parse_impl_methods(parser: &mut Parser, methods: Vec<Rc<MethodFunction>>) -> ParserResult<Vec<Rc<MethodFunction>>> {
-    parse_impl_methods_with_generic_context(parser, methods, &[], &std::collections::HashMap::new())
-}
-
-/// Parse the body of a `trait` declaration: a sequence of method
-/// signatures (no body block). Each signature is `fn name(params) -> RetTy`
-/// optionally followed by `requires` / `ensures` clauses. Methods are
-/// terminated by a newline; the loop ends at `}`. Generics on individual
-/// trait methods are accepted but their bounds are dropped (the initial
-/// trait feature implementation does not propagate them).
-/// Backward-compat wrapper for non-generic traits — calls the
-/// generic-aware variant with an empty generic param list.
-pub fn parse_trait_method_signatures(
-    parser: &mut Parser,
-) -> ParserResult<Vec<TraitMethodSignature>> {
-    parse_trait_method_signatures_with_generics(parser, &[])
 }
 
 /// ITER-PROTOCOL-TRAIT: parses trait method signatures with the
@@ -1473,10 +1451,6 @@ pub fn parse_impl_methods_with_generic_context(
     }
 }
 
-pub fn parse_method_param_list(parser: &mut Parser, args: Vec<Parameter>) -> ParserResult<(Vec<Parameter>, bool, bool)> {
-    parse_method_param_list_with_generic_context(parser, args, &[])
-}
-
 /// Parse a method parameter list. Returns
 /// `(parameters, has_self, self_is_mut)` where `self_is_mut` is
 /// only meaningful when `has_self == true`.
@@ -1530,10 +1504,6 @@ pub fn parse_method_param_list_with_generic_context(parser: &mut Parser, args: V
 
     let (params, _) = parse_param_def_list_impl_with_generic_context(parser, args, generic_params)?;
     Ok((params, has_self, self_is_mut))
-}
-
-pub fn parse_param_def_list_impl(parser: &mut Parser, args: Vec<Parameter>) -> ParserResult<(Vec<Parameter>, bool)> {
-    parse_param_def_list_impl_with_generic_context(parser, args, &[])
 }
 
 pub fn parse_param_def_list_impl_with_generic_context(parser: &mut Parser, mut args: Vec<Parameter>, generic_params: &[string_interner::DefaultSymbol]) -> ParserResult<(Vec<Parameter>, bool)> {

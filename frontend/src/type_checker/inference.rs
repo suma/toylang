@@ -109,47 +109,14 @@ impl TypeInferenceState {
         }
     }
 
-    pub fn set_type_hint(&mut self, hint: Option<TypeDecl>) {
-        self.type_hint = hint;
-    }
-
     pub fn get_type_hint(&self) -> Option<TypeDecl> {
         self.type_hint.clone()
     }
 
-    pub fn increment_recursion_depth(&mut self) -> Result<(), crate::type_checker::TypeCheckError> {
-        if self.recursion_depth >= self.max_recursion_depth {
-            return Err(crate::type_checker::TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, 
-                "Maximum recursion depth reached in type inference"
-            ));
-        }
-        self.recursion_depth += 1;
-        Ok(())
-    }
-
-    pub fn decrement_recursion_depth(&mut self) {
-        if self.recursion_depth > 0 {
-            self.recursion_depth -= 1;
-        }
-    }
-
-    pub fn add_number_context(&mut self, expr_ref: ExprRef, type_decl: TypeDecl) {
-        self.number_usage_context.push((expr_ref, type_decl.clone()));
-        // Also add to comprehensive expr_types mapping
-        self.expr_types.insert(expr_ref, type_decl);
-    }
     
     /// Record the type of any expression
     pub fn set_expr_type(&mut self, expr_ref: ExprRef, type_decl: TypeDecl) {
         self.expr_types.insert(expr_ref, type_decl);
-    }
-
-    pub fn map_variable(&mut self, name: DefaultSymbol, expr_ref: ExprRef) {
-        self.variable_expr_mapping.insert(name, expr_ref);
-    }
-
-    pub fn get_variable_expr(&self, name: DefaultSymbol) -> Option<ExprRef> {
-        self.variable_expr_mapping.get(&name).copied()
     }
 
     pub fn clear(&mut self) {
@@ -184,17 +151,6 @@ impl TypeInferenceState {
         None
     }
     
-    /// Add or update a generic type mapping in the current (top) scope
-    pub fn set_generic_type(&mut self, param: DefaultSymbol, type_decl: TypeDecl) {
-        if let Some(current_scope) = self.generic_substitutions_stack.last_mut() {
-            current_scope.insert(param, type_decl);
-        } else {
-            // If no scope exists, create one
-            let mut new_scope = HashMap::new();
-            new_scope.insert(param, type_decl);
-            self.generic_substitutions_stack.push(new_scope);
-        }
-    }
     
     /// Record a generic instantiation for later processing
     pub fn record_instantiation(&mut self, instantiation: GenericInstantiation) {

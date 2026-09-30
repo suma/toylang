@@ -502,6 +502,24 @@ impl TypeDecl {
     /// nor stored in struct / tuple / array / dict fields. With
     /// no lifetime system, this prevents references from
     /// outliving their referents.
+    /// Whether the type is, or holds, `Unknown` — the type a failed
+    /// expression gets. An error about such a type follows from the
+    /// earlier failure (LLM-TOOLING-CASCADE-BY-KIND).
+    pub fn contains_unknown(&self) -> bool {
+        match self {
+            TypeDecl::Unknown => true,
+            TypeDecl::Ref { inner, .. } => inner.contains_unknown(),
+            TypeDecl::Array(elems, _, _) | TypeDecl::Tuple(elems) => elems.iter().any(|t| t.contains_unknown()),
+            TypeDecl::Dict(k, v) => k.contains_unknown() || v.contains_unknown(),
+            TypeDecl::Struct(_, args) | TypeDecl::Enum(_, args) => args.iter().any(|t| t.contains_unknown()),
+            TypeDecl::Range(t) => t.contains_unknown(),
+            TypeDecl::Function(params, ret) => {
+                params.iter().any(|t| t.contains_unknown()) || ret.contains_unknown()
+            }
+            _ => false,
+        }
+    }
+
     pub fn contains_ref(&self) -> bool {
         match self {
             TypeDecl::Ref { .. } => true,

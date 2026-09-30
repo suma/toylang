@@ -204,7 +204,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                      a column window needs struct elements",
                     field_name,
                     self.type_name_for_error(other)
-                )));
+                )).about_types(&[other]));
             }
         };
         let struct_fields = self.context.get_struct_fields(struct_symbol).ok_or_else(|| {
@@ -663,7 +663,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                             param_name,
                             self.named_type_for_error(bound),
                             self.named_type_for_error(inferred)
-                        )));
+                        )).about_types(&[bound, inferred]));
                     }
                 }
             }
@@ -734,7 +734,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, format!(
                 "Cannot slice type {} - no __getslice__ method found",
                 self.type_name_for_error(object_type)
-            )))
+            )).about_types(&[object_type]))
         }
     }
 
@@ -756,7 +756,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::ARRAY, format!(
                 "Cannot index into type {} - no __getitem__ method found",
                 self.type_name_for_error(object_type)
-            )))?;
+            )).about_types(&[object_type]))?;
 
         // POINTER P2: `&self` / `&mut self` receivers do not occupy a
         // `parameter` slot (the parser only flips `has_self_param`),
@@ -836,7 +836,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::ARRAY, format!(
                 "Cannot assign to struct type {} - no __setitem__ method found",
                 self.type_name_for_error(object_type)
-            )))?;
+            )).about_types(&[object_type]))?;
         let first_param_is_self = setitem_method
             .parameter
             .first()
@@ -885,7 +885,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, format!(
                 "Cannot slice-assign to type {} - no __setslice__ method found",
                 self.type_name_for_error(object_type)
-            )))
+            )).about_types(&[object_type]))
         }
     }
 }

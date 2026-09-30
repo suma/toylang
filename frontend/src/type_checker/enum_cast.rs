@@ -103,7 +103,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 "Cannot cast enum `{}` to {}: `as` turns an enum into an integer type only",
                 resolve(self, enum_name),
                 self.type_name_for_error(target)
-            )));
+            )).about_types(&[target]));
         }
         if let Some(v) = variants.iter().find(|v| !v.payload_types.is_empty()) {
             return Err(TypeCheckError::coded(crate::diagnostic::codes::CONVERSION, format!(
@@ -114,7 +114,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 self.type_name_for_error(target),
                 resolve(self, enum_name),
                 resolve(self, v.name),
-            )));
+            )).about_types(&[target]));
         }
         for (v, value) in variants.iter().zip(discriminant_values(&variants)) {
             if integer_literal_of(value, target).is_none() {
@@ -124,7 +124,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     self.type_name_for_error(target),
                     resolve(self, enum_name),
                     resolve(self, v.name),
-                )));
+                )).about_types(&[target]));
             }
         }
         self.enum_casts.insert(*operand, (enum_name, target.clone()));

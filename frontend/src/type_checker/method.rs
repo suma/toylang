@@ -371,7 +371,7 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                                         method_name,
                                         self.type_name_for_error(&resolved_expected_type),
                                         self.type_name_for_error(&actual_return_type)
-                                    )).with_location(loc));
+                                    )).about_types(&[&resolved_expected_type, &actual_return_type]).with_location(loc));
                                 }
                             }
                         }
@@ -385,7 +385,7 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                                 method_name,
                                 self.type_name_for_error(&resolved_expected_type),
                                 self.type_name_for_error(&actual_return_type)
-                            )).with_location(loc));
+                            )).about_types(&[&resolved_expected_type, &actual_return_type]).with_location(loc));
                         }
                     }
                 },

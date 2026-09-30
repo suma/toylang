@@ -330,6 +330,7 @@ fn a_module_flagged_diagnostic_is_never_rendered_against_the_local_file() {
         origin_module: Some("helper".to_string()),
         suggestions: Vec::new(),
         related: Vec::new(),
+        cascade: false,
         span_word: None,
         backtrace: Vec::new(),
     };

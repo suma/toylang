@@ -12,6 +12,9 @@
 
 ### 2026-09-30
 
+- **LLM-TOOLING-CASCADE-BY-KIND — 連鎖の判定を印で** — `TypeCheckError::cascade` /
+  `follows_unknown` (型ペイロードに `Unknown` を含む種別は構造で、型を綴るコード付きの 54 か所は
+  `about_types` で)。文言の文字列判定をやめた。
 - **LLM-TOOLING-RELATED-REST — 関連箇所の残り** — E0003 の did-you-mean (候補の宣言)、
   E0023 (trait 側の契約)、E0022 (scoped allocator)、E0026 (窓を取った元)、E0028 (コンテナ) を埋めた。
 - **LLM-TOOLING-NO-SPAN — 位置のない型エラー** — 宣言の検査 (未定義の型・重複 variant 等)、
@@ -2589,11 +2592,6 @@
   `fn bad() -> &u64 { val n = 5u64 \n &n }` は E0026 ではなく
   **`[E0003] Identifier 'n' not found`** になる (誤った診断)。
   どちらも E0026 の例として説明文に載せようとして見つけた。
-- **LLM-TOOLING-CASCADE-BY-KIND — 連鎖の判定が文言頼み** —
-  `diagnostic::drop_cascades` は「文言が型 `Unknown` を名指すか」を
-  文字列で判定している (文頭の `Unknown field` は除外する程度の
-  ヒューリスティック)。`TypeCheckError` を作る時点で「オペランドに
-  `Unknown` が居た」を印として持たせ、それで落とすべき。
 - **LLM-TOOLING-SCRUTINEE-OPTION (要調査)** — 2026-09-30 の集計で
   `match scrutinee must be ..., got Option<i64>` / `Option<u64>` /
   `Result<u64, E>` が計 30 件ほど出ていた。これを期待するテストは無く

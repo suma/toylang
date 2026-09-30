@@ -142,7 +142,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, format!(
                     "Cannot access type {} - only arrays, dictionaries, and structs with __getitem__ are supported",
                     self.type_name_for_error(&object_type)
-                )))
+                )).about_types(&[&object_type]))
             }
         }
     }
@@ -227,7 +227,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                                     "Dict value type mismatch: expected {}, found {}",
                                     self.type_name_for_error(expected_dict_value_type),
                                     self.type_name_for_error(&resolved_value_type)
-                                )));
+                                )).about_types(&[expected_dict_value_type, &resolved_value_type]));
                             }
                             // No value: an assignment is `Unit` at
                             // every form (see `visit_assign`).
@@ -284,7 +284,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, format!(
                     "Cannot assign to type {} - only arrays, dictionaries, and structs with __setitem__ are supported",
                     self.type_name_for_error(&object_type)
-                )))
+                )).about_types(&[&object_type]))
             }
         }
     }
@@ -395,7 +395,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     entry_index + 1,
                     self.type_name_for_error(&final_key_type),
                     self.type_name_for_error(&check_key_type)
-                )));
+                )).about_types(&[&final_key_type, &check_key_type]));
             }
             if check_value_type != final_value_type {
                 return Err(TypeCheckError::coded(crate::diagnostic::codes::TYPE_MISMATCH, format!(
@@ -403,7 +403,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     entry_index + 1,
                     self.type_name_for_error(&final_value_type),
                     self.type_name_for_error(&check_value_type)
-                )));
+                )).about_types(&[&final_value_type, &check_value_type]));
             }
         }
 
@@ -480,7 +480,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 None => Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, format!(
                     "Cannot access index {} on non-tuple type {}",
                     index, self.type_name_for_error(&tuple_type)
-                ))),
+                )).about_types(&[&tuple_type])),
             },
         }
     }
@@ -884,7 +884,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 "Cannot cast {} to {}",
                 self.type_name_for_error(&expr_type),
                 self.type_name_for_error(target_type)
-            )))
+            )).about_types(&[&expr_type, target_type]))
         }
     }
 }

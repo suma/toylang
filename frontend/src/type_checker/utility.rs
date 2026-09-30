@@ -222,7 +222,8 @@ impl<'a> TypeCheckerVisitor<'a> {
             return Err(TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
                 "{} '{}' generic parameter '{}' bound violation: expected {}, got {}{}",
                 owner_kind, owner_name, param_name, bound_str, inferred_str, note
-            )));
+            ))
+            .about_types(&[inferred]));
         }
         Ok(())
     }

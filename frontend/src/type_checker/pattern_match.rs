@@ -158,7 +158,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                     "struct pattern requires a struct value, got {}",
                     self.type_name_for_error(expected_ty)
-                )));
+                )).about_types(&[expected_ty]));
             }
         };
         if value_name != struct_name {
@@ -233,7 +233,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                         "literal pattern is only valid where a primitive value is expected, got {}",
                         self.type_name_for_error(expected_ty)
-                    )));
+                    )).about_types(&[expected_ty]));
                 }
                 let saved_hint = self.type_inference.type_hint.clone();
                 self.type_inference.type_hint = Some(expected_ty.clone());
@@ -246,13 +246,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                             "const `{name}` has type {}, but this position holds {}",
                             self.type_name_for_error(&lit_ty),
                             self.type_name_for_error(expected_ty)
-                        )));
+                        )).about_types(&[&lit_ty, expected_ty]));
                     }
                     return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                         "literal pattern type {} does not match expected {}",
                         self.type_name_for_error(&lit_ty),
                         self.type_name_for_error(expected_ty)
-                    )));
+                    )).about_types(&[&lit_ty, expected_ty]));
                 }
                 Ok(())
             }
@@ -263,7 +263,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                             "tuple pattern requires a tuple value, got {}",
                             self.type_name_for_error(expected_ty)
-                        )));
+                        )).about_types(&[expected_ty]));
                     }
                 };
                 if sub_patterns.len() != element_types.len() {
@@ -311,7 +311,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                             "enum-variant sub-pattern expects an enum payload, got {}",
                             self.type_name_for_error(expected_ty)
-                        )));
+                        )).about_types(&[expected_ty]));
                     }
                 };
                 if *pat_enum != enum_name {
@@ -369,7 +369,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                 "range pattern is only valid where an integer is expected, got {}",
                 self.type_name_for_error(expected_ty)
-            )));
+            )).about_types(&[expected_ty]));
         }
         let lo = self.range_endpoint(low, expected_ty)?;
         let hi = self.range_endpoint(high, expected_ty)?;
@@ -401,7 +401,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 "range endpoint type {} does not match {}",
                 self.type_name_for_error(&ty),
                 self.type_name_for_error(expected_ty)
-            )));
+            )).about_types(&[&ty, expected_ty]));
         }
         self.core
             .expr_pool
@@ -487,7 +487,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                     "match scrutinee must be an enum, struct, primitive (bool / an integer / str), or tuple, got {}",
                     self.type_name_for_error(&scrutinee_ty)
-                )));
+                )).about_types(&[&scrutinee_ty]));
             }
         };
 
@@ -606,13 +606,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                                 "const `{name}` has type {}, but the match is on {}",
                                 self.type_name_for_error(&lit_ty),
                                 self.type_name_for_error(&prim_ty)
-                            )));
+                            )).about_types(&[&lit_ty, &prim_ty]));
                         }
                         return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                             "literal pattern type {} does not match scrutinee type {}",
                             self.type_name_for_error(&lit_ty),
                             self.type_name_for_error(&prim_ty)
-                        )));
+                        )).about_types(&[&lit_ty, &prim_ty]));
                     }
                     // Record the concrete literal value for duplicate /
                     // exhaustiveness checks. A guarded arm does not fully
@@ -693,7 +693,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                             return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                                 "tuple pattern requires a tuple scrutinee, got {}",
                                 self.type_name_for_error(&scrutinee_ty)
-                            )));
+                            )).about_types(&[&scrutinee_ty]));
                         }
                     };
                     if sub_patterns.len() != element_types.len() {
@@ -721,7 +721,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                             return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                                 "enum-variant pattern cannot be used in a match on {}",
                                 self.type_name_for_error(t)
-                            )));
+                            )).about_types(&[t]));
                         }
                         ScrutineeKind::Struct => {
                             return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, 
@@ -820,7 +820,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                         "match arm guard must be of type bool, got {}",
                         self.type_name_for_error(&guard_ty)
-                    )));
+                    )).about_types(&[&guard_ty]));
                 }
             }
             // IF-VAL: an arm body that is a literal empty block (`=> {}`)
@@ -959,7 +959,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     self.type_name_for_error(&first),
                     i,
                     self.type_name_for_error(t)
-                )));
+                )).about_types(&[&first, t]));
             }
         }
         Ok(first)
@@ -1028,7 +1028,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 return Err(TypeCheckError::coded(crate::diagnostic::codes::MATCH_COVERAGE, format!(
                     "non-exhaustive match {}: position type {} is not fully covered — add a wildcard `_` or a bare name",
                     context, self.type_name_for_error(position_type)
-                )));
+                )).about_types(&[position_type]));
             }
         };
         // Group sub-patterns by variant name; collect refutability

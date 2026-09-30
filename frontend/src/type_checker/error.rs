@@ -273,6 +273,12 @@ pub struct TypeCheckError {
     /// #3). Boxed and optional: few errors have either, and every
     /// type-checker function returns `Result<_, TypeCheckError>`.
     pub anchors: Option<Box<ErrorAnchors>>,
+    /// Set when the error is about a type that is `Unknown` because an
+    /// earlier expression failed: a consequence, not a mistake of its
+    /// own. Typed kinds are recognised structurally
+    /// ([`Self::follows_unknown`]); a message that spells its types out
+    /// is marked where it is built ([`Self::about_types`]).
+    pub cascade: bool,
 }
 
 /// See [`TypeCheckError::anchors`].
@@ -298,6 +304,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -313,6 +320,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -327,6 +335,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -341,6 +350,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -355,6 +365,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -368,6 +379,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -383,6 +395,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -397,6 +410,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -410,6 +424,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -423,6 +438,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -437,6 +453,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -451,6 +468,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -467,6 +485,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -480,6 +499,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -492,6 +512,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -504,6 +525,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -516,6 +538,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -535,6 +558,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -568,6 +592,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -580,6 +605,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -592,6 +618,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -610,6 +637,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -622,6 +650,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -639,6 +668,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -652,6 +682,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -674,6 +705,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -686,6 +718,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -698,6 +731,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -716,6 +750,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -728,6 +763,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
@@ -742,12 +778,39 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 
     pub fn with_context(mut self, context: &str) -> Self {
         self.context = Some(context.to_string());
         self
+    }
+
+    /// Mark the error as following from an earlier one when any of the
+    /// types it is about holds `Unknown`.
+    pub fn about_types(mut self, types: &[&TypeDecl]) -> Self {
+        if types.iter().any(|t| t.contains_unknown()) {
+            self.cascade = true;
+        }
+        self
+    }
+
+    /// Whether this error only follows from another: marked so where it
+    /// was built, or a typed kind whose types hold `Unknown`.
+    pub fn follows_unknown(&self) -> bool {
+        self.cascade
+            || match &*self.kind {
+                TypeCheckErrorKind::TypeMismatch { expected, actual } => {
+                    expected.contains_unknown() || actual.contains_unknown()
+                }
+                TypeCheckErrorKind::TypeMismatchOperation(op) => {
+                    op.left.contains_unknown() || op.right.contains_unknown()
+                }
+                TypeCheckErrorKind::UnsupportedOperation { type_name, .. } => type_name.contains_unknown(),
+                TypeCheckErrorKind::MethodError(data) => data.type_name.contains_unknown(),
+                _ => false,
+            }
     }
 
     /// Place the error at `word` inside the declaration starting at
@@ -821,6 +884,7 @@ impl TypeCheckError {
             origin_module: None,
             suggestions: Vec::new(),
             anchors: None,
+            cascade: false,
         }
     }
 

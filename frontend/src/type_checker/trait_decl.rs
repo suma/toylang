@@ -260,7 +260,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         i + 1,
                         self.type_name_for_error(&s_resolved),
                         self.type_name_for_error(&p_resolved)
-                    ))));
+                    )).about_types(&[&s_resolved, &p_resolved])));
                 }
             }
             // DBC-TRAIT-INHERIT: a contract is an expression written
@@ -333,7 +333,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     "impl {t_str} for {s_str}: method '{m_str}' return type mismatch (expected {}, found {})",
                     self.type_name_for_error(&s_ret),
                     self.type_name_for_error(&m_ret)
-                ))));
+                )).about_types(&[&s_ret, &m_ret])));
             }
         }
 

@@ -250,6 +250,10 @@ pub struct Diagnostic {
     /// Other places this diagnostic is about (LLM-TOOLING #3). Always
     /// present in the JSON, empty when there are none.
     pub related: Vec<Related>,
+    /// The error only follows from another (`TypeCheckError::follows_unknown`);
+    /// `drop_cascades` removes it next to a real error.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub cascade: bool,
     /// See `TypeCheckError::location_word`; consumed by `anchor_in`.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub span_word: Option<String>,
@@ -288,6 +292,7 @@ impl Diagnostic {
             origin_module: None,
             suggestions: Vec::new(),
             related: Vec::new(),
+            cascade: false,
             span_word: None,
             backtrace: Vec::new(),
         }
@@ -310,6 +315,7 @@ impl Diagnostic {
             origin_module: error.origin_module.clone(),
             suggestions: error.suggestions.clone(),
             related: error.anchors.as_ref().map(|a| a.related.clone()).unwrap_or_default(),
+            cascade: error.follows_unknown(),
             span_word: error.anchors.as_ref().and_then(|a| a.location_word.clone()),
             backtrace: Vec::new(),
         }
@@ -449,6 +455,7 @@ impl Diagnostic {
             origin_module: None,
             suggestions: error.suggestions.clone(),
             related: Vec::new(),
+            cascade: false,
             span_word: None,
             backtrace: Vec::new(),
         }
@@ -456,38 +463,20 @@ impl Diagnostic {
 }
 
 /// Drop the errors that are consequences of another one (LLM-TOOLING
-/// #6).
+/// #6, CASCADE-BY-KIND).
 ///
 /// A failed expression is typed `Unknown`, and checks downstream of it
 /// are meant to stay quiet about it (the poison rule). The ones that do
-/// not are recognisable: they name the type `Unknown`, which a program
-/// cannot write, or report an operand that was never typed. Each check
-/// used to be fixed one at a time (LLM-LOOP P1 / P3); this is the net
-/// under all of them.
+/// not are marked where the error is built — `Diagnostic::cascade`,
+/// from `TypeCheckError::follows_unknown` — and removed here, once,
+/// rather than fixed one check at a time.
 ///
 /// Only when a real error remains: an `Unknown` with nothing to explain
 /// it is the checker's own bug, and hiding it would hide that.
 pub fn drop_cascades(errors: &mut Vec<Diagnostic>) {
-    let is_cascade = |d: &Diagnostic| {
-        names_unknown_type(&d.message) || d.message.starts_with("desugar_null_coalesce:")
-    };
-    if errors.iter().any(|d| !is_cascade(d)) {
-        errors.retain(|d| !is_cascade(d));
+    if errors.iter().any(|d| !d.cascade) {
+        errors.retain(|d| !d.cascade);
     }
-}
-
-/// Whether `message` spells the type `Unknown`: the whole word, where a
-/// type goes (`got Unknown`, `Vec<Unknown>`), not the adjective that
-/// starts a sentence (`Unknown field 'z'`).
-fn names_unknown_type(message: &str) -> bool {
-    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
-    message.match_indices("Unknown").any(|(i, w)| {
-        let before = message[..i].chars().next_back();
-        let rest = &message[i + w.len()..];
-        let whole = !before.is_some_and(is_ident) && !rest.chars().next().is_some_and(is_ident);
-        let adjective = rest.strip_prefix(' ').and_then(|r| r.chars().next()).is_some_and(|c| c.is_ascii_lowercase());
-        whole && i > 0 && !adjective
-    })
 }
 
 /// Put diagnostics in their one reported order and drop exact repeats
@@ -910,12 +899,16 @@ mod tests {
 
     #[test]
     fn a_cascade_is_dropped_only_next_to_a_real_error() {
-        let d = |m: &str| Diagnostic::message_only(m.to_string(), "t.t");
-        let mut both = vec![d("Unknown field 'z' in struct 'P'"), d("field access 'w' for type Unknown")];
+        let d = |m: &str, cascade: bool| {
+            let mut d = Diagnostic::message_only(m.to_string(), "t.t");
+            d.cascade = cascade;
+            d
+        };
+        let mut both = vec![d("Unknown field 'z' in struct 'P'", false), d("field access 'w' for type Unknown", true)];
         drop_cascades(&mut both);
         assert_eq!(both.len(), 1);
-        assert!(both[0].message.starts_with("Unknown field"), "`Unknown field` is a word in a sentence, not the type");
-        let mut alone = vec![d("match scrutinee must be an enum, got Unknown")];
+        assert!(both[0].message.starts_with("Unknown field"));
+        let mut alone = vec![d("match scrutinee must be an enum, got Unknown", true)];
         drop_cascades(&mut alone);
         assert_eq!(alone.len(), 1, "an unexplained Unknown is kept");
     }

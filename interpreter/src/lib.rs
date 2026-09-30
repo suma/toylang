@@ -1905,6 +1905,7 @@ fn runtime_diagnostic(
         origin_module: None,
         suggestions: Vec::new(),
         related: Vec::new(),
+        cascade: false,
         span_word: None,
         backtrace: backtrace
             .iter()
@@ -1940,6 +1941,7 @@ fn ir_vm_diagnostic(failure: &ir_vm::lift::IrVmFailure, entry_file: &str) -> Dia
         origin_module: None,
         suggestions: Vec::new(),
         related: Vec::new(),
+        cascade: false,
         span_word: None,
         backtrace: failure
             .frames

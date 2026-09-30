@@ -363,7 +363,7 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
                     "range endpoints must be matching integer types, got {}..{}",
                     self.type_name_for_error(&start_ty),
                     self.type_name_for_error(&end_ty)
-                )));
+                )).about_types(&[&start_ty, &end_ty]));
             }
         };
         Ok(TypeDecl::Range(Box::new(element_ty)))
@@ -435,7 +435,7 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
             return Err(TypeCheckError::coded(crate::diagnostic::codes::TYPE_MISMATCH, format!(
                 "`with allocator = ...` requires an Allocator value, but got {}",
                 self.type_name_for_error(&allocator_ty)
-            )));
+            )).about_types(&[&allocator_ty]));
         }
         self.visit_expr(body)
     }
@@ -673,7 +673,7 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
                         return Err(TypeCheckError::coded(crate::diagnostic::codes::TYPE_MISMATCH, format!(
                             "abs expects an i64 or f64 argument, got {}",
                             self.type_name_for_error(&arg_types[0])
-                        )));
+                        )).about_types(&[&arg_types[0]]));
                     }
                 }
             }
@@ -683,7 +683,7 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
                 return Err(TypeCheckError::coded(crate::diagnostic::codes::TYPE_MISMATCH, format!(
                     "{name} expects integer arguments, got {}",
                     self.type_name_for_error(&arg_types[0])
-                )));
+                )).about_types(&[&arg_types[0]]));
             }
             if arg_types[0] != arg_types[1] {
                 let name = if matches!(func, BuiltinFunction::Min) { "min" } else { "max" };
@@ -691,7 +691,7 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
                     "{name} arguments must agree on type: got {} and {}",
                     self.type_name_for_error(&arg_types[0]),
                     self.type_name_for_error(&arg_types[1])
-                )));
+                )).about_types(&[&arg_types[0], &arg_types[1]]));
             }
             return Ok(arg_types[0].clone());
         }

@@ -1858,7 +1858,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                  `(`, the two are read as the single call `{fn_name_str}(...)` -- start the \
                  next line with something else (bind it: `val x = (...)`)",
                 self.type_name_for_error(&ty)
-            )));
+            )).about_types(&[&ty]));
         }
         let error = TypeCheckError::not_found("Function", &fn_name_str);
         Err(self.suggest_known_function_name(error, &fn_name_str))
@@ -2093,7 +2093,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     self.type_name_for_error(&arg_ty),
                     name_str,
                     idx + 1
-                )));
+                )).about_types(&[expected, &arg_ty]));
             }
         }
         self.type_inference.type_hint = original_hint;
@@ -2176,7 +2176,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         "closure body returns {} but declared return type is {}",
                         self.type_name_for_error(&body_ty),
                         self.type_name_for_error(declared)
-                    )));
+                    )).about_types(&[&body_ty, declared]));
                 }
                 declared.clone()
             }
@@ -2930,7 +2930,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let err = TypeCheckError::coded(crate::diagnostic::codes::TRY_OPERAND, format!(
                     "`?` requires Result<T, E> or Option<T>, got {}",
                     self.type_name_for_error(&inner_ty)
-                ));
+                )).about_types(&[&inner_ty]);
                 return Err(self.error_with_location(err, &inner));
             }
         };
@@ -3284,13 +3284,14 @@ impl<'a> TypeCheckerVisitor<'a> {
             lhs_ty
         } else {
             self.null_coalesce_lhs_types.get(&lhs).map(|(t, _)| t.clone()).ok_or_else(|| {
-                self.error_with_location(
-                    TypeCheckError::coded(
-                        crate::diagnostic::codes::INTERNAL,
-                        "desugar_null_coalesce: left operand was never typed",
-                    ),
-                    &lhs,
-                )
+                // The left operand failed to type, so an error for it is
+                // already reported: this one only follows from it.
+                let mut err = TypeCheckError::coded(
+                    crate::diagnostic::codes::INTERNAL,
+                    "desugar_null_coalesce: left operand was never typed",
+                );
+                err.cascade = true;
+                self.error_with_location(err, &lhs)
             })?
         };
 
@@ -3304,7 +3305,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 return Err(TypeCheckError::coded(crate::diagnostic::codes::TRY_OPERAND, format!(
                     "`??` requires Option<T> or Result<T, E>, got `{}`",
                     self.type_name_for_error(&lhs_ty)
-                )));
+                )).about_types(&[&lhs_ty]));
             }
         };
         let enum_name_str = stdlib_enum_name(
@@ -3499,7 +3500,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 return Err(TypeCheckError::coded(crate::diagnostic::codes::TRY_OPERAND, format!(
                     "`??` requires Option<T> or Result<T, E>, got `{}`",
                     self.type_name_for_error(&lhs_ty)
-                )));
+                )).about_types(&[&lhs_ty]));
             }
         };
         let enum_name_str = stdlib_enum_name(
@@ -3551,7 +3552,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 "`??` arms have incompatible types: `{}` (success) and `{}` (default)",
                 self.type_name_for_error(&success_type),
                 self.type_name_for_error(&rhs_ty),
-            )));
+            )).about_types(&[&success_type, &rhs_ty]));
         }
         Ok(success_type)
     }

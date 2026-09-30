@@ -264,7 +264,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 return Err(TypeCheckError::coded(crate::diagnostic::codes::GENERIC_INFERENCE, format!(
                     "method '{}' on `{}` returns the type parameter `{}`, which is not                      bound here — name it in the enclosing function's or impl's parameter list",
                     method_name, self.type_name_for_error(&resolved_obj_type), sym_str
-                )));
+                )).about_types(&[&resolved_obj_type]));
             }
         }
         
@@ -420,7 +420,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 self.type_name_for_error(obj_type),
                 expected_count,
                 args.len()
-            ));
+            )).about_types(&[obj_type]);
             return Err(match args.first() {
                 Some(arg) => self.error_with_location(err, arg),
                 None => err,
@@ -1007,7 +1007,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                                     method_name,
                                     self.resolve_symbol_name(*struct_name),
                                     idx + 1
-                                )));
+                                )).about_types(&[expected, &arg_ty]));
                             }
                         }
                         self.type_inference.type_hint = original_hint;
@@ -1302,7 +1302,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                                         enum_str, v_str,
                                         self.type_name_for_error(prev),
                                         self.type_name_for_error(&actual_ty)
-                                    )));
+                                    )).about_types(&[prev, &actual_ty]));
                                 }
                             } else {
                                 substitutions.insert(*p, actual_ty.clone());
@@ -1318,7 +1318,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                             enum_str, v_str,
                             self.type_name_for_error(&expected_resolved),
                             self.type_name_for_error(&actual_ty)
-                        )));
+                        )).about_types(&[&expected_resolved, &actual_ty]));
                     }
                 }
                 self.type_inference.type_hint = saved_hint;

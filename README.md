@@ -108,18 +108,30 @@ is where most of the gaps in the language were found.
 - **Error System**: Structured error reporting with consistent formatting
 
 ### Interpreter (`interpreter/`)
-- **Tree-walking Execution**: Direct AST traversal with `Rc<RefCell<Object>>` runtime values
-- **Environment Management**: Proper variable scoping and lifetime management
-- **Module Integration**: Seamless AST integration with qualified identifier support
-- **Built-in Operations**: Comprehensive arithmetic, logical, and comparison operators
-- **Method Registry**: Support for both struct methods and built-in type methods
-- **Resource Management**: Automatic object destruction with custom destructor support
+- **Default engine is the IR VM**: `interpreter` lowers the checked AST
+  through `compiler_lower`, the same lowering the AOT and JIT lanes use,
+  and runs the IR
+- **Tree-walker as the oracle**: direct AST traversal with
+  `Rc<RefCell<Object>>` values, independent of the lowering — the lane
+  the consistency tests compare the others against
+- **Module Integration**: imported modules are merged into one program,
+  with their side tables and file ids, so diagnostics name the module's
+  own file and line
+- **Driver**: `--test`, `--check` (contracts as property tests),
+  `--explain`, `--api`, `--effects`, `--profile=mem`, `--heap-check`
+- **Queries** (`query.rs`): the type at a position, definitions,
+  references and call edges, answered from the checker's own result —
+  what `toy query` runs
+
+Where each concern is implemented is mapped in
+[`design-docs/CODE_MAP.md`](design-docs/CODE_MAP.md).
 
 ## Getting Started
 
 ### Prerequisites
-- Rust 1.70+ 
+- Rust 1.85+ (the workspace uses edition 2024)
 - Cargo package manager
+- `cargo-nextest` for the test suite (`cargo install cargo-nextest`)
 
 ### Building
 
@@ -181,16 +193,52 @@ cargo run -q -p compiler -- interpreter/example/allocator_list.t --heap-check=po
 ### A program with its own modules (`toy`)
 
 ```bash
+cargo run -q -p toy -- new   mypkg                  # a package that runs, tests and checks as is
 cargo run -q -p toy -- build poc/logsearch [--release]
 cargo run -q -p toy -- run   poc/logsearch -- serve /var/log/archive 8080
 cargo run -q -p toy -- test  poc/logsearch          # AOT by default, in parallel
 cargo run -q -p toy -- check poc/logsearch --format=json
+cargo run -q -p toy -- check poc/logsearch --format=short   # one diagnostic per line
+cargo run -q -p toy -- fix   poc/logsearch [--dry-run]      # apply machine-applicable fixes, re-check
 ```
 
 Every subcommand takes `--format=text|json`; `json` puts the result on
 stdout and the errors on stderr as JSON (`run` keeps the program's own
 output and reshapes only the errors); see
 [`design-docs/BUILD_TOOL.md`](design-docs/BUILD_TOOL.md).
+
+`toy query` answers questions about a checked program without running it —
+positions are `FILE:LINE:COL`, and several can be asked in one call:
+
+```bash
+cargo run -q -p toy -- query type    main.t:12:9 --in mypkg   # the type there
+cargo run -q -p toy -- query def     main.t:9:20 --in mypkg   # where a name is defined
+cargo run -q -p toy -- query refs    main.t:5:4  --in mypkg   # where it is used
+cargo run -q -p toy -- query callers twice      --in mypkg   # / callees
+```
+
+For a loop that checks the same package over and over, build `toy` once
+with `cargo build --release -p toy` and call `target/release/toy`
+directly; `cargo run` pays a freshness check and a debug build each time.
+
+### Using it from an LLM agent (Claude Code)
+
+The diagnostics and `toy` are built to be read by a program as well as a
+person: every error carries a code, a span, related locations and, where
+the fix is certain, the edit itself (`--format=json`); `toy explain CODE`
+gives the cause and the fix in prose. This repository also wires them
+into Claude Code:
+
+- [`.claude/skills/toylang/SKILL.md`](.claude/skills/toylang/SKILL.md) — a
+  skill with the grammar traps (`elif`, float suffixes, no semicolons,
+  ownership) and the check → fix → query loop
+- [`.claude/settings.json`](.claude/settings.json) — a `PostToolUse` hook
+  that runs `target/release/toy hook` after every edit to a `.t` file and
+  hands the errors back one per line, and permission for `toy`'s
+  read-only subcommands
+
+The design is in [`design-docs/LLM_TOOLING.md`](design-docs/LLM_TOOLING.md)
+and [`design-docs/CLAUDE_CODE_INTEGRATION.md`](design-docs/CLAUDE_CODE_INTEGRATION.md).
 
 For the full CLI / env-var reference see [`interpreter/README.md`](interpreter/README.md).
 
@@ -200,7 +248,7 @@ For the full CLI / env-var reference see [`interpreter/README.md`](interpreter/R
 lines, because the output is what makes a test run readable, not the speed.
 
 ```bash
-# Everything (~3,100 tests)
+# Everything (~3,300 tests)
 cargo nextest run
 
 # One crate, or a name (filters are substring matches, not exact)
@@ -742,7 +790,7 @@ fn main() -> u64 {
 
 ### Comprehensive Testing
 - **Extensive Test Coverage**: All language features tested with edge cases including destruction system
-- **Three-Phase Testing**: Tests run in phases (lib.rs, main.rs, doc-tests) with clear progress indication
+- **One test binary per crate**: `tests/suite.rs` gathers each crate's test files, run with `cargo nextest`; doc-tests separately with `cargo test --doc`
 - **Property-based Testing**: Automated testing of language invariants
 - **Performance Benchmarks**: Detailed performance analysis with Criterion
 - **Resource Management Tests**: Validation of automatic destruction and custom `drop` methods
@@ -780,11 +828,11 @@ largest open item is real parallel execution — the semantics of
 - **Generic Type System**: Generic functions / structures / impls with constraint-based inference and `<A: Allocator>` bounds
 - **Allocator system**: `with allocator = expr { … }` lexically-scoped allocator binding, ambient sugar, Arena / FixedBuffer / Global allocators (see [`design-docs/ALLOCATOR_PLAN.md`](design-docs/ALLOCATOR_PLAN.md))
 - **Cranelift JIT** (default-on cargo feature, `INTERPRETER_JIT=1` to opt in at runtime): native-code compilation for numeric / bool / struct / tuple / `f64` subsets, with `panic("literal")` and `assert(cond, "literal")` lowered through a host helper + `trap` (see [`design-docs/JIT.md`](design-docs/JIT.md))
-- **Multi-backend Architecture**: Tree-walker (reference oracle) + AOT compiler (IR → cranelift → object file) + Cranelift JIT (AST direct) + IR VM (shared IR flat-slot interpreter). 4-way consistency is continuously validated via `compiler/tests/consistency.rs` (see [`design-docs/BACKEND.md`](design-docs/BACKEND.md) for the full backend technical specification)
+- **Multi-backend Architecture**: Tree-walker (reference oracle) + AOT compiler (IR → cranelift → object file) + Cranelift JIT (AST direct) + IR VM (shared IR flat-slot interpreter). 4-way consistency is continuously validated via `compiler/tests/consistency/` (see [`design-docs/BACKEND.md`](design-docs/BACKEND.md) for the full backend technical specification)
 - **Design by Contract**: `requires` / `ensures` clauses with `result` binding and an `INTERPRETER_CONTRACTS=all|pre|post|off` runtime gate (D `-release` equivalent)
 - **Memory profiling**: request-based allocation counters, leak detection (per allocation site), and allocator layout reports — `--profile=mem` / `--format=json` on the interpreter and `TOY_PROFILE_MEM=1` on AOT binaries, byte-identical across all four backends. The same counters are readable from `requires` / `ensures` / `test`, so memory use can be pinned by contract (see [`design-docs/MEMORY_PROFILING.md`](design-docs/MEMORY_PROFILING.md))
 - **Efficient Memory Management**: Append-only `StmtPool` / `ExprPool` plus automatic destruction with custom `drop` methods
-- **Testing**: ~3,100 tests in the workspace, plus the POC's own 152. The
+- **Testing**: ~3,300 tests in the workspace, plus the POC's own 152. The
   interesting ones are the consistency tests, which run a program on all
   four engines and compare — and pin the *output*, because four engines
   agreeing on a wrong answer is the failure mode that costs the most

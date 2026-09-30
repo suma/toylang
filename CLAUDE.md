@@ -29,8 +29,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | いつ何が landing したか / 未実装項目 | [`design-docs/todo.md`](design-docs/todo.md) |
 | 機能ごとの実装詳細・フェーズ履歴 | [`design-docs/FEATURE_NOTES.md`](design-docs/FEATURE_NOTES.md) |
 | LLM 向けの診断・テスト機能の設計 | [`design-docs/LLM_FEEDBACK_LOOP.md`](design-docs/LLM_FEEDBACK_LOOP.md) |
-| 診断・`toy` を LLM の道具として仕上げる第 2 ラウンド (related / edits / `toy query` / `toy fix`、提案) | [`design-docs/LLM_TOOLING.md`](design-docs/LLM_TOOLING.md) |
-| Claude Code から toylang を使う口 (フック / LSP / スキル / プラグイン、提案) | [`design-docs/CLAUDE_CODE_INTEGRATION.md`](design-docs/CLAUDE_CODE_INTEGRATION.md) |
+| 診断・`toy` を LLM の道具として仕上げる第 2 ラウンド (related / edits / `toy query` / `toy fix`、landing 済み) | [`design-docs/LLM_TOOLING.md`](design-docs/LLM_TOOLING.md) |
+| Claude Code から toylang を使う口 (スキル・フックは landing 済み、LSP / プラグイン / MCP は未着手) | [`design-docs/CLAUDE_CODE_INTEGRATION.md`](design-docs/CLAUDE_CODE_INTEGRATION.md) |
 | backtrace / 行番号 / ファイル名の設計 | [`design-docs/DEBUG_OBSERVABILITY.md`](design-docs/DEBUG_OBSERVABILITY.md) |
 | **AOT コンパイルのどこが遅いか** (`--profile=compile`) | [`design-docs/COMPILE_PROFILE.md`](design-docs/COMPILE_PROFILE.md) |
 | `const fn` / コンパイル時実行の設計 | [`design-docs/COMPILE_TIME_EVAL.md`](design-docs/COMPILE_TIME_EVAL.md) |
@@ -60,7 +60,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | stdlib も `import std.hex` を要求する形にする提案 (未着手) | [`design-docs/MODULE_IMPORTS.md`](design-docs/MODULE_IMPORTS.md) |
 | example のビルド・実行方法 | [`interpreter/example/HOW_TO.md`](interpreter/example/HOW_TO.md) |
 | **自分のモジュールを持つプログラム**のビルド (`toy`) | [`design-docs/BUILD_TOOL.md`](design-docs/BUILD_TOOL.md) |
-| **自分のモジュールを持つプログラム**のビルド (`toy` コマンドの提案) | [`design-docs/BUILD_TOOL.md`](design-docs/BUILD_TOOL.md) |
 | **toylang で書いたプログラム**のテスト (提案。処理系自身のテストは別) | [`design-docs/TEST_TOOL.md`](design-docs/TEST_TOOL.md) |
 | `toy test` の並列実行 (P0〜P3 landing 済み) | [`design-docs/TEST_PARALLEL.md`](design-docs/TEST_PARALLEL.md) |
 | このリポジトリで LLM が作業する際の指針 | [`design-docs/COMPILER_DEV_LOOP.md`](design-docs/COMPILER_DEV_LOOP.md) |
@@ -70,12 +69,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Structure
 
-This is a toy programming language implementation in Rust with two main components:
+Rust で書いた toy 言語の処理系。同じプログラムが 4 つの実行系で同じ意味を持つことが設計の前提:
 
-- **frontend/**: Shared parser, AST library, and type checker using rflex for lexer generation
-- **interpreter/**: Tree-walking interpreter with comprehensive test suite
-
-The language supports functions, variables (val/var), control flow (if/else, for loops with break/continue), basic arithmetic, advanced type checking with context-based inference, and automatic type conversion.
+- **frontend/**: パーサ (lexer は rflex で `lexer.l` から生成)、AST プール、型検査器、
+  プログラム全体の検査 (所有・リージョン・エフェクト・契約)
+- **interpreter/**: 実行ドライバ。既定の engine は IR VM (`compiler_lower` を通す)、
+  tree-walker はオラクル。`--test` / `--check` / `--explain` / `--api` / `--effects`
+  と、`toy query` の実体 (`src/query.rs`)
+- **compiler_ir/** / **compiler_lower/** / **compiler_vm/**: 共有 IR、AST → IR の
+  lowering、IR インタプリタ
+- **compiler/**: AOT (IR → cranelift → object → 実行ファイル) と同じ IR 上の JIT。
+  ランタイムは `compiler/runtime/toylang_rt`
+- **toy/**: ビルドツール (`build` / `run` / `test` / `check` / `fix` / `query` / `hook` ...)
+- **core/**: stdlib (toylang で書いたもの)。**`.claude/skills/toylang/`** は
+  `.t` を書くときの手引き (Claude Code のスキル)
 
 ## Commands
 
@@ -197,8 +204,9 @@ echo '{"tool_input":{"file_path":"mypkg/main.t"}}' | target/release/toy hook
 cargo run -q -p toy -- fix   mypkg [--dry-run] [--format=text|json]
 # 検査済みプログラムへの問い合わせ (LLM-TOOLING #4)。位置は FILE:LINE:COL、
 # 複数を 1 回で聞ける (stdlib の検査が 1 回で済む)。ローカルはブロック
-# スコープで解決。dyn 経由の呼び出しは impl 群を dynamic: true で、
-# 追えない呼び出し (closure 等) は opaque として出す
+# スコープで解決し、match の腕 / if val の束縛・パターンの variant・
+# 値として渡した関数名も木から引く。dyn 経由の呼び出しは impl 群を
+# dynamic: true で、追えない呼び出し (closure 等) は opaque として出す
 cargo run -q -p toy -- query type    main.t:7:13 main.t:12:9 [--in mypkg] [--format=json]
 cargo run -q -p toy -- query def     main.t:9:20        # 名前 → 定義位置
 cargo run -q -p toy -- query refs    main.t:5:4         # 定義 → 参照一覧
@@ -757,17 +765,22 @@ fn main() -> u64 {
 
 ## Architecture Notes
 
-- **Frontend Library**: 
-  - AST uses memory pools (StmtPool, ExprPool) for efficient allocation
-  - Generates lexer from flex-style `.l` file using rflex crate
-  - Advanced type checker with context-based inference and automatic type conversion
-  - Shared between different backends (currently interpreter)
+関心事ごとの実装サイトは [`design-docs/CODE_MAP.md`](design-docs/CODE_MAP.md)。
 
-- **Interpreter**: 
-  - Tree-walking interpreter using Rc<RefCell<Object>> for runtime values
-  - Type checker runs before execution for type safety
-  - Comprehensive test suite with 40+ tests including property-based testing
-  - Example programs in `interpreter/example/` directory
+- **Frontend**:
+  - AST は memory pool (`StmtPool` / `ExprPool`) に置き、位置は `LocationPool`。
+    木に位置を持たない構文 (パターンの名前、宣言の範囲、`parallel` 等) は
+    `File` の side table に載り、モジュール統合がそれも運ぶ
+  - 型検査器は検査するだけでなく**書き換える** (下の「型検査の対象」)
+  - 全バックエンドが共有する。**拡張 trait は作らない** — 実装が 1 つの
+    trait のメソッドは暗黙に pub で dead-code lint が見ないので、2026-10-01 に
+    ~1050 行の死にコードと、inherent method に隠れて一度も動いていなかった
+    重複が見つかった。ファイル分割は `impl TypeCheckerVisitor` を複数書けば済む
+
+- **Interpreter**:
+  - 既定は IR VM。tree-walker (`Rc<RefCell<Object>>`) はオラクルとして残す
+  - 型検査は実行前に走る
+  - example は `interpreter/example/` (~190 本、`example_consistency` が全レーンで突き合わせる)
 
 ## Task Management
 

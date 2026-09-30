@@ -107,6 +107,12 @@ pub struct Edit {
     /// rather than applied to the whole primary span.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub word: Option<WordInSpan>,
+    /// Insert `replacement` (one item per line) before the `}` that
+    /// closes the first `{` after the diagnostic's span — new `match`
+    /// arms, say. Resolved by `anchor_in`, which also indents the lines
+    /// one level deeper than the brace when it sits on its own line.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub before_closing_brace: bool,
 }
 
 /// A word to locate inside a diagnostic's primary span.
@@ -143,7 +149,7 @@ impl Suggestion {
         Suggestion::with_edits(
             message,
             Applicability::MachineApplicable,
-            vec![Edit { file: None, span: Some(span), replacement, word: None }],
+            vec![Edit { file: None, span: Some(span), replacement, word: None, before_closing_brace: false }],
         )
     }
 
@@ -152,7 +158,7 @@ impl Suggestion {
         Suggestion::with_edits(
             message,
             Applicability::MachineApplicable,
-            vec![Edit { file: None, span: None, replacement, word: None }],
+            vec![Edit { file: None, span: None, replacement, word: None, before_closing_brace: false }],
         )
     }
 
@@ -169,7 +175,29 @@ impl Suggestion {
         Suggestion::with_edits(
             message,
             Applicability::MachineApplicable,
-            vec![Edit { file: None, span: None, replacement: new.to_string(), word: Some(target) }],
+            vec![Edit {
+                file: None,
+                span: None,
+                replacement: new.to_string(),
+                word: Some(target),
+                before_closing_brace: false,
+            }],
+        )
+    }
+
+    /// Lines to add before the brace closing the construct the
+    /// diagnostic points at (see [`Edit::before_closing_brace`]).
+    pub fn insert_before_closing_brace(message: &str, applicability: Applicability, lines: Vec<String>) -> Self {
+        Suggestion::with_edits(
+            message,
+            applicability,
+            vec![Edit {
+                file: None,
+                span: None,
+                replacement: lines.join("\n"),
+                word: None,
+                before_closing_brace: true,
+            }],
         )
     }
 
@@ -370,6 +398,36 @@ impl Diagnostic {
                 edit.span.is_some()
             })
         });
+        // Insertions before a closing brace, laid out as lines.
+        self.suggestions.retain_mut(|suggestion| {
+            suggestion.edits.iter_mut().all(|edit| {
+                if !edit.before_closing_brace {
+                    return true;
+                }
+                edit.before_closing_brace = false;
+                let Some(p) = primary else { return false };
+                let Some(source) = source_map.source(p.file) else { return false };
+                let Some(close) = source_map.closing_brace_after(p.file, p.offset as usize) else {
+                    return false;
+                };
+                let line_start = source[..close].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                let indent = &source[line_start..close];
+                let (at, text) = if indent.chars().all(|c| c == ' ' || c == '\t') {
+                    // `}` on its own line: whole lines before it.
+                    let lines: String = edit
+                        .replacement
+                        .lines()
+                        .map(|l| format!("{indent}    {l}\n"))
+                        .collect();
+                    (line_start, lines)
+                } else {
+                    (close, format!(" {} ", edit.replacement.replace('\n', " ")))
+                };
+                edit.replacement = text;
+                edit.span = source_map.location(p.file, at, at).map(Span::from);
+                edit.span.is_some()
+            })
+        });
         // Each edit names its own file: a fix for a call's error can
         // be in the callee's module, and vice versa.
         for edit in self.suggestions.iter_mut().flat_map(|s| s.edits.iter_mut()) {
@@ -421,7 +479,7 @@ impl Diagnostic {
         // this diagnostic); applying it to the whole span would be
         // wrong, so the suggestion goes.
         self.suggestions
-            .retain(|s| s.edits.iter().all(|e| e.word.is_none()));
+            .retain(|s| s.edits.iter().all(|e| e.word.is_none() && !e.before_closing_brace));
         let primary = self.span;
         for edit in self.suggestions.iter_mut().flat_map(|s| s.edits.iter_mut()) {
             if edit.file.is_none() {

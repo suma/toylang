@@ -12,6 +12,9 @@
 
 ### 2026-09-30
 
+- **LLM-TOOLING-MAYBE-INCORRECT — 推測の提案** — 網羅性エラーに欠けた腕の挿入
+  (`=> panic(..)`、閉じ `}` の手前に字下げつきで)、E0014 に移動位置の `.clone()`。
+  どちらも `maybe-incorrect` で、`toy fix` は当てない。
 - **LLM-TOOLING-QUERY-SCOPE — `toy query` の精度** — ローカルをブロックスコープで
   解決 (本文の波括弧の対応から)、enum の variant の def / refs、`dyn Trait` 経由の
   呼び出しを impl 群へ (`dynamic: true`)。
@@ -2606,11 +2609,6 @@
   **パターン**の中の variant・束縛 (パターンは式ではないので位置プールに
   載らない)、関数名を値として渡した先。ブロックスコープは本文の波括弧で
   判定しているので、マクロ的な脱糖で生えた束縛は対象外。
-- **LLM-TOOLING-MAYBE-INCORRECT — 推測の提案を出していない** —
-  `Applicability::MaybeIncorrect` は今も emit されない。候補は E0014 の
-  `&` 化、網羅性エラーへの欠けた腕の挿入 (`=> panic("todo")` は意味を
-  変えるので機械適用しない)。`toy fix` は machine-applicable だけを
-  当てる規約のまま。
 - **LLM-TOOLING-DID-YOU-MEAN-TRANSPOSE** — `closest_candidate` は
   Levenshtein 距離で、4 文字以下は距離 1 まで。入れ替え (`nrom` →
   `norm`) は距離 2 になるので短い名前では提案が出ない。

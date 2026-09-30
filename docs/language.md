@@ -708,6 +708,12 @@ makes, applied together, each with its own `file` and `span` (byte
 A suggestion with one edit also carries it as `replacement` / `span`
 at the top level. `toy fix` applies them all and checks again.
 
+A suggestion marked `maybe-incorrect` is a guess about intent: the
+arms a non-exhaustive `match` lacks (each one `panic`s until filled in),
+or `.clone()` where a value was moved and then used. Applied, the
+program checks, but whether it does what was meant is the author's
+call; `toy fix` never applies them.
+
 A program that fails to parse is still type-checked where it parsed
 cleanly: the report has every parse error and the type errors of the
 functions that hold none. Errors that only follow from an earlier one

@@ -1213,6 +1213,7 @@ impl MoveCheck<'_> {
             span: Some(Span::from(get_at)),
             replacement: "borrow".to_string(),
             word: None,
+            before_closing_brace: false,
         }];
         // Between the binding's name and the initializer: ` = ` or
         // `: T = `.
@@ -1238,6 +1239,7 @@ impl MoveCheck<'_> {
                 span: Some(Span::from(insert_at)),
                 replacement: "&".to_string(),
                 word: None,
+                before_closing_brace: false,
             });
         }
         Some(Suggestion::with_edits(
@@ -1849,6 +1851,22 @@ impl MoveCheck<'_> {
             // Line 0 is the placeholder for a move with no position.
             if moved_at.line > 0 {
                 error = error.with_related(moved_at, "moved here");
+                // One way out: hand over a copy and keep the original.
+                // Only if the type can be cloned, and a copy may not be
+                // what was meant — so it is offered, not applied.
+                let mut end = crate::diagnostic::Span::from(moved_at);
+                end.offset = end.end_offset;
+                error.suggestions.push(crate::diagnostic::Suggestion::with_edits(
+                    "pass a copy where it was moved, keeping the original (`clone`)",
+                    crate::diagnostic::Applicability::MaybeIncorrect,
+                    vec![crate::diagnostic::Edit {
+                        file: None,
+                        span: Some(end),
+                        replacement: ".clone()".to_string(),
+                        word: None,
+                        before_closing_brace: false,
+                    }],
+                ));
             }
             self.errors.push(error);
             return;

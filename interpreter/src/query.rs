@@ -170,7 +170,7 @@ impl<'a> Index<'a> {
         let blocks: Vec<(FileId, usize, usize)> = program
             .source_map
             .iter()
-            .flat_map(|(file, f)| brace_pairs(&f.source).into_iter().map(move |(s, e)| (file, s, e)))
+            .flat_map(|(file, f)| frontend::source_map::brace_pairs(&f.source).into_iter().map(move |(s, e)| (file, s, e)))
             .collect();
         Index { program, interner, types, callables, blocks }
     }
@@ -852,81 +852,4 @@ pub fn answer(index: &Index, kind: &str, subject: &str) -> serde_json::Value {
         }
         other => fail(format!("unknown query `{other}` (type, def, refs, callers, callees)")),
     }
-}
-
-/// Every matched `{ .. }` in `source`, as (open, one past close) byte
-/// offsets. String and character literals and comments are skipped, so
-/// an interpolation's braces or a brace in a comment do not count.
-fn brace_pairs(source: &str) -> Vec<(usize, usize)> {
-    let bytes = source.as_bytes();
-    let mut pairs = Vec::new();
-    let mut open: Vec<usize> = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'#' => {
-                while i < bytes.len() && bytes[i] != b'\n' {
-                    i += 1;
-                }
-            }
-            b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                i += 2;
-                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                    i += 1;
-                }
-                i += 1;
-            }
-            b'r' if matches!(bytes.get(i + 1), Some(b'"') | Some(b'#'))
-                && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_')) =>
-            {
-                // r"..." / r#"..."#: closes on `"` plus as many `#`.
-                let mut j = i + 1;
-                let mut hashes = 0;
-                while bytes.get(j) == Some(&b'#') {
-                    hashes += 1;
-                    j += 1;
-                }
-                if bytes.get(j) != Some(&b'"') {
-                    i += 1;
-                    continue;
-                }
-                j += 1;
-                while j < bytes.len() {
-                    if bytes[j] == b'"' && bytes[j + 1..].iter().take(hashes).filter(|b| **b == b'#').count() == hashes {
-                        j += 1 + hashes;
-                        break;
-                    }
-                    j += 1;
-                }
-                i = j;
-                continue;
-            }
-            b'"' => {
-                i += 1;
-                while i < bytes.len() && bytes[i] != b'"' {
-                    if bytes[i] == b'\\' {
-                        i += 1;
-                    }
-                    i += 1;
-                }
-            }
-            b'\'' => {
-                // A char literal: 'x', '\n', '\u{..}'.
-                if let Some(close) = source[i + 1..].find('\'').map(|c| i + 1 + c) {
-                    if close - i <= 12 {
-                        i = close;
-                    }
-                }
-            }
-            b'{' => open.push(i),
-            b'}' => {
-                if let Some(start) = open.pop() {
-                    pairs.push((start, i + 1));
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    pairs
 }

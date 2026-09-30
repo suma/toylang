@@ -150,14 +150,29 @@ impl<'a> ErrorFormatter<'a> {
             match suggestion.edits.as_slice() {
                 [only] => {
                     let empty_span = only.span.is_some_and(|s| s.offset == s.end_offset);
-                    let action = if empty_span {
-                        format!("insert `{}`", only.replacement)
+                    let action = if only.replacement.trim_end().contains('\n') {
+                        let lines: String = only
+                            .replacement
+                            .trim_end()
+                            .lines()
+                            .map(|l| format!("\n       | {l}"))
+                            .collect();
+                        format!("insert{lines}\n      ")
+                    } else if empty_span {
+                        format!("insert `{}`", only.replacement.trim())
                     } else if only.replacement.is_empty() {
                         "delete it".to_string()
                     } else {
                         format!("replace with `{}`", only.replacement)
                     };
-                    out.push_str(&format!("\n   = help: {} — {action}", suggestion.message));
+                    let maybe = if suggestion.applicability
+                        == frontend::diagnostic::Applicability::MaybeIncorrect
+                    {
+                        " (a guess: check it before applying)"
+                    } else {
+                        ""
+                    };
+                    out.push_str(&format!("\n   = help: {} — {action}{maybe}", suggestion.message));
                 }
                 _ => {
                     out.push_str(&format!("\n   = help: {}:", suggestion.message));

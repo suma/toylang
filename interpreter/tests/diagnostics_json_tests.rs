@@ -993,3 +993,54 @@ fn main() -> u64 { 0u64 }";
         "{diagnostics:#?}"
     );
 }
+
+// LLM-TOOLING-MAYBE-INCORRECT: guesses are offered, marked, and still
+// produce a program that checks — they are guesses about intent, not
+// about syntax. `toy fix` does not apply them.
+#[test]
+fn maybe_incorrect_suggestions_are_marked_and_still_check() {
+    for (what, source) in [
+        (
+            "missing match arms",
+            "enum Shape { Circle(u64), Rect { w: u64, h: u64 }, Point }
+fn area(s: Shape) -> u64 {
+    match s {
+        Shape::Point => 0u64,
+    }
+}
+fn main() -> u64 { area(Shape::Point) }",
+        ),
+        (
+            "use after move",
+            "struct B { v: Vec<u64> }
+fn main() -> u64 {
+    val v: Vec<u64> = Vec::new()
+    val b = B { v: v }
+    v.size()
+}",
+        ),
+    ] {
+        let diagnostics = check_all(source);
+        let guesses: Vec<_> = diagnostics
+            .iter()
+            .flat_map(|d| d.suggestions.iter())
+            .filter(|s| s.applicability == Applicability::MaybeIncorrect)
+            .collect();
+        assert_eq!(guesses.len(), 1, "{what}: {diagnostics:#?}");
+        let mut edits: Vec<(usize, usize, String)> = guesses[0]
+            .edits
+            .iter()
+            .map(|e| {
+                let span = e.span.expect("resolved span");
+                (span.offset as usize, span.end_offset as usize, e.replacement.clone())
+            })
+            .collect();
+        edits.sort_by_key(|(s, _, _)| std::cmp::Reverse(*s));
+        let mut fixed = source.to_string();
+        for (s, e, r) in edits {
+            fixed.replace_range(s..e, &r);
+        }
+        let remaining = check_all(&fixed);
+        assert!(remaining.is_empty(), "{what}:\n{fixed}\n{remaining:#?}");
+    }
+}

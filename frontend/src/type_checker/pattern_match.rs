@@ -881,11 +881,36 @@ impl<'a> TypeCheckerVisitor<'a> {
                         let missing_strs: Vec<String> = missing.iter()
                             .map(|s| self.core.string_interner.resolve(*s).unwrap_or("?").to_string())
                             .collect();
-                        return Err(TypeCheckError::coded(crate::diagnostic::codes::MATCH_COVERAGE, format!(
+                        // A starting point, not a fix: the arms it adds
+                        // stop the program, which the author must replace
+                        // with what each case should do.
+                        let arms: Vec<String> = variants
+                            .iter()
+                            .filter(|v| missing.contains(&v.name))
+                            .map(|v| {
+                                let v_str = self.core.string_interner.resolve(v.name).unwrap_or("?");
+                                let pattern = if v.payload_types.is_empty() {
+                                    format!("{enum_str}::{v_str}")
+                                } else if !v.field_names.is_empty() {
+                                    format!("{enum_str}::{v_str} {{ .. }}")
+                                } else {
+                                    let blanks = vec!["_"; v.payload_types.len()].join(", ");
+                                    format!("{enum_str}::{v_str}({blanks})")
+                                };
+                                format!("{pattern} => panic(\"unhandled {enum_str}::{v_str}\"),")
+                            })
+                            .collect();
+                        let mut err = TypeCheckError::coded(crate::diagnostic::codes::MATCH_COVERAGE, format!(
                             "non-exhaustive match on enum '{}': missing variant(s) {} — add an arm for each or a wildcard `_`",
                             enum_str,
                             missing_strs.join(", ")
-                        )));
+                        ));
+                        err.suggestions.push(crate::diagnostic::Suggestion::insert_before_closing_brace(
+                            "add an arm for each missing variant (they panic until you fill them in)",
+                            crate::diagnostic::Applicability::MaybeIncorrect,
+                            arms,
+                        ));
+                        return Err(err);
                     }
                 }
                 ScrutineeKind::Primitive(TypeDecl::Bool) => {

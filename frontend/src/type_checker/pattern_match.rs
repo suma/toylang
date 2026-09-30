@@ -483,6 +483,22 @@ impl<'a> TypeCheckerVisitor<'a> {
             {
                 ScrutineeKind::Struct
             }
+            // A nominal type nothing declares — `Option` in a program
+            // checked without the stdlib — is a missing name, not a
+            // scrutinee of the wrong kind.
+            TypeDecl::Struct(name, _) | TypeDecl::Identifier(name)
+                if !self.context.struct_definitions.contains_key(name)
+                    && !self.context.enum_definitions.contains_key(name) =>
+            {
+                let name = self.resolve_symbol_name(*name);
+                return Err(TypeCheckError::coded(
+                    crate::diagnostic::codes::NOT_FOUND,
+                    format!(
+                        "the scrutinee's type `{name}` is not declared anywhere this program \
+                         can see (`Option` and `Result` come from the stdlib)"
+                    ),
+                ));
+            }
             _ => {
                 return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                     "match scrutinee must be an enum, struct, primitive (bool / an integer / str), or tuple, got {}",

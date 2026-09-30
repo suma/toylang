@@ -12,6 +12,9 @@
 
 ### 2026-09-30
 
+- **LLM-TOOLING-SCRUTINEE-OPTION — 調査済み** — 型検査器のバグではなく、consistency
+  ハーネスの `needs_core` が stdlib なしで試しに型検査する経路 (`Option` / `Result` が
+  未宣言) の文言だった。宣言の無い型の scrutinee は `E0003` で「宣言されていない」と言うようにした。
 - **LLM-TOOLING-CASCADE-BY-KIND — 連鎖の判定を印で** — `TypeCheckError::cascade` /
   `follows_unknown` (型ペイロードに `Unknown` を含む種別は構造で、型を綴るコード付きの 54 か所は
   `about_types` で)。文言の文字列判定をやめた。
@@ -2592,12 +2595,6 @@
   `fn bad() -> &u64 { val n = 5u64 \n &n }` は E0026 ではなく
   **`[E0003] Identifier 'n' not found`** になる (誤った診断)。
   どちらも E0026 の例として説明文に載せようとして見つけた。
-- **LLM-TOOLING-SCRUTINEE-OPTION (要調査)** — 2026-09-30 の集計で
-  `match scrutinee must be ..., got Option<i64>` / `Option<u64>` /
-  `Result<u64, E>` が計 30 件ほど出ていた。これを期待するテストは無く
-  (`diagnostic_spelling_tests` が期待するのは `got f64` だけ)、全テストは
-  通るので、どこかで生成されて捨てられている可能性がある
-  (`Option` の enum 登録前に本体を見ている経路など)。原因は未確認。
 - **LLM-TOOLING-PATHS — 診断のパスが渡されたとおり** — 入口ファイルは
   引数のまま (絶対パスで渡せば絶対)、モジュールは root からの相対。
   同じ cwd・同じ引数なら出力は一致するが、マシン間では比べられない。

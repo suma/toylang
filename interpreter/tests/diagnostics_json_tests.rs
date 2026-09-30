@@ -968,3 +968,28 @@ fn main() -> u64 { 0u64 }",
         assert!(related.iter().any(|(t, _, _)| *t == text), "{code}: {related:?}\n{d:#?}");
     }
 }
+
+// LLM-TOOLING-SCRUTINEE-OPTION: without the stdlib, `Option` is simply
+// not declared. The consistency harness type-checks every source once
+// without it (to decide whether the stdlib is needed), which is where
+// "match scrutinee must be an enum ..., got Option<i64>" kept appearing:
+// true of nothing, since the type did not exist at all.
+#[test]
+fn a_scrutinee_of_an_undeclared_type_is_reported_as_not_declared() {
+    let source = "fn f(o: Option<u64>) -> u64 {
+    match o {
+        Option::Some(v) => v,
+        Option::None => 0u64,
+    }
+}
+fn main() -> u64 { 0u64 }";
+    let mut parser = frontend::ParserWithInterner::new(source);
+    let mut program = parser.parse_program().expect("parse");
+    let interner = parser.get_string_interner();
+    let diagnostics = interpreter::check_typing_diagnostics(&mut program, interner, Some(source), Some("test.t"), &[])
+        .expect_err("Option is undeclared without the stdlib");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "E0003" && d.message.contains("`Option` is not declared")),
+        "{diagnostics:#?}"
+    );
+}

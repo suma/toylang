@@ -12,9 +12,13 @@ interpreter/proptest-regressions
 # build artifact; safe to delete at any time.
 .toycache/
 
-# Claude Code per-session state (scheduled tasks lock, local settings).
-# Per-user config; should not be tracked.
-.claude/
+# Claude Code per-session state (scheduled tasks lock, local settings)
+# is per-user and not tracked. The shared project settings and skills
+# are (CLAUDE_CODE_INTEGRATION.md: the permissions, the toylang skill,
+# the `toy hook`).
+.claude/*
+!.claude/settings.json
+!.claude/skills/
 
 # Symlink to CLAUDE.md for cross-AI-tool compatibility (Codex / Copilot
 # read AGENTS.md, Claude Code reads CLAUDE.md). Convention is per-user

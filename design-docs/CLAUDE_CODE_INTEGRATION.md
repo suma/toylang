@@ -77,6 +77,13 @@ documentSymbol は `toy api`、goToImplementation は trait メソッド → imp
   ので、stdlib を `~/.cargo/share/toylang/core` に置く (実行ファイルから
   `../share/toylang/core` を探す)。あるいは `TOYLANG_CORE_MODULES` で指す
 
+- **C1 (✅ 2026-09-30)** — `.claude/settings.json` (リポジトリで共有) に
+  `target/release/toy` の `check` / `query` / `explain` / `api` / `effects` /
+  `version` を許可 (`./target/release/toy` も)。書き込み・実行する
+  `fix` / `run` / `test` / `build` / `clean` / `new` / `init` は許可しない。
+  `.gitignore` は `.claude/` 全体から、`settings.json` と `skills/` 以外を
+  無視する形に変えた (`settings.local.json` は個人用のまま)
+
 ### 優先順
 
 1. **T1** — 誤った場所に誘導する不具合なので最初に。小さい

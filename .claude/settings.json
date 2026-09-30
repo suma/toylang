@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(target/release/toy check *)",
+      "Bash(target/release/toy query *)",
+      "Bash(target/release/toy explain *)",
+      "Bash(target/release/toy explain)",
+      "Bash(target/release/toy api *)",
+      "Bash(target/release/toy effects *)",
+      "Bash(target/release/toy version *)",
+      "Bash(target/release/toy version)",
+      "Bash(./target/release/toy check *)",
+      "Bash(./target/release/toy query *)",
+      "Bash(./target/release/toy explain *)",
+      "Bash(./target/release/toy explain)",
+      "Bash(./target/release/toy api *)",
+      "Bash(./target/release/toy effects *)",
+      "Bash(./target/release/toy version *)",
+      "Bash(./target/release/toy version)"
+    ]
+  }
+}

@@ -59,6 +59,8 @@ enum Target {
     Struct(DefaultSymbol),
     Field { owner: DefaultSymbol, field: DefaultSymbol },
     Const(DefaultSymbol),
+    /// `Shape::Circle`: a variant of an enum.
+    Variant { owner: DefaultSymbol, variant: DefaultSymbol },
 }
 
 pub struct Index<'a> {
@@ -66,6 +68,8 @@ pub struct Index<'a> {
     interner: &'a DefaultStringInterner,
     types: &'a HashMap<ExprRef, TypeDecl>,
     callables: Vec<Callable>,
+    /// Every block's range, for the scope a local declaration has.
+    blocks: Vec<(FileId, usize, usize)>,
 }
 
 /// A call found in a body: who is called, and where.
@@ -78,6 +82,9 @@ pub struct CallEdge {
     pub function: Option<String>,
     pub at: Place,
     pub opaque: bool,
+    /// Dispatched through `dyn`: `function` is one of the
+    /// implementations that may run, not the one that will.
+    pub dynamic: bool,
 }
 
 impl<'a> Index<'a> {
@@ -158,7 +165,24 @@ impl<'a> Index<'a> {
                 .min()
                 .unwrap_or_else(|| program.source_map.source(c.file).map(str::len).unwrap_or(usize::MAX));
         }
-        Index { program, interner, types, callables }
+        // A block expression's recorded location is a brace, not its
+        // extent, so scopes come from the text: every matched `{ .. }`.
+        let blocks: Vec<(FileId, usize, usize)> = program
+            .source_map
+            .iter()
+            .flat_map(|(file, f)| brace_pairs(&f.source).into_iter().map(move |(s, e)| (file, s, e)))
+            .collect();
+        Index { program, interner, types, callables, blocks }
+    }
+
+    /// Whether a declaration at `decl` is in scope at `at`: the
+    /// innermost block holding the declaration also holds the use.
+    fn in_scope(&self, file: FileId, decl: usize, at: usize) -> bool {
+        self.blocks
+            .iter()
+            .filter(|(f, s, e)| *f == file && *s <= decl && decl < *e)
+            .min_by_key(|(_, s, e)| e - s)
+            .is_none_or(|(_, s, e)| *s <= at && at < *e)
     }
 
     fn place(&self, loc: &SourceLocation) -> Place {
@@ -297,7 +321,13 @@ impl<'a> Index<'a> {
                 if user.is_empty() { all } else { user }
             }
             Some(Expr::MethodCall(receiver, name, _)) => {
-                match self.types.get(&receiver).and_then(Self::nominal) {
+                let receiver_ty = self.types.get(&receiver);
+                if let Some(TypeDecl::Dyn(trait_sym)) = receiver_ty.map(Self::strip) {
+                    // Through `dyn Trait`: any implementation may run.
+                    let implementors = self.implementors_of(*trait_sym);
+                    return pick(&|c| c.bare == name && c.owner.is_some_and(|o| implementors.contains(&o)));
+                }
+                match receiver_ty.and_then(Self::nominal) {
                     Some(owner) => pick(&|c| c.owner == Some(owner) && c.bare == name),
                     None => Vec::new(),
                 }
@@ -315,6 +345,45 @@ impl<'a> Index<'a> {
             }
             _ => Vec::new(),
         }
+    }
+
+    /// The types that `impl` a trait.
+    fn implementors_of(&self, trait_sym: DefaultSymbol) -> Vec<DefaultSymbol> {
+        (0..self.program.statement.len())
+            .filter_map(|i| match self.program.statement.get(&StmtRef(i as u32)) {
+                Some(Stmt::ImplBlock { target_type, trait_name: Some(t), .. }) if t == trait_sym => {
+                    Some(target_type)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Whether this call dispatches through `dyn`, so its callees are
+    /// candidates rather than the one that runs.
+    fn is_dynamic_call(&self, e: ExprRef) -> bool {
+        match self.program.expression.get(&e) {
+            Some(Expr::MethodCall(receiver, _, _)) => matches!(
+                self.types.get(&receiver).map(Self::strip),
+                Some(TypeDecl::Dyn(_))
+            ),
+            _ => false,
+        }
+    }
+
+    /// `Enum::Variant` written as a construction or a unit value.
+    fn variant_of(&self, e: ExprRef) -> Option<(DefaultSymbol, DefaultSymbol)> {
+        let (owner, variant) = match self.program.expression.get(&e)? {
+            Expr::AssociatedFunctionCall(t, f, _) => (t, f),
+            Expr::QualifiedIdentifier(path) if path.len() == 2 => (path[0], path[1]),
+            _ => return None,
+        };
+        let is_enum = (0..self.program.statement.len()).any(|i| {
+            matches!(self.program.statement.get(&StmtRef(i as u32)),
+                Some(Stmt::EnumDecl { name, variants, .. })
+                    if name == owner && variants.iter().any(|v| v.name == variant))
+        });
+        is_enum.then_some((owner, variant))
     }
 
     /// Where a callable's name is written.
@@ -369,9 +438,17 @@ impl<'a> Index<'a> {
                         }
                     }
                 }
-                Some(Stmt::EnumDecl { name, .. }) => {
-                    if self.word_place(file, loc.offset as usize, usize::MAX, name).is_some_and(|p| on(&p)) {
+                Some(Stmt::EnumDecl { name, variants, .. }) => {
+                    let Some(name_at) = self.word_place(file, loc.offset as usize, usize::MAX, name) else {
+                        continue;
+                    };
+                    if on(&name_at) {
                         return Some(Target::Struct(name));
+                    }
+                    for v in &variants {
+                        if self.word_place(file, name_at.end_offset as usize, usize::MAX, v.name).is_some_and(|p| on(&p)) {
+                            return Some(Target::Variant { owner: name, variant: v.name });
+                        }
                     }
                 }
                 Some(Stmt::Val(name, _, _)) | Some(Stmt::Var(name, _, _)) => {
@@ -449,12 +526,20 @@ impl<'a> Index<'a> {
                 .call_name_place(e, &loc)
                 .is_some_and(|p| p.offset as usize <= offset && offset < p.end_offset as usize);
             if on_name {
+                if let Some((owner, variant)) = self.variant_of(e) {
+                    return Some(Target::Variant { owner, variant });
+                }
+            }
+            if on_name {
                 if let Some(i) = self.resolve_call(e).first() {
                     return Some(Target::Callable(*i));
                 }
             }
         }
         for (e, loc) in self.exprs_at(file, offset) {
+            if let Some((owner, variant)) = self.variant_of(e) {
+                return Some(Target::Variant { owner, variant });
+            }
             match self.program.expression.get(&e) {
                 Some(Expr::Call(..)) | Some(Expr::MethodCall(..)) | Some(Expr::AssociatedFunctionCall(..)) => {
                     if let Some(i) = self.resolve_call(e).first() {
@@ -501,7 +586,10 @@ impl<'a> Index<'a> {
                     return None;
                 }
                 let loc = self.program.location_pool.get_stmt_location(&s)?;
-                let inside = loc.file == file && c.start <= loc.offset as usize && (loc.offset as usize) < at;
+                let inside = loc.file == file
+                    && c.start <= loc.offset as usize
+                    && (loc.offset as usize) < at
+                    && self.in_scope(file, loc.offset as usize, at);
                 inside.then_some(loc.offset as usize)
             })
             .max();
@@ -524,6 +612,7 @@ impl<'a> Index<'a> {
             Target::Struct(s) => format!("type {}", name(*s)),
             Target::Field { owner, field } => format!("field {}.{}", name(*owner), name(*field)),
             Target::Const(s) => format!("constant {}", name(*s)),
+            Target::Variant { owner, variant } => format!("variant {}::{}", name(*owner), name(*variant)),
         }
     }
 
@@ -539,6 +628,11 @@ impl<'a> Index<'a> {
                 let (_, loc) = self.struct_decl(*owner)?;
                 let name_at = self.word_place(loc.file, loc.offset as usize, usize::MAX, *owner)?;
                 self.word_place(loc.file, name_at.end_offset as usize, usize::MAX, *field)
+            }
+            Target::Variant { owner, variant } => {
+                let (_, loc) = self.struct_decl(*owner)?;
+                let name_at = self.word_place(loc.file, loc.offset as usize, usize::MAX, *owner)?;
+                self.word_place(loc.file, name_at.end_offset as usize, usize::MAX, *variant)
             }
             Target::Const(s) => {
                 let c = self.program.consts.iter().find(|c| c.name == *s)?;
@@ -577,6 +671,16 @@ impl<'a> Index<'a> {
     fn references(&self, target: &Target) -> Vec<Place> {
         let mut out: Vec<Place> = Vec::new();
         for (e, loc) in self.all_exprs() {
+            if let Target::Variant { owner, variant } = target {
+                if self.variant_of(e) == Some((*owner, *variant)) {
+                    let q = self.word_place(loc.file, loc.offset as usize, usize::MAX, *owner);
+                    let from = q.map(|p| p.end_offset as usize).unwrap_or(loc.offset as usize);
+                    if let Some(p) = self.word_place(loc.file, from, usize::MAX, *variant) {
+                        out.push(p);
+                    }
+                }
+                continue;
+            }
             let hit = match (target, self.program.expression.get(&e)) {
                 (Target::Callable(i), Some(Expr::Call(..) | Expr::MethodCall(..) | Expr::AssociatedFunctionCall(..))) => {
                     if self.resolve_call(e).contains(i) { self.call_name_place(e, &loc) } else { None }
@@ -652,12 +756,18 @@ impl<'a> Index<'a> {
                 // is opaque.
                 let opaque = matches!(self.program.expression.get(&e), Some(Expr::Call(..)));
                 if opaque {
-                    out.push(CallEdge { function: None, at, opaque: true });
+                    out.push(CallEdge { function: None, at, opaque: true, dynamic: false });
                 }
                 continue;
             }
+            let dynamic = self.is_dynamic_call(e);
             for t in targets {
-                out.push(CallEdge { function: Some(self.callables[t].display.clone()), at: at.clone(), opaque: false });
+                out.push(CallEdge {
+                    function: Some(self.callables[t].display.clone()),
+                    at: at.clone(),
+                    opaque: false,
+                    dynamic,
+                });
             }
         }
         out.sort_by(|a, b| (&a.at.file, a.at.offset).cmp(&(&b.at.file, b.at.offset)));
@@ -742,4 +852,81 @@ pub fn answer(index: &Index, kind: &str, subject: &str) -> serde_json::Value {
         }
         other => fail(format!("unknown query `{other}` (type, def, refs, callers, callees)")),
     }
+}
+
+/// Every matched `{ .. }` in `source`, as (open, one past close) byte
+/// offsets. String and character literals and comments are skipped, so
+/// an interpolation's braces or a brace in a comment do not count.
+fn brace_pairs(source: &str) -> Vec<(usize, usize)> {
+    let bytes = source.as_bytes();
+    let mut pairs = Vec::new();
+    let mut open: Vec<usize> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'#' => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i += 1;
+            }
+            b'r' if matches!(bytes.get(i + 1), Some(b'"') | Some(b'#'))
+                && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_')) =>
+            {
+                // r"..." / r#"..."#: closes on `"` plus as many `#`.
+                let mut j = i + 1;
+                let mut hashes = 0;
+                while bytes.get(j) == Some(&b'#') {
+                    hashes += 1;
+                    j += 1;
+                }
+                if bytes.get(j) != Some(&b'"') {
+                    i += 1;
+                    continue;
+                }
+                j += 1;
+                while j < bytes.len() {
+                    if bytes[j] == b'"' && bytes[j + 1..].iter().take(hashes).filter(|b| **b == b'#').count() == hashes {
+                        j += 1 + hashes;
+                        break;
+                    }
+                    j += 1;
+                }
+                i = j;
+                continue;
+            }
+            b'"' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'"' {
+                    if bytes[i] == b'\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+            }
+            b'\'' => {
+                // A char literal: 'x', '\n', '\u{..}'.
+                if let Some(close) = source[i + 1..].find('\'').map(|c| i + 1 + c) {
+                    if close - i <= 12 {
+                        i = close;
+                    }
+                }
+            }
+            b'{' => open.push(i),
+            b'}' => {
+                if let Some(start) = open.pop() {
+                    pairs.push((start, i + 1));
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    pairs
 }

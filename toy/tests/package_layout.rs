@@ -2404,3 +2404,52 @@ fn json_diagnostics_name_files_relative_to_the_package() {
         .collect();
     assert_eq!(places, [("main.t".to_string(), 2), ("src/geo.t".to_string(), 3)], "{stderr}");
 }
+
+// LLM-TOOLING-QUERY-SCOPE: block scoping, enum variants, `dyn` calls.
+#[test]
+fn query_follows_block_scope_variants_and_dyn_calls() {
+    let pkg = scratch("query_scope");
+    write(
+        &pkg,
+        "main.t",
+        "enum Shape { Circle(u64), Point }
+trait Area { fn area(&self) -> u64 }
+struct Sq { s: u64 }
+impl Area for Sq { fn area(&self) -> u64 { self.s * self.s } }
+fn measure(a: &dyn Area) -> u64 { a.area() }
+fn f(n: u64) -> u64 {
+    val x = n
+    if n > 1u64 {
+        val x = 2u64
+        x + 1u64
+    } else {
+        0u64
+    }
+    x
+}
+fn main() -> u64 {
+    val c = Shape::Circle(3u64)
+    val q = Sq { s: 2u64 }
+    measure(&q) + f(1u64)
+}
+",
+    );
+    let m = pkg.0.join("main.t").to_str().unwrap().to_string();
+    let r = query(&pkg, &["def", &format!("{m}:14:5"), &format!("{m}:10:9"), &format!("{m}:17:20")]);
+    let defs: Vec<(String, u64, u64)> =
+        r["answers"].as_array().unwrap().iter().map(|a| at(&a["definition"])).collect();
+    assert_eq!(
+        defs,
+        [("main.t".to_string(), 7, 9), ("main.t".to_string(), 9, 13), ("main.t".to_string(), 1, 14)],
+        "{r:#}"
+    );
+
+    let r = query(&pkg, &["refs", &format!("{m}:1:15")]);
+    let refs: Vec<(String, u64, u64)> =
+        r["answers"][0]["references"].as_array().unwrap().iter().map(at).collect();
+    assert_eq!(refs, [("main.t".to_string(), 17, 20)], "{r:#}");
+
+    let r = query(&pkg, &["callees", "measure"]);
+    let edge = &r["answers"][0]["results"][0]["callees"][0];
+    assert_eq!((edge["function"].as_str(), edge["dynamic"].as_bool()), (Some("Sq::area"), Some(true)), "{r:#}");
+}

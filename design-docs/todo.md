@@ -12,6 +12,9 @@
 
 ### 2026-09-30
 
+- **LLM-TOOLING-QUERY-SCOPE — `toy query` の精度** — ローカルをブロックスコープで
+  解決 (本文の波括弧の対応から)、enum の variant の def / refs、`dyn Trait` 経由の
+  呼び出しを impl 群へ (`dynamic: true`)。
 - **LLM-TOOLING-PATHS — `toy` の JSON 診断をパッケージ相対に** — `set_diagnostic_root`。
   あわせて、モジュール内の関数の戻り値型の不一致が入口ファイルの位置として報告されていた
   (`node_to_source_location` が入口のソースで行を数えていた) のを直した。
@@ -2598,12 +2601,11 @@
   `fn bad() -> &u64 { val n = 5u64 \n &n }` は E0026 ではなく
   **`[E0003] Identifier 'n' not found`** になる (誤った診断)。
   どちらも E0026 の例として説明文に載せようとして見つけた。
-- **LLM-TOOLING-QUERY-SCOPE — `toy query` の近似** — ローカル変数は
-  「同じ関数内で直前にある同名の宣言 (か引数)」に解決し、ブロック
-  スコープを見ない (内側のブロックで隠した名前をブロックの後で読むと
-  内側の宣言に解決しうる)。enum の variant、trait のメソッド宣言、
-  `dyn` 経由の呼び出し、関数名を値として渡した先は `def` / `refs` の
-  対象外。`callers` は直接呼び出しだけ。
+- **LLM-TOOLING-QUERY-REST — `toy query` の残り** — trait のメソッド宣言
+  (`trait Area { fn area }` の `area`) の上での `def` / `refs`、match の
+  **パターン**の中の variant・束縛 (パターンは式ではないので位置プールに
+  載らない)、関数名を値として渡した先。ブロックスコープは本文の波括弧で
+  判定しているので、マクロ的な脱糖で生えた束縛は対象外。
 - **LLM-TOOLING-MAYBE-INCORRECT — 推測の提案を出していない** —
   `Applicability::MaybeIncorrect` は今も emit されない。候補は E0014 の
   `&` 化、網羅性エラーへの欠けた腕の挿入 (`=> panic("todo")` は意味を

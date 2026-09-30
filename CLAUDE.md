@@ -191,9 +191,9 @@ cargo run -q -p toy -- check mypkg [--format=text|json]
 # --dry-run は 1 巡目の編集を出すだけで書かない。エラーが残れば exit 1
 cargo run -q -p toy -- fix   mypkg [--dry-run] [--format=text|json]
 # 検査済みプログラムへの問い合わせ (LLM-TOOLING #4)。位置は FILE:LINE:COL、
-# 複数を 1 回で聞ける (stdlib の検査が 1 回で済む)。ローカル変数は
-# 「同じ関数内で直前の同名宣言」で解決する近似 (ブロックスコープは見ない)。
-# 追えない呼び出し (closure / dyn) は callees に opaque として出る
+# 複数を 1 回で聞ける (stdlib の検査が 1 回で済む)。ローカルはブロック
+# スコープで解決。dyn 経由の呼び出しは impl 群を dynamic: true で、
+# 追えない呼び出し (closure 等) は opaque として出す
 cargo run -q -p toy -- query type    main.t:7:13 main.t:12:9 [--in mypkg] [--format=json]
 cargo run -q -p toy -- query def     main.t:9:20        # 名前 → 定義位置
 cargo run -q -p toy -- query refs    main.t:5:4         # 定義 → 参照一覧

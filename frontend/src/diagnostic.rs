@@ -825,24 +825,37 @@ pub fn castable_type_name(ty: &TypeDecl) -> Option<&'static str> {
 
 /// Levenshtein distance, capped: returns `None` once the distance is
 /// certainly above `limit` so a long scan can bail early.
+/// Edit distance with an adjacent transposition counted as one edit
+/// (optimal string alignment), or `None` when it exceeds `limit`.
+///
+/// Plain Levenshtein counts `nrom` -> `norm` as two edits, which put the
+/// commonest typo there is past the one-edit limit short names get
+/// (LLM-TOOLING-DID-YOU-MEAN-TRANSPOSE).
 fn edit_distance_within(a: &str, b: &str, limit: usize) -> Option<usize> {
     if a.len().abs_diff(b.len()) > limit {
         return None;
     }
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    let mut cur = vec![0usize; b.len() + 1];
-    for (i, ca) in a.iter().enumerate() {
-        cur[0] = i + 1;
-        for (j, cb) in b.iter().enumerate() {
-            let cost = usize::from(ca != cb);
-            cur[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1);
-        }
-        std::mem::swap(&mut prev, &mut cur);
+    let (n, m) = (a.len(), b.len());
+    let mut d = vec![vec![0usize; m + 1]; n + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
     }
-    let d = prev[b.len()];
-    (d <= limit).then_some(d)
+    for (j, cell) in d[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+    for i in 1..=n {
+        for j in 1..=m {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            let mut best = (d[i - 1][j - 1] + cost).min(d[i - 1][j] + 1).min(d[i][j - 1] + 1);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                best = best.min(d[i - 2][j - 2] + 1);
+            }
+            d[i][j] = best;
+        }
+    }
+    (d[n][m] <= limit).then_some(d[n][m])
 }
 
 /// Pick a "did you mean" candidate for `name`.
@@ -969,5 +982,13 @@ mod tests {
         let mut alone = vec![d("match scrutinee must be an enum, got Unknown", true)];
         drop_cascades(&mut alone);
         assert_eq!(alone.len(), 1, "an unexplained Unknown is kept");
+    }
+
+    #[test]
+    fn a_swapped_pair_is_one_edit() {
+        assert_eq!(closest_candidate("nrom", ["norm", "len"]), Some("norm"));
+        assert_eq!(closest_candidate("lenght", ["length", "height"]), Some("length"));
+        // Still declines a tie.
+        assert_eq!(closest_candidate("ab", ["ba", "abc"]), None);
     }
 }

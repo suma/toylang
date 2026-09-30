@@ -12,6 +12,8 @@
 
 ### 2026-09-30
 
+- **LLM-TOOLING-DID-YOU-MEAN-TRANSPOSE** — did-you-mean の距離を隣接入れ替え 1 に
+  (`nrom` → `norm` が提案されるように)。
 - **LLM-TOOLING-MAYBE-INCORRECT — 推測の提案** — 網羅性エラーに欠けた腕の挿入
   (`=> panic(..)`、閉じ `}` の手前に字下げつきで)、E0014 に移動位置の `.clone()`。
   どちらも `maybe-incorrect` で、`toy fix` は当てない。
@@ -2609,10 +2611,6 @@
   **パターン**の中の variant・束縛 (パターンは式ではないので位置プールに
   載らない)、関数名を値として渡した先。ブロックスコープは本文の波括弧で
   判定しているので、マクロ的な脱糖で生えた束縛は対象外。
-- **LLM-TOOLING-DID-YOU-MEAN-TRANSPOSE** — `closest_candidate` は
-  Levenshtein 距離で、4 文字以下は距離 1 まで。入れ替え (`nrom` →
-  `norm`) は距離 2 になるので短い名前では提案が出ない。
-  Damerau (隣接入れ替えを 1) にするか検討。
 - **LLM-TOOLING-PARSE-RECOVERY-REST — パースエラー時の型検査の限界** —
   `diagnose_parse_failure` は、パースエラーが関数・メソッドの外
   (壊れた `struct` / `enum` / `impl` 見出し) にあるときと、`?` で宣言ごと

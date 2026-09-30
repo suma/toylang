@@ -2509,3 +2509,31 @@ fn main() -> u64 {
         .collect();
     assert_eq!(refs, [vec![main_t(9, 16)], vec![main_t(15, 43)], vec![main_t(15, 7)]], "{r:#}");
 }
+
+// CLAUDE-CODE T1: without the stdlib, say so. A package checked without
+// it used to fail with `String::from_str` not found, pointing at code
+// that was fine.
+#[test]
+fn a_missing_stdlib_is_named_as_such() {
+    let pkg = scratch("no_stdlib");
+    write(&pkg, "main.t", "fn main() -> u64 {\n    val s: String = String::from_str(\"a\")\n    s.len()\n}\n");
+    let empty = pkg.0.join("not_a_stdlib");
+    std::fs::create_dir_all(&empty).unwrap();
+    let out = Command::new(toy_bin())
+        .args(["check", pkg.0.to_str().unwrap()])
+        .env("TOYLANG_CORE_MODULES", &empty)
+        .output()
+        .expect("spawn toy");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(stderr.contains("stdlib was not found") && stderr.contains("TOYLANG_CORE_MODULES"), "{stderr}");
+    assert!(!stderr.contains("E0003"), "{stderr}");
+
+    // Commands that do not read the stdlib still run.
+    let out = Command::new(toy_bin())
+        .args(["explain", "E0001"])
+        .env("TOYLANG_CORE_MODULES", &empty)
+        .output()
+        .expect("spawn toy");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}

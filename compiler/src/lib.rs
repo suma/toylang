@@ -319,21 +319,53 @@ pub fn resolve_core_modules_dirs(
     let Some(exe_dir) = exe.parent() else {
         return Vec::new();
     };
-    // Default search candidates. The third entry is the dev-tree
-    // fallback: when the binary is `target/debug/compiler`,
-    // `exe_dir/../../core` resolves to `<repo>/core/`. The first two
-    // cover a co-located distribution and a Unix install layout.
-    let candidates: [std::path::PathBuf; 3] = [
-        exe_dir.join("core"),
-        exe_dir.join("../share/toylang/core"),
-        exe_dir.join("../../core"),
-    ];
-    for cand in candidates {
+    for cand in stdlib_candidates(exe_dir) {
         if cand.is_dir() {
             return vec![cand];
         }
     }
     Vec::new()
+}
+
+/// Where the stdlib is looked for next to the running binary. The
+/// third entry is the dev-tree fallback: when the binary is
+/// `target/debug/compiler`, `exe_dir/../../core` resolves to
+/// `<repo>/core/`. The first two cover a co-located distribution and a
+/// Unix install layout (`cargo install` puts the binary in
+/// `~/.cargo/bin`, so `~/.cargo/share/toylang/core`).
+fn stdlib_candidates(exe_dir: &std::path::Path) -> [std::path::PathBuf; 3] {
+    [
+        exe_dir.join("core"),
+        exe_dir.join("../share/toylang/core"),
+        exe_dir.join("../../core"),
+    ]
+}
+
+/// Why `roots` does not hold the stdlib, or `None` when one of them does
+/// (a directory with `std/` in it). A program checked without it fails
+/// in a way that points at itself — `String::from_str` not found — so a
+/// tool that always needs the stdlib asks this first (CLAUDE-CODE T1).
+pub fn stdlib_problem(roots: &[std::path::PathBuf]) -> Option<String> {
+    if roots.iter().any(|r| r.join("std").is_dir()) {
+        return None;
+    }
+    let looked: Vec<String> = if let Some(env) = std::env::var_os("TOYLANG_CORE_MODULES") {
+        vec![format!("TOYLANG_CORE_MODULES={}", std::path::Path::new(&env).display())]
+    } else if !roots.is_empty() {
+        roots.iter().map(|r| r.display().to_string()).collect()
+    } else {
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(stdlib_candidates))
+            .map(|c| c.iter().map(|p| p.display().to_string()).collect())
+            .unwrap_or_default()
+    };
+    Some(format!(
+        "the toylang stdlib was not found (a `core` directory holding `std/`; looked at: {}). \
+         Set TOYLANG_CORE_MODULES to the stdlib's `core` directory, or install it next to the \
+         binary as `core/` or `../share/toylang/core`",
+        looked.join(", ")
+    ))
 }
 
 /// Where a build with `options` writes its artefact: `-o` when given,

@@ -67,6 +67,16 @@ documentSymbol は `toy api`、goToImplementation は trait メソッド → imp
 | **T5** | プラグイン | リポジトリに `claude-plugin/` を置き、T2 のフック、C2 のスキル、T4 の LSP 登録、C1 の権限の雛形を束ねる。toylang を使う**別のリポジトリ**が 1 つ入れれば済む形 | 中 (T4 次第) |
 | T6 | `toy mcp` (任意) | MCP サーバとして check / fix / query / explain / api を出す。T4 と役割が重なるので、LSP に無い操作 (**fix の適用、explain、api、test**) を道具として構造化したい場合に限る。Bash 許可 (C1) で足りるなら作らない | 中 |
 
+### 進捗
+
+- **T1 (✅ 2026-09-30)** — `toy` はパッケージを見つける時点で stdlib の root を
+  確かめ (`compiler::stdlib_problem`)、無ければ探した場所と直し方を言って止まる。
+  stdlib を読まないコマンド (`explain` / `version` / `new` / `init`) は影響を受けない。
+  `compiler` / `interpreter` は stdlib なしで走らせる用途があるので変えていない。
+  **インストールの形**: `cargo install --path toy` は `~/.cargo/bin/toy` に入る
+  ので、stdlib を `~/.cargo/share/toylang/core` に置く (実行ファイルから
+  `../share/toylang/core` を探す)。あるいは `TOYLANG_CORE_MODULES` で指す
+
 ### 優先順
 
 1. **T1** — 誤った場所に誘導する不具合なので最初に。小さい

@@ -486,6 +486,11 @@ fn show_format(args: &Args) -> &'static str {
 /// The package `args` names, with the module roots assembled.
 fn locate(args: &Args) -> Result<package::Package, String> {
     let stdlib = compiler::resolve_core_modules_dirs(Vec::new());
+    // Every package reads the stdlib (the prelude, `String`); checked
+    // without it, a program fails as if its own code were wrong.
+    if let Some(problem) = compiler::stdlib_problem(&stdlib) {
+        return Err(problem);
+    }
     let mut pkg = package::find(&args.path, stdlib)?;
     // JSON diagnostics name files relative to the package, whatever
     // path the package was given as (LLM-TOOLING-PATHS).

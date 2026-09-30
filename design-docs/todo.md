@@ -12,6 +12,8 @@
 
 ### 2026-09-30
 
+- **CLAUDE-CODE T1 — stdlib が見つからないことを言う** — `toy` は型エラーに進まず、
+  探した場所と直し方を示して止まる (`compiler::stdlib_problem`)。
 - **LLM-TOOLING-PARSE-RECOVERY-HEURISTIC — 壊れた宣言の範囲をパーサが記録** —
   `File::declaration_spans` (壊れた宣言も含む範囲と名前)。診断モードでは宣言の `Err` を報告して
   次の宣言まで読み飛ばし、木を返し続ける。本文の行頭キーワードによる推測をやめた。AST キャッシュ 64。

@@ -2999,6 +2999,12 @@
 
 ## 検討中の機能
 
+* **Claude Code 連携 (CLAUDE-CODE-INTEGRATION)** — toylang のプログラムを Claude Code
+  が書くときに `toy` を使う口の検討。優先は T1 (stdlib が見つからないときに型エラーでは
+  なくそう言う。今は `String::from_str` のエラーになる)、権限とスキル、`toy hook`
+  (編集直後の自動検査) と 1 行 1 診断の形式、`toy lsp` (Claude Code の組み込み `LSP`
+  ツールの操作が `toy query` とほぼ一対一)。
+  [`CLAUDE_CODE_INTEGRATION.md`](CLAUDE_CODE_INTEGRATION.md)。
 * **LLM 向け道具の第 2 ラウンド (LLM-TOOLING)** — 7 性質と残りタスクは
   2026-09-29/30 に landing (完了済み節)。残りは未実装節の
   `LLM-TOOLING-QUERY-TEXT` (パターンに位置が無いので本文から探している部分)。[`LLM_TOOLING.md`](LLM_TOOLING.md)。

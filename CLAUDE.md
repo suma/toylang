@@ -30,6 +30,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 機能ごとの実装詳細・フェーズ履歴 | [`design-docs/FEATURE_NOTES.md`](design-docs/FEATURE_NOTES.md) |
 | LLM 向けの診断・テスト機能の設計 | [`design-docs/LLM_FEEDBACK_LOOP.md`](design-docs/LLM_FEEDBACK_LOOP.md) |
 | 診断・`toy` を LLM の道具として仕上げる第 2 ラウンド (related / edits / `toy query` / `toy fix`、提案) | [`design-docs/LLM_TOOLING.md`](design-docs/LLM_TOOLING.md) |
+| Claude Code から toylang を使う口 (フック / LSP / スキル / プラグイン、提案) | [`design-docs/CLAUDE_CODE_INTEGRATION.md`](design-docs/CLAUDE_CODE_INTEGRATION.md) |
 | backtrace / 行番号 / ファイル名の設計 | [`design-docs/DEBUG_OBSERVABILITY.md`](design-docs/DEBUG_OBSERVABILITY.md) |
 | **AOT コンパイルのどこが遅いか** (`--profile=compile`) | [`design-docs/COMPILE_PROFILE.md`](design-docs/COMPILE_PROFILE.md) |
 | `const fn` / コンパイル時実行の設計 | [`design-docs/COMPILE_TIME_EVAL.md`](design-docs/COMPILE_TIME_EVAL.md) |

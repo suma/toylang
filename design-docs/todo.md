@@ -12,6 +12,8 @@
 
 ### 2026-09-30
 
+- **NEWLINE-BINARY-AMP — 行頭の `&` は新しい式** — `-` と同じ規則。`val n = 5u64` の次行の
+  `&n` が `5u64 & n` と読まれていた (REBORROW-CHECK-GAPS (2) の正体)。AST キャッシュ 63。
 - **REBORROW-CHECK-GAPS (1) — 値渡しの引数への参照を返す関数を拒否** — 検査が本体の
   型付けより前に走るので `&x` を参照と見ていなかった。構文上の借用で判定する (E0026)。
 - **EXAMPLE-TEMP-PATH-RACE — example の一時ファイル競合** — `example_consistency` の通常 /
@@ -2612,10 +2614,6 @@
 以下 LLM-TOOLING-* は 2026-09-29/30 の LLM 向け道具の第 2 ラウンド
 ([`LLM_TOOLING.md`](LLM_TOOLING.md)) で残ったもの。
 
-- **NEWLINE-BINARY-AMP — 行頭の `&` が前の行の二項演算に続く** —
-  パーサは改行を区切りと見ないので、`val n = 5u64` の次の行の `&n` は
-  `5u64 & n` (ビット AND) と読まれ、`[E0003] Identifier 'n' not found`
-  になる (REBORROW-CHECK-GAPS の (2) の正体)。
 - **LLM-TOOLING-QUERY-REST — `toy query` の残り** — trait のメソッド宣言
   (`trait Area { fn area }` の `area`) の上での `def` / `refs`、match の
   **パターン**の中の variant・束縛 (パターンは式ではないので位置プールに

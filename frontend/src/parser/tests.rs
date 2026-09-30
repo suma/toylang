@@ -1367,4 +1367,20 @@ mod parser_tests {
             }
         }
     }
+
+    // NEWLINE-BINARY-AMP: `&` at the start of a line is a borrow that
+    // starts a new expression; at the end of a line it continues.
+    #[test]
+    fn an_ampersand_starting_a_line_starts_a_new_expression() {
+        let count = |source: &str| {
+            let mut parser = ParserWithInterner::new(source);
+            let program = parser.parse_program().expect("parse");
+            let body = program.function[0].code;
+            let Some(crate::ast::Stmt::Expression(block)) = program.statement.get(&body) else { panic!() };
+            let Some(crate::ast::Expr::Block(stmts)) = program.expression.get(&block) else { panic!() };
+            stmts.len()
+        };
+        assert_eq!(count("fn f() -> u64 {\n    val n = 5u64\n    &n\n    0u64\n}\nfn main() -> u64 { 0u64 }"), 3);
+        assert_eq!(count("fn f() -> u64 {\n    val n = 5u64 &\n        3u64\n    n\n}\nfn main() -> u64 { 0u64 }"), 2);
+    }
 }

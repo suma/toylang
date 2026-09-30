@@ -119,6 +119,11 @@ val a: i64 = 10i64
 -a              # this is its own statement, not `10 - a`
 ```
 
+The same holds for `&`, which is both bitwise and and a borrow: at the
+start of a line it begins a new expression (`val n = 5u64` followed by a
+line `&n` is two statements, not `5u64 & n`). An operator at the *end* of
+a line still continues the expression onto the next.
+
 ---
 
 ## Types

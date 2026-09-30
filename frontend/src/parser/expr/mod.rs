@@ -544,11 +544,14 @@ fn parse_binary_impl<'a>(parser: &mut Parser<'a>, group: &OperatorGroup<'a>) -> 
 
         match matched_op {
             Some((kind, op)) => {
-                // `-` is both binary subtraction and unary negation. When it
-                // appears at the start of a new source line, treat it as the
-                // start of a new expression so `val x = 7\n-y` parses as two
-                // statements, not `7 - y`.
-                if matches!(kind, Kind::ISub) && parser.has_newline_before_current_token() {
+                // `-` is both binary subtraction and unary negation, and
+                // `&` both bitwise and and a borrow. When one appears at
+                // the start of a new source line, treat it as the start of
+                // a new expression so `val x = 7\n-y` parses as two
+                // statements, not `7 - y` — and `val n = 5u64\n&n` not as
+                // `5u64 & n` (NEWLINE-BINARY-AMP), which reported the `n`
+                // being declared as not found.
+                if matches!(kind, Kind::ISub | Kind::And) && parser.has_newline_before_current_token() {
                     return Ok(lhs);
                 }
                 let op_location = parser.current_source_location();

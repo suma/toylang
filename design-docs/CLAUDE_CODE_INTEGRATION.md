@@ -94,6 +94,15 @@ documentSymbol は `toy api`、goToImplementation は trait メソッド → imp
   パッケージ相対。machine-applicable な修正があれば `(fix: ..)` を添える
   (複数行の編集なら `(fix: toy fix)`)。`check` 以外では拒否する
 
+- **T2 (✅ 2026-10-01)** — `toy hook` (`toy/src/hook.rs`) と、`.claude/settings.json`
+  の `PostToolUse` (`Edit|Write`) フック。`$CLAUDE_PROJECT_DIR/target/release/toy`
+  が無ければ何もしない。検査対象は、`src/` の下のモジュールならパッケージの入口
+  (モジュール単独を入口にすると、自分を名前で呼ぶ `greet::double` が「`greet`
+  が見つからない」という偽のエラーになるため)、それ以外は編集したファイル。
+  所要 ~26 ms (release)。**このセッションで実際に発火させて確かめた**: 誤りのある
+  編集で stderr の 1 行が Claude に差し戻され、直すと何も出ない。警告だけのときに
+  JSON の `additionalContext` で返す経路は、パイプでの出力までしか確かめていない
+
 ### 優先順
 
 1. **T1** — 誤った場所に誘導する不具合なので最初に。小さい

@@ -18,5 +18,20 @@
       "Bash(./target/release/toy version *)",
       "Bash(./target/release/toy version)"
     ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -x \"$CLAUDE_PROJECT_DIR/target/release/toy\" ]; then \"$CLAUDE_PROJECT_DIR/target/release/toy\" hook; fi",
+            "timeout": 30,
+            "statusMessage": "toy check"
+          }
+        ]
+      }
+    ]
   }
 }

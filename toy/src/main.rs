@@ -19,6 +19,7 @@
 mod clean;
 mod collide;
 mod fix;
+mod hook;
 mod package;
 mod scaffold;
 mod test_runner;
@@ -40,6 +41,7 @@ usage:
   toy fix   [PATH] [--dry-run] [--format=text|json]
   toy query type|def|refs FILE:LINE:COL... [--in PATH] [--format=text|json]
   toy query callers|callees NAME... [--in PATH] [--format=text|json]
+  toy hook                       (a Claude Code PostToolUse hook: checks the edited .t file)
   toy clean [PATH] [--all] [--format=text|json] [-v]
   toy new   <DIR> [--format=text|json] [-v]
   toy init  [DIR] [--format=text|json] [-v]
@@ -228,6 +230,12 @@ fn main() {
     }
     let command = argv[0].clone();
     let rest = &argv[1..];
+
+    if command == "hook" {
+        // Reads the Claude Code hook input on stdin; the exit code is
+        // the answer (CLAUDE_CODE_INTEGRATION.md T2).
+        process::exit(hook::run());
+    }
 
     if command == "query" {
         if let Err(e) = cmd_query(rest) {

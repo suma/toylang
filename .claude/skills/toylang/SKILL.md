@@ -14,7 +14,12 @@ toylang は Rust に似た見た目の、改行区切りの静的型付き言語
 `toy` は release ビルドを直接叩く (`cargo run` より一桁速い)。無ければ
 `cargo build --release -p toy`。
 
+このリポジトリでは `.t` を Edit / Write するたびに **`toy hook` が自動で検査**
+し、誤りがあれば 1 行 1 件で差し戻してくる (`.claude/settings.json` の
+PostToolUse フック)。差し戻されたら、その行を直してから先へ進む。
+
 1. **検査** — `target/release/toy check <パッケージか .t> --format=json`
+   (1 行ずつ欲しければ `--format=short`)
    - 診断は `code` (E00xx)・`file`・`span`・`suggestions[].edits`・`related`
      (関連箇所) を持つ。`toy explain E00xx` で原因と直し方
 2. **修正** — machine-applicable な提案は `target/release/toy fix <パッケージ>`

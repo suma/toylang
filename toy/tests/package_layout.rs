@@ -2559,3 +2559,58 @@ fn check_short_prints_one_line_per_diagnostic() {
     let out = run(&pkg, &["test", path, "--format=short"]);
     assert!(String::from_utf8_lossy(&out.stderr).contains("only `toy check`"));
 }
+
+// CLAUDE-CODE T2: `toy hook`, the Claude Code PostToolUse hook.
+fn hook(file: &std::path::Path) -> std::process::Output {
+    use std::io::Write;
+    let input = serde_json::json!({ "tool_name": "Edit", "tool_input": { "file_path": file } });
+    let mut child = Command::new(toy_bin())
+        .arg("hook")
+        .env("TOYLANG_CORE_MODULES", stdlib())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn toy hook");
+    child.stdin.take().unwrap().write_all(input.to_string().as_bytes()).unwrap();
+    child.wait_with_output().expect("toy hook")
+}
+
+#[test]
+fn hook_feeds_errors_back_and_stays_quiet_otherwise() {
+    let pkg = scratch("hook");
+    // A module that names itself (`geo::area` in its own test) is fine as
+    // part of the package; the hook checks the package, not the module
+    // on its own.
+    write(
+        &pkg,
+        "src/geo.t",
+        "pub fn area(w: u64, h: u64) -> u64 { w * h }\ntest \"area\" { assert_eq(geo::area(2u64, 3u64), 6u64) }\n",
+    );
+    write(&pkg, "main.t", "fn main() -> u64 { geo::area(1u64, 2u64) }\n");
+    let module = pkg.0.join("src/geo.t");
+    let out = hook(&module);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(out.stdout.is_empty() && out.stderr.is_empty());
+
+    // An error comes back on stderr with exit 2, one line each.
+    write(&pkg, "src/geo.t", "pub fn area(w: u64, h: u64) -> bool { w * h }\n");
+    let out = hook(&module);
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.lines().any(|l| l.starts_with("src/geo.t:1:8: E0001")), "{stderr}");
+
+    // Warnings only: exit 0, JSON context on stdout.
+    write(&pkg, "src/geo.t", "pub fn area(w: u64, h: u64) -> u64 { w * h }\n");
+    write(&pkg, "main.t", "fn main() -> u64 {\n    io::write_file(\"/no/such/dir/x\", \"a\")\n    0u64\n}\n");
+    let out = hook(&pkg.0.join("main.t"));
+    assert_eq!(out.status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert!(v["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("E0025"), "{v}");
+
+    // Not a `.t` file: nothing to do.
+    write(&pkg, "notes.md", "# notes\n");
+    let out = hook(&pkg.0.join("notes.md"));
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stdout.is_empty() && out.stderr.is_empty());
+}

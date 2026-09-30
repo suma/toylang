@@ -10,6 +10,11 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-10-01
+
+- **CLAUDE-CODE T2 / T3 — 編集直後の自動検査** — `toy hook` と PostToolUse フック、
+  `toy check --format=short`。
+
 ### 2026-09-30
 
 - **CLAUDE-CODE C1 / C2 — 権限とスキル** — `.claude/settings.json` で toy の読むだけの
@@ -3009,12 +3014,10 @@
 
 ## 検討中の機能
 
-* **Claude Code 連携 (CLAUDE-CODE-INTEGRATION)** — toylang のプログラムを Claude Code
-  が書くときに `toy` を使う口の検討。優先は T1 (stdlib が見つからないときに型エラーでは
-  なくそう言う。今は `String::from_str` のエラーになる)、権限とスキル、`toy hook`
-  (編集直後の自動検査) と 1 行 1 診断の形式、`toy lsp` (Claude Code の組み込み `LSP`
-  ツールの操作が `toy query` とほぼ一対一)。
-  [`CLAUDE_CODE_INTEGRATION.md`](CLAUDE_CODE_INTEGRATION.md)。
+* **Claude Code 連携 (CLAUDE-CODE-INTEGRATION) の残り** — T1 / C1 / C2 / T2 / T3 は
+  2026-09-30〜10-01 に landing (完了済み節)。残りは T4 `toy lsp` (Claude Code の
+  組み込み `LSP` ツールの操作が `toy query` とほぼ一対一)、T5 プラグイン化、
+  T6 `toy mcp` (任意)。[`CLAUDE_CODE_INTEGRATION.md`](CLAUDE_CODE_INTEGRATION.md)。
 * **LLM 向け道具の第 2 ラウンド (LLM-TOOLING)** — 7 性質と残りタスクは
   2026-09-29/30 に landing (完了済み節)。残りは未実装節の
   `LLM-TOOLING-QUERY-TEXT` (パターンに位置が無いので本文から探している部分)。[`LLM_TOOLING.md`](LLM_TOOLING.md)。

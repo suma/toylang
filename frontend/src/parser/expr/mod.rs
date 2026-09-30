@@ -753,6 +753,11 @@ fn parse_postfix_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                 parser.next(); // consume 'as'
 
                 let target_type = parser.parse_type_declaration()?;
+                // ENUM-DISCRIMINANT: `e as u32` on an enum becomes a
+                // `match`, and a computed `e` is bound to this name first
+                // (`apply_enum_cast_rewrites`). The type checker cannot
+                // intern, so the name is interned wherever a cast is.
+                parser.string_interner.get_or_intern("__enum_cast");
                 expr = parser.ast_builder.cast_expr(expr, target_type, Some(location));
             }
             // `expr?` — postfix early-return operator. The parser

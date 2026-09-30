@@ -1262,3 +1262,72 @@ fn a_compound_field_is_a_match_scrutinee() {
     "#;
     assert_renders(src, "compound_field_scrutinee", "4 9\n");
 }
+
+/// An enum-returning call written straight into `if val` -- a free
+/// function, a module function, an associated function. Each used to
+/// fail the compiled lanes with "`match` on scalar scrutinee only
+/// supports i64 / u64 / bool, got enum#N" and no position; the parser
+/// now binds the call first (MATCH-TEMP-EXIT-LEAK).
+#[test]
+fn an_enum_returning_call_is_an_if_val_scrutinee() {
+    let src = r#"
+        fn half(n: u64) -> Option<u64> {
+            if n % 2u64 == 0u64 { Option::Some(n / 2u64) } else { Option::None }
+        }
+        fn main() -> u64 {
+            var s = 0u64
+            if val Result::Ok(n) = parse::to_u64("42") { s = s + n }
+            if val Result::Err(e) = parse::to_u64("x") { s = s + 100u64 }
+            if val Option::Some(h) = half(8u64) { s = s + h }
+            if val Result::Err(e) = File::open("/nonexistent/logsearch-probe") {
+                s = s + 1000u64
+            }
+            println(s)
+            0u64
+        }
+    "#;
+    assert_renders(src, "an_enum_returning_call_is_an_if_val_scrutinee", "1146\n");
+}
+
+/// `e as u32` becomes a `match` in the type checker, which binds a
+/// computed operand the way the parser binds a call: over an
+/// associated function the compiled lanes had no way in.
+#[test]
+fn an_associated_call_casts_to_its_discriminant() {
+    let src = r#"
+        enum Color { Red = 1, Green = 5 }
+        struct Pal { n: u64 }
+        impl Pal {
+            fn pick(i: u64) -> Color { if i > 0u64 { Color::Green } else { Color::Red } }
+        }
+        fn pick(i: u64) -> Color { Pal::pick(i) }
+        fn main() -> u64 {
+            val a = Pal::pick(1u64) as u32
+            val b = pick(0u64) as u32
+            (a * 10u32 + b) as u64
+        }
+    "#;
+    assert_consistent(src, "an_associated_call_casts_to_its_discriminant");
+}
+
+/// A lowering error names the place it is about. The errors are built
+/// where the expression is not at hand, and used to arrive with no
+/// position at all.
+#[test]
+fn a_lowering_error_carries_the_position() {
+    let src = r#"
+fn main() -> u64 {
+    var v: Vec<u64> = Vec::new()
+    v.push(3u64)
+    var n = 0u64
+    while val Option::Some(x) = v.iter().next() {
+        n = n + x
+        break
+    }
+    n
+}
+"#;
+    let error = lowering_error(src);
+    assert!(error.starts_with("test.t:6:11: "), "{error}");
+    assert!(error.matches("test.t:").count() == 1, "{error}");
+}

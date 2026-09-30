@@ -1125,6 +1125,28 @@ pub(super) fn lowered_ir_with(source: &str, release: bool) -> String {
     format!("{module}")
 }
 
+/// The error `lower_program` reports for `source`, which type-checks
+/// as `test.t`. Panics when the lowering succeeds.
+pub(super) fn lowering_error(source: &str) -> String {
+    let mut parser = frontend::ParserWithInterner::new(source);
+    let mut program = parser.parse_program().expect("parse");
+    let interner = parser.get_string_interner();
+    let core = core_modules_dir();
+    interpreter::check_typing_with_core_modules(
+        &mut program,
+        interner,
+        Some(source),
+        Some("test.t"),
+        if needs_core(source) { std::slice::from_ref(&core) } else { &[] },
+    )
+    .expect("type check");
+    let contract_msgs = compiler_lower::ContractMessages::intern(interner);
+    match compiler_lower::lower_program(&program, interner, &contract_msgs, false) {
+        Ok(_) => panic!("lowering succeeded for:\n{source}"),
+        Err(e) => e,
+    }
+}
+
 /// The rendered body of one lowered function, so a test can count
 /// instructions inside it without matching the rest of the module.
 pub(super) fn lowered_function(ir: &str, name: &str) -> String {

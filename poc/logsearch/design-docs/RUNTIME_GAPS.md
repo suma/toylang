@@ -563,14 +563,17 @@ of an owned value.」 **この 1 行のために関数全体が 1 段深い。**
   `compiler MVP match on scalar scrutinee only supports i64 / u64 / bool,
   got enum#17` で、**位置が出ない** (method 呼び出しは通る)。
   CLAUDE.md の「function-call enum scrutinee は val-bind 経由」と同じ
-  制約だが、`if val` だと desugar 後の `match` のことなので気づきにくい
+  制約だが、`if val` だと desugar 後の `match` のことなので気づきにくい。
+  **同日に解消** (呼び出しの scrutinee はパーサが束縛し、lowering の
+  エラーは位置を持つ)。この POC に残した `val` の一時束縛は、もう
+  外してよい
 - **右辺に呼び出しを直接書き、腕の中から `continue` / `return` で抜けると
   所有 payload が漏れる** (AOT と JIT で一致して再現、束縛してからなら
   漏れない。`if val` 固有ではなく、呼び出しを直接 scrutinee にした
   `match` でも同じ)。この POC の右辺は `Span` / `Line` / 整数 / payload
   の無いエラー enum だけなので踏んでいない。→ todo の
   **MATCH-TEMP-EXIT-LEAK** — **同日に解消**: パーサが呼び出しの scrutinee を
-  `val` に束縛するようになり、1 つ目の穴 (AOT が落ちる) も同じ修正で消えた
+  `val` に束縛するようになった
 
 ### 6. 小さな穴 (どれも回避できるが、書き方が 1 段遠くなる)
 

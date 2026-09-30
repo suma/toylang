@@ -1999,7 +1999,30 @@ impl<'a> FunctionLower<'a> {
         let previous = self.current_expr.replace(*expr_ref);
         let result = self.lower_expr_here(expr_ref);
         self.current_expr = previous;
-        result
+        result.map_err(|e| self.locate_error(expr_ref, e))
+    }
+
+    /// Put `path:line:col: ` in front of a lowering error, taken from the
+    /// innermost expression that failed and has a position. The errors
+    /// are plain strings built deep inside the lowering, where the
+    /// expression is not at hand, so without this a compiled lane said
+    /// "`match` on scalar scrutinee only supports i64 / u64 / bool" and
+    /// left the program to be searched by hand. A synthesized expression
+    /// has no position and leaves the error to the one around it.
+    fn locate_error(&mut self, expr_ref: &ExprRef, error: String) -> String {
+        if self.located_error.as_ref() == Some(&error) {
+            return error;
+        }
+        let Some(loc) = self.program.location_pool.get_expr_location(expr_ref).copied() else {
+            return error;
+        };
+        let path = match self.program.source_map.get(loc.file).map(|f| f.path.as_str()) {
+            Some("") | None => "<input>",
+            Some(path) => path,
+        };
+        let located = format!("{path}:{}:{}: {error}", loc.line, loc.column);
+        self.located_error = Some(located.clone());
+        located
     }
 
     /// Source position of the expression being lowered, recorded in the

@@ -12,6 +12,10 @@
 
 ### 2026-10-01
 
+- **MATCH-SCRUTINEE-CALL-AOT — 呼び出しの enum を scrutinee にすると compiled レーンが位置なしで
+  落ちる** — `if val Result::Ok(n) = parse::to_u64(s)` は MATCH-TEMP-EXIT-LEAK の束縛で通るように
+  なり、型検査器が合成する `match` (`Pal::pick(1u64) as u32`) も被演算子を `__enum_cast` に
+  束縛する。lowering のエラーは失敗した最も内側の式の `file:line:col:` を頭に持つ。
 - **MATCH-TEMP-EXIT-LEAK — 呼び出しを直接 scrutinee にした `match` の payload** — パーサが
   `match f(x)` / `if val` / `while val` / `for x in` の呼び出しを `val __match_N` に束縛する
   (`next()` を除く)。腕から `continue` / `return` で抜けたときの漏れ、入れ子の `match` で外側の

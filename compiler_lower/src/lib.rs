@@ -324,6 +324,10 @@ struct FunctionLower<'a> {
     /// entered from the function header — which is the honest answer
     /// for a line nobody wrote.
     current_expr: Option<ExprRef>,
+    /// The last error `lower_expr` put a source position on, so the
+    /// expressions around the one that failed pass it through instead
+    /// of stacking their own positions in front of it.
+    located_error: Option<String>,
     /// `result` symbol — used to bind the return value during
     /// ensures evaluation. The interpreter / type-checker rely on the
     /// same name. We resolve it lazily because the symbol may not

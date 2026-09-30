@@ -1884,6 +1884,7 @@ impl<'a> FunctionLower<'a> {
             debug_frames: !release,
             print_stderr: false,
             current_expr: None,
+            located_error: None,
             bindings: HashMap::new(),
             pending_block_enums: HashMap::new(),
             loop_stack: Vec::new(),

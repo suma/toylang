@@ -175,7 +175,31 @@ impl<'a> TypeCheckerVisitor<'a> {
                     body,
                 });
             }
-            self.core.expr_pool.update(&expr_ref, Expr::Match(operand, arms));
+            // A computed operand is bound first, as the parser binds a
+            // call it is asked to match (MATCH-TEMP-EXIT-LEAK): the
+            // compiled lanes take a `match` over a binding in every
+            // shape, and over an associated call (`Pal::pick(1u64) as
+            // u32`) not at all. The enum owns nothing, so the binding
+            // only names the value. The name is absent only when no
+            // parsed file had a cast, i.e. every cast came from a
+            // cached module; those stay unbound, as they always were.
+            let place = matches!(
+                self.core.expr_pool.get(&operand),
+                Some(Expr::Identifier(_) | Expr::FieldAccess(..))
+            );
+            match self.core.string_interner.get("__enum_cast") {
+                Some(name) if !place => {
+                    let ty = TypeDecl::Enum(*enum_name, Vec::new());
+                    let bind = self.core.stmt_pool.add(Stmt::Val(name, Some(ty), operand));
+                    let ident = self.core.expr_pool.add(Expr::Identifier(name));
+                    let matched = self.core.expr_pool.add(Expr::Match(ident, arms));
+                    let matched_stmt = self.core.stmt_pool.add(Stmt::Expression(matched));
+                    self.core
+                        .expr_pool
+                        .update(&expr_ref, Expr::Block(vec![bind, matched_stmt]));
+                }
+                _ => self.core.expr_pool.update(&expr_ref, Expr::Match(operand, arms)),
+            }
         }
     }
 }

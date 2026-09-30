@@ -1178,8 +1178,20 @@ impl<'a> TypeCheckerVisitor<'a> {
             };
 
             if !types_match {
-                // Create location information from function node with calculated line and column
-                let func_location = self.node_to_source_location(&func.node);
+                // On the function's name, in the file its body is in:
+                // the node's offsets are that file's, so computing the
+                // line against the entry file (what `node_to_source_location`
+                // does) put a module function's error in the wrong file.
+                let file = self
+                    .core
+                    .location_pool
+                    .get_stmt_location(&func.code)
+                    .map(|l| l.file)
+                    .unwrap_or(crate::source_map::FileId::ENTRY);
+                let start = func.node.start as u32;
+                let func_location =
+                    crate::type_checker::SourceLocation::new_in(file, 0, 0, start, start);
+                let func_name_word = self.resolve_symbol_name(func.name);
 
                 // Add detailed information about the type mismatch
                 let func_name_str = self.resolve_symbol_name(func.name);
@@ -1203,7 +1215,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 return Err(TypeCheckError::type_mismatch(
                     expected_return_type.clone(),
                     last.clone(),
-                ).with_location(func_location)
+                ).at_word(func_location, &func_name_word)
                  .with_context(&detailed_context));
             }
         }

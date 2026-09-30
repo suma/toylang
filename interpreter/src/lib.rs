@@ -2602,16 +2602,64 @@ pub fn parse_failure_summary(diagnostics: &[Diagnostic]) -> String {
     }
 }
 
+/// Where JSON diagnostics report paths from (LLM-TOOLING-PATHS). `None`
+/// — the default — reports them as the driver was given them. `toy`
+/// sets its package root, so the entry (often given as an absolute
+/// path) and the package's modules (recorded relative to their root)
+/// come out in one convention, and the same package checked on two
+/// machines gives the same bytes.
+pub fn set_diagnostic_root(root: Option<std::path::PathBuf>) {
+    let canonical = root.map(|r| r.canonicalize().unwrap_or(r));
+    *DIAGNOSTIC_ROOT.lock().unwrap() = canonical;
+}
+
+static DIAGNOSTIC_ROOT: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+fn diagnostic_root() -> Option<std::path::PathBuf> {
+    DIAGNOSTIC_ROOT.lock().ok().and_then(|g| g.clone())
+}
+
+/// Every `"file"` string under `value` that names a file inside `root`,
+/// made relative to it. Paths outside it (the stdlib) are left alone.
+pub fn relativize_paths(value: &mut serde_json::Value, root: &std::path::Path) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, v) in map.iter_mut() {
+                match v {
+                    serde_json::Value::String(path) if key == "file" => {
+                        let p = std::path::Path::new(path.as_str());
+                        let canonical = p.canonicalize().ok();
+                        if let Some(rel) = canonical.as_deref().and_then(|c| c.strip_prefix(root).ok()) {
+                            *path = rel.to_string_lossy().into_owned();
+                        }
+                    }
+                    other => relativize_paths(other, root),
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                relativize_paths(item, root);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Diagnostics as the JSON array tools read: each one as serialised,
 /// plus `explain` — the command that prints its code's explanation
 /// (LLM-TOOLING #2), a reference that works offline and matches the
 /// version that produced the code.
 pub fn diagnostics_json(diagnostics: &[Diagnostic]) -> serde_json::Value {
+    let root = diagnostic_root();
     serde_json::Value::Array(
         diagnostics
             .iter()
             .map(|d| {
                 let mut value = serde_json::to_value(d).unwrap_or(serde_json::Value::Null);
+                if let Some(root) = &root {
+                    relativize_paths(&mut value, root);
+                }
                 if let serde_json::Value::Object(map) = &mut value {
                     if frontend::explain::explain(d.code).is_some() {
                         map.insert(

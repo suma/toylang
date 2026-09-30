@@ -487,6 +487,9 @@ fn show_format(args: &Args) -> &'static str {
 fn locate(args: &Args) -> Result<package::Package, String> {
     let stdlib = compiler::resolve_core_modules_dirs(Vec::new());
     let mut pkg = package::find(&args.path, stdlib)?;
+    // JSON diagnostics name files relative to the package, whatever
+    // path the package was given as (LLM-TOOLING-PATHS).
+    interpreter::set_diagnostic_root(Some(pkg.root.clone()));
     // Explicit `--core-modules` land after the package's own `src/`,
     // so they win — the same "later wins" rule the flag has when
     // passed to the compiler directly.
@@ -787,7 +790,7 @@ fn cmd_query(argv: &[String]) -> Result<(), String> {
     let mut answers: Vec<serde_json::Value> =
         subjects.iter().map(|s| interpreter::query::answer(&index, kind, s)).collect();
     for a in &mut answers {
-        relativize_files(a, &root);
+        interpreter::relativize_paths(a, &root);
     }
     if args.json {
         print_json(&serde_json::json!({
@@ -805,34 +808,6 @@ fn cmd_query(argv: &[String]) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-/// Every `"file"` in a query answer, relative to the package root —
-/// the entry is recorded as given (often absolute) and modules
-/// relative to their root; one convention reads better and compares.
-fn relativize_files(value: &mut serde_json::Value, root: &Path) {
-    match value {
-        serde_json::Value::Object(map) => {
-            for (key, v) in map.iter_mut() {
-                if key == "file"
-                    && let serde_json::Value::String(path) = v
-                {
-                    let canonical = Path::new(path.as_str()).canonicalize().ok();
-                    if let Some(rel) = canonical.as_deref().and_then(|p| p.strip_prefix(root).ok()) {
-                        *path = rel.to_string_lossy().into_owned();
-                    }
-                } else {
-                    relativize_files(v, root);
-                }
-            }
-        }
-        serde_json::Value::Array(items) => {
-            for item in items {
-                relativize_files(item, root);
-            }
-        }
-        _ => {}
-    }
 }
 
 /// One answer as text: a line per fact, `file:line:column` for places.

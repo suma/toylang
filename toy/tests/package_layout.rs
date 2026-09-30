@@ -2385,3 +2385,22 @@ fn diagnostics_and_answers_are_byte_identical_across_runs_and_in_source_order() 
     sorted.sort();
     assert_eq!(keys, sorted, "{stderr}");
 }
+
+// LLM-TOOLING-PATHS: `toy` reports files relative to the package, and a
+// module's error is reported in the module's file.
+#[test]
+fn json_diagnostics_name_files_relative_to_the_package() {
+    let pkg = scratch("rel_paths");
+    write(&pkg, "src/geo.t", "pub fn ok() -> u64 { 1u64 }\n\npub fn bad() -> bool { 1u64 }\n");
+    write(&pkg, "main.t", "fn main() -> u64 {\n    val b: bool = 1u64\n    geo::ok()\n}\n");
+    let abs = pkg.0.canonicalize().unwrap();
+    let out = run(&pkg, &["check", abs.to_str().unwrap(), "--format=json"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let json = &stderr[stderr.find('[').unwrap()..=stderr.rfind(']').unwrap()];
+    let diags: Vec<serde_json::Value> = serde_json::from_str(json).expect("json");
+    let places: Vec<(String, u64)> = diags
+        .iter()
+        .map(|d| (d["file"].as_str().unwrap().to_string(), d["span"]["line"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(places, [("main.t".to_string(), 2), ("src/geo.t".to_string(), 3)], "{stderr}");
+}

@@ -12,6 +12,9 @@
 
 ### 2026-09-30
 
+- **LLM-TOOLING-PATHS — `toy` の JSON 診断をパッケージ相対に** — `set_diagnostic_root`。
+  あわせて、モジュール内の関数の戻り値型の不一致が入口ファイルの位置として報告されていた
+  (`node_to_source_location` が入口のソースで行を数えていた) のを直した。
 - **LLM-TOOLING-SCRUTINEE-OPTION — 調査済み** — 型検査器のバグではなく、consistency
   ハーネスの `needs_core` が stdlib なしで試しに型検査する経路 (`Option` / `Result` が
   未宣言) の文言だった。宣言の無い型の scrutinee は `E0003` で「宣言されていない」と言うようにした。
@@ -2595,11 +2598,6 @@
   `fn bad() -> &u64 { val n = 5u64 \n &n }` は E0026 ではなく
   **`[E0003] Identifier 'n' not found`** になる (誤った診断)。
   どちらも E0026 の例として説明文に載せようとして見つけた。
-- **LLM-TOOLING-PATHS — 診断のパスが渡されたとおり** — 入口ファイルは
-  引数のまま (絶対パスで渡せば絶対)、モジュールは root からの相対。
-  同じ cwd・同じ引数なら出力は一致するが、マシン間では比べられない。
-  `toy query` は答えをパッケージ root 相対に揃えている
-  (`relativize_files`) ので、診断にも同じことをする。
 - **LLM-TOOLING-QUERY-SCOPE — `toy query` の近似** — ローカル変数は
   「同じ関数内で直前にある同名の宣言 (か引数)」に解決し、ブロック
   スコープを見ない (内側のブロックで隠した名前をブロックの後で読むと

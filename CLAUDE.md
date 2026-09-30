@@ -261,7 +261,8 @@ echo 'fn main() -> u64 { 7u64 }' | cargo run -q -p compiler -- - --all-backends
 - **診断 (エラー)** を stderr に JSON 配列で出す
   (各要素は `severity` / `code` / `message` / `file` / `span` (`line`・`column`・
   `offset`・`end_offset`) / `origin_module` / `suggestions` / `related`
-  (関連箇所) / `explain`、実行時エラーは `backtrace` も持つ)。提案は `edits` (各編集が `file` / `span` /
+  (関連箇所) / `explain`、実行時エラーは `backtrace` も持つ)。`toy` 経由の
+  `file` はパッケージ root からの相対パス (root の外 = stdlib はそのまま)。提案は `edits` (各編集が `file` / `span` /
   `replacement` を持ち、全部まとめて当てる) で表す。text はスニペット付きで 1 エラーあたり ~11 行。
   パース・型・実行時 (IR VM) のエラーが対象。JSON 配列の後に
   `toy: N type-check error(s)` のような 1 行要約が続くことがあるので、

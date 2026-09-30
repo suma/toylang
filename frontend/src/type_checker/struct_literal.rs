@@ -239,11 +239,19 @@ impl<'a> TypeCheckerVisitor<'a> {
     fn unknown_field<'c>(
         &self,
         obj: &ExprRef,
+        owner: DefaultSymbol,
         written: &str,
         fields: impl IntoIterator<Item = &'c str>,
     ) -> TypeCheckError {
         let after = self.get_expr_location(obj).map(|l| l.end_offset);
-        TypeCheckError::not_found("field", written).suggest_name(
+        // Named with its struct: "field 'y' not found" did not say
+        // where it was looked for.
+        let owner = self.resolve_symbol_name(owner);
+        TypeCheckError::coded(
+            crate::diagnostic::codes::NOT_FOUND,
+            format!("struct `{owner}` has no field `{written}`"),
+        )
+        .suggest_name(
             "a field",
             written,
             fields,
@@ -316,7 +324,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                             return Ok(struct_field.type_decl.clone());
                         }
                     }
-                    Err(self.unknown_field(obj, &field_name, struct_fields.iter().map(|f| f.name.as_str())))
+                    Err(self.unknown_field(obj, struct_name, &field_name, struct_fields.iter().map(|f| f.name.as_str())))
                 } else {
                     let struct_name_str = self.resolve_symbol_name(struct_name);
                     Err(TypeCheckError::not_found("struct", &struct_name_str))
@@ -344,7 +352,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     if self.resolve_symbol_name(struct_symbol) == "SoaVec" {
                         return self.column_window_type(type_params.first(), *field);
                     }
-                    Err(self.unknown_field(obj, &field_name, struct_fields.iter().map(|f| f.name.as_str())))
+                    Err(self.unknown_field(obj, struct_symbol, &field_name, struct_fields.iter().map(|f| f.name.as_str())))
                 } else {
                     let struct_name_str = self.resolve_symbol_name(struct_symbol);
                     Err(TypeCheckError::not_found("struct", &struct_name_str))

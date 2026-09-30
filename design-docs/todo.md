@@ -12,6 +12,9 @@
 
 ### 2026-09-30
 
+- **LLM-TOOLING-PARSE-RECOVERY-REST** — 関数の外 (壊れた struct 等) のパースエラーでも
+  型検査を続け、壊れた宣言の範囲とその名前を名指す誤りを捨てる。未知フィールドの文言に
+  struct 名を入れた (`struct \`P\` has no field \`y\``)。
 - **LLM-TOOLING-DID-YOU-MEAN-TRANSPOSE** — did-you-mean の距離を隣接入れ替え 1 に
   (`nrom` → `norm` が提案されるように)。
 - **LLM-TOOLING-MAYBE-INCORRECT — 推測の提案** — 網羅性エラーに欠けた腕の挿入
@@ -2611,11 +2614,11 @@
   **パターン**の中の variant・束縛 (パターンは式ではないので位置プールに
   載らない)、関数名を値として渡した先。ブロックスコープは本文の波括弧で
   判定しているので、マクロ的な脱糖で生えた束縛は対象外。
-- **LLM-TOOLING-PARSE-RECOVERY-REST — パースエラー時の型検査の限界** —
-  `diagnose_parse_failure` は、パースエラーが関数・メソッドの外
-  (壊れた `struct` / `enum` / `impl` 見出し) にあるときと、`?` で宣言ごと
-  落ちて関数が木に入らなかったときはパースエラーだけを返す。後者は
-  `else if` を回復にしたのと同じ要領で、落ちる経路を回復にすれば減る。
+- **LLM-TOOLING-PARSE-RECOVERY-HEURISTIC** — 関数の外で壊れた宣言の範囲は
+  **本文の行頭のキーワード**で求め、その宣言の名前を名指す型エラーを捨てる
+  (`interpreter::top_level_declarations`)。字下げした宣言や、名前を
+  含まない連鎖 (壊れた struct の variant 経由の誤り等) は拾えない。
+  パーサが宣言の範囲を記録すれば (PARSER-DECL-END と同じ根) 本文に頼らずに済む。
   宣言ごと 1 件のパースエラー抑制 (P1) はそのまま。
 - **PARSER-DECL-END — 宣言ノードの終わりが記録されない** — ファイル
   末尾の関数は `Function::node.end == 0`。`toy query` と

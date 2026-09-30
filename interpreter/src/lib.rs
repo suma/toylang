@@ -2544,11 +2544,27 @@ pub fn diagnose_parse_failure(
             .min_by_key(|(s, e)| e - s)
             .copied()
     };
+    // An error outside every function — a broken `struct`, or a
+    // function that failed so early the parser left it out — breaks the
+    // top-level declaration around it. Its range is taken from the text
+    // (declarations start at the beginning of a line), and its name is
+    // kept: errors elsewhere that name it follow from it.
     let mut broken: Vec<(usize, usize)> = Vec::new();
+    let mut broken_names: Vec<String> = Vec::new();
+    let decl_starts = top_level_declarations(source);
     for e in &outcome.errors {
-        match containing(e.location.offset as usize) {
-            Some(range) => broken.push(range),
-            None => return diagnostics,
+        let offset = e.location.offset as usize;
+        if let Some(range) = containing(offset) {
+            broken.push(range);
+            continue;
+        }
+        let Some(index) = decl_starts.iter().rposition(|(start, _)| *start <= offset) else {
+            return diagnostics;
+        };
+        let end = decl_starts.get(index + 1).map(|(s, _)| *s).unwrap_or(source.len());
+        broken.push((decl_starts[index].0, end));
+        if let Some(name) = &decl_starts[index].1 {
+            broken_names.push(name.clone());
         }
     }
 
@@ -2567,15 +2583,62 @@ pub fn diagnose_parse_failure(
     let Ok(Err(type_errors)) = checked else {
         return diagnostics;
     };
+    let names_broken = |message: &str| {
+        broken_names.iter().any(|name| {
+            message.match_indices(name.as_str()).any(|(i, w)| {
+                let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+                let before = message[..i].chars().next_back();
+                let after = message[i + w.len()..].chars().next();
+                !before.is_some_and(is_ident) && !after.is_some_and(is_ident)
+            })
+        })
+    };
     diagnostics.extend(type_errors.into_iter().filter(|d| {
         let inside_broken = d.file == filename
             && d.span.is_some_and(|s| {
                 broken.iter().any(|(b, e)| *b <= s.offset as usize && (s.offset as usize) < *e)
             });
-        !inside_broken
+        !inside_broken && !names_broken(&d.message)
     }));
     frontend::diagnostic::normalize(&mut diagnostics, filename);
     diagnostics
+}
+
+/// Where each top-level declaration of `source` starts, with the name
+/// it declares when it has one. A declaration is a line that begins
+/// (at column 0) with a declaration keyword, after any modifiers.
+fn top_level_declarations(source: &str) -> Vec<(usize, Option<String>)> {
+    const MODIFIERS: [&str; 5] = ["pub", "unsafe", "never_allocates", "const", "extern"];
+    const NAMED: [&str; 6] = ["fn", "struct", "enum", "trait", "type", "const"];
+    const UNNAMED: [&str; 3] = ["impl", "test", "import"];
+    let mut out = Vec::new();
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        let start = offset;
+        offset += line.len();
+        if line.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let words: Vec<&str> = line
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .filter(|w| !w.is_empty())
+            .collect();
+        let mut rest = words.as_slice();
+        while let [first, tail @ ..] = rest {
+            // `const` is a modifier only when a `fn` follows it.
+            let modifier = MODIFIERS.contains(first) && !(*first == "const" && tail.first() != Some(&"fn"));
+            if !modifier {
+                break;
+            }
+            rest = tail;
+        }
+        match rest {
+            [kw, name, ..] if NAMED.contains(kw) => out.push((start, Some((*name).to_string()))),
+            [kw, ..] if NAMED.contains(kw) || UNNAMED.contains(kw) => out.push((start, None)),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Diagnostics as text, the way a type-check failure is printed.

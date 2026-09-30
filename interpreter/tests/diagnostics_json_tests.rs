@@ -860,13 +860,18 @@ fn main() -> u64 { val z = 1.5
 }
 
 #[test]
-fn a_parse_error_outside_every_function_reports_the_parse_errors_alone() {
+fn a_broken_declaration_outside_functions_still_lets_the_rest_be_checked() {
+    // LLM-TOOLING-PARSE-RECOVERY-REST: the broken `struct` is left out,
+    // and what only fails because of it (`p.y`, a field it lost) is not
+    // reported; the unrelated misspelling is.
     let source = "struct P { x: u64 y: u64 }
+fn usep(p: P) -> u64 { p.x + p.y }
 fn g() -> u64 { calculate_totl(1u64) }
 fn main() -> u64 { 0u64 }";
     let diagnostics = diagnose_failed_parse(source);
-    assert!(diagnostics.iter().all(|d| d.code == "E0032"), "{diagnostics:#?}");
-    assert!(!diagnostics.is_empty());
+    let codes: Vec<&str> = diagnostics.iter().map(|d| d.code).collect();
+    assert_eq!(codes, ["E0032", "E0003"], "{diagnostics:#?}");
+    assert!(diagnostics[1].message.contains("calculate_totl"), "{diagnostics:#?}");
 }
 
 #[test]

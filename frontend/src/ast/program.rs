@@ -147,6 +147,11 @@ pub struct File {
     /// error uses it to leave a broken declaration, and what only fails
     /// because of it, out of the type errors it reports.
     pub declaration_spans: Vec<DeclarationSpan>,
+    /// The names written in patterns (`match` arms, `if val`, `while
+    /// val`), which the tree records without a position: the variant of
+    /// `Shape::Circle(r)` and the `r` it binds. A tool asking what the
+    /// name at a position means reads them here.
+    pub pattern_sites: Vec<PatternSite>,
 
     pub statement: StmtPool,
     pub expression: ExprPool,
@@ -159,6 +164,21 @@ pub struct File {
     /// entry per module it copies in. Anything drawing an excerpt
     /// resolves a location's `file` here.
     pub source_map: SourceMap,
+}
+
+/// See [`File::pattern_sites`].
+#[derive(Debug, PartialEq, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct PatternSite {
+    /// The variant (`Circle`), or the name bound (`r`).
+    pub name: DefaultSymbol,
+    /// The enum a variant belongs to; `None` for a binding.
+    pub owner: Option<DefaultSymbol>,
+    /// Where the name is written.
+    pub at: crate::type_checker::SourceLocation,
+    /// A binding is visible from `at` up to this offset: the end of the
+    /// arm or block the pattern guards.
+    pub scope_end: u32,
 }
 
 /// See [`File::declaration_spans`].

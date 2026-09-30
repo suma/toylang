@@ -412,12 +412,15 @@ fn parse_while_val(parser: &mut Parser, outer_label: Option<DefaultSymbol>) -> P
     let location = parser.current_source_location();
     parser.expect_err(&Kind::Val)?;
     // PATTERN-EXTEND: one arm per alternative, as in `match`.
+    let sites = parser.pattern_sites.len();
     let patterns = super::expr::parse_match_pattern(parser)?;
+    let bound = parser.pattern_sites.len();
     parser.expect_err(&Kind::Equal)?;
     parser.push_context(crate::parser::core::ParseContext::Condition);
     let scrutinee = super::expr::parse_logical_expr(parser)?;
     parser.pop_context();
     let (user_body, _) = parse_loop_body(parser, outer_label, None)?;
+    parser.scope_pattern_bindings(sites, bound);
 
     // Some(PAT) arm: `{ BODY; continue }`. The trailing `continue`
     // unifies the arm's type with the None-arm's `{ break }` (both

@@ -198,6 +198,8 @@ pub struct Parser<'a> {
     pub(crate) keep_tree_on_error: bool,
     /// See [`crate::ast::File::declaration_spans`].
     pub(crate) declaration_spans: Vec<crate::ast::DeclarationSpan>,
+    /// See [`crate::ast::File::pattern_sites`].
+    pub(crate) pattern_sites: Vec<crate::ast::PatternSite>,
     /// The text being parsed. Also seeds the program's `SourceMap`
     /// entry slot (DEBUG-OBS D2) so an excerpt can be drawn from a
     /// module whose file is long gone.
@@ -378,6 +380,7 @@ impl<'a> Parser<'a> {
             loop_stack: Vec::new(),
             parallel_loops: std::collections::HashMap::new(),
             declaration_spans: Vec::new(),
+            pattern_sites: Vec::new(),
             call_paths: std::collections::HashMap::new(),
             synthetic_counter: 0,
             in_ensures_clause: false,
@@ -536,6 +539,28 @@ impl<'a> Parser<'a> {
     }
 
     /// Get current source location with line and column information
+    /// Record a name written in a pattern (`File::pattern_sites`); a
+    /// binding's scope is set once the arm it guards has been parsed.
+    pub(crate) fn record_pattern_name(
+        &mut self,
+        name: DefaultSymbol,
+        owner: Option<DefaultSymbol>,
+        at: SourceLocation,
+    ) {
+        self.pattern_sites.push(crate::ast::PatternSite { name, owner, at, scope_end: at.end_offset });
+    }
+
+    /// Give the bindings recorded since `from` (the pattern just
+    /// parsed) the scope that ends at the cursor.
+    pub(crate) fn scope_pattern_bindings(&mut self, from: usize, to: usize) {
+        let end = self.current_position().map(|p| p.start).unwrap_or(self.input.len()) as u32;
+        for site in &mut self.pattern_sites[from..to] {
+            if site.owner.is_none() {
+                site.scope_end = end;
+            }
+        }
+    }
+
     pub fn current_source_location(&mut self) -> SourceLocation {
         if let Some(position) = self.current_position() {
             let offset = position.start;

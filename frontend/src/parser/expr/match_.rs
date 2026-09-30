@@ -23,7 +23,9 @@ pub fn parse_match(parser: &mut Parser) -> ParserResult<ExprRef> {
         // PATTERN-EXTEND: one arm can carry several alternatives
         // (`1i64 | 2i64 =>`), which expand into one arm each. They
         // share the body and the guard: only one of them ever runs.
+        let sites = parser.pattern_sites.len();
         let alternatives = parse_match_pattern(parser)?;
+        let bound = parser.pattern_sites.len();
         let guard = if matches!(parser.peek(), Some(Kind::If)) {
             parser.next();
             parser.push_context(crate::parser::core::ParseContext::Condition);
@@ -35,6 +37,7 @@ pub fn parse_match(parser: &mut Parser) -> ParserResult<ExprRef> {
         };
         parser.expect_err(&Kind::FatArrow)?;
         let body = parse_logical_expr(parser)?;
+        parser.scope_pattern_bindings(sites, bound);
         for pattern in alternatives {
             arms.push(crate::ast::MatchArm { pattern, guard, body });
         }
@@ -217,6 +220,8 @@ fn parse_one_pattern(parser: &mut Parser) -> ParserResult<Vec<crate::ast::Patter
         && matches!(parser.peek_n(1), Some(Kind::At))
     {
         let sym = parser.string_interner.get_or_intern(name);
+        let at = parser.current_source_location();
+        parser.record_pattern_name(sym, None, at);
         parser.next(); // name
         parser.next(); // `@`
         // `parse_one_pattern`, not the list form: `n @ a | b` binds
@@ -254,6 +259,7 @@ fn parse_one_pattern(parser: &mut Parser) -> ParserResult<Vec<crate::ast::Patter
     if let Some(pat) = parse_pattern_literal(parser)? {
         return Ok(vec![pat]);
     }
+    let first_at = parser.current_source_location();
     let first = match parser.peek() {
         Some(Kind::Identifier(s)) => {
             let s = s.to_string();
@@ -285,6 +291,7 @@ fn parse_one_pattern(parser: &mut Parser) -> ParserResult<Vec<crate::ast::Patter
         return parse_pattern_tuple_struct(parser, first);
     }
     if parser.peek() != Some(&Kind::DoubleColon) {
+        parser.record_pattern_name(first, None, first_at);
         return Ok(vec![crate::ast::Pattern::Name(first)]);
     }
     parse_pattern_enum_variant_tail(parser, first)
@@ -374,6 +381,7 @@ fn parse_pattern_struct(
             parser.skip_newlines();
             break;
         }
+        let field_at = parser.current_source_location();
         let field = match parser.peek() {
             Some(Kind::Identifier(s)) => {
                 let s = s.to_string();
@@ -394,6 +402,7 @@ fn parse_pattern_struct(
             parser.skip_newlines();
             parse_match_pattern(parser)?
         } else {
+            parser.record_pattern_name(field, None, field_at);
             vec![crate::ast::Pattern::Name(field)]
         };
         field_names.push(field);
@@ -542,6 +551,7 @@ fn parse_pattern_enum_variant_tail(
 ) -> ParserResult<Vec<crate::ast::Pattern>> {
     let location = parser.current_source_location();
     parser.expect_err(&Kind::DoubleColon)?;
+    let variant_at = parser.current_source_location();
     let variant = match parser.peek() {
         Some(Kind::Identifier(s)) => {
             let s = s.to_string();
@@ -558,6 +568,7 @@ fn parse_pattern_enum_variant_tail(
             ));
         }
     };
+    parser.record_pattern_name(variant, Some(enum_name), variant_at);
     // ENUM-STRUCT-VARIANT: `E::A { x, y: 0u64, .. }` -- a struct
     // pattern under the joined name, which the type checker turns into
     // the positional variant pattern once it knows the field order.

@@ -12,6 +12,9 @@
 
 ### 2026-10-01
 
+- **LLM-TOOLING-QUERY-TEXT — `toy query` がパターンと関数値を木から引く** — パーサが
+  パターンに書かれた variant と束縛を位置・スコープつきで残し (`File::pattern_sites`)、
+  値として渡した関数名は型検査器の closure 書き換えから数える。本文検索を撤去。
 - **INTERP-STRING-LITERAL — 補間の中の文字列リテラル** — `"{f("a")}"` が書けるように
   (字句解析器が `{...}` の中の文字列・raw 文字列・文字リテラルを読み飛ばす)。字句エラーの
   文言にコードが二重に出る (`[E0012] [E0012]`) のも直した。
@@ -2628,11 +2631,6 @@
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
 
-- **LLM-TOOLING-QUERY-TEXT — `toy query` の本文頼みの部分** — match パターンの
-  variant (`Owner::Variant` の本文検索)、パターンの束縛 (同じ行の `=>` / `if val`
-  の `=` より前の同名の語)、値として渡した関数名 (呼び出しでない語) は本文から
-  探している (コメントと文字列は除く)。パターンに位置がないため。パーサが
-  パターンの位置を位置プールに載せれば木から引ける。
 - **TREE-WALKER-DYNAMIC-GENERIC-SCOPE — 呼び出し先が呼び出し元の型引数を
   見る** — tree-walker の `merged_generic_scope` は**実行中の全呼び出し**の
   scope を合わせたもの (動的スコープ) なので、generic でない関数の中でも
@@ -3013,8 +3011,7 @@
   組み込み `LSP` ツールの操作が `toy query` とほぼ一対一)、T5 プラグイン化、
   T6 `toy mcp` (任意)。[`CLAUDE_CODE_INTEGRATION.md`](CLAUDE_CODE_INTEGRATION.md)。
 * **LLM 向け道具の第 2 ラウンド (LLM-TOOLING)** — 7 性質と残りタスクは
-  2026-09-29/30 に landing (完了済み節)。残りは未実装節の
-  `LLM-TOOLING-QUERY-TEXT` (パターンに位置が無いので本文から探している部分)。[`LLM_TOOLING.md`](LLM_TOOLING.md)。
+  2026-09-29〜10-01 に landing (完了済み節)、残りは無い。[`LLM_TOOLING.md`](LLM_TOOLING.md)。
 * **ヒープ検査モード (HEAP-CHECK) の残り** — H0 (`--heap-check=report`、
   二重 free の棚卸し) と H0b (報告に二重 drop を起こした関数名) は 2026-09-26 に
   landing (完了済み節)、棚卸しで見つかった二重 drop も全部潰した

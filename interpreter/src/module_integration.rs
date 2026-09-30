@@ -1318,6 +1318,9 @@ impl<'a> AstIntegrationContext<'a> {
     ///   ran) and the lowering never outlined it, so the one
     ///   construct whose answer was pinned before it went parallel
     ///   was not the construct at all.
+    /// * `pattern_sites` — the names written in patterns, which `toy
+    ///   query` resolves from; without them a pattern in a module had
+    ///   no answer.
     fn copy_side_tables(&mut self) -> Result<(), String> {
         for (expr_ref, path) in &self.module_program.call_paths {
             let mapped = self.map_expr(expr_ref, "call path")?;
@@ -1331,6 +1334,12 @@ impl<'a> AstIntegrationContext<'a> {
             let mapped = self.map_stmt(stmt_ref, "parallel loop")?;
             let located = at.in_file(self.module_file);
             self.main_program.parallel_loops.insert(mapped, located);
+        }
+        for site in &self.module_program.pattern_sites {
+            let name = self.remap_symbol(site.name)?;
+            let owner = site.owner.map(|o| self.remap_symbol(o)).transpose()?;
+            let at = site.at.in_file(self.module_file);
+            self.main_program.pattern_sites.push(frontend::ast::PatternSite { name, owner, at, ..*site });
         }
         Ok(())
     }

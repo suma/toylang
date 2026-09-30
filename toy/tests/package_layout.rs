@@ -2510,6 +2510,64 @@ fn main() -> u64 {
     assert_eq!(refs, [vec![main_t(9, 16)], vec![main_t(15, 43)], vec![main_t(15, 7)]], "{r:#}");
 }
 
+// LLM-TOOLING-QUERY-TEXT: pattern names come from the parser, not the
+// text. The text search took the `val x` above an arm for the arm's own
+// `x`, missed a binding on a line without `=>`, and knew nothing of scope.
+#[test]
+fn query_resolves_pattern_names_from_the_tree() {
+    let pkg = scratch("query_patterns");
+    write(
+        &pkg,
+        "main.t",
+        "fn pick(o: Option<u64>) -> u64 {
+    val x = 1u64
+    val a = match o {
+        Option::Some(x) => x,
+        Option::None => 0u64,
+    }
+    a + x
+}
+fn main() -> u64 {
+    val u = geo::unit()
+    pick(Option::Some(2u64)) + geo::area(u)
+}
+",
+    );
+    write(
+        &pkg,
+        "src/geo.t",
+        "pub enum Shape { Rect { w: u64, h: u64 }, Dot }
+pub fn area(s: Shape) -> u64 {
+    match s {
+        Shape::Rect {
+            w,
+            h
+        } => w * h,
+        Shape::Dot => 0u64,
+    }
+}
+pub fn unit() -> Shape { Shape::Dot }
+",
+    );
+    let m = pkg.0.join("main.t").to_str().unwrap().to_string();
+    let g = pkg.0.join("src/geo.t").to_str().unwrap().to_string();
+    let r = query(&pkg, &["def", &format!("{m}:4:28"), &format!("{m}:7:9"), &format!("{g}:7:14"), &format!("{g}:8:16")]);
+    let defs: Vec<(String, u64, u64)> =
+        r["answers"].as_array().unwrap().iter().map(|a| at(&a["definition"])).collect();
+    let main_t = |l, c| ("main.t".to_string(), l, c);
+    let geo_t = |l, c| ("src/geo.t".to_string(), l, c);
+    assert_eq!(defs, [main_t(4, 22), main_t(2, 9), geo_t(5, 13), geo_t(1, 43)], "{r:#}");
+
+    let r = query(&pkg, &["refs", &format!("{m}:4:22"), &format!("{m}:2:9"), &format!("{g}:8:16")]);
+    let refs: Vec<Vec<(String, u64, u64)>> = r["answers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["references"].as_array().unwrap().iter().map(at).collect())
+        .collect();
+    assert_eq!(refs, [vec![main_t(4, 28)], vec![main_t(7, 9)], vec![geo_t(8, 16), geo_t(11, 33)]], "{r:#}");
+}
+
 // CLAUDE-CODE T1: without the stdlib, say so. A package checked without
 // it used to fail with `String::from_str` not found, pointing at code
 // that was fine.

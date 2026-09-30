@@ -134,12 +134,15 @@ fn parse_if_val(parser: &mut Parser) -> ParserResult<ExprRef> {
     parser.expect_err(&Kind::Val)?;
     // PATTERN-EXTEND: `if val A | B = x` gets one arm per
     // alternative, the same expansion a `match` arm does.
+    let sites = parser.pattern_sites.len();
     let patterns = parse_match_pattern(parser)?;
+    let bound = parser.pattern_sites.len();
     parser.expect_err(&Kind::Equal)?;
     parser.push_context(crate::parser::core::ParseContext::Condition);
     let scrutinee = parse_logical_expr(parser)?;
     parser.pop_context();
     let then_block = parse_block(parser)?;
+    parser.scope_pattern_bindings(sites, bound);
     let (then_arm_body, else_arm_body): (ExprRef, ExprRef) = match parser.peek() {
         Some(Kind::Else) => {
             let else_location = parser.current_source_location();

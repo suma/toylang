@@ -372,6 +372,7 @@ impl<'a> Parser<'a> {
             parallel_loops: std::mem::take(&mut self.parallel_loops),
             call_paths: std::mem::take(&mut self.call_paths),
             declaration_spans: std::mem::take(&mut self.declaration_spans),
+            pattern_sites: std::mem::take(&mut self.pattern_sites),
             statement: stmt,
             expression: expr,
             location_pool,

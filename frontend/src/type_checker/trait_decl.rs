@@ -48,7 +48,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     ) -> Result<TypeDecl, TypeCheckError> {
         if self.context.traits.contains_key(&name) {
             let trait_str = self.core.string_interner.resolve(name).unwrap_or("?").to_string();
-            return Err(TypeCheckError::new(format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::DUPLICATE_DEFINITION, format!(
                 "trait '{trait_str}' is already defined"
             )));
         }
@@ -58,7 +58,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             if !seen.insert(m.name) {
                 let trait_str = self.core.string_interner.resolve(name).unwrap_or("?").to_string();
                 let m_str = self.core.string_interner.resolve(m.name).unwrap_or("?").to_string();
-                return Err(TypeCheckError::new(format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::DUPLICATE_DEFINITION, format!(
                     "trait '{trait_str}' has duplicate method '{m_str}'"
                 )));
             }
@@ -173,7 +173,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             && trait_type_args.len() != trait_generic_params.len()
         {
             let t_str = self.core.string_interner.resolve(trait_symbol).unwrap_or("?").to_string();
-            return Err(TypeCheckError::new(format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::ARITY, format!(
                 "trait '{t_str}': expected {} type argument(s), found {}",
                 trait_generic_params.len(),
                 trait_type_args.len(),

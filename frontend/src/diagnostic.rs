@@ -630,6 +630,41 @@ pub mod codes {
     /// A write through a shared borrow (`&T`), which would reach a copy.
     pub const SHARED_BORROW_WRITE: &str = "E0039";
 
+    // LLM-TOOLING-E0010-REST: the rest of the catch-all, by family.
+
+    /// The compiler's own invariant broke; not a mistake in the program.
+    pub const INTERNAL: &str = "E0040";
+
+    /// A call or constructor was given the wrong number of arguments.
+    pub const ARITY: &str = "E0041";
+
+    /// A SIMD vector operation used with operands it does not take.
+    pub const SIMD: &str = "E0042";
+
+    /// A generic type parameter could not be worked out from the call.
+    pub const GENERIC_INFERENCE: &str = "E0043";
+
+    /// A write to (or `&mut` of) a binding that is not `var`.
+    pub const IMMUTABLE_WRITE: &str = "E0044";
+
+    /// A struct (or struct-variant) literal or pattern whose fields do
+    /// not match the declaration.
+    pub const STRUCT_FIELDS: &str = "E0045";
+
+    /// `break` / `continue` outside a loop, or naming no enclosing label.
+    pub const LOOP_CONTROL: &str = "E0046";
+
+    /// A `requires` / `ensures` clause that is not a `bool`, or `old(..)`
+    /// outside `ensures`.
+    pub const CONTRACT_CLAUSE: &str = "E0047";
+
+    /// An `extern fn` whose signature cannot cross the C ABI.
+    pub const FFI_ABI: &str = "E0048";
+
+    /// A name that more than one module defines, written without enough
+    /// of a path to pick one.
+    pub const AMBIGUOUS_NAME: &str = "E0049";
+
     /// Every code, in order. `crate::explain` is checked against this
     /// list by a test, so a new code cannot ship without prose.
     pub const ALL: &[&str] = &[
@@ -672,6 +707,16 @@ pub mod codes {
         TRY_OPERAND,
         TRAIT_BOUND,
         SHARED_BORROW_WRITE,
+        INTERNAL,
+        ARITY,
+        SIMD,
+        GENERIC_INFERENCE,
+        IMMUTABLE_WRITE,
+        STRUCT_FIELDS,
+        LOOP_CONTROL,
+        CONTRACT_CLAUSE,
+        FFI_ABI,
+        AMBIGUOUS_NAME,
     ];
 }
 
@@ -843,7 +888,8 @@ mod tests {
         "E0010", "E0011", "E0012", "E0013", "E0014", "E0015", "E0016", "E0017", "E0018",
         "E0019", "E0020", "E0021", "E0022", "E0023", "E0024", "E0025", "E0026", "E0027",
         "E0028", "E0029", "E0030", "E0031", "E0032", "E0033", "E0034", "E0035", "E0036",
-        "E0037", "E0038", "E0039",
+        "E0037", "E0038", "E0039", "E0040", "E0041", "E0042", "E0043", "E0044", "E0045",
+        "E0046", "E0047", "E0048", "E0049",
     ];
 
     #[test]

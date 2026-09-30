@@ -662,7 +662,7 @@ impl TypeCheckContext {
                         .get_expr_location(value)
                         .map(|l| l.offset);
                     let field_name_owned = field_name_str.to_string();
-                    return Err(TypeCheckError::generic_error(&format!(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::STRUCT_FIELDS, format!(
                         "Unknown field '{field_name_str}' in struct '{struct_name_str}'"
                     ))
                     .suggest_name(
@@ -699,7 +699,7 @@ impl TypeCheckContext {
                         .string_interner
                         .resolve(struct_name)
                         .unwrap_or("<unknown>");
-                    return Err(TypeCheckError::generic_error(&format!(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::STRUCT_FIELDS, format!(
                         "Missing required field '{}' in struct '{struct_name_str}'",
                         required_field.name
                     )));

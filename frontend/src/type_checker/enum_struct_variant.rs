@@ -46,13 +46,13 @@ impl<'a> TypeCheckerVisitor<'a> {
         let resolve = |s: DefaultSymbol| self.core.string_interner.resolve(s).unwrap_or("?").to_string();
         let path = format!("{}::{}", resolve(enum_name), resolve(variant));
         let Some(variants) = self.context.enum_definitions.get(&enum_name) else {
-            return Err(TypeCheckError::new(format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::NOT_FOUND, format!(
                 "`{path} {{ .. }}`: there is no enum named `{}`",
                 resolve(enum_name)
             )));
         };
         let Some(def) = variants.iter().find(|v| v.name == variant) else {
-            return Err(TypeCheckError::new(format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::NOT_FOUND, format!(
                 "`{path} {{ .. }}`: enum `{}` has no variant `{}`",
                 resolve(enum_name),
                 resolve(variant)
@@ -64,7 +64,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             } else {
                 format!("its fields are positional: write `{path}(..)`")
             };
-            return Err(TypeCheckError::new(format!("`{path}` is not a struct variant — {spelling}")));
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::STRUCT_FIELDS, format!("`{path}` is not a struct variant — {spelling}")));
         }
         Ok(def.field_names.clone())
     }
@@ -85,13 +85,13 @@ impl<'a> TypeCheckerVisitor<'a> {
         let mut slots: Vec<Option<T>> = vec![None; field_names.len()];
         for (field, value) in given {
             let Some(i) = field_names.iter().position(|f| f == field) else {
-                return Err(TypeCheckError::new(format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::STRUCT_FIELDS, format!(
                     "`{path}` has no field `{}`",
                     resolve(*field)
                 )));
             };
             if slots[i].is_some() {
-                return Err(TypeCheckError::new(format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::DUPLICATE_DEFINITION, format!(
                     "field `{}` of `{path}` is given twice",
                     resolve(*field)
                 )));
@@ -106,7 +106,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 .map(|(f, _)| format!("`{}`", resolve(*f)))
                 .collect();
             if !missing.is_empty() {
-                return Err(TypeCheckError::new(format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::STRUCT_FIELDS, format!(
                     "`{path}` is missing {}: name every field, or end a pattern with `..`",
                     missing.join(", ")
                 )));

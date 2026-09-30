@@ -90,7 +90,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let b_ty = self.simd_vector_arg(&args[1], name, "the `b` vector")?;
         if a_ty != b_ty {
             return Err(self.error_with_location(
-                TypeCheckError::generic_error(&format!(
+                TypeCheckError::coded(crate::diagnostic::codes::SIMD, format!(
                     "{name} permutes two vectors of the same type, but got `{}` and `{}`",
                     a_ty.source_name(),
                     b_ty.source_name()
@@ -112,7 +112,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         };
         if mask.len() != lanes {
             return Err(self.error_with_location(
-                TypeCheckError::generic_error(&format!(
+                TypeCheckError::coded(crate::diagnostic::codes::SIMD, format!(
                     "{name} needs one index per lane: `{}` has {lanes}, but the mask                      has {}",
                     a_ty.source_name(),
                     mask.len()
@@ -123,7 +123,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         for index in &mask {
             if (*index as usize) >= lanes * 2 {
                 return Err(self.error_with_location(
-                    TypeCheckError::generic_error(&format!(
+                    TypeCheckError::coded(crate::diagnostic::codes::SIMD, format!(
                         "index {index} is out of range for {name} on `{}`: the mask                          selects from `a` then `b`, so an index has to be in `0..{}`",
                         a_ty.source_name(),
                         lanes * 2
@@ -160,7 +160,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             args = &args[..op.arity()];
         }
         if args.len() != op.arity() {
-            return Err(TypeCheckError::generic_error(&format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::ARITY, format!(
                 "{name} expects {} argument(s), got {}",
                 op.arity(),
                 args.len()
@@ -203,7 +203,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let mask_ty = self.simd_vector_arg(&args[0], name, "the mask")?;
                 if mask_ty != value_ty.mask() {
                     return Err(self.error_with_location(
-                        TypeCheckError::generic_error(&format!(
+                        TypeCheckError::coded(crate::diagnostic::codes::SIMD, format!(
                             "{name} takes the mask a `{}` comparison produces, which is \
                              `{}`, but this mask is `{}`",
                             value_ty.source_name(),
@@ -216,7 +216,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let b_ty = self.simd_vector_arg(&args[2], name, "the `b` vector")?;
                 if b_ty != value_ty {
                     return Err(self.error_with_location(
-                        TypeCheckError::generic_error(&format!(
+                        TypeCheckError::coded(crate::diagnostic::codes::SIMD, format!(
                             "{name} chooses between two vectors of the same type, but \
                              got `{}` and `{}`",
                             value_ty.source_name(),
@@ -235,7 +235,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let vec_ty = self.simd_vector_arg(&args[0], name, "the vector")?;
                 if op.integer_lanes_only() && vec_ty.is_float() {
                     return Err(self.error_with_location(
-                        TypeCheckError::generic_error(&format!(
+                        TypeCheckError::coded(crate::diagnostic::codes::SIMD, format!(
                             "{name} folds integer lanes, but `{}` has float lanes",
                             vec_ty.source_name()
                         )),
@@ -268,7 +268,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 {
                     if ty != VectorType::U8x16 {
                         return Err(self.error_with_location(
-                            TypeCheckError::generic_error(&format!(
+                            TypeCheckError::coded(crate::diagnostic::codes::SIMD, format!(
                                 "{name} indexes bytes, so {role} has to be `u8x16`,                                  got `{}`; reinterpret it with `__simd_bitcast` first",
                                 ty.source_name()
                             )),
@@ -326,7 +326,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             let lv = *lv;
             if lv.is_float() {
                 return Err(self.error_with_location(
-                    TypeCheckError::generic_error(&format!(
+                    TypeCheckError::coded(crate::diagnostic::codes::SIMD, format!(
                         "`{}` needs integer lanes, but `{}` has float lanes",
                         Self::simd_op_spelling(op),
                         lv.source_name()
@@ -336,7 +336,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
             if !matches!(r, TypeDecl::UInt64 | TypeDecl::Number) {
                 return Err(self.error_with_location(
-                    TypeCheckError::generic_error(&format!(
+                    TypeCheckError::coded(crate::diagnostic::codes::SIMD, format!(
                         "lane-wise `{}` shifts every lane by the same `u64` amount, \
                          got `{}` on the right",
                         Self::simd_op_spelling(op),
@@ -352,7 +352,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             (TypeDecl::Vector(lv), TypeDecl::Vector(rv)) => (*lv, *rv),
             (TypeDecl::Vector(lv), other) => {
                 return Err(self.error_with_location(
-                    TypeCheckError::generic_error(&format!(
+                    TypeCheckError::coded(crate::diagnostic::codes::SIMD, format!(
                         "lane-wise `{}` needs a `{}` on both sides, got `{}`; \
                          broadcast the scalar with `__simd_splat` first",
                         Self::simd_op_spelling(op),
@@ -364,7 +364,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
             (other, TypeDecl::Vector(rv)) => {
                 return Err(self.error_with_location(
-                    TypeCheckError::generic_error(&format!(
+                    TypeCheckError::coded(crate::diagnostic::codes::SIMD, format!(
                         "lane-wise `{}` needs a `{}` on both sides, got `{}`; \
                          broadcast the scalar with `__simd_splat` first",
                         Self::simd_op_spelling(op),
@@ -379,7 +379,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         if lv != rv {
             return Err(self.error_with_location(
-                TypeCheckError::generic_error(&format!(
+                TypeCheckError::coded(crate::diagnostic::codes::SIMD, format!(
                     "lane-wise `{}` needs both sides to have the same lane type, \
                      got `{}` and `{}`",
                     Self::simd_op_spelling(op),
@@ -395,7 +395,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             Operator::IDiv if lv.is_float() => TypeDecl::Vector(lv),
             Operator::IDiv | Operator::IMod => {
                 return Err(self.error_with_location(
-                    TypeCheckError::generic_error(&format!(
+                    TypeCheckError::coded(crate::diagnostic::codes::SIMD, format!(
                         "`{}` is not defined on `{}`: a scalar integer divide \
                          panics on zero (RUNTIME-TRAP), and checking sixteen lanes \
                          would cost more than the vectorisation saves; divide by a \
@@ -415,7 +415,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             | Operator::LeftShift | Operator::RightShift => {
                 if lv.is_float() {
                     return Err(self.error_with_location(
-                        TypeCheckError::generic_error(&format!(
+                        TypeCheckError::coded(crate::diagnostic::codes::SIMD, format!(
                             "`{}` needs integer lanes, but `{}` has float lanes",
                             Self::simd_op_spelling(op),
                             lv.source_name()
@@ -427,7 +427,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
             Operator::LogicalAnd | Operator::LogicalOr => {
                 return Err(self.error_with_location(
-                    TypeCheckError::generic_error(&format!(
+                    TypeCheckError::coded(crate::diagnostic::codes::SIMD, format!(
                         "`{}` short-circuits, which has no lane-wise meaning; use \
                          the bitwise `{}` on masks instead",
                         Self::simd_op_spelling(op),
@@ -457,14 +457,14 @@ impl<'a> TypeCheckerVisitor<'a> {
             // narrow ints already do, but spelling `-u8x16` is much
             // more likely to be a mistake than an intent.
             UnaryOp::Negate if matches!(v, VectorType::U8x16) => Err(self.error_with_location(
-                TypeCheckError::generic_error(
+                TypeCheckError::coded(crate::diagnostic::codes::SIMD, 
                     "`-` needs signed or float lanes, but `u8x16` lanes are unsigned",
                 ),
                 operand,
             )),
             UnaryOp::Negate => Ok(Some(TypeDecl::Vector(v))),
             UnaryOp::BitwiseNot if v.is_float() => Err(self.error_with_location(
-                TypeCheckError::generic_error(&format!(
+                TypeCheckError::coded(crate::diagnostic::codes::SIMD, format!(
                     "`~` needs integer lanes, but `{}` has float lanes",
                     v.source_name()
                 )),
@@ -472,7 +472,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             )),
             UnaryOp::BitwiseNot => Ok(Some(TypeDecl::Vector(v))),
             UnaryOp::LogicalNot => Err(self.error_with_location(
-                TypeCheckError::generic_error(&format!(
+                TypeCheckError::coded(crate::diagnostic::codes::SIMD, format!(
                     "`!` takes a `bool`, and `{}` is {} lanes; invert a mask with `~`",
                     v.source_name(),
                     v.lanes()
@@ -515,7 +515,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     ) -> Result<VectorType, TypeCheckError> {
         stamped.ok_or_else(|| {
             let name = op.builtin_name();
-            TypeCheckError::generic_error(&format!(
+            TypeCheckError::coded(crate::diagnostic::codes::SIMD, format!(
                 "{name} has no lane-type suffix, so it takes its type from a \
                  `val` / `var` annotation naming it: write \
                  `val v: f64x2 = {name}(...)` (or one of `f32x4` / `i32x4` / \
@@ -551,7 +551,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             return Ok(());
         }
         Err(self.error_with_location(
-            TypeCheckError::generic_error(&format!(
+            TypeCheckError::coded(crate::diagnostic::codes::SIMD, format!(
                 "{name} expects `{}` for {role}, got `{}`",
                 self.format_type_for_error(expected),
                 self.format_type_for_error(&actual)
@@ -576,7 +576,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         match actual? {
             TypeDecl::Vector(v) => Ok(v),
             other => Err(self.error_with_location(
-                TypeCheckError::generic_error(&format!(
+                TypeCheckError::coded(crate::diagnostic::codes::SIMD, format!(
                     "{name} expects a vector for {role}, got `{}`",
                     self.format_type_for_error(&other)
                 )),
@@ -597,7 +597,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         match index {
             Some(k) if (k as usize) < vec_ty.lanes() => Ok(()),
             Some(k) => Err(self.error_with_location(
-                TypeCheckError::generic_error(&format!(
+                TypeCheckError::coded(crate::diagnostic::codes::SIMD, format!(
                     "lane {k} is out of range for `{}`, which has {} lanes",
                     vec_ty.source_name(),
                     vec_ty.lanes()
@@ -605,7 +605,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 arg,
             )),
             None => Err(self.error_with_location(
-                TypeCheckError::generic_error(&format!(
+                TypeCheckError::coded(crate::diagnostic::codes::SIMD, format!(
                     "{name} needs a literal lane index (the lane is part of the \
                      instruction, not a value it reads); to select a lane computed \
                      at run time, store the vector with `__simd_store` and read the \

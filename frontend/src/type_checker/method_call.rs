@@ -202,7 +202,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             && let Some(owned) = str_needs_owned_buffer(&method_str)
         {
             return Err(self.error_with_location(
-                TypeCheckError::generic_error(&format!(
+                TypeCheckError::coded(crate::diagnostic::codes::METHOD, format!(
                     "`str` has no method `{method_str}`: it borrows its bytes, so it has no buffer to write a new string into. `String::from_str(s).{owned}` produces an owned String"
                 )),
                 obj,
@@ -261,7 +261,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 || self.context.current_fn_generic_params.contains(sym);
             if !in_impl_scope && !in_fn_scope {
                 let sym_str = self.resolve_symbol_name(*sym);
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::GENERIC_INFERENCE, format!(
                     "method '{}' on `{}` returns the type parameter `{}`, which is not                      bound here — name it in the enclosing function's or impl's parameter list",
                     method_name, self.type_name_for_error(&resolved_obj_type), sym_str
                 )));
@@ -414,7 +414,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let expected_count = method_func.parameter.len() - self.method_receiver_slots(&method_func);
         if args.len() != expected_count {
             let method_str = self.resolve_symbol_name(*method);
-            let err = TypeCheckError::generic_error(&format!(
+            let err = TypeCheckError::coded(crate::diagnostic::codes::ARITY, format!(
                 "method '{}' on `{}` argument count mismatch: expected {}, found {}",
                 method_str,
                 self.type_name_for_error(obj_type),
@@ -984,7 +984,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         // compatibility — same shape as
                         // `visit_indirect_call`'s checks.
                         if args.len() != param_tys.len() {
-                            return Err(TypeCheckError::generic_error(&format!(
+                            return Err(TypeCheckError::coded(crate::diagnostic::codes::ARITY, format!(
                                 "field '{}' on struct '{}' has fn type taking {} args, got {}",
                                 method_name,
                                 self.resolve_symbol_name(*struct_name),
@@ -1000,7 +1000,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                                 && arg_ty != TypeDecl::Unknown
                             {
                                 self.type_inference.type_hint = original_hint;
-                                return Err(TypeCheckError::generic_error(&format!(
+                                return Err(TypeCheckError::coded(crate::diagnostic::codes::TYPE_MISMATCH, format!(
                                     "Type error: expected {}, found {}. field '{}' on struct '{}' arg {} type mismatch",
                                     self.type_name_for_error(expected),
                                     self.type_name_for_error(&arg_ty),
@@ -1106,7 +1106,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             .map(|(_, ty)| ty.clone())
             .collect();
         if args.len() != params.len() {
-            return Err(TypeCheckError::generic_error(&format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::ARITY, format!(
                 "module function '{}' expects {} argument(s), found {}",
                 self.resolve_symbol_name(function_name),
                 params.len(),
@@ -1179,7 +1179,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 .map(|(_, ty)| ty.substitute_generics(&subst))
                 .collect();
             if args.len() != params.len() {
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::ARITY, format!(
                     "`{}::{}` expects {} argument(s), found {}",
                     self.resolve_symbol_name(struct_name),
                     self.resolve_symbol_name(function_name),
@@ -1242,7 +1242,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 if args.len() != variant_def.payload_types.len() {
                     let enum_str = self.resolve_symbol_name(struct_name);
                     let v_str = self.resolve_symbol_name(function_name);
-                    return Err(TypeCheckError::generic_error(&format!(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::ARITY, format!(
                         "variant '{}::{}' expects {} argument(s), found {}",
                         enum_str, v_str, variant_def.payload_types.len(), args.len()
                     )));
@@ -1297,7 +1297,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                                 if !borrow_of_same && !prev.is_equivalent(&actual_ty) {
                                     let enum_str = self.resolve_symbol_name(struct_name);
                                     let v_str = self.resolve_symbol_name(function_name);
-                                    return Err(TypeCheckError::generic_error(&format!(
+                                    return Err(TypeCheckError::coded(crate::diagnostic::codes::TYPE_MISMATCH, format!(
                                         "variant '{}::{}' generic parameter conflict: {} vs {}",
                                         enum_str, v_str,
                                         self.type_name_for_error(prev),
@@ -1313,7 +1313,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     if !actual_ty.is_equivalent(&expected_resolved) && !matches!(actual_ty, TypeDecl::Unknown) {
                         let enum_str = self.resolve_symbol_name(struct_name);
                         let v_str = self.resolve_symbol_name(function_name);
-                        return Err(TypeCheckError::generic_error(&format!(
+                        return Err(TypeCheckError::coded(crate::diagnostic::codes::TYPE_MISMATCH, format!(
                             "variant '{}::{}' payload type mismatch: expected {}, found {}",
                             enum_str, v_str,
                             self.type_name_for_error(&expected_resolved),
@@ -1382,7 +1382,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             // The span is the qualifier; the name follows it, before
             // the arguments.
             let before = args.first().and_then(|a| self.get_expr_location(a)).map(|l| l.offset);
-            return Err(TypeCheckError::generic_error(&format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::NOT_FOUND, format!(
                 "module '{}' has no exported function '{}'",
                 module_str, func_str
             ))
@@ -1439,7 +1439,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let method = self.context
             .get_struct_method(struct_name, function_name, &hint_args)
             .cloned()
-            .ok_or_else(|| TypeCheckError::generic_error(&format!(
+            .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::NOT_FOUND, format!(
                 "Associated function '{}' not found for struct '{}'",
                 function_name_str, self.resolve_symbol_name(struct_name)
             )))?;
@@ -1459,7 +1459,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         };
 
         if args.len() != params.len() {
-            return Err(TypeCheckError::generic_error(&format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::ARITY, format!(
                 "Associated function '{}::{}' expects {} arguments, found {}",
                 self.resolve_symbol_name(struct_name),
                 function_name_str,

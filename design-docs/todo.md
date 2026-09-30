@@ -12,6 +12,9 @@
 
 ### 2026-09-30
 
+- **LLM-TOOLING-E0010-REST — 汎用エラーの分類** — 211 か所のうち 203 か所を既存コードか
+  新コード `E0040`〜`E0049` (内部 / 個数 / SIMD / 推論 / val への書き込み / フィールド /
+  ループ制御 / 契約節 / C ABI / 曖昧なパス) へ。残り 8 か所は稀な経路。
 - **LLM-TOOLING #7 — 速度** — 再計測で 1 往復を支配するのは `cargo run` と debug
   ビルドと確認 (release バイナリ直叩きで 8 倍)。CLAUDE.md の指針にし、
   `toy check --profile=compile` を足した。インクリメンタル型検査は非目標のまま。
@@ -2572,13 +2575,14 @@
 以下 LLM-TOOLING-* は 2026-09-29/30 の LLM 向け道具の第 2 ラウンド
 ([`LLM_TOOLING.md`](LLM_TOOLING.md)) で残ったもの。
 
-- **LLM-TOOLING-E0010-REST — 汎用エラー 211 か所の分類** —
-  `TypeCheckError::generic_error` / `TypeCheckError::new` の呼び出しが
-  まだ `E0010` を返す。系統がはっきりしたものは `TypeCheckError::coded`
-  で既存コードか新コードへ移す (#2 と同じ手順。テスト全体で実際に
-  出る文言を数えてから決める。番号は `codes::ALL` の末尾に足すだけで、
-  `RELEASED` テストが変更・削除を落とす)。`pattern_match.rs` には文言を
-  変数で渡していて移せなかった 4 か所が残る。
+- **REBORROW-CHECK-GAPS — 参照を返す検査の穴 (2026-09-30 に発見)** —
+  `check_reborrow_returns` (`type_checker/visitor.rs`) は「引数から
+  借りた参照だけ返してよい」を言うが、(1) **値渡しの引数への参照**
+  `fn bad(x: u64) -> &u64 { &x }` が通る (呼び出し側は `x` を持って
+  いないので、返った参照は死んだ値を指す)。(2) ローカルへの参照
+  `fn bad() -> &u64 { val n = 5u64 \n &n }` は E0026 ではなく
+  **`[E0003] Identifier 'n' not found`** になる (誤った診断)。
+  どちらも E0026 の例として説明文に載せようとして見つけた。
 - **LLM-TOOLING-NO-SPAN — 位置のない型エラー** — 2026-09-30 の集計で
   位置なしが 174 件 (単体テストが直接作るものを含む)。直していない
   上位は `Type 'X' not found` (27)、`never_allocates` / `const fn` の

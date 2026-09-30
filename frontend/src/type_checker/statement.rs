@@ -162,7 +162,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             Ok(TypeDecl::Unit)
         } else {
             let e = expr.as_ref()
-                .ok_or_else(|| TypeCheckError::generic_error("Expected expression in return"))?;
+                .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Expected expression in return"))?;
             let return_type = self.check_expr_located(e)?;
             // NUMBER-HINT: an explicit `return 0` names the same
             // position as the tail expression, so the enclosing
@@ -345,7 +345,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         match label {
             None => {
                 if self.context.loop_label_stack.is_empty() {
-                    Err(TypeCheckError::generic_error(&format!("`{kw}` outside of a loop")))
+                    Err(TypeCheckError::coded(crate::diagnostic::codes::LOOP_CONTROL, format!("`{kw}` outside of a loop")))
                 } else {
                     Ok(())
                 }
@@ -355,7 +355,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     Ok(())
                 } else {
                     let name = self.core.string_interner.resolve(sym).unwrap_or("?");
-                    Err(TypeCheckError::generic_error(&format!(
+                    Err(TypeCheckError::coded(crate::diagnostic::codes::LOOP_CONTROL, format!(
                         "`{kw}` references undefined loop label `@{name}`"
                     )))
                 }

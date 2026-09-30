@@ -59,7 +59,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let mut cur = *expr;
         loop {
             let obj = self.core.expr_pool.get(&cur).ok_or_else(|| {
-                TypeCheckError::generic_error("Invalid lvalue expression reference")
+                TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid lvalue expression reference")
             })?;
             match obj {
                 Expr::Identifier(sym) => return Ok(sym),
@@ -67,7 +67,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 Expr::TupleAccess(obj, _) => cur = obj,
                 Expr::SliceAccess(obj, info) => {
                     if !matches!(info.slice_type, crate::ast::SliceType::SingleElement) {
-                        return Err(TypeCheckError::generic_error(
+                        return Err(TypeCheckError::coded(crate::diagnostic::codes::IMMUTABLE_WRITE, 
                             "cannot take a mutable borrow of a range-slice expression; \
                              only single-element index borrow is supported",
                         ));
@@ -75,7 +75,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     cur = obj;
                 }
                 _ => {
-                    return Err(TypeCheckError::generic_error(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::IMMUTABLE_WRITE, 
                         "cannot take a mutable borrow of a non-place expression; \
                          only `&mut <name>`, `&mut <name>.field`, `&mut <name>.0`, or \
                          `&mut <name>[i]` are supported in REF-Stage-2",
@@ -95,7 +95,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Set up context hint for nested expressions
         let original_hint = self.type_inference.type_hint.clone();
         let expr_obj = self.core.expr_pool.get(expr)
-            .ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference"))?;
+            .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid expression reference"))?;
 
         // `expr?` — postfix early-return operator. The parser emits
         // `Expr::Try { inner, .. }`; we intercept here (rather than
@@ -220,7 +220,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let operand = *operand;
         let operand_ty = {
             let operand_obj = self.core.expr_pool.get(&operand)
-                .ok_or_else(|| TypeCheckError::generic_error("Invalid operand expression reference"))?;
+                .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid operand expression reference"))?;
             let ty = operand_obj.clone().accept_expr(self)?;
             self.note_visited_number(&operand, &ty);
             ty
@@ -296,7 +296,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 Some(false) => {
                     let name = self.core.string_interner.resolve(root).unwrap_or("?").to_string();
                     return Err(self.error_with_location(
-                        TypeCheckError::generic_error(&format!(
+                        TypeCheckError::coded(crate::diagnostic::codes::IMMUTABLE_WRITE, format!(
                             "cannot borrow `{}` as mutable: binding is not declared `var`",
                             name
                         )),
@@ -309,7 +309,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     // are also not mutable lvalues.
                     let name = self.core.string_interner.resolve(root).unwrap_or("?").to_string();
                     return Err(self.error_with_location(
-                        TypeCheckError::generic_error(&format!(
+                        TypeCheckError::coded(crate::diagnostic::codes::IMMUTABLE_WRITE, format!(
                             "cannot take a mutable borrow of `{}`: not a mutable local binding",
                             name
                         )),
@@ -401,7 +401,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         let lhs_ty = {
             let lhs_obj = self.core.expr_pool.get(&lhs)
-                .ok_or_else(|| TypeCheckError::generic_error("Invalid left-hand expression reference"))?;
+                .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid left-hand expression reference"))?;
             let ty = lhs_obj.clone().accept_expr(self)?;
             self.note_visited_number(&lhs, &ty);
             ty
@@ -417,13 +417,13 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
         let rhs_ty = {
             let mut rhs_obj = self.core.expr_pool.get(&rhs)
-                .ok_or_else(|| TypeCheckError::generic_error("Invalid right-hand expression reference"))?;
+                .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid right-hand expression reference"))?;
             // The operands are visited through `accept_expr`, which
             // does not pass `visit_expr`'s rewrite intercepts, so the
             // SIMD stamp has to be applied here as well.
             if self.stamp_simd_call(&rhs, &rhs_obj) {
                 rhs_obj = self.core.expr_pool.get(&rhs)
-                    .ok_or_else(|| TypeCheckError::generic_error("Invalid right-hand expression reference"))?;
+                    .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid right-hand expression reference"))?;
             }
             let ty = rhs_obj.clone().accept_expr(self);
             self.type_inference.type_hint = saved_hint;
@@ -912,7 +912,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     ) -> Result<TypeDecl, TypeCheckError> {
         self.rewrite_range_for_in(s);
         let stmt = self.core.stmt_pool.get(s)
-            .ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference in block"))?;
+            .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid statement reference in block"))?;
 
         match stmt {
             // A `return` **diverges**: control leaves the enclosing
@@ -936,7 +936,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             Stmt::Return(ret_ty) => {
                 if let Some(e) = ret_ty {
                     let expr_obj = self.core.expr_pool.get(&e)
-                        .ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in return"))?;
+                        .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid expression reference in return"))?;
                     let ty = expr_obj.clone().accept_expr(self)?;
                     self.type_inference.set_expr_type(e, ty.clone());
                     self.note_visited_number(&e, &ty);
@@ -987,7 +987,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
             _ => {
                 let stmt_obj = self.core.stmt_pool.get(s)
-                    .ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference"))?;
+                    .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid statement reference"))?;
                 stmt_obj.clone().accept_stmt(self)
             }
         }
@@ -1094,7 +1094,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         if let Some(last_type) = last {
             Ok(last_type)
         } else {
-            Err(TypeCheckError::generic_error("Empty block - no return value"))
+            Err(TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Empty block - no return value"))
         }
     }
 
@@ -1125,13 +1125,13 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Check if-block
         let if_block = *then_block;
         let is_if_empty = match self.core.expr_pool.get(&if_block)
-            .ok_or_else(|| TypeCheckError::generic_error("Invalid if block expression reference"))? {
+            .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid if block expression reference"))? {
             Expr::Block(expressions) => expressions.is_empty(),
             _ => false,
         };
         if !is_if_empty {
             let if_expr = self.core.expr_pool.get(&if_block)
-                .ok_or_else(|| TypeCheckError::generic_error("Invalid if block expression reference"))?;
+                .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid if block expression reference"))?;
             let if_ty = if_expr.clone().accept_expr(self)?;
             block_types.push(if_ty);
         }
@@ -1140,13 +1140,13 @@ impl<'a> TypeCheckerVisitor<'a> {
         for (_, elif_block) in elif_pairs {
             let elif_block = *elif_block;
             let is_elif_empty = match self.core.expr_pool.get(&elif_block)
-                .ok_or_else(|| TypeCheckError::generic_error("Invalid elif block expression reference"))? {
+                .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid elif block expression reference"))? {
                 Expr::Block(expressions) => expressions.is_empty(),
                 _ => false,
             };
             if !is_elif_empty {
                 let elif_expr = self.core.expr_pool.get(&elif_block)
-                    .ok_or_else(|| TypeCheckError::generic_error("Invalid elif block expression reference"))?;
+                    .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid elif block expression reference"))?;
                 let elif_ty = elif_expr.clone().accept_expr(self)?;
                 block_types.push(elif_ty);
             }
@@ -1155,13 +1155,13 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Check else-block
         let else_block = *else_block;
         let is_else_empty = match self.core.expr_pool.get(&else_block)
-            .ok_or_else(|| TypeCheckError::generic_error("Invalid else block expression reference"))? {
+            .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid else block expression reference"))? {
             Expr::Block(expressions) => expressions.is_empty(),
             _ => false,
         };
         if !is_else_empty {
             let else_expr = self.core.expr_pool.get(&else_block)
-                .ok_or_else(|| TypeCheckError::generic_error("Invalid else block expression reference"))?;
+                .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid else block expression reference"))?;
             let else_ty = else_expr.clone().accept_expr(self)?;
             block_types.push(else_ty);
         }
@@ -1351,7 +1351,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             // wave `self = <value>` through to a runtime error.
             if self.resolve_symbol_name(name) == "self" {
                 return Err(self.error_with_location(
-                    TypeCheckError::generic_error(
+                    TypeCheckError::coded(crate::diagnostic::codes::IMMUTABLE_WRITE, 
                         "cannot assign to `self`: the receiver is not a reassignable binding (write to its fields instead)",
                     ),
                     &lhs,
@@ -1359,7 +1359,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
             if self.context.is_var_mutable(name) == Some(false) {
                 let name_str = self.resolve_symbol_name(name);
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::IMMUTABLE_WRITE, format!(
                     "cannot assign to `{name_str}`: binding is immutable (declared with `val`; use `var` to allow reassignment)"
                 )));
             }
@@ -1386,7 +1386,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         let lhs_ty = {
             let lhs_obj = self.core.expr_pool.get(&lhs)
-                .ok_or_else(|| TypeCheckError::generic_error("Invalid left-hand expression reference"))?;
+                .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid left-hand expression reference"))?;
             lhs_obj.clone().accept_expr(self)?
         };
         
@@ -1838,7 +1838,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Say what it is instead of letting the reader hunt for a
         // function they never wrote.
         if fn_name_str == "old" {
-            return Err(TypeCheckError::generic_error(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::CONTRACT_CLAUSE, 
                 "`old(...)` is only meaningful in an `ensures` clause: it snapshots \
                  the value an expression had on entry to the function",
             ));
@@ -1852,7 +1852,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         if let Some(ty) = self.context.get_var(fn_name)
             && !matches!(ty, TypeDecl::Function(..))
         {
-            return Err(TypeCheckError::generic_error(&format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::UNSUPPORTED_OPERATION, format!(
                 "`{fn_name_str}` is a value of type `{}`, not a function, so it cannot be \
                  called. If a line ends with `{fn_name_str}` and the next one starts with \
                  `(`, the two are read as the single call `{fn_name_str}(...)` -- start the \
@@ -1936,7 +1936,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let args = match self.core.expr_pool.get(args_ref) {
             Some(Expr::ExprList(args)) => args.clone(),
             Some(_) => return Ok(()),
-            None => return Err(TypeCheckError::generic_error("Invalid arguments reference")),
+            None => return Err(TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid arguments reference")),
         };
 
         // Normalize Identifier params to Struct for known struct types
@@ -1952,7 +1952,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         if args.len() != param_types.len() {
             let fn_name_str = self.resolve_symbol_name(fn_name);
-            let err = TypeCheckError::generic_error(&format!(
+            let err = TypeCheckError::coded(crate::diagnostic::codes::ARITY, format!(
                 "Function '{}' argument count mismatch: expected {}, found {}",
                 fn_name_str, param_types.len(), args.len()
             ));
@@ -2056,11 +2056,11 @@ impl<'a> TypeCheckerVisitor<'a> {
     ) -> Result<TypeDecl, TypeCheckError> {
         let args_data = match self.core.expr_pool.get(args_ref) {
             Some(Expr::ExprList(args)) => args.clone(),
-            _ => return Err(TypeCheckError::generic_error("Invalid arguments reference")),
+            _ => return Err(TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid arguments reference")),
         };
         if args_data.len() != param_tys.len() {
             let name_str = self.resolve_symbol_name(callee_name);
-            return Err(TypeCheckError::generic_error(&format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::ARITY, format!(
                 "function value '{}' argument count mismatch: expected {}, found {}",
                 name_str,
                 param_tys.len(),
@@ -2077,7 +2077,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             if !self.is_arg_compatible_dyn_aware(&arg_ty, expected) && arg_ty != TypeDecl::Unknown {
                 self.type_inference.type_hint = original_hint;
                 let name_str = self.resolve_symbol_name(callee_name);
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::TYPE_MISMATCH, format!(
                     "Type error: expected {}, found {}. Function value '{}' argument {} type mismatch",
                     self.type_name_for_error(expected),
                     self.type_name_for_error(&arg_ty),
@@ -2162,7 +2162,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 if !TypeDecl::is_arg_compatible(&body_ty, declared)
                     && body_ty != TypeDecl::Unknown
                 {
-                    return Err(TypeCheckError::generic_error(&format!(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::TYPE_MISMATCH, format!(
                         "closure body returns {} but declared return type is {}",
                         self.type_name_for_error(&body_ty),
                         self.type_name_for_error(declared)
@@ -2193,14 +2193,14 @@ impl<'a> TypeCheckerVisitor<'a> {
     ) -> Result<(), TypeCheckError> {
         for (_, ty) in params {
             if Self::type_mentions_any_generic(ty) {
-                return Err(TypeCheckError::generic_error(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::UNSUPPORTED_OPERATION, 
                     "generic-parameterised closures are not yet supported",
                 ));
             }
         }
         if let Some(ret) = return_type
             && Self::type_mentions_any_generic(ret) {
-                return Err(TypeCheckError::generic_error(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::UNSUPPORTED_OPERATION, 
                     "generic-parameterised closures are not yet supported",
                 ));
             }
@@ -2229,7 +2229,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         for (_, ty) in &captures {
             if Self::type_mentions_any_generic(ty) {
-                return Err(TypeCheckError::generic_error(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::UNSUPPORTED_OPERATION, 
                     "generic-parameterised closures are not yet supported",
                 ));
             }
@@ -2581,7 +2581,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         // Check recursion depth to prevent stack overflow
         if self.type_inference.recursion_depth >= self.type_inference.max_recursion_depth {
-            return Err(TypeCheckError::generic_error(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, 
                 "Maximum recursion depth reached in array literal type inference - possible circular reference"
             ));
         }
@@ -2624,7 +2624,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         };
         if args.len() != field_names.len() {
             let struct_name = self.resolve_symbol_name(callee);
-            return Some(Err(TypeCheckError::generic_error(&format!(
+            return Some(Err(TypeCheckError::coded(crate::diagnostic::codes::ARITY, format!(
                 "`{struct_name}` takes {} field(s), but {} argument(s) were given",
                 field_names.len(),
                 args.len()
@@ -2809,7 +2809,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             return Ok(None);
         };
         if !fun.generic_params.is_empty() {
-            return Err(TypeCheckError::generic_error(&format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::UNSUPPORTED_OPERATION, format!(
                 "generic function `{}` cannot be passed as a value: it has no single type; \
                  wrap the call in a closure literal that names the types",
                 self.resolve_symbol_name(name)
@@ -2900,7 +2900,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     result_binding,
                 ),
                 _ => {
-                    return Err(TypeCheckError::generic_error(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, 
                         "desugar_try_expr: pool entry no longer a Try node",
                     ));
                 }
@@ -2961,13 +2961,13 @@ impl<'a> TypeCheckerVisitor<'a> {
         // `"Some"` / `"None"` (`core/std/option.t`), so `.get()`
         // (which only needs `&self`) is sufficient.
         let success_sym = self.core.string_interner.get(success_variant).ok_or_else(|| {
-            TypeCheckError::generic_error(&format!(
+            TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, format!(
                 "`?` desugar: `{}` variant symbol not interned — is stdlib loaded?",
                 success_variant
             ))
         })?;
         let error_sym = self.core.string_interner.get(error_variant).ok_or_else(|| {
-            TypeCheckError::generic_error(&format!(
+            TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, format!(
                 "`?` desugar: `{}` variant symbol not interned — is stdlib loaded?",
                 error_variant
             ))
@@ -3099,7 +3099,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let inner_name = self.type_name_for_error(&inner_err_ty);
                 let target_name = self.type_name_for_error(&target_err_ty);
                 if !self.type_implements_from(&target_err_ty, &inner_err_ty) {
-                    return Err(TypeCheckError::generic_error(&format!(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::TRY_OPERAND, format!(
                         "`?` cannot convert error type `{}` to `{}`; implement \
                          `From<{}> for {}` (e.g. `impl From<str> for String`)",
                         inner_name, target_name, inner_name, target_name,
@@ -3253,7 +3253,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 ..
             }) => (scrutinee_binding, success_binding, error_binding),
             _ => {
-                return Err(TypeCheckError::generic_error(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, 
                     "desugar_null_coalesce: pool entry no longer a NullCoalesce node",
                 ));
             }
@@ -3272,7 +3272,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             lhs_ty
         } else {
             self.null_coalesce_lhs_types.get(&lhs).map(|(t, _)| t.clone()).ok_or_else(|| {
-                TypeCheckError::generic_error(
+                TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, 
                     "desugar_null_coalesce: left operand was never typed",
                 )
             })?
@@ -3366,13 +3366,13 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         // Variant symbols are already interned by the stdlib auto-load.
         let success_sym = self.core.string_interner.get(success_variant).ok_or_else(|| {
-            TypeCheckError::generic_error(&format!(
+            TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, format!(
                 "`??` desugar: `{}` variant symbol not interned — is stdlib loaded?",
                 success_variant
             ))
         })?;
         let failure_sym = self.core.string_interner.get(failure_variant).ok_or_else(|| {
-            TypeCheckError::generic_error(&format!(
+            TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, format!(
                 "`??` desugar: `{}` variant symbol not interned — is stdlib loaded?",
                 failure_variant
             ))
@@ -3531,7 +3531,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             && decided(&rhs_ty)
             && !success_type.is_equivalent(&rhs_ty)
         {
-            return Err(TypeCheckError::generic_error(&format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::TYPE_MISMATCH, format!(
                 "`??` arms have incompatible types: `{}` (success) and `{}` (default)",
                 self.type_name_for_error(&success_type),
                 self.type_name_for_error(&rhs_ty),
@@ -3912,7 +3912,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     .resolve(*p)
                     .unwrap_or("?")
                     .to_string();
-                Err(TypeCheckError::generic_error(&format!(
+                Err(TypeCheckError::coded(crate::diagnostic::codes::NOT_FOUND, format!(
                     "unknown type `{shown}` in `{builtin}::<{shown}>` — the type \
                      argument must be a declared type or a generic parameter in scope"
                 )))
@@ -3927,7 +3927,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         .resolve(*name)
                         .unwrap_or("?")
                         .to_string();
-                    return Err(TypeCheckError::generic_error(&format!(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::NOT_FOUND, format!(
                         "unknown type `{shown}` in `{builtin}` — the type \
                          argument must be a declared type or a generic parameter in scope"
                     )));
@@ -3950,7 +3950,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             TypeDecl::Array(..) | TypeDecl::Dict(..) | TypeDecl::Range(_)
             | TypeDecl::Function(..) | TypeDecl::Dyn(_) | TypeDecl::Self_
             | TypeDecl::TraitIntersection(_)
-            | TypeDecl::Hole | TypeDecl::Unknown => Err(TypeCheckError::generic_error(&format!(
+            | TypeDecl::Hole | TypeDecl::Unknown => Err(TypeCheckError::coded(crate::diagnostic::codes::UNSUPPORTED_OPERATION, format!(
                 "`{builtin}::<T>` supports primitives, `ptr`, vectors, tuples and \
                  declared struct / enum types — arrays, dicts, function and trait-object \
                  types have no size to report",

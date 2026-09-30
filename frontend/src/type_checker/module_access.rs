@@ -154,13 +154,13 @@ impl<'a> TypeCheckerVisitor<'a> {
     fn resolve_module_member_type(&mut self, module_path: &[DefaultSymbol], member_name: &DefaultSymbol) -> Result<Option<TypeDecl>, TypeCheckError> {
         // Convert member name to string for lookup
         let member_str = self.core.string_interner.resolve(*member_name)
-            .ok_or_else(|| TypeCheckError::generic_error("Member name not found in string interner"))?;
+            .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Member name not found in string interner"))?;
 
         // Simple heuristic: if it's a known function pattern, return a generic function type
         if self.is_likely_function_name(member_str) {
             Ok(Some(TypeDecl::Unknown))
         } else {
-            Err(TypeCheckError::generic_error(&format!(
+            Err(TypeCheckError::coded(crate::diagnostic::codes::NOT_FOUND, format!(
                 "Member '{}' not found in module '{}'",
                 member_str,
                 self.resolve_module_path_names(module_path).join("::")
@@ -205,7 +205,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // `encode` -- so telling the reader to rename a file sends
         // them somewhere there is nothing to fix.
         match qualifier {
-            None => TypeCheckError::generic_error(&format!(
+            None => TypeCheckError::coded(crate::diagnostic::codes::AMBIGUOUS_NAME, format!(
                 "ambiguous call `{written}`: {} both define it. \
                  Qualify the call with the module you mean, or move \
                  your own definition into a module root that comes \
@@ -216,7 +216,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             // that does not say enough. MODULE-SYSTEM P3 made the
             // leading segments count, so the fix is to write more of
             // the path rather than to rename a file.
-            Some(_) => TypeCheckError::generic_error(&format!(
+            Some(_) => TypeCheckError::coded(crate::diagnostic::codes::AMBIGUOUS_NAME, format!(
                 "ambiguous module path `{written}`: it matches {}. A qualifier is \
                  matched from the end, so write enough leading segments to pick \
                  one of them",

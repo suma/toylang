@@ -51,7 +51,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         for (v, value) in variants.iter().zip(values) {
             if let Some(first) = seen.insert(value, v.name) {
                 let resolve = |s: DefaultSymbol| self.core.string_interner.resolve(s).unwrap_or("?");
-                return Err(TypeCheckError::new(format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::DUPLICATE_DEFINITION, format!(
                     "`{}::{}` and `{}::{}` both stand for {value}: a discriminant names one variant",
                     resolve(enum_name),
                     resolve(first),
@@ -99,14 +99,14 @@ impl<'a> TypeCheckerVisitor<'a> {
             .cloned()
             .unwrap_or_default();
         if integer_literal_of(0, target).is_none() {
-            return Err(TypeCheckError::new(format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::CONVERSION, format!(
                 "Cannot cast enum `{}` to {}: `as` turns an enum into an integer type only",
                 resolve(self, enum_name),
                 self.type_name_for_error(target)
             )));
         }
         if let Some(v) = variants.iter().find(|v| !v.payload_types.is_empty()) {
-            return Err(TypeCheckError::new(format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::CONVERSION, format!(
                 "Cannot cast enum `{}` to {}: `{}::{}` carries data, so the enum has no \
                  number per variant — `as` needs every variant to be a unit variant. \
                  Match on the value instead",
@@ -118,7 +118,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
         for (v, value) in variants.iter().zip(discriminant_values(&variants)) {
             if integer_literal_of(value, target).is_none() {
-                return Err(TypeCheckError::new(format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::CONVERSION, format!(
                     "Cannot cast enum `{}` to {}: `{}::{}` stands for {value}, which does not fit",
                     resolve(self, enum_name),
                     self.type_name_for_error(target),

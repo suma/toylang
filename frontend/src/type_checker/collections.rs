@@ -117,11 +117,11 @@ impl<'a> TypeCheckerVisitor<'a> {
 
                         Ok(*value_type.clone())
                     } else {
-                        Err(TypeCheckError::generic_error("Dictionary access requires key index"))
+                        Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, "Dictionary access requires key index"))
                     }
                 } else {
                     // Range slicing is not supported for dictionaries
-                    Err(TypeCheckError::generic_error("Dictionary slicing is not supported - use single key access dict[key]"))
+                    Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, "Dictionary slicing is not supported - use single key access dict[key]"))
                 }
             }
             TypeDecl::Identifier(struct_name) => {
@@ -139,7 +139,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
             }
             _ => {
-                Err(TypeCheckError::generic_error(&format!(
+                Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, format!(
                     "Cannot access type {} - only arrays, dictionaries, and structs with __getitem__ are supported",
                     self.type_name_for_error(&object_type)
                 )))
@@ -223,7 +223,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                             };
 
                             if *expected_dict_value_type != resolved_value_type {
-                                return Err(TypeCheckError::generic_error(&format!(
+                                return Err(TypeCheckError::coded(crate::diagnostic::codes::TYPE_MISMATCH, format!(
                                     "Dict value type mismatch: expected {}, found {}",
                                     self.type_name_for_error(expected_dict_value_type),
                                     self.type_name_for_error(&resolved_value_type)
@@ -236,11 +236,11 @@ impl<'a> TypeCheckerVisitor<'a> {
                             Ok(TypeDecl::Unit)
                         }
                     } else {
-                        Err(TypeCheckError::generic_error("Dictionary assignment requires key index"))
+                        Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, "Dictionary assignment requires key index"))
                     }
                 } else {
                     // Range slice assignment not supported for dictionaries
-                    Err(TypeCheckError::generic_error("Dictionary slice assignment not supported - use single key assignment dict[key] = value"))
+                    Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, "Dictionary slice assignment not supported - use single key assignment dict[key] = value"))
                 }
             }
             TypeDecl::Identifier(struct_name) => {
@@ -257,7 +257,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         // form (see `visit_assign`).
                         Ok(TypeDecl::Unit)
                     } else {
-                        Err(TypeCheckError::generic_error("Struct assignment requires key index"))
+                        Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, "Struct assignment requires key index"))
                     }
                 } else {
                     // Range slice assignment: check for __setslice__ method
@@ -273,7 +273,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         self.check_struct_setitem_access(struct_name, key_type_result, &value_type, &object_type)?;
                         Ok(TypeDecl::Unit)
                     } else {
-                        Err(TypeCheckError::generic_error("Struct assignment requires key index"))
+                        Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, "Struct assignment requires key index"))
                     }
                 } else {
                     // Range slice assignment: check for __setslice__ method
@@ -281,7 +281,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
             }
             _ => {
-                Err(TypeCheckError::generic_error(&format!(
+                Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, format!(
                     "Cannot assign to type {} - only arrays, dictionaries, and structs with __setitem__ are supported",
                     self.type_name_for_error(&object_type)
                 )))
@@ -390,7 +390,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             };
 
             if check_key_type != final_key_type {
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::TYPE_MISMATCH, format!(
                     "Dict key type mismatch at entry {}: expected {}, found {}. All keys must have the same type.",
                     entry_index + 1,
                     self.type_name_for_error(&final_key_type),
@@ -398,7 +398,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 )));
             }
             if check_value_type != final_value_type {
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::TYPE_MISMATCH, format!(
                     "Dict value type mismatch at entry {}: expected {}, found {}. All values must have the same type.",
                     entry_index + 1,
                     self.type_name_for_error(&final_value_type),
@@ -461,7 +461,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         match tuple_type {
             TypeDecl::Tuple(ref types) => {
                 if index >= types.len() {
-                    return Err(TypeCheckError::generic_error(&format!(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, format!(
                         "Tuple index {} out of bounds for tuple with {} elements",
                         index, types.len()
                     )));
@@ -477,7 +477,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     self.tuple_struct_rewrites.accesses.insert(*tuple, field_symbol);
                     self.visit_field_access_impl(tuple, &field_symbol)
                 }
-                None => Err(TypeCheckError::generic_error(&format!(
+                None => Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, format!(
                     "Cannot access index {} on non-tuple type {}",
                     index, self.type_name_for_error(&tuple_type)
                 ))),
@@ -510,7 +510,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         };
         if !fields.first().is_some_and(|f| f.is_positional()) {
             let struct_name = self.resolve_symbol_name(struct_symbol);
-            return Err(TypeCheckError::generic_error(&format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::STRUCT_FIELDS, format!(
                 "`{struct_name}` has named fields, so its fields are reached by name \
                  (`value.field`), not by index"
             )));
@@ -518,7 +518,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let Some(field_name) = fields.get(index).map(|f| f.name.clone()) else {
             let arity = fields.len();
             let struct_name = self.resolve_symbol_name(struct_symbol);
-            return Err(TypeCheckError::generic_error(&format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, format!(
                 "index {index} is out of bounds for `{struct_name}`, which has {arity} field(s)"
             )));
         };
@@ -880,7 +880,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             (from, to) if from == to => Ok(target_type.clone()),
 
             // Invalid cast
-            _ => Err(TypeCheckError::generic_error(&format!(
+            _ => Err(TypeCheckError::coded(crate::diagnostic::codes::CONVERSION, format!(
                 "Cannot cast {} to {}",
                 self.type_name_for_error(&expr_type),
                 self.type_name_for_error(target_type)

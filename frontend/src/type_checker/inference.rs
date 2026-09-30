@@ -119,7 +119,7 @@ impl TypeInferenceState {
 
     pub fn increment_recursion_depth(&mut self) -> Result<(), crate::type_checker::TypeCheckError> {
         if self.recursion_depth >= self.max_recursion_depth {
-            return Err(crate::type_checker::TypeCheckError::generic_error(
+            return Err(crate::type_checker::TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, 
                 "Maximum recursion depth reached in type inference"
             ));
         }

@@ -138,10 +138,11 @@ mod tuple_tests {
         assert!(access_result.is_err());
         let error = access_result.unwrap_err();
         match *error.kind {
-            TypeCheckErrorKind::GenericError { ref message } => {
+            TypeCheckErrorKind::Coded { code, ref message } => {
+                assert_eq!(code, crate::diagnostic::codes::ARRAY);
                 assert!(message.contains("out of bounds"));
             },
-            _ => panic!("Expected GenericError with out of bounds message"),
+            _ => panic!("Expected an E0006 error with an out of bounds message"),
         }
     }
     

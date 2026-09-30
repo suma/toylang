@@ -855,7 +855,7 @@ fn main() -> u64 { val z = 1.5
     let codes: Vec<&str> = diagnostics.iter().map(|d| d.code).collect();
     // `val b: bool = a` sits in `f`, which holds the `else if`: its
     // errors are not reported, whatever they are.
-    assert_eq!(codes, ["E0033", "E0003", "E0010", "E0034"], "{diagnostics:#?}");
+    assert_eq!(codes, ["E0033", "E0003", "E0045", "E0034"], "{diagnostics:#?}");
 }
 
 #[test]

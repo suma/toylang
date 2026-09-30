@@ -48,19 +48,19 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
             }
         } else {
             self.pop_context();
-            return Err(TypeCheckError::generic_error("Invalid arguments reference"));
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid arguments reference"));
         };
         
         let args = args_data.ok_or_else(|| {
             self.pop_context();
-            TypeCheckError::generic_error("Invalid arguments expression")
+            TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid arguments expression")
         })?;
         
         // Verify argument count matches parameter count
         if args.len() != fun.parameter.len() {
             self.pop_context();
             let fn_name_str = self.resolve_symbol_name(fn_name);
-            return Err(TypeCheckError::generic_error(&format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::ARITY, format!(
                 "Generic function '{}' argument count mismatch: expected {}, found {}",
                 fn_name_str, fun.parameter.len(), args.len()
             )));
@@ -136,7 +136,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
             Err(e) => {
                 self.pop_context();
                 let fn_name_str = self.resolve_symbol_name(fn_name);
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::GENERIC_INFERENCE, format!(
                     "Type inference failed for generic function '{}': {}",
                     fn_name_str, e
                 )));
@@ -149,7 +149,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
                 self.pop_context();
                 let param_name = self.resolve_symbol_name(*generic_param);
                 let fn_name_str = self.resolve_symbol_name(fn_name);
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::GENERIC_INFERENCE, format!(
                     "Cannot infer generic type parameter '{}' for function '{}'",
                     param_name, fn_name_str
                 )));
@@ -288,7 +288,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
                 if should_push_scope {
                     self.type_inference.pop_generic_scope();
                 }
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::GENERIC_INFERENCE, format!(
                     "Type inference failed for generic struct '{}': {}",
                     struct_name_str, e
                 )));
@@ -330,7 +330,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
                     }
                     let param_name = self.resolve_symbol_name(*generic_param);
                     let struct_name_str = self.resolve_symbol_name(*struct_name);
-                    return Err(TypeCheckError::generic_error(&format!(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::GENERIC_INFERENCE, format!(
                         "Cannot infer generic type parameter '{}' for struct '{}'",
                         param_name, struct_name_str
                     )));
@@ -435,7 +435,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
         // Verify argument count matches parameter count
         if args.len() != method.parameter.len() {
             let fn_name_str = self.resolve_symbol_name(function_name);
-            return Err(TypeCheckError::generic_error(&format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::ARITY, format!(
                 "Associated function '{}' argument count mismatch: expected {}, found {}",
                 fn_name_str, method.parameter.len(), args.len()
             )));
@@ -477,7 +477,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
             }
             Err(e) => {
                 self.type_inference.pop_generic_scope();
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::GENERIC_INFERENCE, format!(
                     "Type inference failed for associated function '{}': {}",
                     fn_name_str, e
                 )));
@@ -518,7 +518,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
                     self.type_inference.pop_generic_scope();
                     let param_name = self.resolve_symbol_name(*generic_param);
                     let fn_name_str = self.resolve_symbol_name(function_name);
-                    return Err(TypeCheckError::generic_error(&format!(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::GENERIC_INFERENCE, format!(
                         "Cannot infer generic type parameter '{}' for associated function '{}'",
                         param_name, fn_name_str
                     )));

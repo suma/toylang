@@ -22,7 +22,7 @@ impl<'a> LiteralTypeChecker for TypeCheckerVisitor<'a> {
 
     fn check_number_literal(&mut self, value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
         let num_str = self.core.string_interner.resolve(value)
-            .ok_or_else(|| TypeCheckError::generic_error("Failed to resolve number literal"))?;
+            .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Failed to resolve number literal"))?;
         
         // If we have a type hint from val/var declaration, validate and return the hint type
         if let Some(hint) = self.type_inference.type_hint.clone() {

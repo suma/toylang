@@ -110,7 +110,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         };
         if args.len() != params.len() {
             let roles: Vec<&str> = params.iter().map(|(_, role)| *role).collect();
-            return Err(TypeCheckError::generic_error(&format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::ARITY, format!(
                 "{name} takes {} arguments ({}), got {}",
                 params.len(),
                 roles.join(", "),
@@ -138,7 +138,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     ) -> Result<TypeDecl, TypeCheckError> {
         self.validate_type_argument(ty, "__builtin_ptr_read")?;
         if args.len() != 2 {
-            return Err(TypeCheckError::generic_error(&format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::ARITY, format!(
                 "__builtin_ptr_read::<T> takes 2 arguments (pointer, byte offset), got {}",
                 args.len()
             )));
@@ -170,7 +170,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     ) -> Result<TypeDecl, TypeCheckError> {
         self.validate_type_argument(ty, "__builtin_ptr_ref")?;
         if args.len() != 2 {
-            return Err(TypeCheckError::generic_error(&format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::ARITY, format!(
                 "__builtin_ptr_ref::<T> takes 2 arguments (pointer, byte offset), got {}",
                 args.len()
             )));
@@ -211,7 +211,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             return Ok(());
         }
         Err(self.error_with_location(
-            TypeCheckError::generic_error(&format!(
+            TypeCheckError::coded(crate::diagnostic::codes::TYPE_MISMATCH, format!(
                 "{name} expects `{}` for the {role}, got `{}`",
                 self.format_type_for_error(expected),
                 self.format_type_for_error(&actual)

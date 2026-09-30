@@ -174,7 +174,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         if let Some(expr) = self.core.expr_pool.get(expr_ref)
             && let Expr::Number(value) = expr {
                 let num_str_owned = self.core.string_interner.resolve(value)
-                    .ok_or_else(|| TypeCheckError::generic_error("Failed to resolve number literal"))?
+                    .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Failed to resolve number literal"))?
                     .to_string();
                 // Numeric literal separators: `_` between digits is
                 // legal in source (`1_000_000`) but `str::parse` and

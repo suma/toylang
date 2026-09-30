@@ -165,7 +165,7 @@ impl<'a> ProgramVisitor for TypeCheckerVisitor<'a> {
         // Check for reserved keywords in package name
         for &symbol in &package_decl.name {
             let name_str = self.core.string_interner.resolve(symbol)
-                .ok_or_else(|| TypeCheckError::generic_error("Package name symbol not found in interner"))?;
+                .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Package name symbol not found in interner"))?;
 
             if super::module_access::is_reserved_keyword(name_str) {
                 return Err(TypeCheckError::generic_error(&format!("Package name '{}' cannot use reserved keyword", name_str)));
@@ -194,7 +194,7 @@ impl<'a> ProgramVisitor for TypeCheckerVisitor<'a> {
         // Validate each component of import path
         for &symbol in &import_decl.module_path {
             let name_str = self.core.string_interner.resolve(symbol)
-                .ok_or_else(|| TypeCheckError::generic_error("Import path symbol not found in interner"))?;
+                .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Import path symbol not found in interner"))?;
 
             if super::module_access::is_reserved_keyword(name_str) {
                 return Err(TypeCheckError::generic_error(&format!("Import path '{}' cannot use reserved keyword", name_str)));
@@ -240,7 +240,7 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
                 self.type_inference.set_expr_type(try_ref, ty.clone());
                 Ok(ty)
             }
-            None => Err(TypeCheckError::generic_error("`?` operand has no `?` node")),
+            None => Err(TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "`?` operand has no `?` node")),
         }
     }
 
@@ -359,7 +359,7 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
             (TypeDecl::Number, other) | (other, TypeDecl::Number)
                 if other.is_integer() => other.clone(),
             _ => {
-                return Err(TypeCheckError::new(format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::TYPE_MISMATCH, format!(
                     "range endpoints must be matching integer types, got {}..{}",
                     self.type_name_for_error(&start_ty),
                     self.type_name_for_error(&end_ty)
@@ -432,7 +432,7 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
             _ => false,
         };
         if !is_allocator {
-            return Err(TypeCheckError::new(format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::TYPE_MISMATCH, format!(
                 "`with allocator = ...` requires an Allocator value, but got {}",
                 self.type_name_for_error(&allocator_ty)
             )));
@@ -486,7 +486,7 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
                     if !v.payload_types.is_empty() {
                         let enum_str = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
                         let v_str = self.core.string_interner.resolve(variant_name).unwrap_or("?").to_string();
-                        return Err(TypeCheckError::new(format!(
+                        return Err(TypeCheckError::coded(crate::diagnostic::codes::ARITY, format!(
                             "variant '{}::{}' takes {} argument(s); call it as `{}::{}( ... )`",
                             enum_str, v_str, v.payload_types.len(), enum_str, v_str
                         )));
@@ -521,7 +521,7 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
                 }
                 let enum_str = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
                 let v_str = self.core.string_interner.resolve(variant_name).unwrap_or("?").to_string();
-                return Err(TypeCheckError::new(format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::NOT_FOUND, format!(
                     "'{}' is not a variant of enum '{}'", v_str, enum_str
                 )));
             }
@@ -530,7 +530,7 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
         if let Some(last_symbol) = path.last() {
             self.visit_identifier(*last_symbol)
         } else {
-            Err(TypeCheckError::generic_error("empty qualified identifier path"))
+            Err(TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "empty qualified identifier path"))
         }
     }
 
@@ -554,7 +554,7 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
         // spec argument itself is a parser-generated `u64` constant.
         if matches!(func, BuiltinFunction::Format) {
             let [value, _spec] = args.as_slice() else {
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::ARITY, format!(
                     "__builtin_format takes 2 arguments, got {}",
                     args.len()
                 )));
@@ -574,7 +574,7 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
                 );
             if !formattable {
                 let shown = self.named_type_for_error(&value_ty);
-                let err = TypeCheckError::generic_error(&format!(
+                let err = TypeCheckError::coded(crate::diagnostic::codes::UNSUPPORTED_OPERATION, format!(
                     "a format spec applies to primitives only \
                      (integers, `f64`, `f32`, `bool`, `str`), but this value is `{shown}`; \
                      write `{{value}}` without a spec, or give the type a \
@@ -653,7 +653,7 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
                     BuiltinFunction::Max => "max",
                     _ => unreachable!(),
                 };
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::ARITY, format!(
                     "{name} expects {expected} argument(s), got {}",
                     args.len()
                 )));
@@ -670,7 +670,7 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
                     TypeDecl::Int64 => return Ok(TypeDecl::Int64),
                     TypeDecl::Float64 => return Ok(TypeDecl::Float64),
                     _ => {
-                        return Err(TypeCheckError::generic_error(&format!(
+                        return Err(TypeCheckError::coded(crate::diagnostic::codes::TYPE_MISMATCH, format!(
                             "abs expects an i64 or f64 argument, got {}",
                             self.type_name_for_error(&arg_types[0])
                         )));
@@ -680,14 +680,14 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
             // Min / Max: both operands must be the same integer type.
             if !matches!(arg_types[0], TypeDecl::Int64 | TypeDecl::UInt64) {
                 let name = if matches!(func, BuiltinFunction::Min) { "min" } else { "max" };
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::TYPE_MISMATCH, format!(
                     "{name} expects integer arguments, got {}",
                     self.type_name_for_error(&arg_types[0])
                 )));
             }
             if arg_types[0] != arg_types[1] {
                 let name = if matches!(func, BuiltinFunction::Min) { "min" } else { "max" };
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::TYPE_MISMATCH, format!(
                     "{name} arguments must agree on type: got {} and {}",
                     self.type_name_for_error(&arg_types[0]),
                     self.type_name_for_error(&arg_types[1])
@@ -853,14 +853,14 @@ impl<'a> DeclVisitor for TypeCheckerVisitor<'a> {
         let claimed_pre_registration = self.context.enums_awaiting_decl.remove(&name);
         if !claimed_pre_registration && self.context.enum_definitions.contains_key(&name) {
             let name_str = self.core.string_interner.resolve(name).unwrap_or("?").to_string();
-            return Err(TypeCheckError::new(format!("enum '{}' is already defined", name_str)));
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::DUPLICATE_DEFINITION, format!("enum '{}' is already defined", name_str)));
         }
         let mut seen = std::collections::HashSet::new();
         for v in variants {
             if !seen.insert(v.name) {
                 let enum_str = self.core.string_interner.resolve(name).unwrap_or("?").to_string();
                 let v_str = self.core.string_interner.resolve(v.name).unwrap_or("?").to_string();
-                return Err(TypeCheckError::new(format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::DUPLICATE_DEFINITION, format!(
                     "duplicate variant '{}' in enum '{}'", v_str, enum_str
                 )));
             }

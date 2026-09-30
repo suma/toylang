@@ -366,7 +366,7 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                                     // so the report carries a line number
                                     // instead of none at all.
                                     let loc = self.method_body_location(method);
-                                    return Err(TypeCheckError::generic_error(&format!(
+                                    return Err(TypeCheckError::coded(crate::diagnostic::codes::TYPE_MISMATCH, format!(
                                         "method '{}' return type mismatch: expected {}, found {}",
                                         method_name,
                                         self.type_name_for_error(&resolved_expected_type),
@@ -380,7 +380,7 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                         if !self.are_types_compatible(&actual_return_type, &resolved_expected_type) {
                             let method_name = self.resolve_symbol_name(method.name);
                             let loc = self.method_body_location(method);
-                            return Err(TypeCheckError::generic_error(&format!(
+                            return Err(TypeCheckError::coded(crate::diagnostic::codes::TYPE_MISMATCH, format!(
                                 "method '{}' return type mismatch: expected {}, found {}",
                                 method_name,
                                 self.type_name_for_error(&resolved_expected_type),

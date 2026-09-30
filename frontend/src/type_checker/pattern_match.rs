@@ -374,7 +374,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let lo = self.range_endpoint(low, expected_ty)?;
         let hi = self.range_endpoint(high, expected_ty)?;
         if hi <= lo {
-            return Err(TypeCheckError::new(format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                 "range pattern {}..{} is empty — `..` excludes its upper bound, \
                  so this arm could never run",
                 lo, hi
@@ -890,7 +890,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         // Covered — fall through to the arm-type check.
                     } else {
                         let t_name = self.type_name_for_error(t);
-                        return Err(TypeCheckError::new(format!(
+                        return Err(TypeCheckError::coded(crate::diagnostic::codes::MATCH_COVERAGE, format!(
                             "non-exhaustive match on {}: the arms leave values uncovered, \
                              add a wildcard `_` arm (or ranges that span the type)",
                             t_name
@@ -1231,7 +1231,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             return Ok(None);
         }
         if !is_readable_twice(self.core.expr_pool, scrutinee) {
-            return Err(TypeCheckError::new(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, 
                 "a match on a `String` with string-literal arms needs a name as its scrutinee \
                  -- bind the value with `val` first"
                     .to_string(),
@@ -1296,7 +1296,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
                 Some(None) => {
                     let name = self.core.string_interner.resolve(*sym).unwrap_or("?");
-                    return Err(TypeCheckError::new(format!(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                         "`{name}` is a const, so this pattern would compare against it — but its \
                          value is not a literal, and a pattern needs one while compiling. Write the \
                          literal, or bind and compare in a guard: `v if v == {name} =>`"

@@ -258,7 +258,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             return Ok(ty);
         }
         let expr_obj = self.core.expr_pool.get(expr_ref)
-            .ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference"))?;
+            .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid expression reference"))?;
         // ERROR_MODEL E2: `?` in statement position. This route --
         // statements, and tail expressions -- is the one place a `Try`
         // node is reached without going through `visit_expr`, and the

@@ -41,7 +41,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 if !generic_params.is_empty() {
                     self.type_inference.pop_generic_scope();
                 }
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::DUPLICATE_DEFINITION, format!(
                     "Duplicate field '{}' in struct '{}'",
                     field.name,
                     self.resolve_symbol_name(name)
@@ -58,7 +58,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 if !generic_params.is_empty() {
                     self.type_inference.pop_generic_scope();
                 }
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::UNSUPPORTED_OPERATION, format!(
                     "struct field `{}` declares a reference type; references cannot be \
                      stored in struct fields (REF-Stage-2 (e))",
                     field.name
@@ -192,14 +192,14 @@ impl<'a> TypeCheckerVisitor<'a> {
     ) -> Result<TypeDecl, TypeCheckError> {
         let field_name = self.resolve_symbol_name(field);
         let element_type = element_type.ok_or_else(|| {
-            TypeCheckError::generic_error(&format!(
+            TypeCheckError::coded(crate::diagnostic::codes::UNSUPPORTED_OPERATION, format!(
                 "cannot take the column `{field_name}`: the array has no element type"
             ))
         })?;
         let struct_symbol = match element_type {
             TypeDecl::Identifier(sym) | TypeDecl::Struct(sym, _) => *sym,
             other => {
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::UNSUPPORTED_OPERATION, format!(
                     "cannot take the column `{}` of an array of `{}`: \
                      a column window needs struct elements",
                     field_name,
@@ -217,7 +217,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             .map(|f| f.type_decl.clone())
             .ok_or_else(|| TypeCheckError::not_found("field", &field_name))?;
         if !is_column_leaf(&field_type) {
-            return Err(TypeCheckError::generic_error(&format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::UNSUPPORTED_OPERATION, format!(
                 "cannot take the column `{field_name}`: its type is not a scalar, and a \
                  compound field occupies several columns (DATA-ORIENTED Phase 1 windows \
                  one)"
@@ -228,7 +228,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // modules were not loaded, which is worth saying plainly
         // rather than reporting an unknown struct.
         let column = self.core.string_interner.get("Column").ok_or_else(|| {
-            TypeCheckError::generic_error(
+            TypeCheckError::coded(crate::diagnostic::codes::UNSUPPORTED_OPERATION, 
                 "a column window needs the stdlib `Column<T>`                  (`core/std/column.t`), which this program did not load",
             )
         })?;
@@ -254,7 +254,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn visit_field_access_impl(&mut self, obj: &ExprRef, field: &DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
         // Check recursion depth to prevent stack overflow
         if self.type_inference.recursion_depth >= self.type_inference.max_recursion_depth {
-            return Err(TypeCheckError::generic_error(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, 
                 "Maximum recursion depth reached in field access type inference - possible circular reference"
             ));
         }
@@ -410,7 +410,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn visit_struct_literal_impl(&mut self, struct_name: &DefaultSymbol, fields: &Vec<(DefaultSymbol, ExprRef)>) -> Result<TypeDecl, TypeCheckError> {
         // Check recursion depth to prevent stack overflow
         if self.type_inference.recursion_depth >= self.type_inference.max_recursion_depth {
-            return Err(TypeCheckError::generic_error(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, 
                 "Maximum recursion depth reached in struct type inference - possible circular reference"
             ));
         }
@@ -548,7 +548,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             Err(e) => {
                 self.type_inference.pop_generic_scope();
                 let struct_name_str = self.resolve_symbol_name(*struct_name);
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::GENERIC_INFERENCE, format!(
                     "Type inference failed for generic struct '{}': {}",
                     struct_name_str, e
                 )));
@@ -605,7 +605,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             if !substitutions.contains_key(generic_param) {
                 self.type_inference.pop_generic_scope();
                 let param_name = self.resolve_symbol_name(*generic_param);
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::GENERIC_INFERENCE, format!(
                     "Cannot infer generic type parameter '{}' for struct '{}'",
                     param_name,
                     self.resolve_symbol_name(*struct_name)
@@ -715,7 +715,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Helper method to check __getslice__ on a struct
     pub fn check_struct_getslice_method(&mut self, struct_name: DefaultSymbol, slice_info: &SliceInfo, object_type: &TypeDecl) -> Result<TypeDecl, TypeCheckError> {
         let struct_name_str = self.core.string_interner.resolve(struct_name)
-            .ok_or_else(|| TypeCheckError::generic_error("Unknown struct name"))?;
+            .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::NOT_FOUND, "Unknown struct name"))?;
 
         if let Some(start_expr) = &slice_info.start {
             let _ = self.visit_expr(start_expr)?;
@@ -728,10 +728,10 @@ impl<'a> TypeCheckerVisitor<'a> {
             if let Some(return_type) = &getslice_method.return_type {
                 Ok(return_type.clone())
             } else {
-                Err(TypeCheckError::generic_error("__getslice__ method must have return type"))
+                Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, "__getslice__ method must have return type"))
             }
         } else {
-            Err(TypeCheckError::generic_error(&format!(
+            Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, format!(
                 "Cannot slice type {} - no __getslice__ method found",
                 self.type_name_for_error(object_type)
             )))
@@ -743,17 +743,17 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// `TypeDecl::Struct` variants separately.
     pub fn check_struct_getitem_access(&mut self, struct_name: DefaultSymbol, slice_info: &SliceInfo, object_type: &TypeDecl) -> Result<TypeDecl, TypeCheckError> {
         let index_expr = slice_info.start.as_ref()
-            .ok_or_else(|| TypeCheckError::generic_error("Struct access requires index"))?;
+            .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Struct access requires index"))?;
 
         let struct_name_str = self.core.string_interner.resolve(struct_name)
-            .ok_or_else(|| TypeCheckError::generic_error("Unknown struct name"))?
+            .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::NOT_FOUND, "Unknown struct name"))?
             .to_string();
 
         let index_type = self.visit_expr(index_expr)?;
 
         let getitem_method = self.context
             .get_method_function_by_name(&struct_name_str, "__getitem__", self.core.string_interner)
-            .ok_or_else(|| TypeCheckError::generic_error(&format!(
+            .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::ARRAY, format!(
                 "Cannot index into type {} - no __getitem__ method found",
                 self.type_name_for_error(object_type)
             )))?;
@@ -771,13 +771,13 @@ impl<'a> TypeCheckerVisitor<'a> {
             .map(|name| name == "self")
             .unwrap_or(false);
         if !first_param_is_self && !getitem_method.has_self_param {
-            return Err(TypeCheckError::generic_error(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, 
                 "__getitem__ must take self (`&self`, `&mut self`, or `self: Self`)",
             ));
         }
         let index_param_index = if first_param_is_self { 1 } else { 0 };
         if getitem_method.parameter.len() < index_param_index + 1 {
-            return Err(TypeCheckError::generic_error("__getitem__ method must have at least (self, index)"));
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, "__getitem__ method must have at least (self, index)"));
         }
         let index_param_type = getitem_method.parameter[index_param_index].1.clone();
         if index_type != index_param_type && !self.are_types_compatible(&index_param_type, &index_type) {
@@ -787,7 +787,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let declared_return = getitem_method
             .return_type
             .clone()
-            .ok_or_else(|| TypeCheckError::generic_error("__getitem__ method must have return type"))?;
+            .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::ARRAY, "__getitem__ method must have return type"))?;
 
         // POINTER P2: substitute the declared return type against the
         // receiver's type args — `p[0u64]` on a `Ptr<u64>` used to
@@ -829,11 +829,11 @@ impl<'a> TypeCheckerVisitor<'a> {
         object_type: &TypeDecl,
     ) -> Result<(), TypeCheckError> {
         let struct_name_str = self.core.string_interner.resolve(struct_name)
-            .ok_or_else(|| TypeCheckError::generic_error("Unknown struct name"))?
+            .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::NOT_FOUND, "Unknown struct name"))?
             .to_string();
         let setitem_method = self.context
             .get_method_function_by_name(&struct_name_str, "__setitem__", self.core.string_interner)
-            .ok_or_else(|| TypeCheckError::generic_error(&format!(
+            .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::ARRAY, format!(
                 "Cannot assign to struct type {} - no __setitem__ method found",
                 self.type_name_for_error(object_type)
             )))?;
@@ -844,13 +844,13 @@ impl<'a> TypeCheckerVisitor<'a> {
             .map(|name| name == "self")
             .unwrap_or(false);
         if !first_param_is_self && !setitem_method.has_self_param {
-            return Err(TypeCheckError::generic_error(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, 
                 "__setitem__ must take self (`&self`, `&mut self`, or `self: Self`)",
             ));
         }
         let key_param_index = if first_param_is_self { 1 } else { 0 };
         if setitem_method.parameter.len() < key_param_index + 2 {
-            return Err(TypeCheckError::generic_error(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, 
                 "__setitem__ method must have at least (self, key, value)",
             ));
         }
@@ -870,7 +870,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Helper method to check __setslice__ on a struct
     pub fn check_struct_setslice_method(&mut self, struct_name: DefaultSymbol, start: &Option<ExprRef>, end: &Option<ExprRef>, value_type: &TypeDecl, object_type: &TypeDecl) -> Result<TypeDecl, TypeCheckError> {
         let struct_name_str = self.core.string_interner.resolve(struct_name)
-            .ok_or_else(|| TypeCheckError::generic_error("Unknown struct name"))?;
+            .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::NOT_FOUND, "Unknown struct name"))?;
 
         if let Some(start_expr) = start {
             let _ = self.visit_expr(start_expr)?;
@@ -882,7 +882,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         if let Some(_setslice_method) = self.context.get_method_function_by_name(struct_name_str, "__setslice__", self.core.string_interner) {
             Ok(value_type.clone())
         } else {
-            Err(TypeCheckError::generic_error(&format!(
+            Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, format!(
                 "Cannot slice-assign to type {} - no __setslice__ method found",
                 self.type_name_for_error(object_type)
             )))
@@ -971,7 +971,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     (type_name, fields, base, base_binding)
                 }
                 _ => {
-                    return Err(TypeCheckError::generic_error(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, 
                         "desugar_struct_update: pool entry no longer a StructUpdate node",
                     ));
                 }
@@ -1016,7 +1016,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             // The declaration interned every field name, so `get`
             // (which only needs `&self`) always finds it.
             let Some(field_sym) = self.core.string_interner.get(def.name.as_str()) else {
-                return Err(TypeCheckError::generic_error(&format!(
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, format!(
                     "struct update: field `{}` of `{}` is not interned",
                     def.name,
                     self.resolve_symbol_name(struct_name)

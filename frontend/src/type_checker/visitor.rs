@@ -600,7 +600,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // type the reader would have to distrust.
         if is_hole && expr.is_none() {
             let var_name = self.core.string_interner.resolve(name).unwrap_or("?").to_string();
-            return Err(TypeCheckError::generic_error(&format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::TYPE_HOLE, format!(
                 "type hole: `{}` has no initializer, so there is nothing to infer from -- \
                  write `var {} : <type>` or give it a value",
                 var_name, var_name
@@ -828,7 +828,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                             .unwrap_or("?")
                             .to_string();
                         let pty_str = self.type_name_for_error(pty);
-                        return Err(TypeCheckError::generic_error(&format!(
+                        return Err(TypeCheckError::coded(crate::diagnostic::codes::FFI_ABI, format!(
                             "extern fn `{fn_name}`: parameter `{param_name}` has type `{pty_str}`, \
                              which cannot cross the C ABI boundary (FFI_PLAN P1 allows only \
                              scalars: ints, f64, bool, ptr, usize; pass `str` as \
@@ -841,7 +841,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     && !is_ffi_boundary_scalar(ret)
                 {
                     let ret_str = self.type_name_for_error(ret);
-                    return Err(TypeCheckError::generic_error(&format!(
+                    return Err(TypeCheckError::coded(crate::diagnostic::codes::FFI_ABI, format!(
                         "extern fn `{fn_name}`: return type `{ret_str}` cannot cross the C ABI \
                          boundary (FFI_PLAN P1 allows only scalars: ints, f64, bool, ptr, usize)"
                     )));
@@ -880,18 +880,18 @@ impl<'a> TypeCheckerVisitor<'a> {
             func.return_type.clone().unwrap_or(TypeDecl::Unit),
         );
 
-        let statements = match self.core.stmt_pool.get(&s).ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference"))? {
+        let statements = match self.core.stmt_pool.get(&s).ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid statement reference"))? {
             Stmt::Expression(e) => {
-                match self.core.expr_pool.get(&e).ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference"))? {
+                match self.core.expr_pool.get(&e).ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid expression reference"))? {
                     Expr::Block(statements) => {
                         statements.clone()  // Clone required: statements is used in multiple loops and we need mutable access to self
                     }
                     _ => {
-                        return Err(TypeCheckError::generic_error("type_check: expected block expression"));
+                        return Err(TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "type_check: expected block expression"));
                     }
                 }
             }
-            _ => return Err(TypeCheckError::generic_error("type_check: expected block statement")),
+            _ => return Err(TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "type_check: expected block statement")),
         };
 
         // CLOSURE-CAPTURE E3: decide each closure's capture mode
@@ -992,7 +992,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let errors_before_body = self.errors.len();
 
         for stmt in statements.iter() {
-            let stmt_obj = self.core.stmt_pool.get(stmt).ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference"))?;
+            let stmt_obj = self.core.stmt_pool.get(stmt).ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, "Invalid statement reference"))?;
             let res = stmt_obj.clone().accept_stmt(self);
             match res {
                 Ok(ty) => last = ty,
@@ -1269,7 +1269,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let mut bad = false;
         self.walk_return_sites(func.code, &refs, &mut bad);
         if bad {
-            return Err(TypeCheckError::generic_error(&format!(
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::WINDOW_ESCAPE, format!(
                 "function `{}` returns a reference that is not a reborrow of one of its \
                  parameters; a borrow may only be handed back when the caller already \
                  holds what it points at (ELEMENT-BORROW E1)",
@@ -1386,8 +1386,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         let ty = self.check_expr_located(cond)?;
         if ty != TypeDecl::Bool {
             let ty_str = self.type_name_for_error(&ty);
-            let err = TypeCheckError::generic_error(
-                &format!("`{kind}` clause must be of type bool, got {ty_str}")
+            let err = TypeCheckError::coded(crate::diagnostic::codes::CONTRACT_CLAUSE, 
+                format!("`{kind}` clause must be of type bool, got {ty_str}")
             );
             return Err(self.error_with_location(err, cond));
         }

@@ -646,12 +646,16 @@ front-end driver (`interpreter::check_typing*` /
 `compile_file`) routes errors through `ErrorFormatter` for the
 caret-pointer formatting visible in test output.
 
-Every diagnostic carries a stable code (`E0001`…`E0039`). A released
-code keeps its number and meaning; new ones are appended. `E0010` is
-what is left uncategorised — a parse error has its own code (`E0032`
-syntax, `E0033` `else if`, `E0034` a float without its suffix), and so
-do the match, `?` / `??`, trait and shared-borrow families
-(`E0035`–`E0039`). In `--format=json` each diagnostic carries
+Every diagnostic carries a stable code (`E0001`…`E0049`). A released
+code keeps its number and meaning; new ones are appended. A parse error
+has its own code (`E0032` syntax, `E0033` `else if`, `E0034` a float
+without its suffix), and so do the match, `?` / `??`, trait and
+shared-borrow families (`E0035`–`E0039`), argument counts (`E0041`),
+SIMD operands (`E0042`), generic inference (`E0043`), writes to a `val`
+(`E0044`), struct-literal fields (`E0045`), loop control (`E0046`),
+contract clauses (`E0047`), the C ABI (`E0048`) and ambiguous paths
+(`E0049`). `E0040` is the compiler's own error, not the program's.
+`E0010` is what is left uncategorised. In `--format=json` each diagnostic carries
 `explain`: the command that prints its explanation. These are
 toylang's own numbering, not Rust's — identical-looking identifiers with
 different meanings would be worse than none. `interpreter --explain

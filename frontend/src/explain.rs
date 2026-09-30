@@ -85,6 +85,16 @@ const ENTRIES: &[Entry] = &[
     (codes::TRY_OPERAND, E0037),
     (codes::TRAIT_BOUND, E0038),
     (codes::SHARED_BORROW_WRITE, E0039),
+    (codes::INTERNAL, E0040),
+    (codes::ARITY, E0041),
+    (codes::SIMD, E0042),
+    (codes::GENERIC_INFERENCE, E0043),
+    (codes::IMMUTABLE_WRITE, E0044),
+    (codes::STRUCT_FIELDS, E0045),
+    (codes::LOOP_CONTROL, E0046),
+    (codes::CONTRACT_CLAUSE, E0047),
+    (codes::FFI_ABI, E0048),
+    (codes::AMBIGUOUS_NAME, E0049),
 ];
 
 const E0001: &str = "\
@@ -1120,6 +1130,122 @@ would land in a copy and be lost when the function returns, so it is
 refused. Declare the parameter `&mut T` (and pass `&mut c`), or the
 method `&mut self` when the write is to `self`. The same holds for
 calling a `&mut self` method through a shared borrow.";
+
+const E0040: &str = "\
+E0040: an internal error in the compiler
+
+One of the compiler's own assumptions did not hold — a reference into
+its tables that should exist does not, a rewrite found a node in a
+shape it did not leave it in. It is not a mistake in the program, and
+no edit to the program is known to be the fix.
+
+If other errors are reported alongside it, fix those first: an
+internal error can be a consequence of the tree an earlier error left
+behind. If it is the only one, it is a compiler bug; the smallest
+program that still produces it is the useful report.";
+
+const E0041: &str = "\
+E0041: the wrong number of arguments
+
+    fn add(a: u64, b: u64) -> u64 { a + b }
+    add(1u64)                    # E0041: expected 2, found 1
+
+Functions, methods, associated functions, enum variants with a payload,
+tuple structs and builtins all report it under this code. There are no
+default arguments and no variadic functions (apart from the
+`print` family), so the count in the declaration is the count to pass.";
+
+const E0042: &str = "\
+E0042: a SIMD operation on operands it does not take
+
+    val a: u8x16 = __simd_splat(1u8)
+    val b = -a                   # E0042: `u8x16` lanes are unsigned
+
+The vector types (`f64x2`, `f32x4`, `i32x4`, `i64x2`, `u8x16`) take the
+ordinary operators lane-wise, with rules of their own: integer `/` and
+`%` are refused (a per-lane zero check would undo the point), `<<` /
+`>>` shift every lane by one `u64`, comparisons give a mask of the
+lane-width integer vector, `&&` / `||` do not apply, and both sides of
+a binary operator have the same vector type. The `__simd_*` intrinsics
+check their operands the same way; the SIMD section of
+`docs/language.md` lists what each one takes.";
+
+const E0043: &str = "\
+E0043: a generic type parameter could not be worked out
+
+    fn make<T>() -> u64 { 0u64 }
+    make()                       # E0043: cannot infer `T`
+
+A type parameter is inferred from the arguments (and from an
+annotation on the result). When nothing mentions `T`, nothing decides
+it. Give the result a type the parameter appears in, pass an argument
+that carries it, or drop the parameter if it is unused.";
+
+const E0044: &str = "\
+E0044: a write to a binding that is not `var`
+
+    val n = 1u64
+    n = 2u64                     # E0044: `n` is declared with `val`
+
+`val` binds once. Reassigning it, assigning through its fields, or
+taking `&mut` of it needs `var`. The receiver of a method is not a
+binding the method can reassign either: `self = ..` is refused.";
+
+const E0045: &str = "\
+E0045: a struct literal's fields do not match the struct
+
+    struct P { x: u64, y: u64 }
+    val p = P { x: 1u64 }        # E0045: missing required field `y`
+
+A struct literal (and a struct variant, `E::A { .. }`) names every
+field exactly once and no others. A misspelled field is reported as
+unknown before anything is reported missing, with the close name
+offered when there is exactly one. `P { x: 1u64, ..base }` fills the
+rest from another value of the same struct.";
+
+const E0046: &str = "\
+E0046: `break` / `continue` outside a loop, or to a label that is not there
+
+    fn main() -> u64 {
+        break                    # E0046
+        0u64
+    }
+
+`break` and `continue` need an enclosing `while` / `for` / `loop` in the
+same function (a closure body is a function of its own). `break @name`
+needs an enclosing loop labelled `@name:`.";
+
+const E0047: &str = "\
+E0047: a contract clause that is not a condition
+
+    fn f(n: u64) -> u64
+        requires n                 # E0047: must be of type bool, got u64
+    { n }
+
+`requires` and `ensures` take `bool` expressions (write `n > 0u64`).
+`old(expr)` is the value `expr` had on entry, so it means something in
+an `ensures` clause only.";
+
+const E0048: &str = "\
+E0048: an `extern fn` signature that cannot cross the C ABI
+
+    extern fn bad(s: str) -> i64 from \"toytest\"   # E0048
+
+An `extern fn` parameter or return is a C scalar: an integer, `f64`,
+`bool`, `ptr` or `usize`. Pass a string as `__builtin_str_to_ptr(s)`
+and a struct through a `ptr` to its memory.";
+
+const E0049: &str = "\
+E0049: a name more than one module defines, written too briefly
+
+Two modules under the same root — `src/a/util.t` and `src/b/util.t` —
+both defining `fn parse`, and a call written `util::parse(..)`: the
+qualifier is matched from the end, so it names both. Write enough of
+the path to pick one (`a::util::parse`). The message lists the
+candidates.
+
+A bare name is not ambiguous in the same way: a function in the
+calling file wins, and a later module root wins over an earlier one.";
 
 const E0029: &str = "\
 E0029: a parallel loop body depends on the order of its iterations

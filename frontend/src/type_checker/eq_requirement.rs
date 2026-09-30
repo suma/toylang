@@ -120,7 +120,7 @@ impl TypeCheckerVisitor<'_> {
                          `fn eq(&self, other: &{type_name}) -> bool` in `impl {type_name}`)"
                     )
                 };
-                let mut error = TypeCheckError::generic_error(&format!(
+                let mut error = TypeCheckError::coded(crate::diagnostic::codes::TRAIT_BOUND, format!(
                     "{} '{}' generic parameter '{}' compares its values with `==`, but {}",
                     inst.owner_kind, inst.owner_name, param_name, problem
                 ));

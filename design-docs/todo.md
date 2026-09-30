@@ -2569,6 +2569,75 @@
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
 
+以下 LLM-TOOLING-* は 2026-09-29/30 の LLM 向け道具の第 2 ラウンド
+([`LLM_TOOLING.md`](LLM_TOOLING.md)) で残ったもの。
+
+- **LLM-TOOLING-E0010-REST — 汎用エラー 211 か所の分類** —
+  `TypeCheckError::generic_error` / `TypeCheckError::new` の呼び出しが
+  まだ `E0010` を返す。系統がはっきりしたものは `TypeCheckError::coded`
+  で既存コードか新コードへ移す (#2 と同じ手順。テスト全体で実際に
+  出る文言を数えてから決める。番号は `codes::ALL` の末尾に足すだけで、
+  `RELEASED` テストが変更・削除を落とす)。`pattern_match.rs` には文言を
+  変数で渡していて移せなかった 4 か所が残る。
+- **LLM-TOOLING-NO-SPAN — 位置のない型エラー** — 2026-09-30 の集計で
+  位置なしが 174 件 (単体テストが直接作るものを含む)。直していない
+  上位は `Type 'X' not found` (27)、`never_allocates` / `const fn` の
+  到達検査 (E0016 6 / E0017 3)、`Duplicate field` / `duplicate variant` /
+  `trait has duplicate method`、`struct field declares a reference type`、
+  `extern fn` の ABI 検査。宣言ノードは開始位置しか持たないので、
+  `TypeCheckError::at_word` (名前で位置を確定) で付けられる。
+- **LLM-TOOLING-RELATED-REST — 関連箇所を埋めていない診断** — `related`
+  を埋めたのは E0031 / E0014 / E0001 (引数) / E0038 / 条件付き移動だけ。
+  E0003 の did-you-mean (候補の定義位置)、E0023 (trait 側の契約)、
+  E0022 / E0026 (allocator・コンテナの束縛位置)、E0028 (コンテナ) は空。
+- **LLM-TOOLING-CASCADE-BY-KIND — 連鎖の判定が文言頼み** —
+  `diagnostic::drop_cascades` は「文言が型 `Unknown` を名指すか」を
+  文字列で判定している (文頭の `Unknown field` は除外する程度の
+  ヒューリスティック)。`TypeCheckError` を作る時点で「オペランドに
+  `Unknown` が居た」を印として持たせ、それで落とすべき。
+- **LLM-TOOLING-SCRUTINEE-OPTION (要調査)** — 2026-09-30 の集計で
+  `match scrutinee must be ..., got Option<i64>` / `Option<u64>` /
+  `Result<u64, E>` が計 30 件ほど出ていた。これを期待するテストは無く
+  (`diagnostic_spelling_tests` が期待するのは `got f64` だけ)、全テストは
+  通るので、どこかで生成されて捨てられている可能性がある
+  (`Option` の enum 登録前に本体を見ている経路など)。原因は未確認。
+- **LLM-TOOLING-PATHS — 診断のパスが渡されたとおり** — 入口ファイルは
+  引数のまま (絶対パスで渡せば絶対)、モジュールは root からの相対。
+  同じ cwd・同じ引数なら出力は一致するが、マシン間では比べられない。
+  `toy query` は答えをパッケージ root 相対に揃えている
+  (`relativize_files`) ので、診断にも同じことをする。
+- **LLM-TOOLING-QUERY-SCOPE — `toy query` の近似** — ローカル変数は
+  「同じ関数内で直前にある同名の宣言 (か引数)」に解決し、ブロック
+  スコープを見ない (内側のブロックで隠した名前をブロックの後で読むと
+  内側の宣言に解決しうる)。enum の variant、trait のメソッド宣言、
+  `dyn` 経由の呼び出し、関数名を値として渡した先は `def` / `refs` の
+  対象外。`callers` は直接呼び出しだけ。
+- **LLM-TOOLING-MAYBE-INCORRECT — 推測の提案を出していない** —
+  `Applicability::MaybeIncorrect` は今も emit されない。候補は E0014 の
+  `&` 化、網羅性エラーへの欠けた腕の挿入 (`=> panic("todo")` は意味を
+  変えるので機械適用しない)。`toy fix` は machine-applicable だけを
+  当てる規約のまま。
+- **LLM-TOOLING-DID-YOU-MEAN-TRANSPOSE** — `closest_candidate` は
+  Levenshtein 距離で、4 文字以下は距離 1 まで。入れ替え (`nrom` →
+  `norm`) は距離 2 になるので短い名前では提案が出ない。
+  Damerau (隣接入れ替えを 1) にするか検討。
+- **LLM-TOOLING-PARSE-RECOVERY-REST — パースエラー時の型検査の限界** —
+  `diagnose_parse_failure` は、パースエラーが関数・メソッドの外
+  (壊れた `struct` / `enum` / `impl` 見出し) にあるときと、`?` で宣言ごと
+  落ちて関数が木に入らなかったときはパースエラーだけを返す。後者は
+  `else if` を回復にしたのと同じ要領で、落ちる経路を回復にすれば減る。
+  宣言ごと 1 件のパースエラー抑制 (P1) はそのまま。
+- **PARSER-DECL-END — 宣言ノードの終わりが記録されない** — ファイル
+  末尾の関数は `Function::node.end == 0`。`toy query` と
+  `diagnose_parse_failure` は「次の宣言の手前まで」で補っている。
+  パーサで終わり位置を入れれば両方の補いが要らなくなる。
+- **LLM-TOOLING-FIX-REST — `toy fix` の細部** — `--dry-run` は書き込まない
+  ので 1 巡目の編集しか出せない (2 巡目は 1 巡目を当てた後にしか
+  見えない)。`find_duplicate_impl_method` は最初の 1 組しか報告しない
+  ので、同名 method が複数組あると 1 回の検査で 1 件ずつになる。
+  呼び出し式への数値キャスト提案 (`f() as u8`) は既存方針で出さない。
+
+
 - **EXAMPLE-TEMP-PATH-RACE** — `interpreter/example/fs_file.t`
   (`$TMPDIR/toylang_example_fs_file.bin`) と `error_model.t`
   (`/tmp/toylang_error_model_demo.txt`) が固定パスに書くので、
@@ -2951,11 +3020,9 @@
 
 ## 検討中の機能
 
-* **LLM 向け道具の第 2 ラウンド (LLM-TOOLING) の残り** — 7 性質は 2026-09-29/30 に
-  landing (完了済み節)。残りは `E0010` の汎用 211 か所の分類、位置のない
-  `Type 'X' not found` / E0016 / E0017、パスの相対化 (マシン間比較)、
-  `maybe-incorrect` の提案、`toy query` のブロックスコープ。
-  [`LLM_TOOLING.md`](LLM_TOOLING.md)。
+* **LLM 向け道具の第 2 ラウンド (LLM-TOOLING)** — 7 性質は 2026-09-29/30 に
+  landing (完了済み節)。残りは未実装節の `LLM-TOOLING-*` と
+  `PARSER-DECL-END`。[`LLM_TOOLING.md`](LLM_TOOLING.md)。
 * **ヒープ検査モード (HEAP-CHECK) の残り** — H0 (`--heap-check=report`、
   二重 free の棚卸し) と H0b (報告に二重 drop を起こした関数名) は 2026-09-26 に
   landing (完了済み節)、棚卸しで見つかった二重 drop も全部潰した

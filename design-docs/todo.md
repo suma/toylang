@@ -2634,6 +2634,20 @@
   なった。`math::abs` の 1 セグメント形はそのまま。
 ## 未実装 📋
 
+- **MATCH-TEMP-EXIT-LEAK — 呼び出しを直接 scrutinee にして腕から抜けると
+  payload が漏れる** — `match m.mk(i) { Option::Some(v) => { .. continue } .. }`
+  (`if val Option::Some(v) = m.mk(i)` も同じ) で、腕の中の `continue` /
+  `return` が所有 payload (`Vec` 等) を drop しない。腕の末尾まで走れば
+  解放される。`val r = m.mk(i)` に束縛してから `match r` にすると漏れない
+  ので、**名前の無い一時値に drop flag / 出口の drop が付いていない**。
+  AOT と JIT で一致して再現 (`--profile=mem` の `leaks`)。
+  2026-10-01 に poc/logsearch を `if val` へ移していて発覚 (POC の右辺は
+  所有しない payload だけなので実害なし)。同じ移行で、自由関数の呼び出しを
+  右辺に書くと AOT が `compiler MVP match on scalar scrutinee only supports
+  i64 / u64 / bool, got enum#N` を**位置なし**で出すことも踏んだ
+  (既知の「function-call enum scrutinee は val-bind 経由」の制約。
+  少なくとも位置は出すべき)。
+
 - **TREE-WALKER-DYNAMIC-GENERIC-SCOPE — 呼び出し先が呼び出し元の型引数を
   見る** — tree-walker の `merged_generic_scope` は**実行中の全呼び出し**の
   scope を合わせたもの (動的スコープ) なので、generic でない関数の中でも

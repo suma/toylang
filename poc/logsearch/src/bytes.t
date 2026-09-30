@@ -123,11 +123,7 @@ impl ByteWriter {
     # reply here has, because the length has to be known before the
     # headers go out.
     pub fn put_all(&mut self, other: &ByteWriter) {
-        val w = other.span()
-        match w {
-            Option::Some(b) => { self.put_span(b, 0u64, other.len()) }
-            Option::None => { }
-        }
+        if val Option::Some(b) = other.span() { self.put_span(b, 0u64, other.len()) }
     }
 
     pub fn capacity(&self) -> u64 { self.buf.capacity() }

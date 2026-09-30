@@ -226,11 +226,7 @@ fn put_row(w: &mut ByteWriter, r: &CatRow, crc: &Crc32) {
     w.put_u32(r.terms)
     w.put_u32(r.daykey)
     var sum: u64 = 0u64
-    val sp = w.span()
-    match sp {
-        Option::Some(b) => { sum = crc.of(b, at, 60u64) }
-        Option::None => { }
-    }
+    if val Option::Some(b) = w.span() { sum = crc.of(b, at, 60u64) }
     w.put_u32(sum)
 }
 
@@ -283,64 +279,40 @@ pub fn row_of_head(h: &SegHead, seg_bytes: u64, is_archive: bool) -> CatRow {
 
 fn read_whole(path: str, out: &mut ByteWriter) -> bool {
     val opened = File::open(path)
-    var ok = false
-    match opened {
-        Result::Ok(f) => {
-            val sz = f.size()
-            match sz {
-                Result::Ok(n) => {
-                    if n == 0u64 {
-                        out.clear()
-                        ok = true
-                    } else {
-                        ok = segfile::read_range(&f, 0u64, n, out)
-                    }
-                }
-                Result::Err(e) => { }
+    if val Result::Ok(f) = opened {
+        if val Result::Ok(n) = f.size() {
+            if n == 0u64 {
+                out.clear()
+                return true
             }
+            return segfile::read_range(&f, 0u64, n, out)
         }
-        Result::Err(e) => { }
     }
-    ok
+    false
 }
 
 fn spill(f: &File, w: &ByteWriter) -> bool {
     if w.len() == 0u64 { return true }
-    val sp = w.span()
-    var ok = false
-    match sp {
-        Option::Some(b) => { ok = segfile::put_bytes(f, b, w.len()) }
-        Option::None => { }
+    if val Option::Some(b) = w.span() {
+        return segfile::put_bytes(f, b, w.len())
     }
-    ok
+    false
 }
 
 fn write_whole(path: str, w: &ByteWriter) -> bool {
     val created = File::create(path)
-    var ok = false
-    match created {
-        Result::Ok(f) => {
-            if spill(&f, w) {
-                val s = f.sync()
-                match s {
-                    Result::Ok(u) => { ok = true }
-                    Result::Err(e) => { }
-                }
-            }
+    if val Result::Ok(f) = created {
+        if spill(&f, w) {
+            if val Result::Ok(u) = f.sync() { return true }
         }
-        Result::Err(e) => { }
     }
-    ok
+    false
 }
 
 fn append_whole(path: str, w: &ByteWriter) -> bool {
     val opened = File::append(path)
-    var ok = false
-    match opened {
-        Result::Ok(f) => { ok = spill(&f, w) }
-        Result::Err(e) => { }
-    }
-    ok
+    if val Result::Ok(f) = opened { return spill(&f, w) }
+    false
 }
 
 fn ensure_dirs(mount: str) -> bool {
@@ -348,15 +320,9 @@ fn ensure_dirs(mount: str) -> bool {
     val tmp = tmp_path(mount)
     var ok = true
     val a = fs::mkdir_all(meta.to_str())
-    match a {
-        Result::Ok(u) => { }
-        Result::Err(e) => { ok = false }
-    }
+    if val Result::Err(e) = a { ok = false }
     val b = fs::mkdir_all(tmp.to_str())
-    match b {
-        Result::Ok(u) => { }
-        Result::Err(e) => { ok = false }
-    }
+    if val Result::Err(e) = b { ok = false }
     ok
 }
 
@@ -510,13 +476,9 @@ pub fn encode_snapshot(c: &Catalog, gen: u64, w: &mut ByteWriter, crc: &Crc32) {
     # exist. It covers the rows only: the header cannot checksum
     # itself.
     var sum: u64 = 0u64
-    val sp = w.span()
-    match sp {
-        Option::Some(b) => {
-            val n = w.len() - SNAP_HEAD_BYTES
-            if n > 0u64 { sum = crc.of(b, SNAP_HEAD_BYTES, n) }
-        }
-        Option::None => { }
+    if val Option::Some(b) = w.span() {
+        val n = w.len() - SNAP_HEAD_BYTES
+        if n > 0u64 { sum = crc.of(b, SNAP_HEAD_BYTES, n) }
     }
     w.patch_u32(16u64, sum)
 }
@@ -555,20 +517,13 @@ pub fn latest_gen(mount: str) -> u64 {
     val meta = meta_path(mount)
     var best: u64 = 0u64
     val listing = fs::list_dir(meta.to_str())
-    match listing {
-        Result::Ok(names) => {
-            var i: u64 = 0u64
-            while i < names.size() {
-                val nm: &String = names.borrow(i)
-                val g = gen_of_snap(&nm)
-                match g {
-                    Option::Some(v) => { if v > best { best = v } }
-                    Option::None => { }
-                }
-                i = i + 1u64
-            }
+    if val Result::Ok(names) = listing {
+        var i: u64 = 0u64
+        while i < names.size() {
+            val nm: &String = names.borrow(i)
+            if val Option::Some(v) = gen_of_snap(&nm) { if v > best { best = v } }
+            i = i + 1u64
         }
-        Result::Err(e) => { }
     }
     best
 }
@@ -599,11 +554,7 @@ fn put_jrec(w: &mut ByteWriter, op: u64, crc: &Crc32, body_len: u64) {
     w.patch_u32(4u64, JREC_HEAD_BYTES + body_len)
     w.patch_u32(8u64, op)
     var sum: u64 = 0u64
-    val sp = w.span()
-    match sp {
-        Option::Some(b) => { sum = crc.of(b, JREC_HEAD_BYTES, body_len) }
-        Option::None => { }
-    }
+    if val Option::Some(b) = w.span() { sum = crc.of(b, JREC_HEAD_BYTES, body_len) }
     w.patch_u32(12u64, sum)
 }
 
@@ -714,13 +665,9 @@ pub fn load(mount: str, crc: &Crc32) -> Catalog {
     var buf = ByteWriter::with_capacity(65536u64)
     val sp = snap_path(mount, gen)
     if read_whole(sp.to_str(), &mut buf) {
-        val b = buf.span()
-        match b {
-            Option::Some(w) => {
-                val got = decode_snapshot(w, buf.len(), &mut c, crc)
-                if got == gen { c.gen = gen }
-            }
-            Option::None => { }
+        if val Option::Some(w) = buf.span() {
+            val got = decode_snapshot(w, buf.len(), &mut c, crc)
+            if got == gen { c.gen = gen }
         }
     }
     if c.gen != gen {
@@ -732,12 +679,8 @@ pub fn load(mount: str, crc: &Crc32) -> Catalog {
 
     val lp = log_path(mount, gen)
     if read_whole(lp.to_str(), &mut buf) {
-        val b2 = buf.span()
-        match b2 {
-            Option::Some(w2) => {
-                c.applied = replay(w2, buf.len(), &mut c, crc)
-            }
-            Option::None => { }
+        if val Option::Some(w2) = buf.span() {
+            c.applied = replay(w2, buf.len(), &mut c, crc)
         }
     }
     c
@@ -757,12 +700,8 @@ pub fn write_generation(mount: str, c: &Catalog, gen: u64,
     if !write_whole(part, &w) { return false }
     val dst = snap_path(mount, gen)
     val moved = fs::rename(part, dst.to_str())
-    var ok = false
-    match moved {
-        Result::Ok(u) => { ok = true }
-        Result::Err(e) => { }
-    }
-    ok
+    if val Result::Ok(u) = moved { return true }
+    false
 }
 
 # Fold the journal into a new generation. Safe to call at any time:
@@ -809,23 +748,16 @@ pub fn rebuild(mount: str, crc: &Crc32) -> Catalog {
         val arc = String::from_str(".arc.seg")
         val is_arc = p.ends_with(&arc)
         val opened = File::open(ps)
-        match opened {
-            Result::Ok(f) => {
-                val h = segfile::head_of(&f, &mut scratch)
-                if h.ok {
-                    var size: u64 = 0u64
-                    val sz = f.size()
-                    match sz {
-                        Result::Ok(n) => { size = n }
-                        Result::Err(e) => { }
-                    }
-                    var r = row_of_head(&h, size, is_arc)
-                    val key = daykey_of_path(&p)
-                    if key > 0u64 { r.daykey = key }
-                    c.add(&r)
-                }
+        if val Result::Ok(f) = opened {
+            val h = segfile::head_of(&f, &mut scratch)
+            if h.ok {
+                var size: u64 = 0u64
+                if val Result::Ok(n) = f.size() { size = n }
+                var r = row_of_head(&h, size, is_arc)
+                val key = daykey_of_path(&p)
+                if key > 0u64 { r.daykey = key }
+                c.add(&r)
             }
-            Result::Err(e) => { }
         }
         i = i + 1u64
     }

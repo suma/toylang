@@ -250,7 +250,6 @@ fn apply_line(line: &String, out: &mut MountSet, toks: &mut Vec<String>) -> bool
     val path: &String = toks.borrow(1u64)
     var quota: u64 = 0u64
     var ro = false
-    var ok = true
 
     var i: u64 = 2u64
     while i < toks.size() {
@@ -262,20 +261,20 @@ fn apply_line(line: &String, out: &mut MountSet, toks: &mut Vec<String>) -> bool
             val got = parse_size(&v)
             match got {
                 Option::Some(n) => { quota = n }
-                Option::None => { ok = false }
+                Option::None => { return false }
             }
         } elif t.eq(&rokey) {
             ro = true
         } else {
-            ok = false
+            return false
         }
         i = i + 1u64
     }
     # A quota of zero would divide by zero in `permille` and, worse,
     # would read as "no limit" to whoever wrote the line.
-    if quota == 0u64 { ok = false }
-    if ok { out.add(&path, quota, ro) }
-    ok
+    if quota == 0u64 { return false }
+    out.add(&path, quota, ro)
+    true
 }
 
 # Parse a whole configuration, and say how many lines were not
@@ -368,42 +367,24 @@ pub fn read_meta(mount: str) -> MountMeta {
     # either: a `MountMeta` is only ever complete or absent.
     val p = meta_file(mount)
     val text = io::read_file(p.to_str())
-    match text {
-        Result::Ok(body) => {
-            val doc = json::parse(body)
-            match doc {
-                Result::Ok(j) => {
-                    val root = j.root()
-                    var fmt: u64 = 0u64
-                    var born: i64 = 0i64
-                    val f = j.get(root, "format")
-                    match f {
-                        Option::Some(id) => { fmt = j.as_int(id) as u64 }
-                        Option::None => { }
-                    }
-                    val b = j.get(root, "created_unix_ns")
-                    match b {
-                        Option::Some(id2) => { born = j.as_int(id2) }
-                        Option::None => { }
-                    }
-                    val u = j.get(root, "uuid")
-                    match u {
-                        Option::Some(id3) => {
-                            val txt = j.as_text(id3)
-                            val su = String::from_str(txt)
-                            val m = MountMeta {
-                                ok: true, format: fmt,
-                                created_unix_ns: born, uuid: su,
-                            }
-                            return m
-                        }
-                        Option::None => { }
-                    }
+    if val Result::Ok(body) = text {
+        val doc = json::parse(body)
+        if val Result::Ok(j) = doc {
+            val root = j.root()
+            var fmt: u64 = 0u64
+            var born: i64 = 0i64
+            if val Option::Some(id) = j.get(root, "format") { fmt = j.as_int(id) as u64 }
+            if val Option::Some(id2) = j.get(root, "created_unix_ns") { born = j.as_int(id2) }
+            if val Option::Some(id3) = j.get(root, "uuid") {
+                val txt = j.as_text(id3)
+                val su = String::from_str(txt)
+                val m = MountMeta {
+                    ok: true, format: fmt,
+                    created_unix_ns: born, uuid: su,
                 }
-                Result::Err(e) => { }
+                return m
             }
         }
-        Result::Err(e) => { }
     }
     var absent = MountMeta::empty()
     absent
@@ -412,10 +393,7 @@ pub fn read_meta(mount: str) -> MountMeta {
 pub fn write_meta(mount: str, uuid: &String, note: str) -> bool {
     val dir = "{mount}/meta"
     val made = fs::mkdir_all(dir)
-    match made {
-        Result::Ok(u) => { }
-        Result::Err(e) => { return false }
-    }
+    if val Result::Err(e) = made { return false }
     var w = JsonWriter::new()
     w.begin_object()
     w.key("format")

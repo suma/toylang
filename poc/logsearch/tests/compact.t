@@ -38,45 +38,23 @@ fn cp_build(stem: str, n: u64, first: u64, segid: u64) -> u64 {
     val body = cp_fixture(n, first)
     val log = "{stem}.log"
     val wrote = io::write_file(log, body.to_str())
-    match wrote {
-        Result::Ok(k) => { }
-        Result::Err(e) => { panic("fixture: cannot write {log}: {e}") }
-    }
+    if val Result::Err(e) = wrote { panic("fixture: cannot write {log}: {e}") }
     var reader = LogReader::with_capacity(262144u64)
     var rec = ParsedLine::new()
     var w = ArchiveWriter::new()
     val crc = Crc32::new()
-    val loaded = reader.load(log)
-    match loaded {
-        Result::Ok(k) => { }
-        Result::Err(e) => { panic("fixture: cannot read back {log}: {e}") }
-    }
+    if val Result::Err(e) = reader.load(log) { panic("fixture: cannot read back {log}: {e}") }
     var count = 0u64
-    var more = true
-    while more {
-        val nx = reader.next_line()
-        match nx {
-            Option::Some(l) => {
-                if l.len > 0u64 {
-                    val win = reader.span()
-                    match win {
-                        Option::Some(sp) => {
-                            record::parse_line(sp, l, &mut rec)
-                            w.add(sp, l, &rec)
-                            count = count + 1u64
-                        }
-                        Option::None => { }
-                    }
-                }
+    while val Option::Some(l) = reader.next_line() {
+        if l.len > 0u64 {
+            if val Option::Some(sp) = reader.span() {
+                record::parse_line(sp, l, &mut rec)
+                w.add(sp, l, &rec)
+                count = count + 1u64
             }
-            Option::None => { more = false }
         }
     }
-    val done = w.finish(stem, segid, &crc)
-    match done {
-        Result::Ok(k) => { }
-        Result::Err(e) => { panic("fixture: cannot write segment: {e}") }
-    }
+    if val Result::Err(e) = w.finish(stem, segid, &crc) { panic("fixture: cannot write segment: {e}") }
     count
 }
 
@@ -103,21 +81,18 @@ fn cp_wipe(mount: str) {
     # 台帳も (世代とジャーナルが前回の segid を覚えている)。
     val meta = catalog::meta_path(mount)
     val listing = fs::list_dir(meta.to_str())
-    match listing {
-        Result::Ok(names) => {
-            var k: u64 = 0u64
-            while k < names.size() {
-                val nm: &String = names.borrow(k)
-                val full = "{meta.to_str()}/{nm.to_str()}"
-                val rm2 = fs::remove_file(full)
-                match rm2 {
-                    Result::Ok(u) => { }
-                    Result::Err(e) => { }
-                }
-                k = k + 1u64
+    if val Result::Ok(names) = listing {
+        var k: u64 = 0u64
+        while k < names.size() {
+            val nm: &String = names.borrow(k)
+            val full = "{meta.to_str()}/{nm.to_str()}"
+            val rm2 = fs::remove_file(full)
+            match rm2 {
+                Result::Ok(u) => { }
+                Result::Err(e) => { }
             }
+            k = k + 1u64
         }
-        Result::Err(e) => { }
     }
 }
 
@@ -126,10 +101,7 @@ fn cp_mount(mount: str) -> u64 {
     cp_wipe(mount)
     val day = "{mount}/seg/2026/09/03"
     val made = fs::mkdir_all(day)
-    match made {
-        Result::Ok(u) => { }
-        Result::Err(e) => { panic("cannot make {day}: {e}") }
-    }
+    if val Result::Err(e) = made { panic("cannot make {day}: {e}") }
     var total = 0u64
     total = total + cp_build("{day}/000000000001", 30u64, 0u64, 1u64)
     total = total + cp_build("{day}/000000000002", 25u64, 100u64, 2u64)
@@ -227,10 +199,7 @@ test "one cold segment is not a merge" {
     cp_wipe(mount)
     val day = "{mount}/seg/2026/09/03"
     val made = fs::mkdir_all(day)
-    match made {
-        Result::Ok(u) => { }
-        Result::Err(e) => { panic("cannot make {day}: {e}") }
-    }
+    if val Result::Err(e) = made { panic("cannot make {day}: {e}") }
     val n = cp_build("{day}/000000000001", 12u64, 0u64, 1u64)
     val crc = Crc32::new()
     val c = catalog::rebuild(mount, &crc)

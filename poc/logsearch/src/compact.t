@@ -146,10 +146,7 @@ pub fn compact_once(mount: str, now: i64, crc: &Crc32) -> CompactReport {
     val dir = store::day_dir(mount, stamp)
     val dir_str = dir.to_str()
     val made = fs::mkdir_all(dir_str)
-    match made {
-        Result::Ok(u) => { }
-        Result::Err(e) => { out.ok = false  return out }
-    }
+    if val Result::Err(e) = made { out.ok = false  return out }
     val base = "{dir_str}/{segid:012}.arc"
     val wrote = w.finish(base, segid, crc)
     var produced: u64 = 0u64
@@ -230,39 +227,33 @@ fn take_records(recs: &ByteWriter, arena_buf: &ByteWriter, count: u64,
     var added: u64 = 0u64
     val idx_w = recs.span()
     val aw = arena_buf.span()
-    match idx_w {
-        Option::Some(idx) => {
-            match aw {
-                Option::Some(arena) => {
-                    var rd = ByteReader::new(recs.len())
-                    var line_at: u64 = 0u64
-                    var r: u64 = 0u64
-                    while r < count && rd.remaining() > 0u64 {
-                        val flags = rd.take_varint(idx)
-                        val line_len = rd.take_varint(idx)
-                        val ts = rd.take_varint(idx)
-                        val host_rel = rd.take_varint(idx)
-                        val host_len = rd.take_varint(idx)
-                        val tag_rel = rd.take_varint(idx)
-                        val tag_len = rd.take_varint(idx)
-                        val labels_rel = rd.take_varint(idx)
-                        val labels_len = rd.take_varint(idx)
-                        val body_rel = rd.take_varint(idx)
-                        val body_len = rd.take_varint(idx)
-                        if line_len > 0u64 {
-                            val ln = Line { start: line_at, len: line_len }
-                            record::parse_line(arena, ln, rec)
-                            w.add(arena, ln, rec)
-                            added = added + 1u64
-                        }
-                        line_at = line_at + line_len
-                        r = r + 1u64
-                    }
+    if val Option::Some(idx) = idx_w {
+        if val Option::Some(arena) = aw {
+            var rd = ByteReader::new(recs.len())
+            var line_at: u64 = 0u64
+            var r: u64 = 0u64
+            while r < count && rd.remaining() > 0u64 {
+                val flags = rd.take_varint(idx)
+                val line_len = rd.take_varint(idx)
+                val ts = rd.take_varint(idx)
+                val host_rel = rd.take_varint(idx)
+                val host_len = rd.take_varint(idx)
+                val tag_rel = rd.take_varint(idx)
+                val tag_len = rd.take_varint(idx)
+                val labels_rel = rd.take_varint(idx)
+                val labels_len = rd.take_varint(idx)
+                val body_rel = rd.take_varint(idx)
+                val body_len = rd.take_varint(idx)
+                if line_len > 0u64 {
+                    val ln = Line { start: line_at, len: line_len }
+                    record::parse_line(arena, ln, rec)
+                    w.add(arena, ln, rec)
+                    added = added + 1u64
                 }
-                Option::None => { }
+                line_at = line_at + line_len
+                r = r + 1u64
             }
         }
-        Option::None => { }
     }
     added
 }
@@ -274,28 +265,21 @@ fn record_archive(mount: str, base: str, gen: u64, crc: &Crc32) -> bool {
     val path = "{base}.seg"
     val opened = File::open(path)
     var ok = false
-    match opened {
-        Result::Ok(f) => {
-            var scratch = ByteWriter::with_capacity(512u64)
-            val h = segfile::head_of(&f, &mut scratch)
-            if h.ok {
-                var size: u64 = 0u64
-                val sz = f.size()
-                match sz {
-                    Result::Ok(k) => { size = k }
-                    Result::Err(e) => { }
-                }
-                var r = catalog::row_of_head(&h, size, true)
-                val name = String::from_str(path)
-                val key = catalog::daykey_of_path(&name)
-                if key > 0u64 { r.daykey = key }
-                ok = catalog::append_add(mount, gen, &r, crc)
-                if ok {
-                    val noted = labels::note_segment(mount, &name, gen, crc)
-                }
+    if val Result::Ok(f) = opened {
+        var scratch = ByteWriter::with_capacity(512u64)
+        val h = segfile::head_of(&f, &mut scratch)
+        if h.ok {
+            var size: u64 = 0u64
+            if val Result::Ok(k) = f.size() { size = k }
+            var r = catalog::row_of_head(&h, size, true)
+            val name = String::from_str(path)
+            val key = catalog::daykey_of_path(&name)
+            if key > 0u64 { r.daykey = key }
+            ok = catalog::append_add(mount, gen, &r, crc)
+            if ok {
+                val noted = labels::note_segment(mount, &name, gen, crc)
             }
         }
-        Result::Err(e) => { }
     }
     ok
 }

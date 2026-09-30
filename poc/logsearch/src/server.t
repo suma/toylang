@@ -154,29 +154,26 @@ fn recv_some(conn: &TcpStream, buf: &mut ByteWriter, cap: u64) -> i64 {
     buf.reserve(want)
     val room = buf.room()
     var out = IO_FAILED
-    match room {
-        Option::Some(all) => {
-            val win = all.slice(have, want)
-            val got = conn.read(win)
-            match got {
-                Result::Ok(n) => {
-                    if n == 0u64 {
-                        out = IO_CLOSED
-                    } else {
-                        buf.set_len(have + n)
-                        out = n as i64
-                    }
+    if val Option::Some(all) = room {
+        val win = all.slice(have, want)
+        val got = conn.read(win)
+        match got {
+            Result::Ok(n) => {
+                if n == 0u64 {
+                    out = IO_CLOSED
+                } else {
+                    buf.set_len(have + n)
+                    out = n as i64
                 }
-                Result::Err(e) => {
-                    match e {
-                        NetError::WouldBlock => { out = IO_AGAIN }
-                        NetError::Interrupted => { out = IO_AGAIN }
-                        _ => { out = IO_FAILED }
-                    }
+            }
+            Result::Err(e) => {
+                match e {
+                    NetError::WouldBlock => { out = IO_AGAIN }
+                    NetError::Interrupted => { out = IO_AGAIN }
+                    _ => { out = IO_FAILED }
                 }
             }
         }
-        Option::None => { }
     }
     out
 }
@@ -186,22 +183,19 @@ fn send_some(conn: &TcpStream, buf: &ByteWriter, from: u64) -> i64 {
     if from >= total { return 0i64 }
     val win = buf.span()
     var out = IO_FAILED
-    match win {
-        Option::Some(all) => {
-            val piece = all.slice(from, total - from)
-            val put = conn.write(piece)
-            match put {
-                Result::Ok(n) => { out = n as i64 }
-                Result::Err(e) => {
-                    match e {
-                        NetError::WouldBlock => { out = IO_AGAIN }
-                        NetError::Interrupted => { out = IO_AGAIN }
-                        _ => { out = IO_FAILED }
-                    }
+    if val Option::Some(all) = win {
+        val piece = all.slice(from, total - from)
+        val put = conn.write(piece)
+        match put {
+            Result::Ok(n) => { out = n as i64 }
+            Result::Err(e) => {
+                match e {
+                    NetError::WouldBlock => { out = IO_AGAIN }
+                    NetError::Interrupted => { out = IO_AGAIN }
+                    _ => { out = IO_FAILED }
                 }
             }
         }
-        Option::None => { }
     }
     out
 }
@@ -260,33 +254,26 @@ fn ingest_route(b: Span<u8>, r: &Request, st: &mut Stats,
     var taken: u64 = 0u64
     var bad: u64 = 0u64
     var stalled = false
-    var more = true
-    while more {
-        val nx = sc.next(body)
-        match nx {
-            Option::Some(l) => {
-                if l.len > MAX_RECORD_BYTES {
-                    bad = bad + 1u64
-                } elif l.len > 0u64 {
-                    if w.is_full() && !stalled {
-                        val done = flush_active(w, ms, gens, st, &crc)
-                        if done == 0u64 { stalled = true }
-                    }
-                    if stalled {
-                        bad = bad + 1u64
-                    } else {
-                        record::parse_line(body, l, &mut rec)
-                        if !rec.has_ts {
-                            rec.has_ts = true
-                            rec.ts = now
-                        }
-                        w.add(body, l, &rec)
-                        taken = taken + 1u64
-                        st.seq = st.seq + 1u64
-                    }
-                }
+    while val Option::Some(l) = sc.next(body) {
+        if l.len > MAX_RECORD_BYTES {
+            bad = bad + 1u64
+        } elif l.len > 0u64 {
+            if w.is_full() && !stalled {
+                val done = flush_active(w, ms, gens, st, &crc)
+                if done == 0u64 { stalled = true }
             }
-            Option::None => { more = false }
+            if stalled {
+                bad = bad + 1u64
+            } else {
+                record::parse_line(body, l, &mut rec)
+                if !rec.has_ts {
+                    rec.has_ts = true
+                    rec.ts = now
+                }
+                w.add(body, l, &rec)
+                taken = taken + 1u64
+                st.seq = st.seq + 1u64
+            }
         }
     }
     st.accepted = st.accepted + taken
@@ -546,12 +533,9 @@ fn admin_gc(spec: str, days: u64, body: &mut ByteWriter) -> u64 {
                         # to read the segment's terms from.
                         val forgot = labels::forget_segment(ps, sp, gen, &crc)
                         val rm = fs::remove_file(sp.to_str())
-                        match rm {
-                            Result::Ok(u) => {
-                                dropped = dropped + 1u64
-                                freed = freed + sizes.get(j)
-                            }
-                            Result::Err(e) => { }
+                        if val Result::Ok(u) = rm {
+                            dropped = dropped + 1u64
+                            freed = freed + sizes.get(j)
                         }
                     }
                     j = j + 1u64
@@ -1276,10 +1260,7 @@ impl Conns {
     pub fn fd_of(&self, slot: u64) -> i32 {
         val held: &Option<TcpStream> = self.sock.borrow(slot)
         var out: i32 = -1i32
-        match held {
-            Option::Some(s) => { out = s.as_fd() }
-            Option::None => { }
-        }
+        if val Option::Some(s) = held { out = s.as_fd() }
         out
     }
 
@@ -1322,17 +1303,14 @@ pub fn conn_open(c: &mut Conns, poller: &Poller, sock: TcpStream,
     val held: Option<TcpStream> = Option::Some(sock)
     c.sock.set(slot, held)
     val reg = poller.register(fd, conn_token(slot), interest_read())
-    match reg {
-        Result::Ok(u) => { }
-        Result::Err(e) => {
-            val free: Option<TcpStream> = Option::None
-            val back: Option<TcpStream> = c.sock.replace(slot, free)
-            match back {
-                Option::Some(s) => { }
-                Option::None => { }
-            }
-            return -1i64
+    if val Result::Err(e) = reg {
+        val free: Option<TcpStream> = Option::None
+        val back: Option<TcpStream> = c.sock.replace(slot, free)
+        match back {
+            Option::Some(s) => { }
+            Option::None => { }
         }
+        return -1i64
     }
     c.local.set(slot, local)
     c.writing.set(slot, false)
@@ -1426,18 +1404,12 @@ fn conn_hold_response(c: &mut Conns, slot: u64, big: &ByteWriter) {
     if n <= SEND_SLOT_BYTES {
         val src = big.span()
         val dst = c.outbox.room()
-        match src {
-            Option::Some(srcw) => {
-                match dst {
-                    Option::Some(dstw) => {
-                        val base = slot * SEND_SLOT_BYTES
-                        val win = dstw.slice(base, n)
-                        win.copy_from(srcw)
-                    }
-                    Option::None => { }
-                }
+        if val Option::Some(srcw) = src {
+            if val Option::Some(dstw) = dst {
+                val base = slot * SEND_SLOT_BYTES
+                val win = dstw.slice(base, n)
+                win.copy_from(srcw)
             }
-            Option::None => { }
         }
         c.out_len.set(slot, n)
         c.big_owner = -1i64
@@ -1480,10 +1452,7 @@ fn conn_route(c: &mut Conns, slot: u64, poller: &Poller, spec: str,
                 c.in_len.set(slot, 0u64)
                 val fd = c.fd_of(slot)
                 val up = poller.register(fd, conn_token(slot), interest_write())
-                match up {
-                    Result::Ok(u) => { }
-                    Result::Err(e) => { out = false }
-                }
+                if val Result::Err(e) = up { out = false }
                 c.deadline.set(slot, time::now_mono_ns() + IDLE_TIMEOUT_NS)
             } elif have >= RECV_SLOT_BYTES {
                 # The slot filled without a request ending in it.
@@ -1551,13 +1520,9 @@ fn conn_sent_all(c: &mut Conns, slot: u64, poller: &Poller,
     } else {
         val base = slot * SEND_SLOT_BYTES
         val n: u64 = c.out_len.get(slot)
-        val room = c.outbox.room()
-        match room {
-            Option::Some(all) => {
-                val win = all.slice(base, n)
-                keep = keep_open_bytes(win, n)
-            }
-            Option::None => { }
+        if val Option::Some(all) = c.outbox.room() {
+            val win = all.slice(base, n)
+            keep = keep_open_bytes(win, n)
         }
     }
     if !keep { return false }
@@ -1567,10 +1532,7 @@ fn conn_sent_all(c: &mut Conns, slot: u64, poller: &Poller,
     c.in_len.set(slot, 0u64)
     val fd = c.fd_of(slot)
     val back = poller.register(fd, conn_token(slot), interest_read())
-    match back {
-        Result::Ok(u) => { }
-        Result::Err(e) => { return false }
-    }
+    if val Result::Err(e) = back { return false }
     c.deadline.set(slot, time::now_mono_ns() + IDLE_TIMEOUT_NS)
     true
 }
@@ -1764,10 +1726,7 @@ pub fn serve(spec: str, addr: str, port: u64, idle_s: u64) -> u64 {
         Result::Err(e) => { eprintln("cannot create a poller: {e}")  return 1u64 }
     }
     val watch = poller.register(listener.as_fd(), LISTENER_TOKEN, interest_read())
-    match watch {
-        Result::Ok(u) => { }
-        Result::Err(e) => { eprintln("cannot watch the listener: {e}")  return 1u64 }
-    }
+    if val Result::Err(e) = watch { eprintln("cannot watch the listener: {e}")  return 1u64 }
 
     # The buffers are taken once, here, and reused for every
     # connection: that is the whole memory discipline (MEMORY.md
@@ -1890,16 +1849,10 @@ pub fn serve(spec: str, addr: str, port: u64, idle_s: u64) -> u64 {
             if running {
                 if conns.is_full() && watching {
                     val off = poller.deregister(listener.as_fd())
-                    match off {
-                        Result::Ok(u) => { watching = false }
-                        Result::Err(e) => { }
-                    }
+                    if val Result::Ok(u) = off { watching = false }
                 } elif !conns.is_full() && !watching {
                     val on = poller.register(listener.as_fd(), LISTENER_TOKEN, interest_read())
-                    match on {
-                        Result::Ok(u) => { watching = true }
-                        Result::Err(e) => { }
-                    }
+                    if val Result::Ok(u) = on { watching = true }
                 }
             }
 

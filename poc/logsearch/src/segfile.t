@@ -128,25 +128,16 @@ pub fn read_range(f: &File, off: u64, len: u64, out: &mut ByteWriter) -> bool {
     out.clear()
     if len == 0u64 { return true }
     out.reserve(len)
-    var ok = false
-    val room = out.room()
-    match room {
-        Option::Some(all) => {
-            val win = all.slice(0u64, len)
-            val got = f.read_at(off, win)
-            match got {
-                Result::Ok(n) => {
-                    if n == len {
-                        out.set_len(len)
-                        ok = true
-                    }
-                }
-                Result::Err(e) => { }
+    if val Option::Some(all) = out.room() {
+        val win = all.slice(0u64, len)
+        if val Result::Ok(n) = f.read_at(off, win) {
+            if n == len {
+                out.set_len(len)
+                return true
             }
         }
-        Option::None => { }
     }
-    ok
+    false
 }
 
 # The header and directory of an open segment, using `scratch` as the
@@ -155,52 +146,48 @@ pub fn read_range(f: &File, off: u64, len: u64, out: &mut ByteWriter) -> bool {
 pub fn head_of(f: &File, scratch: &mut ByteWriter) -> SegHead {
     var h = SegHead::empty()
     if !read_range(f, 0u64, DATA_AT, &mut scratch) { return h }
-    val w = scratch.span()
-    match w {
-        Option::Some(b) => {
-            var rd = ByteReader::new(DATA_AT)
-            if rd.take_magic(b, "LSD3") {
-                val version = rd.take_u32(b)
-                h.segid = rd.take_u64(b)
-                h.ts_min = rd.take_u64(b) as i64
-                h.ts_max = rd.take_u64(b) as i64
-                h.records = rd.take_u64(b)
-                h.n_frames = rd.take_u32(b)
-                h.frame_raw = rd.take_u32(b)
-                h.arena_bytes = rd.take_u64(b)
-                val kind = rd.take_u32(b)
-                val hcrc = rd.take_u32(b)
+    if val Option::Some(b) = scratch.span() {
+        var rd = ByteReader::new(DATA_AT)
+        if rd.take_magic(b, "LSD3") {
+            val version = rd.take_u32(b)
+            h.segid = rd.take_u64(b)
+            h.ts_min = rd.take_u64(b) as i64
+            h.ts_max = rd.take_u64(b) as i64
+            h.records = rd.take_u64(b)
+            h.n_frames = rd.take_u32(b)
+            h.frame_raw = rd.take_u32(b)
+            h.arena_bytes = rd.take_u64(b)
+            val kind = rd.take_u32(b)
+            val hcrc = rd.take_u32(b)
 
-                rd.seek(DIR_AT)
-                val count = rd.take_u32(b)
-                val reserved = rd.take_u32(b)
-                var i: u64 = 0u64
-                while i < count && i < DIR_SLOTS {
-                    val k = rd.take_u32(b)
-                    val off = rd.take_u64(b)
-                    val len = rd.take_u64(b)
-                    val sum = rd.take_u32(b)
-                    val section = section_of(k)
-                    match section {
-                        Option::Some(Section::Frames) => { h.frames_off = off  h.frames_len = len }
-                        Option::Some(Section::Records) => {
-                            h.recs_off = off
-                            h.recs_len = len
-                            h.recs_crc = sum
-                        }
-                        Option::Some(Section::FieldTable) => { h.ftab_off = off  h.ftab_len = len }
-                        Option::Some(Section::Terms) => { h.terms_off = off  h.terms_len = len }
-                        Option::Some(Section::Links) => { h.links_off = off  h.links_len = len }
-                        Option::Some(Section::Objects) => { h.objs_off = off  h.objs_len = len }
-                        Option::Some(Section::Streams) => { h.strs_off = off  h.strs_len = len }
-                        Option::None => { }
+            rd.seek(DIR_AT)
+            val count = rd.take_u32(b)
+            val reserved = rd.take_u32(b)
+            var i: u64 = 0u64
+            while i < count && i < DIR_SLOTS {
+                val k = rd.take_u32(b)
+                val off = rd.take_u64(b)
+                val len = rd.take_u64(b)
+                val sum = rd.take_u32(b)
+                val section = section_of(k)
+                match section {
+                    Option::Some(Section::Frames) => { h.frames_off = off  h.frames_len = len }
+                    Option::Some(Section::Records) => {
+                        h.recs_off = off
+                        h.recs_len = len
+                        h.recs_crc = sum
                     }
-                    i = i + 1u64
+                    Option::Some(Section::FieldTable) => { h.ftab_off = off  h.ftab_len = len }
+                    Option::Some(Section::Terms) => { h.terms_off = off  h.terms_len = len }
+                    Option::Some(Section::Links) => { h.links_off = off  h.links_len = len }
+                    Option::Some(Section::Objects) => { h.objs_off = off  h.objs_len = len }
+                    Option::Some(Section::Streams) => { h.strs_off = off  h.strs_len = len }
+                    Option::None => { }
                 }
-                if version == SEG_VERSION { h.ok = true }
+                i = i + 1u64
             }
+            if version == SEG_VERSION { h.ok = true }
         }
-        Option::None => { }
     }
     h
 }
@@ -214,69 +201,54 @@ pub fn head_of(f: &File, scratch: &mut ByteWriter) -> SegHead {
 # the copy through a scratch buffer that worked around it is gone.
 pub fn expand_all(f: &File, h: &SegHead, crc: &Crc32,
                   raw: &mut ByteWriter, out: &mut ByteWriter) -> bool {
-    var ok = true
     var at = h.frames_off
     val end = h.frames_off + h.frames_len
     var i: u64 = 0u64
-    while i < h.n_frames && ok {
-        if at + 24u64 > end {
-            ok = false
-        } else {
-            if !read_range(f, at, 24u64, &mut raw) {
-                ok = false
-            } else {
-                var codec: u64 = 0u64
-                var rawlen: u64 = 0u64
-                var clen: u64 = 0u64
-                var want: u64 = 0u64
-                val hw = raw.span()
-                match hw {
-                    Option::Some(hb) => {
-                        var rd = ByteReader::new(24u64)
-                        if !rd.take_magic(hb, "LSF1") { ok = false }
-                        codec = rd.take_u32(hb)
-                        rawlen = rd.take_u32(hb)
-                        clen = rd.take_u32(hb)
-                        want = rd.take_u32(hb)
-                    }
-                    Option::None => { ok = false }
-                }
-                if ok && at + 24u64 + clen > end { ok = false }
-                if ok {
-                    val before = out.len()
-                    if !read_range(f, at + 24u64, clen, &mut raw) {
-                        ok = false
-                    } else {
-                        val bw = raw.span()
-                        match bw {
-                            Option::Some(body) => {
-                                if codec == 0u64 {
-                                    out.reserve(clen)
-                                    out.put_span_fast(body, 0u64, clen)
-                                } else {
-                                    if !lsz::decode_frame(body, 0u64, clen, rawlen, &mut out) { ok = false }
-                                }
-                            }
-                            Option::None => { ok = false }
-                        }
-                    }
-                    if ok {
-                        val ow = out.span()
-                        match ow {
-                            Option::Some(got) => {
-                                if crc.of(got, before, rawlen) != want { ok = false }
-                            }
-                            Option::None => { ok = false }
-                        }
-                    }
-                }
-                at = at + 24u64 + clen
+    while i < h.n_frames {
+        if at + 24u64 > end { return false }
+        if !read_range(f, at, 24u64, &mut raw) { return false }
+        var codec: u64 = 0u64
+        var rawlen: u64 = 0u64
+        var clen: u64 = 0u64
+        var want: u64 = 0u64
+        val hw = raw.span()
+        match hw {
+            Option::Some(hb) => {
+                var rd = ByteReader::new(24u64)
+                if !rd.take_magic(hb, "LSF1") { return false }
+                codec = rd.take_u32(hb)
+                rawlen = rd.take_u32(hb)
+                clen = rd.take_u32(hb)
+                want = rd.take_u32(hb)
             }
+            Option::None => { return false }
         }
+        if at + 24u64 + clen > end { return false }
+        val before = out.len()
+        if !read_range(f, at + 24u64, clen, &mut raw) { return false }
+        val bw = raw.span()
+        match bw {
+            Option::Some(body) => {
+                if codec == 0u64 {
+                    out.reserve(clen)
+                    out.put_span_fast(body, 0u64, clen)
+                } else {
+                    if !lsz::decode_frame(body, 0u64, clen, rawlen, &mut out) { return false }
+                }
+            }
+            Option::None => { return false }
+        }
+        val ow = out.span()
+        match ow {
+            Option::Some(got) => {
+                if crc.of(got, before, rawlen) != want { return false }
+            }
+            Option::None => { return false }
+        }
+        at = at + 24u64 + clen
         i = i + 1u64
     }
-    if out.len() != h.arena_bytes { ok = false }
-    ok
+    out.len() == h.arena_bytes
 }
 
 # Expand only the frames `need` marks, leaving the rest of `out` at
@@ -296,81 +268,68 @@ pub fn expand_all(f: &File, h: &SegHead, crc: &Crc32,
 pub fn expand_selected(f: &File, h: &SegHead, crc: &Crc32,
                        raw: &mut ByteWriter, out: &mut ByteWriter,
                        need: &Vec<u8>) -> bool {
-    var ok = true
     var at = h.frames_off
     val end = h.frames_off + h.frames_len
     var i: u64 = 0u64
-    while i < h.n_frames && ok {
-        if at + 24u64 > end {
-            ok = false
-        } else {
-            if !read_range(f, at, 24u64, &mut raw) {
-                ok = false
-            } else {
-                var codec: u64 = 0u64
-                var rawlen: u64 = 0u64
-                var clen: u64 = 0u64
-                var want: u64 = 0u64
-                val hw = raw.span()
-                match hw {
-                    Option::Some(hb) => {
-                        var rd = ByteReader::new(24u64)
-                        if !rd.take_magic(hb, "LSF1") { ok = false }
-                        codec = rd.take_u32(hb)
-                        rawlen = rd.take_u32(hb)
-                        clen = rd.take_u32(hb)
-                        want = rd.take_u32(hb)
-                    }
-                    Option::None => { ok = false }
-                }
-                if ok && at + 24u64 + clen > end { ok = false }
-                var wanted = true
-                if i < need.size() {
-                    val flag: u8 = need.get(i)
-                    wanted = flag != 0u8
-                }
-                if ok && !wanted {
-                    # Skip the body entirely: no read, no decode, no
-                    # CRC. The arena keeps its shape.
-                    val n = out.len() + rawlen
-                    out.reserve(rawlen)
-                    out.set_len(n)
-                }
-                if ok && wanted {
-                    val before = out.len()
-                    if !read_range(f, at + 24u64, clen, &mut raw) {
-                        ok = false
+    while i < h.n_frames {
+        if at + 24u64 > end { return false }
+        if !read_range(f, at, 24u64, &mut raw) { return false }
+        var codec: u64 = 0u64
+        var rawlen: u64 = 0u64
+        var clen: u64 = 0u64
+        var want: u64 = 0u64
+        val hw = raw.span()
+        match hw {
+            Option::Some(hb) => {
+                var rd = ByteReader::new(24u64)
+                if !rd.take_magic(hb, "LSF1") { return false }
+                codec = rd.take_u32(hb)
+                rawlen = rd.take_u32(hb)
+                clen = rd.take_u32(hb)
+                want = rd.take_u32(hb)
+            }
+            Option::None => { return false }
+        }
+        if at + 24u64 + clen > end { return false }
+        var wanted = true
+        if i < need.size() {
+            val flag: u8 = need.get(i)
+            wanted = flag != 0u8
+        }
+        if !wanted {
+            # Skip the body entirely: no read, no decode, no
+            # CRC. The arena keeps its shape.
+            val n = out.len() + rawlen
+            out.reserve(rawlen)
+            out.set_len(n)
+        }
+        if wanted {
+            val before = out.len()
+            if !read_range(f, at + 24u64, clen, &mut raw) { return false }
+            val bw = raw.span()
+            match bw {
+                Option::Some(body) => {
+                    if codec == 0u64 {
+                        out.reserve(clen)
+                        out.put_span_fast(body, 0u64, clen)
                     } else {
-                        val bw = raw.span()
-                        match bw {
-                            Option::Some(body) => {
-                                if codec == 0u64 {
-                                    out.reserve(clen)
-                                    out.put_span_fast(body, 0u64, clen)
-                                } else {
-                                    if !lsz::decode_frame(body, 0u64, clen, rawlen, &mut out) { ok = false }
-                                }
-                            }
-                            Option::None => { ok = false }
-                        }
-                    }
-                    if ok {
-                        val ow = out.span()
-                        match ow {
-                            Option::Some(got) => {
-                                if crc.of(got, before, rawlen) != want { ok = false }
-                            }
-                            Option::None => { ok = false }
-                        }
+                        if !lsz::decode_frame(body, 0u64, clen, rawlen, &mut out) { return false }
                     }
                 }
-                at = at + 24u64 + clen
+                Option::None => { return false }
+            }
+            val ow = out.span()
+            match ow {
+                Option::Some(got) => {
+                    if crc.of(got, before, rawlen) != want { return false }
+                }
+                Option::None => { return false }
             }
         }
+        at = at + 24u64 + clen
         i = i + 1u64
     }
-    if out.len() != h.arena_bytes { ok = false }
-    ok
+    out.len() == h.arena_bytes
 }
 
 # The frame each arena offset falls in, as `(arena_at, raw)` pairs read
@@ -382,28 +341,24 @@ pub fn frame_extents(f: &File, h: &SegHead, scratch: &mut ByteWriter,
     lens.clear()
     if h.ftab_len == 0u64 { return false }
     if !read_range(f, h.ftab_off, h.ftab_len, &mut scratch) { return false }
-    var ok = true
     val sw = scratch.span()
     match sw {
         Option::Some(sb) => {
             var rd = ByteReader::new(h.ftab_len)
             var i: u64 = 0u64
-            while i < h.n_frames && ok {
-                if rd.remaining() < 20u64 {
-                    ok = false
-                } else {
-                    val skip = rd.take_u64(sb)
-                    val arena_at = rd.take_u64(sb)
-                    val raw = rd.take_u32(sb)
-                    starts.push(arena_at)
-                    lens.push(raw)
-                }
+            while i < h.n_frames {
+                if rd.remaining() < 20u64 { return false }
+                val skip = rd.take_u64(sb)
+                val arena_at = rd.take_u64(sb)
+                val raw = rd.take_u32(sb)
+                starts.push(arena_at)
+                lens.push(raw)
                 i = i + 1u64
             }
         }
-        Option::None => { ok = false }
+        Option::None => { return false }
     }
-    ok
+    true
 }
 
 # Write `len` bytes of `b` to the file at the cursor, retrying a short
@@ -415,18 +370,17 @@ pub fn frame_extents(f: &File, h: &SegHead, scratch: &mut ByteWriter,
 # turns it back into a failure the caller can report.
 pub fn put_bytes(f: &File, b: Span<u8>, len: u64) -> bool {
     var done: u64 = 0u64
-    var ok = true
-    while done < len && ok {
+    while done < len {
         val win = b.slice(done, len - done)
         val put = f.write(win)
         match put {
             Result::Ok(n) => {
-                if n == 0u64 { ok = false } else { done = done + n }
+                if n == 0u64 { return false } else { done = done + n }
             }
-            Result::Err(e) => { ok = false }
+            Result::Err(e) => { return false }
         }
     }
-    ok
+    true
 }
 
 # Unwrap a section written with the "LST1" header -- magic, codec, raw
@@ -447,23 +401,20 @@ pub fn decode_block(src: Span<u8>, len: u64, crc: &Crc32, out: &mut ByteWriter) 
     val body = rd.position()
     if body + clen > len { return false }
 
-    var ok = true
     if codec == 0u64 {
         out.reserve(clen)
         out.put_span_fast(src, body, clen)
     } else {
-        if !lsz::decode_frame(src, body, clen, raw_len, &mut out) { ok = false }
+        if !lsz::decode_frame(src, body, clen, raw_len, &mut out) { return false }
     }
-    if ok {
-        val ow = out.span()
-        match ow {
-            Option::Some(got) => {
-                if crc.of(got, 0u64, out.len()) != want { ok = false }
-            }
-            Option::None => { ok = false }
+    val ow = out.span()
+    match ow {
+        Option::Some(got) => {
+            if crc.of(got, 0u64, out.len()) != want { return false }
         }
+        Option::None => { return false }
     }
-    ok
+    true
 }
 
 # Read one "LST1" section off the disk and expand it: `raw` takes the
@@ -472,11 +423,8 @@ pub fn load_block(f: &File, off: u64, len: u64, crc: &Crc32,
                   raw: &mut ByteWriter, out: &mut ByteWriter) -> bool {
     if len == 0u64 { return false }
     if !read_range(f, off, len, &mut raw) { return false }
-    var ok = false
-    val w = raw.span()
-    match w {
-        Option::Some(b) => { ok = decode_block(b, len, crc, &mut out) }
-        Option::None => { }
+    if val Option::Some(b) = raw.span() {
+        return decode_block(b, len, crc, &mut out)
     }
-    ok
+    false
 }

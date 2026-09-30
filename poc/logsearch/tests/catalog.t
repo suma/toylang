@@ -47,21 +47,18 @@ fn same(a: &CatRow, b: &CatRow) -> bool {
 # 世代が残っていると `latest_gen` が別の答えを出す。
 fn wipe(dir: str) {
     val listing = fs::list_dir(dir)
-    match listing {
-        Result::Ok(names) => {
-            var i: u64 = 0u64
-            while i < names.size() {
-                val nm: &String = names.borrow(i)
-                val full = path::join(dir, nm.to_str())
-                val gone = fs::remove_file(full.to_str())
-                match gone {
-                    Result::Ok(u) => { }
-                    Result::Err(e) => { }
-                }
-                i = i + 1u64
+    if val Result::Ok(names) = listing {
+        var i: u64 = 0u64
+        while i < names.size() {
+            val nm: &String = names.borrow(i)
+            val full = path::join(dir, nm.to_str())
+            val gone = fs::remove_file(full.to_str())
+            match gone {
+                Result::Ok(u) => { }
+                Result::Err(e) => { }
             }
+            i = i + 1u64
         }
-        Result::Err(e) => { }
     }
 }
 
@@ -70,15 +67,9 @@ fn fresh_mount(name: str) -> String {
     val meta = "{mount}/meta"
     val tmp = "{mount}/tmp"
     val a = fs::mkdir_all(meta)
-    match a {
-        Result::Ok(u) => { }
-        Result::Err(e) => { panic("mkdir {meta}: {e}") }
-    }
+    if val Result::Err(e) = a { panic("mkdir {meta}: {e}") }
     val b = fs::mkdir_all(tmp)
-    match b {
-        Result::Ok(u) => { }
-        Result::Err(e) => { panic("mkdir {tmp}: {e}") }
-    }
+    if val Result::Err(e) = b { panic("mkdir {tmp}: {e}") }
     wipe(meta)
     wipe(tmp)
     val out = String::from_str(mount)
@@ -241,10 +232,7 @@ test "a torn journal tail stops the replay where the bytes stop" {
     # 3 本目を書き始めたところで電源が落ちた形。
     val lp = catalog::log_path(mount, 1u64)
     val torn = io::append_file(lp.to_str(), "LSJ1\u{00}\u{00}")
-    match torn {
-        Result::Ok(n) => { }
-        Result::Err(e) => { panic("cannot tear the journal: {e}") }
-    }
+    if val Result::Err(e) = torn { panic("cannot tear the journal: {e}") }
 
     val back = catalog::load(mount, &crc)
     assert_eq(back.applied(), 2u64)

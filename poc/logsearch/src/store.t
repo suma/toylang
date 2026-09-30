@@ -40,10 +40,7 @@ pub fn flush_segment(w: &mut ArchiveWriter, out: str, segid: u64, crc: &Crc32,
     val dir = day_dir(out, stamp)
     val dir_str = dir.to_str()
     val made = fs::mkdir_all(dir_str)
-    match made {
-        Result::Ok(u) => { }
-        Result::Err(e) => { println("  mkdir {dir_str}: {e}")  return 0u64 }
-    }
+    if val Result::Err(e) = made { println("  mkdir {dir_str}: {e}")  return 0u64 }
     val base = "{dir_str}/{segid:012}"
     val wrote = w.finish(base, segid, crc)
     var n: u64 = 0u64
@@ -75,36 +72,29 @@ pub fn record_segment(mount_dir: str, base: str, gen: u64, crc: &Crc32) -> bool 
     val path = "{base}.seg"
     val opened = File::open(path)
     var ok = false
-    match opened {
-        Result::Ok(f) => {
-            var scratch = ByteWriter::with_capacity(512u64)
-            val h = segfile::head_of(&f, &mut scratch)
-            if h.ok {
-                var size: u64 = 0u64
-                val sz = f.size()
-                match sz {
-                    Result::Ok(k) => { size = k }
-                    Result::Err(e) => { }
-                }
-                var r = catalog::row_of_head(&h, size, false)
-                # Where it went, not where its timestamps say it
-                # should have: a segment with no dated records at all
-                # is filed under the day it was written.
-                val name = String::from_str(path)
-                val key = catalog::daykey_of_path(&name)
-                if key > 0u64 { r.daykey = key }
-                ok = catalog::append_add(mount_dir, gen, &r, crc)
-                # The label dictionary follows the catalog: one
-                # segment's terms folded in, so `/v1/labels` never
-                # opens a segment to answer (HTTP_API.md section 2).
-                # A failure here is not a failure of the write — the
-                # dictionary is a cache and `repair` rebuilds it.
-                if ok {
-                    val noted = labels::note_segment(mount_dir, &name, gen, crc)
-                }
+    if val Result::Ok(f) = opened {
+        var scratch = ByteWriter::with_capacity(512u64)
+        val h = segfile::head_of(&f, &mut scratch)
+        if h.ok {
+            var size: u64 = 0u64
+            if val Result::Ok(k) = f.size() { size = k }
+            var r = catalog::row_of_head(&h, size, false)
+            # Where it went, not where its timestamps say it
+            # should have: a segment with no dated records at all
+            # is filed under the day it was written.
+            val name = String::from_str(path)
+            val key = catalog::daykey_of_path(&name)
+            if key > 0u64 { r.daykey = key }
+            ok = catalog::append_add(mount_dir, gen, &r, crc)
+            # The label dictionary follows the catalog: one
+            # segment's terms folded in, so `/v1/labels` never
+            # opens a segment to answer (HTTP_API.md section 2).
+            # A failure here is not a failure of the write — the
+            # dictionary is a cache and `repair` rebuilds it.
+            if ok {
+                val noted = labels::note_segment(mount_dir, &name, gen, crc)
             }
         }
-        Result::Err(e) => { }
     }
     ok
 }

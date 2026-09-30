@@ -42,10 +42,7 @@ fn joined(a: str, b: str) -> String {
 
 fn write_text(path: &String, body: &String) {
     val wrote = io::write_file(path.to_str(), body.to_str())
-    match wrote {
-        Result::Ok(n) => { }
-        Result::Err(e) => { panic("fixture: cannot write {path.to_str()}: {e}") }
-    }
+    if val Result::Err(e) = wrote { panic("fixture: cannot write {path.to_str()}: {e}") }
 }
 
 # `stem.log` を書き、`stem.seg` に 1 セグメントとして畳む。
@@ -61,35 +58,16 @@ fn build_segment(stem: str, body: &String) -> String {
     var w = ArchiveWriter::new()
     val crc = Crc32::new()
 
-    val loaded = reader.load(log.to_str())
-    match loaded {
-        Result::Ok(n) => { }
-        Result::Err(e) => { panic("fixture: cannot read back {log.to_str()}: {e}") }
-    }
-    var more = true
-    while more {
-        val nx = reader.next_line()
-        match nx {
-            Option::Some(l) => {
-                if l.len > 0u64 {
-                    val win = reader.span()
-                    match win {
-                        Option::Some(sp) => {
-                            record::parse_line(sp, l, &mut rec)
-                            w.add(sp, l, &rec)
-                        }
-                        Option::None => { }
-                    }
-                }
+    if val Result::Err(e) = reader.load(log.to_str()) { panic("fixture: cannot read back {log.to_str()}: {e}") }
+    while val Option::Some(l) = reader.next_line() {
+        if l.len > 0u64 {
+            if val Option::Some(sp) = reader.span() {
+                record::parse_line(sp, l, &mut rec)
+                w.add(sp, l, &rec)
             }
-            Option::None => { more = false }
         }
     }
-    val done = w.finish(stem, 7u64, &crc)
-    match done {
-        Result::Ok(n) => { }
-        Result::Err(e) => { panic("fixture: cannot write segment: {e}") }
-    }
+    if val Result::Err(e) = w.finish(stem, 7u64, &crc) { panic("fixture: cannot write segment: {e}") }
     val seg = joined(stem, ".seg")
     seg
 }
@@ -329,10 +307,7 @@ test "a flipped byte in a block is caught, not decoded" {
     }
     val broken = String::from_str("build/segment-crc-broken.seg")
     val wrote = io::write_file_bytes(broken.to_str(), span_of(&flipped))
-    match wrote {
-        Result::Ok(n) => { }
-        Result::Err(e) => { panic("cannot write the broken copy: {e}") }
-    }
+    if val Result::Err(e) = wrote { panic("cannot write the broken copy: {e}") }
 
     val reopened = File::open(broken.to_str())
     match reopened {
@@ -358,10 +333,7 @@ test "a truncated segment is not a segment" {
     bytes.truncate(segfile::HEAD_BYTES / 2u64)
     val short = String::from_str("build/segment-short-cut.seg")
     val wrote = io::write_file_bytes(short.to_str(), span_of(&bytes))
-    match wrote {
-        Result::Ok(n) => { }
-        Result::Err(e) => { panic("cannot write the short copy: {e}") }
-    }
+    if val Result::Err(e) = wrote { panic("cannot write the short copy: {e}") }
     val opened = File::open(short.to_str())
     match opened {
         Result::Ok(f) => {

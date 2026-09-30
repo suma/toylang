@@ -146,13 +146,9 @@ pub fn encode_dict(d: &LabelDict, gen: u64, w: &mut ByteWriter, crc: &Crc32) {
         i = i + 1u64
     }
     var sum: u64 = 0u64
-    val sp = w.span()
-    match sp {
-        Option::Some(b) => {
-            val n = w.len() - DICT_HEAD_BYTES
-            if n > 0u64 { sum = crc.of(b, DICT_HEAD_BYTES, n) }
-        }
-        Option::None => { }
+    if val Option::Some(b) = w.span() {
+        val n = w.len() - DICT_HEAD_BYTES
+        if n > 0u64 { sum = crc.of(b, DICT_HEAD_BYTES, n) }
     }
     w.patch_u32(16u64, sum)
 }
@@ -297,43 +293,24 @@ pub fn load_dict(mount: str, crc: &Crc32) -> LabelDict {
     var d = LabelDict::new()
     val path = dict_path(mount)
     val opened = File::open(path.to_str())
-    match opened {
-        Result::Ok(f) => {
-            var size: u64 = 0u64
-            val sz = f.size()
-            match sz {
-                Result::Ok(k) => { size = k }
-                Result::Err(e) => { }
-            }
-            if size > 0u64 {
-                var buf = ByteWriter::with_capacity(size + 16u64)
-                buf.reserve(size)
-                val room = buf.room()
-                match room {
-                    Option::Some(win) => {
-                        val part = win.slice(0u64, size)
-                        val got = f.read_at(0u64, part)
-                        match got {
-                            Result::Ok(n) => {
-                                if n == size {
-                                    buf.set_len(size)
-                                    val sp = buf.span()
-                                    match sp {
-                                        Option::Some(all) => {
-                                            val g = decode_dict(all, size, &mut d, crc)
-                                        }
-                                        Option::None => { }
-                                    }
-                                }
-                            }
-                            Result::Err(e) => { }
+    if val Result::Ok(f) = opened {
+        var size: u64 = 0u64
+        if val Result::Ok(k) = f.size() { size = k }
+        if size > 0u64 {
+            var buf = ByteWriter::with_capacity(size + 16u64)
+            buf.reserve(size)
+            if val Option::Some(win) = buf.room() {
+                val part = win.slice(0u64, size)
+                if val Result::Ok(n) = f.read_at(0u64, part) {
+                    if n == size {
+                        buf.set_len(size)
+                        if val Option::Some(all) = buf.span() {
+                            val g = decode_dict(all, size, &mut d, crc)
                         }
                     }
-                    Option::None => { }
                 }
             }
         }
-        Result::Err(e) => { }
     }
     d
 }
@@ -349,28 +326,17 @@ pub fn save_dict(mount: str, gen: u64, d: &LabelDict, crc: &Crc32) -> bool {
     val staged = String::from_str("{tmp.to_str()}/labels.dict")
     val final_path = dict_path(mount)
     var ok = false
-    val text = w.span()
-    match text {
-        Option::Some(all) => {
-            val made = File::create(staged.to_str())
-            match made {
-                Result::Ok(f) => {
-                    val part = all.slice(0u64, w.len())
-                    val put = f.write(part)
-                    match put {
-                        Result::Ok(n) => { ok = n == w.len() }
-                        Result::Err(e) => { }
-                    }
-                    val synced = f.sync()
-                    match synced {
-                        Result::Ok(u) => { }
-                        Result::Err(e) => { }
-                    }
-                }
+    if val Option::Some(all) = w.span() {
+        val made = File::create(staged.to_str())
+        if val Result::Ok(f) = made {
+            val part = all.slice(0u64, w.len())
+            if val Result::Ok(n) = f.write(part) { ok = n == w.len() }
+            val synced = f.sync()
+            match synced {
+                Result::Ok(u) => { }
                 Result::Err(e) => { }
             }
         }
-        Option::None => { }
     }
     if !ok { return false }
     val moved = fs::rename(staged.to_str(), final_path.to_str())

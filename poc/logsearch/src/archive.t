@@ -833,59 +833,54 @@ impl ArchiveWriter {
         val w = self.arena.span()
         var blk = ByteWriter::with_capacity(FRAME_RAW_BYTES + 65536u64)
         var written: u64 = 0u64
-        var ok = true
-        match w {
-            Option::Some(arena) => {
-                var at: u64 = 0u64
-                while at < total && ok {
-                    var raw = FRAME_RAW_BYTES
-                    if at + raw > total { raw = total - at }
-                    val sum = crc.of(arena, at, raw)
+        if val Option::Some(arena) = w {
+            var at: u64 = 0u64
+            while at < total {
+                var raw = FRAME_RAW_BYTES
+                if at + raw > total { raw = total - at }
+                val sum = crc.of(arena, at, raw)
 
-                    blk.clear()
-                    blk.put_magic("LSF1")
-                    val codec_at = blk.len()
-                    blk.put_u32(1u64)          # codec, patched to 0 if stored
-                    blk.put_u32(raw)
-                    val clen_at = blk.len()
-                    blk.put_u32(0u64)          # compressed length, patched below
-                    blk.put_u32(sum)
-                    blk.put_u32(0u64)          # reserved
-                    val body_at = blk.len()
+                blk.clear()
+                blk.put_magic("LSF1")
+                val codec_at = blk.len()
+                blk.put_u32(1u64)          # codec, patched to 0 if stored
+                blk.put_u32(raw)
+                val clen_at = blk.len()
+                blk.put_u32(0u64)          # compressed length, patched below
+                blk.put_u32(sum)
+                blk.put_u32(0u64)          # reserved
+                val body_at = blk.len()
 
-                    val clen = self.z.encode(arena, at, raw, &mut blk)
-                    # Compression has to earn its place: a frame that
-                    # does not shrink by an eighth is stored raw, so a
-                    # blob of random or already-compressed bytes never
-                    # comes out *larger* than it went in.
-                    if clen * 8u64 >= raw * 7u64 {
-                        blk.truncate(body_at)
-                        blk.reserve(raw)
-                        blk.put_span_fast(arena, at, raw)
-                        blk.patch_u32(codec_at, 0u64)
-                        blk.patch_u32(clen_at, raw)
-                    } else {
-                        blk.patch_u32(clen_at, clen)
-                    }
-
-                    ftab.put_u64(base_off + written)
-                    ftab.put_u64(at)
-                    ftab.put_u32(raw)
-
-                    val bw = blk.span()
-                    match bw {
-                        Option::Some(bb) => {
-                            if !segfile::put_bytes(f, bb, blk.len()) { ok = false }
-                        }
-                        Option::None => { ok = false }
-                    }
-                    written = written + blk.len()
-                    at = at + raw
+                val clen = self.z.encode(arena, at, raw, &mut blk)
+                # Compression has to earn its place: a frame that
+                # does not shrink by an eighth is stored raw, so a
+                # blob of random or already-compressed bytes never
+                # comes out *larger* than it went in.
+                if clen * 8u64 >= raw * 7u64 {
+                    blk.truncate(body_at)
+                    blk.reserve(raw)
+                    blk.put_span_fast(arena, at, raw)
+                    blk.patch_u32(codec_at, 0u64)
+                    blk.patch_u32(clen_at, raw)
+                } else {
+                    blk.patch_u32(clen_at, clen)
                 }
+
+                ftab.put_u64(base_off + written)
+                ftab.put_u64(at)
+                ftab.put_u32(raw)
+
+                val bw = blk.span()
+                match bw {
+                    Option::Some(bb) => {
+                        if !segfile::put_bytes(f, bb, blk.len()) { return 0u64 }
+                    }
+                    Option::None => { return 0u64 }
+                }
+                written = written + blk.len()
+                at = at + raw
             }
-            Option::None => { }
         }
-        if !ok { return 0u64 }
         written
     }
 
@@ -924,7 +919,6 @@ impl ArchiveWriter {
     # moment this returns.
     fn write_seg(&mut self, f: &File, segid: u64, crc: &Crc32) -> u64 {
         var hdr = ByteWriter::with_capacity(segfile::DATA_AT + 64u64)
-        var ok = true
 
         # 1. Reserve the header and the directory.
         var z: u64 = 0u64
@@ -932,11 +926,10 @@ impl ArchiveWriter {
         val zw = hdr.span()
         match zw {
             Option::Some(zb) => {
-                if !segfile::put_bytes(f, zb, hdr.len()) { ok = false }
+                if !segfile::put_bytes(f, zb, hdr.len()) { return 0u64 }
             }
-            Option::None => { ok = false }
+            Option::None => { return 0u64 }
         }
-        if !ok { return 0u64 }
 
         # 2. The frames.
         var ftab = ByteWriter::with_capacity(65536u64)
@@ -951,30 +944,20 @@ impl ArchiveWriter {
         val recs_off = at_off
         val recs_len = self.recs.len()
         var recs_crc: u64 = 0u64
-        val rw = self.recs.span()
-        match rw {
-            Option::Some(rb) => {
-                recs_crc = crc.of(rb, 0u64, recs_len)
-                if !segfile::put_bytes(f, rb, recs_len) { ok = false }
-            }
-            Option::None => { }
+        if val Option::Some(rb) = self.recs.span() {
+            recs_crc = crc.of(rb, 0u64, recs_len)
+            if !segfile::put_bytes(f, rb, recs_len) { return 0u64 }
         }
-        if !ok { return 0u64 }
         at_off = at_off + recs_len
 
         # 4. The frame table: (file offset, arena offset, raw length).
         val ftab_off = at_off
         val ftab_len = ftab.len()
         var ftab_crc: u64 = 0u64
-        val fw = ftab.span()
-        match fw {
-            Option::Some(fb) => {
-                ftab_crc = crc.of(fb, 0u64, ftab_len)
-                if !segfile::put_bytes(f, fb, ftab_len) { ok = false }
-            }
-            Option::None => { }
+        if val Option::Some(fb) = ftab.span() {
+            ftab_crc = crc.of(fb, 0u64, ftab_len)
+            if !segfile::put_bytes(f, fb, ftab_len) { return 0u64 }
         }
-        if !ok { return 0u64 }
         at_off = at_off + ftab_len
 
         # ---- the typed term index (ONTOLOGY.md O0-b/O0-c) --------
@@ -1000,11 +983,7 @@ impl ArchiveWriter {
         while t < n_terms {
             val name: &String = self.term_names.borrow(t)
             tsec.put_varint(name.len())
-            val nw = name.as_span()
-            match nw {
-                Option::Some(nb) => { tsec.put_span(nb, 0u64, name.len()) }
-                Option::None => { }
-            }
+            if val Option::Some(nb) = name.as_span() { tsec.put_span(nb, 0u64, name.len()) }
             t = t + 1u64
         }
 
@@ -1069,11 +1048,7 @@ impl ArchiveWriter {
         }
         val blob_at = tsec.len()
         tsec.put_varint(blob.len())
-        val bw = blob.span()
-        match bw {
-            Option::Some(bb) => { tsec.put_span(bb, 0u64, blob.len()) }
-            Option::None => { }
-        }
+        if val Option::Some(bb) = blob.span() { tsec.put_span(bb, 0u64, blob.len()) }
         # Wrap and compress the section, header first:
         #   "LST1", codec, raw length, compressed length, raw CRC
         var blk = ByteWriter::with_capacity(1048576u64)
@@ -1081,10 +1056,7 @@ impl ArchiveWriter {
         val raw_len = tsec.len()
         var raw_crc: u64 = 0u64
         val tw = tsec.span()
-        match tw {
-            Option::Some(tb) => { raw_crc = crc.of(tb, 0u64, raw_len) }
-            Option::None => { }
-        }
+        if val Option::Some(tb) = tw { raw_crc = crc.of(tb, 0u64, raw_len) }
         blk.put_magic("LST1")
         val tcodec_at = blk.len()
         blk.put_u32(1u64)
@@ -1093,31 +1065,23 @@ impl ArchiveWriter {
         blk.put_u32(0u64)
         blk.put_u32(raw_crc)
         val tbody_at = blk.len()
-        match tw {
-            Option::Some(tb) => {
-                val clen = self.z.encode(tb, 0u64, raw_len, &mut blk)
-                if clen * 8u64 >= raw_len * 7u64 {
-                    blk.truncate(tbody_at)
-                    blk.put_span(tb, 0u64, raw_len)
-                    blk.patch_u32(tcodec_at, 0u64)
-                    blk.patch_u32(tclen_at, raw_len)
-                } else {
-                    blk.patch_u32(tclen_at, clen)
-                }
+        if val Option::Some(tb) = tw {
+            val clen = self.z.encode(tb, 0u64, raw_len, &mut blk)
+            if clen * 8u64 >= raw_len * 7u64 {
+                blk.truncate(tbody_at)
+                blk.put_span(tb, 0u64, raw_len)
+                blk.patch_u32(tcodec_at, 0u64)
+                blk.patch_u32(tclen_at, raw_len)
+            } else {
+                blk.patch_u32(tclen_at, clen)
             }
-            Option::None => { }
         }
         val terms_len = blk.len()
         var terms_crc: u64 = 0u64
-        val bw2 = blk.span()
-        match bw2 {
-            Option::Some(bb) => {
-                terms_crc = crc.of(bb, 0u64, terms_len)
-                if !segfile::put_bytes(f, bb, terms_len) { ok = false }
-            }
-            Option::None => { }
+        if val Option::Some(bb) = blk.span() {
+            terms_crc = crc.of(bb, 0u64, terms_len)
+            if !segfile::put_bytes(f, bb, terms_len) { return 0u64 }
         }
-        if !ok { return 0u64 }
         at_off = at_off + terms_len
 
         # ---- the link section (ONTOLOGY.md O1) -------------------
@@ -1198,10 +1162,7 @@ impl ArchiveWriter {
         val lraw_len = lsec.len()
         var lraw_crc: u64 = 0u64
         val lw = lsec.span()
-        match lw {
-            Option::Some(lb) => { lraw_crc = crc.of(lb, 0u64, lraw_len) }
-            Option::None => { }
-        }
+        if val Option::Some(lb) = lw { lraw_crc = crc.of(lb, 0u64, lraw_len) }
         blk.put_magic("LST1")
         val lcodec_at = blk.len()
         blk.put_u32(1u64)
@@ -1210,31 +1171,23 @@ impl ArchiveWriter {
         blk.put_u32(0u64)
         blk.put_u32(lraw_crc)
         val lbody_at = blk.len()
-        match lw {
-            Option::Some(lb) => {
-                val clen = self.z.encode(lb, 0u64, lraw_len, &mut blk)
-                if clen * 8u64 >= lraw_len * 7u64 {
-                    blk.truncate(lbody_at)
-                    blk.put_span(lb, 0u64, lraw_len)
-                    blk.patch_u32(lcodec_at, 0u64)
-                    blk.patch_u32(lclen_at, lraw_len)
-                } else {
-                    blk.patch_u32(lclen_at, clen)
-                }
+        if val Option::Some(lb) = lw {
+            val clen = self.z.encode(lb, 0u64, lraw_len, &mut blk)
+            if clen * 8u64 >= lraw_len * 7u64 {
+                blk.truncate(lbody_at)
+                blk.put_span(lb, 0u64, lraw_len)
+                blk.patch_u32(lcodec_at, 0u64)
+                blk.patch_u32(lclen_at, lraw_len)
+            } else {
+                blk.patch_u32(lclen_at, clen)
             }
-            Option::None => { }
         }
         val links_len = blk.len()
         var links_crc: u64 = 0u64
-        val bw3 = blk.span()
-        match bw3 {
-            Option::Some(bb) => {
-                links_crc = crc.of(bb, 0u64, links_len)
-                if !segfile::put_bytes(f, bb, links_len) { ok = false }
-            }
-            Option::None => { }
+        if val Option::Some(bb) = blk.span() {
+            links_crc = crc.of(bb, 0u64, links_len)
+            if !segfile::put_bytes(f, bb, links_len) { return 0u64 }
         }
-        if !ok { return 0u64 }
         at_off = at_off + links_len
 
         # ---- the object table (ONTOLOGY.md O1) -------------------
@@ -1270,10 +1223,7 @@ impl ArchiveWriter {
         val oraw_len = osec.len()
         var oraw_crc: u64 = 0u64
         val ow = osec.span()
-        match ow {
-            Option::Some(ob) => { oraw_crc = crc.of(ob, 0u64, oraw_len) }
-            Option::None => { }
-        }
+        if val Option::Some(ob) = ow { oraw_crc = crc.of(ob, 0u64, oraw_len) }
         blk.put_magic("LST1")
         val ocodec_at = blk.len()
         blk.put_u32(1u64)
@@ -1282,19 +1232,16 @@ impl ArchiveWriter {
         blk.put_u32(0u64)
         blk.put_u32(oraw_crc)
         val obody_at = blk.len()
-        match ow {
-            Option::Some(ob) => {
-                val clen = self.z.encode(ob, 0u64, oraw_len, &mut blk)
-                if clen * 8u64 >= oraw_len * 7u64 {
-                    blk.truncate(obody_at)
-                    blk.put_span(ob, 0u64, oraw_len)
-                    blk.patch_u32(ocodec_at, 0u64)
-                    blk.patch_u32(oclen_at, oraw_len)
-                } else {
-                    blk.patch_u32(oclen_at, clen)
-                }
+        if val Option::Some(ob) = ow {
+            val clen = self.z.encode(ob, 0u64, oraw_len, &mut blk)
+            if clen * 8u64 >= oraw_len * 7u64 {
+                blk.truncate(obody_at)
+                blk.put_span(ob, 0u64, oraw_len)
+                blk.patch_u32(ocodec_at, 0u64)
+                blk.patch_u32(oclen_at, oraw_len)
+            } else {
+                blk.patch_u32(oclen_at, clen)
             }
-            Option::None => { }
         }
         val objs_len = blk.len()
         var objs_crc: u64 = 0u64
@@ -1302,11 +1249,10 @@ impl ArchiveWriter {
         match bw4 {
             Option::Some(bb) => {
                 objs_crc = crc.of(bb, 0u64, objs_len)
-                if !segfile::put_bytes(f, bb, objs_len) { ok = false }
+                if !segfile::put_bytes(f, bb, objs_len) { return 0u64 }
             }
-            Option::None => { ok = false }
+            Option::None => { return 0u64 }
         }
-        if !ok { return 0u64 }
         at_off = at_off + objs_len
 
         # ---- the stream table (DATA_MODEL.md section 3) ----------
@@ -1322,11 +1268,7 @@ impl ArchiveWriter {
         while sti < n_streams {
             val text: &String = self.stream_text.borrow(sti)
             ssec.put_varint(text.len())
-            val sw = text.as_span()
-            match sw {
-                Option::Some(sb) => { ssec.put_span(sb, 0u64, text.len()) }
-                Option::None => { }
-            }
+            if val Option::Some(sb) = text.as_span() { ssec.put_span(sb, 0u64, text.len()) }
             val c: u64 = self.stream_count.get(sti)
             ssec.put_varint(c)
             val fi: i64 = self.stream_first.get(sti)
@@ -1348,10 +1290,7 @@ impl ArchiveWriter {
         val sraw_len = ssec.len()
         var sraw_crc: u64 = 0u64
         val ssw = ssec.span()
-        match ssw {
-            Option::Some(sb) => { sraw_crc = crc.of(sb, 0u64, sraw_len) }
-            Option::None => { }
-        }
+        if val Option::Some(sb) = ssw { sraw_crc = crc.of(sb, 0u64, sraw_len) }
         blk.put_magic("LST1")
         val scodec_at = blk.len()
         blk.put_u32(1u64)
@@ -1360,19 +1299,16 @@ impl ArchiveWriter {
         blk.put_u32(0u64)
         blk.put_u32(sraw_crc)
         val sbody_at = blk.len()
-        match ssw {
-            Option::Some(sb) => {
-                val clen = self.z.encode(sb, 0u64, sraw_len, &mut blk)
-                if clen * 8u64 >= sraw_len * 7u64 {
-                    blk.truncate(sbody_at)
-                    blk.put_span(sb, 0u64, sraw_len)
-                    blk.patch_u32(scodec_at, 0u64)
-                    blk.patch_u32(sclen_at, sraw_len)
-                } else {
-                    blk.patch_u32(sclen_at, clen)
-                }
+        if val Option::Some(sb) = ssw {
+            val clen = self.z.encode(sb, 0u64, sraw_len, &mut blk)
+            if clen * 8u64 >= sraw_len * 7u64 {
+                blk.truncate(sbody_at)
+                blk.put_span(sb, 0u64, sraw_len)
+                blk.patch_u32(scodec_at, 0u64)
+                blk.patch_u32(sclen_at, sraw_len)
+            } else {
+                blk.patch_u32(sclen_at, clen)
             }
-            Option::None => { }
         }
         val strs_len = blk.len()
         var strs_crc: u64 = 0u64
@@ -1380,11 +1316,10 @@ impl ArchiveWriter {
         match bw5 {
             Option::Some(bb) => {
                 strs_crc = crc.of(bb, 0u64, strs_len)
-                if !segfile::put_bytes(f, bb, strs_len) { ok = false }
+                if !segfile::put_bytes(f, bb, strs_len) { return 0u64 }
             }
-            Option::None => { ok = false }
+            Option::None => { return 0u64 }
         }
-        if !ok { return 0u64 }
         at_off = at_off + strs_len
 
         # ---- the header and the directory, written back ----------
@@ -1406,13 +1341,9 @@ impl ArchiveWriter {
         hdr.put_u32(0u64)                  # kind: 0 = segment
         val hcrc_at = hdr.len()
         hdr.put_u32(0u64)                  # header crc, patched below
-        val hsum_w = hdr.span()
-        match hsum_w {
-            Option::Some(hb) => {
-                val hsum = crc.of(hb, 0u64, hcrc_at)
-                hdr.patch_u32(hcrc_at, hsum)
-            }
-            Option::None => { }
+        if val Option::Some(hb) = hdr.span() {
+            val hsum = crc.of(hb, 0u64, hcrc_at)
+            hdr.patch_u32(hcrc_at, hsum)
         }
 
         hdr.put_u32(7u64)                  # section count
@@ -1431,24 +1362,18 @@ impl ArchiveWriter {
             Option::Some(hb) => {
                 val put = f.write_at(0u64, hb.slice(0u64, segfile::DATA_AT))
                 match put {
-                    Result::Ok(n) => { if n != segfile::DATA_AT { ok = false } }
-                    Result::Err(e) => { ok = false }
+                    Result::Ok(n) => { if n != segfile::DATA_AT { return 0u64 } }
+                    Result::Err(e) => { return 0u64 }
                 }
             }
-            Option::None => { ok = false }
+            Option::None => { return 0u64 }
         }
-        if !ok { return 0u64 }
 
         # The bytes are not on the disk until this returns. A segment
         # that is published by a rename and then lost to a power cut
         # would leave a catalogue entry pointing at nothing
         # (STORAGE_FORMAT.md §2).
-        val synced = f.sync()
-        match synced {
-            Result::Ok(u) => { }
-            Result::Err(e) => { ok = false }
-        }
-        if !ok { return 0u64 }
+        if val Result::Err(e) = f.sync() { return 0u64 }
         at_off
     }
 }
@@ -1869,9 +1794,7 @@ pub fn terms_with_prefix(idx: Span<u8>, sec_off: u64, sec_len: u64, prefix: str)
     var names: Vec<u64> = Vec::new()
     var counts: Vec<u64> = Vec::new()
     var out = TermHits { names, counts, scanned: 0u64 }
-    # Single exit again: `return out` from inside the guard would be
-    # a conditional move of an owned value.
-    if sec_len > 0u64 {
+    if sec_len == 0u64 { return out }
     var rd = ByteReader::new(sec_off + sec_len)
     rd.seek(sec_off)
     val n = rd.take_u32(idx)
@@ -1904,7 +1827,6 @@ pub fn terms_with_prefix(idx: Span<u8>, sec_off: u64, sec_len: u64, prefix: str)
             }
         }
         i = i + 1u64
-    }
     }
     out
 }

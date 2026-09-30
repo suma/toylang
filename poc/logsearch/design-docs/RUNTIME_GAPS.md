@@ -538,6 +538,39 @@ of an owned value.」 **この 1 行のために関数全体が 1 段深い。**
 (実ログ 12 セグメントがバイト一致、`scan` / `fields` / `query` /
 `verify` の 488 行が一致、`archive` の所要時間も同じ)。
 
+**2026-10-01: `if val` / `while val` と早期脱出に移した。** MOVE-CONDITIONAL
+(分岐の中の移動を drop flag で追う) が入ったので、`ok` の梯子の理由
+だった「所有値を分岐の中から出せない」が消えた。3 つの形を書き換えた:
+`var more = true` + `next_line()` の `match` → `while val` (12 本)、
+片腕が空の `match` → `if val` (約 190)、`var ok` の梯子 → 失敗した
+その場で `return` / `continue` (`var ok = true` 14 → 4、`ok = false`
+86 → 29)。`segfile.t` の 7 段 (`expand_all` / `expand_selected`) は
+1 段になり、`archive.t` の「Single exit again」のコメントは理由ごと
+消えた。**`.t` 全体で 18,201 → 17,397 行。** **残した `ok`** は
+梯子ではないもの — 両方の処理を必ず走らせる (`catalog.t` の
+`ensure_dirs`、`labels.t` の `save_dict` は短い write の後も `sync`
+する)、`while` 条件と後段が読む (`lsz.t` の `decode_frame`、`compact.t`
+の `read_ok`)、戻り値そのもの (`h.ok` / `report.ok`)。**出力は移行前と
+一致** (実ログ 12 セグメントのハッシュ、`scan` / `archive` / `verify` /
+`catalog` / `fields` / `query` / `object` / `compact` / `retain` の
+出力、`--profile=mem` の確保・解放回数とピーク)。
+
+**移行中に踏んだ処理系の穴が 2 つ** (どちらも回避は「右辺を `val` に
+束縛してから `if val`」):
+
+- **右辺に自由関数 / 関連関数の呼び出しを直接書くと AOT が落ちる** —
+  `if val Result::Ok(n) = parse::to_u64(s)` が
+  `compiler MVP match on scalar scrutinee only supports i64 / u64 / bool,
+  got enum#17` で、**位置が出ない** (method 呼び出しは通る)。
+  CLAUDE.md の「function-call enum scrutinee は val-bind 経由」と同じ
+  制約だが、`if val` だと desugar 後の `match` のことなので気づきにくい
+- **右辺に呼び出しを直接書き、腕の中から `continue` / `return` で抜けると
+  所有 payload が漏れる** (AOT と JIT で一致して再現、束縛してからなら
+  漏れない。`if val` 固有ではなく、呼び出しを直接 scrutinee にした
+  `match` でも同じ)。この POC の右辺は `Span` / `Line` / 整数 / payload
+  の無いエラー enum だけなので踏んでいない。→ todo の
+  **MATCH-TEMP-EXIT-LEAK**
+
 ### 6. 小さな穴 (どれも回避できるが、書き方が 1 段遠くなる)
 
 | 無いもの | この POC での現れ方 |
@@ -568,8 +601,8 @@ push している箇所は 0 件だった。
 
 | ある構文 | 使用 | 代わりに書かれている形 |
 |---|---|---|
-| `if val` / `while val` | **1** / 0 | `Option` を剥く `match` が **192 箇所**、うち **None 腕が空なのが 85**。「1 ファイルを行に割る」6 行の入れ子が **14 回**複製されている (`tests/steady.t:57-75` ほか) |
-| `?` | 4 | `Result::Err(e) => {...}` が **195 箇所**、`Ok(x) => { }` (成功を捨てる) が **75** |
+| `if val` / `while val` | ~~1 / 0~~ → **192** / **12** (2026-10-01) | ~~`Option` を剥く `match` が 192 箇所、うち None 腕が空なのが 85~~。空の None 腕は 4 (両腕とも空の後始末)。「1 ファイルを行に割る」入れ子は `while val` + `if val` の 2 段になった |
+| `?` | 4 | `Result::Err(e) => {...}` が **195 箇所**、`Ok(x) => { }` (成功を捨てる) が ~~75~~ → **11** (2026-10-01、残りは `if val Result::Err(e) = ..`) |
 | match arm guard | 0 | 腕の中を `if` で始める (331 腕のうち 18) |
 | `loop` / `@label:` 付き `break` | 0 / 0 | 上の §5 のフラグ |
 | `str` のリテラル腕 + `\|` | 0 | `if` の表が **10 本** (`src/record.t:159` の `Jan`..`Dec` 12 連ほか) |
@@ -578,7 +611,8 @@ push している箇所は 0 件だった。
 | `soa Vec<T>` / `Column<T>` | 1 | 並列 `Vec` の手書き SoA (`ArchiveWriter` は **Vec 18 本**、`Conns` 8 本) |
 
 **インデント 24 桁 (6 段) 以上の行が 1,073 / 16,948 = 6.3%** で、
-その最大の原因が 1 行目の `Option` 手展開である。**言語側の宿題は
+その最大の原因が 1 行目の `Option` 手展開である。
+**2026-10-01 に 1,107 / 18,201 (6.1%) → 732 / 17,397 (4.2%)** — 下の §5 の移行で。**言語側の宿題は
 文法追加ではなく、なぜ辿り着かなかったか** (診断・例・API の形) の方。
 
 ### 8. 化石と思われた回避策 — 叩き直した結果 (2026-09-23)

@@ -191,11 +191,7 @@ test "the server answers over a real socket" {
     # 届く前に `accept` すると `WouldBlock` が返る — 忙しい機械では
     # 実際に起き、**10 回に 1 回ほど落ちていた**。他の 2 本の
     # ソケットテストは最初からこうしてある。
-    val listening = listener.set_blocking(true)
-    match listening {
-        Result::Ok(u) => { }
-        Result::Err(e) => { panic("set_blocking: {e}") }
-    }
+    if val Result::Err(e) = listener.set_blocking(true) { panic("set_blocking: {e}") }
     val taken = listener.accept()
     var conn = match taken {
         Result::Ok(c) => c,
@@ -230,16 +226,8 @@ test "the server answers over a real socket" {
     var total: u64 = 0u64
     val until = sv_deadline_ns()
     while total == 0u64 && time::now_mono_ns() < until {
-        val room = reply.capacity_span()
-        match room {
-            Option::Some(win) => {
-                val got = client.read(win)
-                match got {
-                    Result::Ok(n) => { total = total + n }
-                    Result::Err(e) => { }
-                }
-            }
-            Option::None => { }
+        if val Option::Some(win) = reply.capacity_span() {
+            if val Result::Ok(n) = client.read(win) { total = total + n }
         }
     }
     assert(total > 0u64, "the response should arrive")
@@ -328,10 +316,7 @@ test "nothing readable is 503 and not a bad request" {
 test "an archive with nothing in it answers, it does not fail" {
     val dir = "build/server-empty"
     val made = fs::mkdir_all(dir)
-    match made {
-        Result::Ok(u) => { }
-        Result::Err(e) => { panic("mkdir {dir}: {e}") }
-    }
+    if val Result::Err(e) = made { panic("mkdir {dir}: {e}") }
     val got = answer_for(dir, "GET /v1/query?q=a&format=json HTTP/1.1\r\n\r\n", true)
     assert(contains(&got, "HTTP/1.1 200 OK"), "an empty archive is still an answer")
     assert(contains(&got, "\"records\":[]"), "with no records")
@@ -404,21 +389,18 @@ fn wipe_mount(dir: str) {
     }
     val meta = "{dir}/meta"
     val listing = fs::list_dir(meta)
-    match listing {
-        Result::Ok(names) => {
-            var k: u64 = 0u64
-            while k < names.size() {
-                val nm: &String = names.borrow(k)
-                val full = path::join(meta, nm.to_str())
-                val rm = fs::remove_file(full.to_str())
-                match rm {
-                    Result::Ok(u) => { }
-                    Result::Err(e) => { }
-                }
-                k = k + 1u64
+    if val Result::Ok(names) = listing {
+        var k: u64 = 0u64
+        while k < names.size() {
+            val nm: &String = names.borrow(k)
+            val full = path::join(meta, nm.to_str())
+            val rm = fs::remove_file(full.to_str())
+            match rm {
+                Result::Ok(u) => { }
+                Result::Err(e) => { }
             }
+            k = k + 1u64
         }
-        Result::Err(e) => { }
     }
 }
 
@@ -428,10 +410,7 @@ fn wipe_mount(dir: str) {
 fn writable(dir: str, st: &mut Stats, ms: &mut MountSet,
             gens: &mut Vec<u64>) -> bool {
     val made = fs::mkdir_all(dir)
-    match made {
-        Result::Ok(u) => { }
-        Result::Err(e) => { panic("mkdir {dir}: {e}") }
-    }
+    if val Result::Err(e) = made { panic("mkdir {dir}: {e}") }
     val crc = Crc32::new()
     val ok = store::open_for_write(dir, ms, gens, &crc, false, true)
     if ok { st.segid = store::next_segid(ms, &crc) }
@@ -721,16 +700,8 @@ fn reply_is_ok(conn: &TcpStream) -> bool {
     var total: u64 = 0u64
     val until = sv_deadline_ns()
     while total == 0u64 && time::now_mono_ns() < until {
-        val room = reply.capacity_span()
-        match room {
-            Option::Some(win) => {
-                val got = conn.read(win)
-                match got {
-                    Result::Ok(n) => { total = n }
-                    Result::Err(e) => { }
-                }
-            }
-            Option::None => { }
+        if val Option::Some(win) = reply.capacity_span() {
+            if val Result::Ok(n) = conn.read(win) { total = n }
         }
     }
     reply.set_size(total)
@@ -797,21 +768,9 @@ test "three connections are served at the same time" {
     val nb3 = c3.set_blocking(false)
 
     val request = String::from_str("GET /healthz HTTP/1.1\r\nconnection: close\r\n\r\n")
-    val w1 = c1.write(span_of(&request))
-    match w1 {
-        Result::Ok(n) => { }
-        Result::Err(e) => { panic("write 1: {e}") }
-    }
-    val w2 = c2.write(span_of(&request))
-    match w2 {
-        Result::Ok(n) => { }
-        Result::Err(e) => { panic("write 2: {e}") }
-    }
-    val w3 = c3.write(span_of(&request))
-    match w3 {
-        Result::Ok(n) => { }
-        Result::Err(e) => { panic("write 3: {e}") }
-    }
+    if val Result::Err(e) = c1.write(span_of(&request)) { panic("write 1: {e}") }
+    if val Result::Err(e) = c2.write(span_of(&request)) { panic("write 2: {e}") }
+    if val Result::Err(e) = c3.write(span_of(&request)) { panic("write 3: {e}") }
 
     val made = Poller::new()
     var poller = match made {
@@ -828,15 +787,11 @@ test "three connections are served at the same time" {
     # 3 本を表に入れる。1 本ずつ答えるのではなく、全部入れてから回す。
     var taken: u64 = 0u64
     while taken < 3u64 {
-        val accepted = listener.accept_fd()
-        match accepted {
-            Result::Ok(fd) => {
-                var sock = TcpStream::from_fd(fd)
-                val slot = server::conn_open(&mut conns, &poller, sock, true)
-                assert(slot >= 0i64, "the table should have room for {taken}")
-                taken = taken + 1u64
-            }
-            Result::Err(e) => { }
+        if val Result::Ok(fd) = listener.accept_fd() {
+            var sock = TcpStream::from_fd(fd)
+            val slot = server::conn_open(&mut conns, &poller, sock, true)
+            assert(slot >= 0i64, "the table should have room for {taken}")
+            taken = taken + 1u64
         }
     }
     assert_eq(conns.live(), 3u64)
@@ -849,10 +804,7 @@ test "three connections are served at the same time" {
     while conns.live() > 0u64 && time::now_mono_ns() < until {
         val ready = poller.wait(50i64)
         var n: u64 = 0u64
-        match ready {
-            Result::Ok(k) => { n = k }
-            Result::Err(e) => { }
-        }
+        if val Result::Ok(k) = ready { n = k }
         var i: u64 = 0u64
         while i < n {
             val ev = poller.event(i)
@@ -909,11 +861,7 @@ test "a table of connections can hold handles now" {
     # `var conn = match ...` で先に所有を取り出してから push する
     # (腕の中で渡すと、元の `Result` の drop が接続を閉じる — 所有と
     # 別名の残りの論点)。
-    val blocking = listener.set_blocking(true)
-    match blocking {
-        Result::Ok(u) => { }
-        Result::Err(e) => { panic("set_blocking: {e}") }
-    }
+    if val Result::Err(e) = listener.set_blocking(true) { panic("set_blocking: {e}") }
     val taken = listener.accept()
     var conn = match taken {
         Result::Ok(c) => c,
@@ -924,11 +872,7 @@ test "a table of connections can hold handles now" {
     assert_eq(conns.size(), 1u64)
 
     # 読む側は非ブロッキングにしておく。壊れたときに固まらずに落ちる。
-    val nb = client.set_blocking(false)
-    match nb {
-        Result::Ok(u) => { }
-        Result::Err(e) => { panic("set_blocking: {e}") }
-    }
+    if val Result::Err(e) = client.set_blocking(false) { panic("set_blocking: {e}") }
 
     # 2 回使う。かつては 1 回目の借用で fd が閉じ、2 回目が EBADF に
     # なっていた。
@@ -953,16 +897,8 @@ test "a table of connections can hold handles now" {
     var total: u64 = 0u64
     val until = sv_deadline_ns()
     while total == 0u64 && time::now_mono_ns() < until {
-        val room = reply.capacity_span()
-        match room {
-            Option::Some(win) => {
-                val got = client.read(win)
-                match got {
-                    Result::Ok(n) => { total = n }
-                    Result::Err(e) => { }
-                }
-            }
-            Option::None => { }
+        if val Option::Some(win) = reply.capacity_span() {
+            if val Result::Ok(n) = client.read(win) { total = n }
         }
     }
     assert(total > 0u64, "the writes should reach the peer")
@@ -1001,11 +937,7 @@ test "a slot table holds a connection, lends it, and frees the slot" {
         Result::Ok(c) => c,
         Result::Err(e) => { panic("connect: {e}") }
     }
-    val blocking = listener.set_blocking(true)
-    match blocking {
-        Result::Ok(u) => { }
-        Result::Err(e) => { panic("set_blocking: {e}") }
-    }
+    if val Result::Err(e) = listener.set_blocking(true) { panic("set_blocking: {e}") }
     val taken = listener.accept()
     var conn = match taken {
         Result::Ok(c) => c,
@@ -1024,11 +956,7 @@ test "a slot table holds a connection, lends it, and frees the slot" {
     conns.set(2u64, filled)
     assert_eq(conns.size(), 4u64)
 
-    val nb = client.set_blocking(false)
-    match nb {
-        Result::Ok(u) => { }
-        Result::Err(e) => { panic("set_blocking: {e}") }
-    }
+    if val Result::Err(e) = client.set_blocking(false) { panic("set_blocking: {e}") }
 
     # 2 回借りて 2 回書く。借用は所有を作らないので、1 回目で
     # 閉じたりしない。
@@ -1056,16 +984,8 @@ test "a slot table holds a connection, lends it, and frees the slot" {
     var total: u64 = 0u64
     val until = sv_deadline_ns()
     while total == 0u64 && time::now_mono_ns() < until {
-        val room = reply.capacity_span()
-        match room {
-            Option::Some(win) => {
-                val got = client.read(win)
-                match got {
-                    Result::Ok(n) => { total = n }
-                    Result::Err(e) => { }
-                }
-            }
-            Option::None => { }
+        if val Option::Some(win) = reply.capacity_span() {
+            if val Result::Ok(n) = client.read(win) { total = n }
         }
     }
     assert(total > 0u64, "the writes should reach the peer")
@@ -1073,25 +993,14 @@ test "a slot table holds a connection, lends it, and frees the slot" {
     # スロットを空ける。取り戻した接続はこの関数の中で死ぬ。
     slot_free(&mut conns, 2u64)
     val after: &Option<TcpStream> = conns.borrow(2u64)
-    match after {
-        Option::Some(s) => { panic("slot 2 should be empty now") }
-        Option::None => { }
-    }
+    if val Option::Some(s) = after { panic("slot 2 should be empty now") }
 
     # 所有が本当に戻っていたなら fd は閉じている — 相手は EOF を見る。
     var eof: bool = false
     val eof_until = sv_deadline_ns()
     while !eof && time::now_mono_ns() < eof_until {
-        val room = reply.capacity_span()
-        match room {
-            Option::Some(win) => {
-                val got = client.read(win)
-                match got {
-                    Result::Ok(n) => { if n == 0u64 { eof = true } }
-                    Result::Err(e) => { }
-                }
-            }
-            Option::None => { }
+        if val Option::Some(win) = reply.capacity_span() {
+            if val Result::Ok(n) = client.read(win) { if n == 0u64 { eof = true } }
         }
     }
     assert(eof, "freeing the slot should close the connection")

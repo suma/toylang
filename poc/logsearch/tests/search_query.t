@@ -131,43 +131,21 @@ fn sq_build(stem: str) -> String {
 fn sq_build_from(stem: str, body: &String) -> String {
     val log = "{stem}.log"
     val wrote = io::write_file(log, body.to_str())
-    match wrote {
-        Result::Ok(n) => { }
-        Result::Err(e) => { panic("fixture: cannot write {log}: {e}") }
-    }
+    if val Result::Err(e) = wrote { panic("fixture: cannot write {log}: {e}") }
     var reader = LogReader::with_capacity(262144u64)
     var rec = ParsedLine::new()
     var w = ArchiveWriter::new()
     val crc = Crc32::new()
-    val loaded = reader.load(log)
-    match loaded {
-        Result::Ok(n) => { }
-        Result::Err(e) => { panic("fixture: cannot read back {log}: {e}") }
-    }
-    var more = true
-    while more {
-        val nx = reader.next_line()
-        match nx {
-            Option::Some(l) => {
-                if l.len > 0u64 {
-                    val win = reader.span()
-                    match win {
-                        Option::Some(sp) => {
-                            record::parse_line(sp, l, &mut rec)
-                            w.add(sp, l, &rec)
-                        }
-                        Option::None => { }
-                    }
-                }
+    if val Result::Err(e) = reader.load(log) { panic("fixture: cannot read back {log}: {e}") }
+    while val Option::Some(l) = reader.next_line() {
+        if l.len > 0u64 {
+            if val Option::Some(sp) = reader.span() {
+                record::parse_line(sp, l, &mut rec)
+                w.add(sp, l, &rec)
             }
-            Option::None => { more = false }
         }
     }
-    val done = w.finish(stem, 1u64, &crc)
-    match done {
-        Result::Ok(n) => { }
-        Result::Err(e) => { panic("fixture: cannot write segment: {e}") }
-    }
+    if val Result::Err(e) = w.finish(stem, 1u64, &crc) { panic("fixture: cannot write segment: {e}") }
     val seg = String::from_str("{stem}.seg")
     seg
 }

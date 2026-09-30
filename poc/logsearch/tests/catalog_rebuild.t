@@ -38,45 +38,23 @@ fn cr_build(stem: str, n: u64, first_sec: u64, segid: u64) -> u64 {
     val body = cr_fixture(n, first_sec)
     val log = cr_joined(stem, ".log")
     val wrote = io::write_file(log.to_str(), body.to_str())
-    match wrote {
-        Result::Ok(k) => { }
-        Result::Err(e) => { panic("fixture: cannot write {log.to_str()}: {e}") }
-    }
+    if val Result::Err(e) = wrote { panic("fixture: cannot write {log.to_str()}: {e}") }
     var reader = LogReader::with_capacity(262144u64)
     var rec = ParsedLine::new()
     var w = ArchiveWriter::new()
     val crc = Crc32::new()
-    val loaded = reader.load(log.to_str())
-    match loaded {
-        Result::Ok(k) => { }
-        Result::Err(e) => { panic("fixture: cannot read back: {e}") }
-    }
+    if val Result::Err(e) = reader.load(log.to_str()) { panic("fixture: cannot read back: {e}") }
     var count = 0u64
-    var more = true
-    while more {
-        val nx = reader.next_line()
-        match nx {
-            Option::Some(l) => {
-                if l.len > 0u64 {
-                    val win = reader.span()
-                    match win {
-                        Option::Some(sp) => {
-                            record::parse_line(sp, l, &mut rec)
-                            w.add(sp, l, &rec)
-                            count = count + 1u64
-                        }
-                        Option::None => { }
-                    }
-                }
+    while val Option::Some(l) = reader.next_line() {
+        if l.len > 0u64 {
+            if val Option::Some(sp) = reader.span() {
+                record::parse_line(sp, l, &mut rec)
+                w.add(sp, l, &rec)
+                count = count + 1u64
             }
-            Option::None => { more = false }
         }
     }
-    val done = w.finish(stem, segid, &crc)
-    match done {
-        Result::Ok(k) => { }
-        Result::Err(e) => { panic("fixture: cannot write segment: {e}") }
-    }
+    if val Result::Err(e) = w.finish(stem, segid, &crc) { panic("fixture: cannot write segment: {e}") }
     count
 }
 
@@ -84,10 +62,7 @@ fn cr_build(stem: str, n: u64, first_sec: u64, segid: u64) -> u64 {
 fn cr_mount_with_segments(mount: str) -> u64 {
     val day = "{mount}/seg/2026/09/03"
     val made = fs::mkdir_all(day)
-    match made {
-        Result::Ok(u) => { }
-        Result::Err(e) => { panic("cannot make {day}: {e}") }
-    }
+    if val Result::Err(e) = made { panic("cannot make {day}: {e}") }
     var total = 0u64
     total = total + cr_build("{day}/000000000001", 40u64, 10u64, 1u64)
     total = total + cr_build("{day}/000000000002", 25u64, 30u64, 2u64)
@@ -161,16 +136,9 @@ test "a file that is not a segment is skipped, not fatal" {
     cr_mount_with_segments(mount)
     val junk = "{mount}/seg/2026/09/03/000000000009.seg"
     val wrote = io::write_file(junk, "this is not a segment\n")
-    match wrote {
-        Result::Ok(n) => { }
-        Result::Err(e) => { panic("cannot write the junk file: {e}") }
-    }
+    if val Result::Err(e) = wrote { panic("cannot write the junk file: {e}") }
     val crc = Crc32::new()
     val c = catalog::rebuild(mount, &crc)
     assert_eq(c.size(), 2u64)
-    val missing = c.find(9u64)
-    match missing {
-        Option::Some(i) => { panic("the junk file should not have become a row") }
-        Option::None => { }
-    }
+    if val Option::Some(i) = c.find(9u64) { panic("the junk file should not have become a row") }
 }

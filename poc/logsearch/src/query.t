@@ -182,49 +182,43 @@ pub fn parse_query(text: str, now: i64) -> Query {
             val eq = String::from_str("=")
             val at = tok.find(eq)
             var handled = false
-            match at {
-                Option::Some(pos) => {
-                    val key = tok.substring(0u64, pos)
-                    val value = tok.substring(pos + 1u64, tok.len())
-                    val vs = value.to_str()
-                    val ks = key.to_str()
-                    # `host` and `tag` are not special: they are keys
-                    # the index knows, and they fall through to the
-                    # term path below. `host` is a *reserved label*
-                    # (DATA_MODEL.md section 2) — the sending host,
-                    # however it arrived — so the syslog header and a
-                    # `host=` label are one key, which is already how
-                    # the archive writes them and how `fields host`
-                    # counts them. Comparing only the syslog header
-                    # here meant `host=web01` missed every ingested
-                    # record and opened all twelve segments on the way.
-                    #
-                    # `top=` is read by the caller, which decides
-                    # between a traversal and a whole distribution. It
-                    # is consumed here so it does not fall through and
-                    # become a body substring -- searching lines for
-                    # the text `top=path` is nobody's intent.
-                    match ks {
-                        "from" => { q.ts_from = parse_time(vs, now)  handled = true }
-                        "to" => { q.ts_to = parse_time(vs, now)  handled = true }
-                        "kind" => { q.kind = kind_code(vs)  handled = true }
-                        "top" => { handled = true }
-                        "order" => {
-                            q.desc = vs == "desc"
-                            handled = true
-                        }
-                        "limit" => {
-                            val n = parse::to_u64(vs)
-                            match n {
-                                Result::Ok(v) => { q.limit = v }
-                                Result::Err(e) => { }
-                            }
-                            handled = true
-                        }
-                        _ => {}
+            if val Option::Some(pos) = at {
+                val key = tok.substring(0u64, pos)
+                val value = tok.substring(pos + 1u64, tok.len())
+                val vs = value.to_str()
+                val ks = key.to_str()
+                # `host` and `tag` are not special: they are keys
+                # the index knows, and they fall through to the
+                # term path below. `host` is a *reserved label*
+                # (DATA_MODEL.md section 2) — the sending host,
+                # however it arrived — so the syslog header and a
+                # `host=` label are one key, which is already how
+                # the archive writes them and how `fields host`
+                # counts them. Comparing only the syslog header
+                # here meant `host=web01` missed every ingested
+                # record and opened all twelve segments on the way.
+                #
+                # `top=` is read by the caller, which decides
+                # between a traversal and a whole distribution. It
+                # is consumed here so it does not fall through and
+                # become a body substring -- searching lines for
+                # the text `top=path` is nobody's intent.
+                match ks {
+                    "from" => { q.ts_from = parse_time(vs, now)  handled = true }
+                    "to" => { q.ts_to = parse_time(vs, now)  handled = true }
+                    "kind" => { q.kind = kind_code(vs)  handled = true }
+                    "top" => { handled = true }
+                    "order" => {
+                        q.desc = vs == "desc"
+                        handled = true
                     }
+                    "limit" => {
+                        val n = parse::to_u64(vs)
+                        if val Result::Ok(v) = n { q.limit = v }
+                        handled = true
+                    }
+                    _ => {}
                 }
-                Option::None => { }
             }
             # `key~needle` / `key^needle`: a search over the *values*
             # the index already holds -- anywhere, or at the start.
@@ -243,15 +237,9 @@ pub fn parse_query(text: str, now: i64) -> Query {
                 var mpos: u64 = 0u64
                 var found = false
                 var anchored = false
-                match tat {
-                    Option::Some(tp) => { mpos = tp  found = true }
-                    Option::None => { }
-                }
+                if val Option::Some(tp) = tat { mpos = tp  found = true }
                 if !found {
-                    match cat {
-                        Option::Some(cpx) => { mpos = cpx  found = true  anchored = true }
-                        Option::None => { }
-                    }
+                    if val Option::Some(cpx) = cat { mpos = cpx  found = true  anchored = true }
                 }
                 if found {
                     val tkey = tok.substring(0u64, mpos)
@@ -280,24 +268,21 @@ pub fn parse_query(text: str, now: i64) -> Query {
                 # with a dot or a capital in it is not a label, so
                 # `Host=x` searches the text.
                 var as_term = false
-                match at {
-                    Option::Some(pos) => {
-                        val key = tok.substring(0u64, pos)
-                        if is_index_key(&key) {
-                            # The dictionary spells terms with a colon
-                            # (`status:404`); the query spells them
-                            # with `=`. The value is cut again here --
-                            # the binding in the branch above belongs
-                            # to that branch.
-                            val term_value = tok.substring(pos + 1u64, tok.len())
-                            val colon = String::from_str(":")
-                            val head = key.concat(&colon)
-                            val norm = head.concat(&term_value)
-                            q.terms.push(norm)
-                            as_term = true
-                        }
+                if val Option::Some(pos) = at {
+                    val key = tok.substring(0u64, pos)
+                    if is_index_key(&key) {
+                        # The dictionary spells terms with a colon
+                        # (`status:404`); the query spells them
+                        # with `=`. The value is cut again here --
+                        # the binding in the branch above belongs
+                        # to that branch.
+                        val term_value = tok.substring(pos + 1u64, tok.len())
+                        val colon = String::from_str(":")
+                        val head = key.concat(&colon)
+                        val norm = head.concat(&term_value)
+                        q.terms.push(norm)
+                        as_term = true
                     }
-                    Option::None => { }
                 }
                 if !as_term { q.needles.push(tok.clone()) }
             }
@@ -321,14 +306,10 @@ fn matches(q: &Query, arena: Span<u8>, line_at: u64, line_len: u64,
     var k: u64 = 0u64
     while k < q.needles.size() {
         val needle: &String = q.needles.borrow(k)
-        val nw = needle.as_span()
-        match nw {
-            Option::Some(want) => {
-                if !search::find(arena, line_at, line_len, want, needle.len()) {
-                    return false
-                }
+        if val Option::Some(want) = needle.as_span() {
+            if !search::find(arena, line_at, line_len, want, needle.len()) {
+                return false
             }
-            Option::None => { }
         }
         k = k + 1u64
     }
@@ -386,52 +367,48 @@ pub fn resolve_indexed(traw: Span<u8>, tlen: u64, q: &Query,
     var t: u64 = 0u64
     while t < q.terms.size() && !empty {
         val name: &String = q.terms.borrow(t)
-        val nw = name.as_span()
-        match nw {
-            Option::Some(want) => {
-                val post = archive::term_postings(traw, tlen, want, name.len())
-                if !post.found {
-                    empty = true
+        if val Option::Some(want) = name.as_span() {
+            val post = archive::term_postings(traw, tlen, want, name.len())
+            if !post.found {
+                empty = true
+            } else {
+                tmp.clear()
+                archive::decode_postings(traw, post.at, post.len, &mut tmp)
+                if first {
+                    var c: u64 = 0u64
+                    while c < tmp.size() {
+                        val v: u32 = tmp.get(c)
+                        allowed.push(v)
+                        c = c + 1u64
+                    }
+                    first = false
                 } else {
-                    tmp.clear()
-                    archive::decode_postings(traw, post.at, post.len, &mut tmp)
-                    if first {
-                        var c: u64 = 0u64
-                        while c < tmp.size() {
-                            val v: u32 = tmp.get(c)
-                            allowed.push(v)
-                            c = c + 1u64
-                        }
-                        first = false
-                    } else {
-                        # Both lists are ascending, so the
-                        # intersection is one merge pass.
-                        merged.clear()
-                        var a: u64 = 0u64
-                        var b: u64 = 0u64
-                        while a < allowed.size() && b < tmp.size() {
-                            val x: u32 = allowed.get(a)
-                            val y: u32 = tmp.get(b)
-                            if x == y {
-                                merged.push(x)
-                                a = a + 1u64
-                                b = b + 1u64
-                            } else {
-                                if x < y { a = a + 1u64 } else { b = b + 1u64 }
-                            }
-                        }
-                        allowed.clear()
-                        var m: u64 = 0u64
-                        while m < merged.size() {
-                            val v: u32 = merged.get(m)
-                            allowed.push(v)
-                            m = m + 1u64
+                    # Both lists are ascending, so the
+                    # intersection is one merge pass.
+                    merged.clear()
+                    var a: u64 = 0u64
+                    var b: u64 = 0u64
+                    while a < allowed.size() && b < tmp.size() {
+                        val x: u32 = allowed.get(a)
+                        val y: u32 = tmp.get(b)
+                        if x == y {
+                            merged.push(x)
+                            a = a + 1u64
+                            b = b + 1u64
+                        } else {
+                            if x < y { a = a + 1u64 } else { b = b + 1u64 }
                         }
                     }
-                    if allowed.size() == 0u64 { empty = true }
+                    allowed.clear()
+                    var m: u64 = 0u64
+                    while m < merged.size() {
+                        val v: u32 = merged.get(m)
+                        allowed.push(v)
+                        m = m + 1u64
+                    }
                 }
+                if allowed.size() == 0u64 { empty = true }
             }
-            Option::None => { }
         }
         t = t + 1u64
     }
@@ -445,116 +422,108 @@ pub fn resolve_indexed(traw: Span<u8>, tlen: u64, q: &Query,
     while u < q.subs.size() && !empty {
         val spec: &String = q.subs.borrow(u)
         val colon = String::from_str(":")
-        val cpos = spec.find(colon)
-        match cpos {
-            Option::Some(cp) => {
-                # spec is `<mark><key>:<needle>`.
-                val mark = spec.substring(0u64, 1u64)
-                val anchored = mark.eq_str("^")
-                val pfx = spec.substring(1u64, cp + 1u64)
-                # The needle is a slice of `spec`, not a
-                # string of its own: `ua~` has an empty
-                # needle and an empty `String` has no span,
-                # which would drop the filter silently.
-                val nw = spec.as_span()
-                match nw {
-                    Option::Some(nsp) => {
-                        val hits = archive::terms_matching(
-                            traw, 0u64, tlen,
-                            pfx.to_str(), nsp,
-                            cp + 1u64, spec.len() - (cp + 1u64),
-                            anchored)
-                        uni.clear()
-                        var hi: u64 = 0u64
-                        while hi < hits.at.size() {
-                            val pat: u64 = hits.at.get(hi)
-                            val plen: u64 = hits.len.get(hi)
-                            tmp.clear()
-                            archive::decode_postings(traw, pat, plen, &mut tmp)
-                            # Union: both sides ascending, so
-                            # one merge pass, dropping repeats.
-                            uni2.clear()
-                            var a: u64 = 0u64
-                            var b: u64 = 0u64
-                            while a < uni.size() || b < tmp.size() {
-                                if a >= uni.size() {
-                                    val y: u32 = tmp.get(b)
-                                    uni2.push(y)
+        if val Option::Some(cp) = spec.find(colon) {
+            # spec is `<mark><key>:<needle>`.
+            val mark = spec.substring(0u64, 1u64)
+            val anchored = mark.eq_str("^")
+            val pfx = spec.substring(1u64, cp + 1u64)
+            # The needle is a slice of `spec`, not a
+            # string of its own: `ua~` has an empty
+            # needle and an empty `String` has no span,
+            # which would drop the filter silently.
+            if val Option::Some(nsp) = spec.as_span() {
+                val hits = archive::terms_matching(
+                    traw, 0u64, tlen,
+                    pfx.to_str(), nsp,
+                    cp + 1u64, spec.len() - (cp + 1u64),
+                    anchored)
+                uni.clear()
+                var hi: u64 = 0u64
+                while hi < hits.at.size() {
+                    val pat: u64 = hits.at.get(hi)
+                    val plen: u64 = hits.len.get(hi)
+                    tmp.clear()
+                    archive::decode_postings(traw, pat, plen, &mut tmp)
+                    # Union: both sides ascending, so
+                    # one merge pass, dropping repeats.
+                    uni2.clear()
+                    var a: u64 = 0u64
+                    var b: u64 = 0u64
+                    while a < uni.size() || b < tmp.size() {
+                        if a >= uni.size() {
+                            val y: u32 = tmp.get(b)
+                            uni2.push(y)
+                            b = b + 1u64
+                        } else {
+                            if b >= tmp.size() {
+                                val x: u32 = uni.get(a)
+                                uni2.push(x)
+                                a = a + 1u64
+                            } else {
+                                val x: u32 = uni.get(a)
+                                val y: u32 = tmp.get(b)
+                                if x == y {
+                                    uni2.push(x)
+                                    a = a + 1u64
                                     b = b + 1u64
                                 } else {
-                                    if b >= tmp.size() {
-                                        val x: u32 = uni.get(a)
+                                    if x < y {
                                         uni2.push(x)
                                         a = a + 1u64
                                     } else {
-                                        val x: u32 = uni.get(a)
-                                        val y: u32 = tmp.get(b)
-                                        if x == y {
-                                            uni2.push(x)
-                                            a = a + 1u64
-                                            b = b + 1u64
-                                        } else {
-                                            if x < y {
-                                                uni2.push(x)
-                                                a = a + 1u64
-                                            } else {
-                                                uni2.push(y)
-                                                b = b + 1u64
-                                            }
-                                        }
+                                        uni2.push(y)
+                                        b = b + 1u64
                                     }
                                 }
                             }
-                            uni.clear()
-                            var c2: u64 = 0u64
-                            while c2 < uni2.size() {
-                                val v: u32 = uni2.get(c2)
-                                uni.push(v)
-                                c2 = c2 + 1u64
-                            }
-                            hi = hi + 1u64
-                        }
-                        if uni.size() == 0u64 {
-                            empty = true
-                        } else {
-                            if first {
-                                var c3: u64 = 0u64
-                                while c3 < uni.size() {
-                                    val v: u32 = uni.get(c3)
-                                    allowed.push(v)
-                                    c3 = c3 + 1u64
-                                }
-                                first = false
-                            } else {
-                                merged.clear()
-                                var a2: u64 = 0u64
-                                var b2: u64 = 0u64
-                                while a2 < allowed.size() && b2 < uni.size() {
-                                    val x: u32 = allowed.get(a2)
-                                    val y: u32 = uni.get(b2)
-                                    if x == y {
-                                        merged.push(x)
-                                        a2 = a2 + 1u64
-                                        b2 = b2 + 1u64
-                                    } else {
-                                        if x < y { a2 = a2 + 1u64 } else { b2 = b2 + 1u64 }
-                                    }
-                                }
-                                allowed.clear()
-                                var m2: u64 = 0u64
-                                while m2 < merged.size() {
-                                    val v: u32 = merged.get(m2)
-                                    allowed.push(v)
-                                    m2 = m2 + 1u64
-                                }
-                            }
-                            if allowed.size() == 0u64 { empty = true }
                         }
                     }
-                    Option::None => { }
+                    uni.clear()
+                    var c2: u64 = 0u64
+                    while c2 < uni2.size() {
+                        val v: u32 = uni2.get(c2)
+                        uni.push(v)
+                        c2 = c2 + 1u64
+                    }
+                    hi = hi + 1u64
+                }
+                if uni.size() == 0u64 {
+                    empty = true
+                } else {
+                    if first {
+                        var c3: u64 = 0u64
+                        while c3 < uni.size() {
+                            val v: u32 = uni.get(c3)
+                            allowed.push(v)
+                            c3 = c3 + 1u64
+                        }
+                        first = false
+                    } else {
+                        merged.clear()
+                        var a2: u64 = 0u64
+                        var b2: u64 = 0u64
+                        while a2 < allowed.size() && b2 < uni.size() {
+                            val x: u32 = allowed.get(a2)
+                            val y: u32 = uni.get(b2)
+                            if x == y {
+                                merged.push(x)
+                                a2 = a2 + 1u64
+                                b2 = b2 + 1u64
+                            } else {
+                                if x < y { a2 = a2 + 1u64 } else { b2 = b2 + 1u64 }
+                            }
+                        }
+                        allowed.clear()
+                        var m2: u64 = 0u64
+                        while m2 < merged.size() {
+                            val v: u32 = merged.get(m2)
+                            allowed.push(v)
+                            m2 = m2 + 1u64
+                        }
+                    }
+                    if allowed.size() == 0u64 { empty = true }
                 }
             }
-            Option::None => { }
         }
         u = u + 1u64
     }
@@ -755,19 +724,15 @@ pub fn search(dir: str, segs: &Vec<String>, q: &Query, crc: &Crc32,
                     }
                     rows.clear()
                     if good {
-                        val rw0 = recs.span()
-                        match rw0 {
-                            Option::Some(rb0) => {
-                                # Rows past the last candidate are never
-                                # looked at, so they are not decoded.
-                                var upto = h.records
-                                if use_terms && allowed.size() > 0u64 {
-                                    val last: u32 = allowed.get(allowed.size() - 1u64)
-                                    if (last as u64) + 1u64 < upto { upto = (last as u64) + 1u64 }
-                                }
-                                archive::decode_records(rb0, recs.len(), upto, &mut rows)
+                        if val Option::Some(rb0) = recs.span() {
+                            # Rows past the last candidate are never
+                            # looked at, so they are not decoded.
+                            var upto = h.records
+                            if use_terms && allowed.size() > 0u64 {
+                                val last: u32 = allowed.get(allowed.size() - 1u64)
+                                if (last as u64) + 1u64 < upto { upto = (last as u64) + 1u64 }
                             }
-                            Option::None => { }
+                            archive::decode_records(rb0, recs.len(), upto, &mut rows)
                         }
                     }
                     need.clear()
@@ -807,60 +772,56 @@ pub fn search(dir: str, segs: &Vec<String>, q: &Query, crc: &Crc32,
                     if good {
                         scanned_bytes = scanned_bytes + expanded_here
                         read_bytes = read_bytes + h.frames_len + h.recs_len
-                        val aw = arena.span()
-                        match aw {
-                            Option::Some(body) => {
-                                # With an index filter only the candidates
-                                # are visited, by ordinal; without one,
-                                # every row is. Either way a record is
-                                # read out of the columns it needs.
-                                val n_rows = rows.size()
-                                var n_visit = n_rows
-                                if use_terms { n_visit = allowed.size() }
-                                val ats = rows.line_at
-                                val line_lens = rows.line_len
-                                val stamps = rows.ts
-                                val flag_col = rows.flags
-                                val host_rels = rows.host_rel
-                                val host_lens = rows.host_len
-                                val tag_rels = rows.tag_rel
-                                val tag_lens = rows.tag_len
-                                for k in 0u64..n_visit {
-                                    var r = k
-                                    if use_terms {
-                                        val a: u32 = allowed.get(k)
-                                        r = a as u64
-                                    }
-                                    if r >= n_rows { break }
-                                    val line_at: u64 = ats.get(r)
-                                    val ll: u32 = line_lens.get(r)
-                                    val line_len = ll as u64
-                                    val ts: i64 = stamps.get(r)
-                                    val fl: u8 = flag_col.get(r)
-                                    val flags = fl as u64
-                                    val hr: u32 = host_rels.get(r)
-                                    val hl: u32 = host_lens.get(r)
-                                    val tr: u32 = tag_rels.get(r)
-                                    val tl: u32 = tag_lens.get(r)
+                        if val Option::Some(body) = arena.span() {
+                            # With an index filter only the candidates
+                            # are visited, by ordinal; without one,
+                            # every row is. Either way a record is
+                            # read out of the columns it needs.
+                            val n_rows = rows.size()
+                            var n_visit = n_rows
+                            if use_terms { n_visit = allowed.size() }
+                            val ats = rows.line_at
+                            val line_lens = rows.line_len
+                            val stamps = rows.ts
+                            val flag_col = rows.flags
+                            val host_rels = rows.host_rel
+                            val host_lens = rows.host_len
+                            val tag_rels = rows.tag_rel
+                            val tag_lens = rows.tag_len
+                            for k in 0u64..n_visit {
+                                var r = k
+                                if use_terms {
+                                    val a: u32 = allowed.get(k)
+                                    r = a as u64
+                                }
+                                if r >= n_rows { break }
+                                val line_at: u64 = ats.get(r)
+                                val ll: u32 = line_lens.get(r)
+                                val line_len = ll as u64
+                                val ts: i64 = stamps.get(r)
+                                val fl: u8 = flag_col.get(r)
+                                val flags = fl as u64
+                                val hr: u32 = host_rels.get(r)
+                                val hl: u32 = host_lens.get(r)
+                                val tr: u32 = tag_rels.get(r)
+                                val tl: u32 = tag_lens.get(r)
 
-                                    val dated = (flags & 1u64) != 0u64
-                                    val kind = ((flags >> 1u64) & 7u64) as u32
+                                val dated = (flags & 1u64) != 0u64
+                                val kind = ((flags >> 1u64) & 7u64) as u32
 
-                                    examined = examined + 1u64
-                                    if matches(q, body, line_at, line_len, kind, ts, dated) {
-                                        matched = matched + 1u64
-                                        if hits.size() < MAX_HITS {
-                                            val hit = Hit { ts, ord: hits.size() }
-                                            hits.push(hit)
-                                            val line = text_of(body, line_at, line_len)
-                                            texts.push(line)
-                                        } else {
-                                            truncated = true
-                                        }
+                                examined = examined + 1u64
+                                if matches(q, body, line_at, line_len, kind, ts, dated) {
+                                    matched = matched + 1u64
+                                    if hits.size() < MAX_HITS {
+                                        val hit = Hit { ts, ord: hits.size() }
+                                        hits.push(hit)
+                                        val line = text_of(body, line_at, line_len)
+                                        texts.push(line)
+                                    } else {
+                                        truncated = true
                                     }
                                 }
                             }
-                            Option::None => { }
                         }
                     }
                 }
@@ -1009,26 +970,19 @@ pub fn streams(segs: &Vec<String>, crc: &Crc32) -> StreamTally {
         val seg_str = seg_path.to_str()
         si = si + 1u64
         val opened_f = File::open(seg_str)
-        match opened_f {
-            Result::Ok(f) => {
-                val h = segfile::head_of(&f, &mut head_buf)
-                var got = h.ok && h.has_streams()
-                if got {
-                    if !segfile::load_block(&f, h.strs_off, h.strs_len, crc, &mut raw, &mut ssec) { got = false }
-                }
-                if got {
-                    out.segments = out.segments + 1u64
-                    val sw = ssec.span()
-                    match sw {
-                        Option::Some(sraw) => {
-                            val rows = archive::streams_of(sraw, ssec.len())
-                            fold_streams(&rows, &mut out)
-                        }
-                        Option::None => { }
-                    }
+        if val Result::Ok(f) = opened_f {
+            val h = segfile::head_of(&f, &mut head_buf)
+            var got = h.ok && h.has_streams()
+            if got {
+                if !segfile::load_block(&f, h.strs_off, h.strs_len, crc, &mut raw, &mut ssec) { got = false }
+            }
+            if got {
+                out.segments = out.segments + 1u64
+                if val Option::Some(sraw) = ssec.span() {
+                    val rows = archive::streams_of(sraw, ssec.len())
+                    fold_streams(&rows, &mut out)
                 }
             }
-            Result::Err(e) => { }
         }
     }
     out
@@ -1093,34 +1047,27 @@ pub fn tally(segs: &Vec<String>, prefix: str, keys_only: bool,
         val seg_str = seg_path.to_str()
         si = si + 1u64
         val opened_f = File::open(seg_str)
-        match opened_f {
-            Result::Ok(f) => {
-                val h = segfile::head_of(&f, &mut head_buf)
-                var got = h.ok && h.has_terms()
-                if got {
-                    out.segments = out.segments + 1u64
-                    if !segfile::load_block(&f, h.terms_off, h.terms_len, crc, &mut raw, &mut tsec) { got = false }
-                }
-                if got {
-                    val tw = tsec.span()
-                    match tw {
-                        Option::Some(traw) => {
-                            val raw_len = tsec.len()
-                            var head = ByteReader::new(raw_len)
-                            out.terms = out.terms + head.take_u32(traw)
-                            if keys_only {
-                                val hits = archive::term_keys(traw, 0u64, raw_len)
-                                fold(&hits, traw, &mut slots, &mut hashes, &mut out)
-                            } else {
-                                val hits = archive::terms_with_prefix(traw, 0u64, raw_len, prefix)
-                                fold(&hits, traw, &mut slots, &mut hashes, &mut out)
-                            }
-                        }
-                        Option::None => { }
+        if val Result::Ok(f) = opened_f {
+            val h = segfile::head_of(&f, &mut head_buf)
+            var got = h.ok && h.has_terms()
+            if got {
+                out.segments = out.segments + 1u64
+                if !segfile::load_block(&f, h.terms_off, h.terms_len, crc, &mut raw, &mut tsec) { got = false }
+            }
+            if got {
+                if val Option::Some(traw) = tsec.span() {
+                    val raw_len = tsec.len()
+                    var head = ByteReader::new(raw_len)
+                    out.terms = out.terms + head.take_u32(traw)
+                    if keys_only {
+                        val hits = archive::term_keys(traw, 0u64, raw_len)
+                        fold(&hits, traw, &mut slots, &mut hashes, &mut out)
+                    } else {
+                        val hits = archive::terms_with_prefix(traw, 0u64, raw_len, prefix)
+                        fold(&hits, traw, &mut slots, &mut hashes, &mut out)
                     }
                 }
             }
-            Result::Err(e) => { }
         }
     }
     out

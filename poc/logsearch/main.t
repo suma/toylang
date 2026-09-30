@@ -128,64 +128,50 @@ fn cmd_scan(dir: str, limit: u64) -> u64 {
 
         val loaded = reader.load(path_str)
         var bytes: u64 = 0u64
-        var ok = true
         match loaded {
             Result::Ok(n) => { bytes = n }
             Result::Err(e) => {
                 println("  {path_str}: {e}")
                 failed = failed + 1u64
-                ok = false
+                continue
             }
         }
-        if ok {
-            read_files = read_files + 1u64
-            if reader.was_truncated() { truncated = truncated + 1u64 }
+        read_files = read_files + 1u64
+        if reader.was_truncated() { truncated = truncated + 1u64 }
 
-            var lines: u64 = 0u64
-            var with_ts: u64 = 0u64
-            var f_syslog: u64 = 0u64
-            var f_apache: u64 = 0u64
-            var more = true
-            while more {
-                val nx = reader.next_line()
-                match nx {
-                    Option::Some(l) => {
-                        if l.len > 0u64 {
-                            val scan_win = reader.span()
-                            match scan_win {
-                                Option::Some(sp) => { record::parse_line(sp, l, &mut rec) }
-                                Option::None => { }
-                            }
-                            lines = lines + 1u64
-                            if rec.has_ts {
-                                with_ts = with_ts + 1u64
-                                if ts_min == 0i64 || rec.ts < ts_min { ts_min = rec.ts }
-                                if rec.ts > ts_max { ts_max = rec.ts }
-                            }
-                            if rec.has_labels() { total_labels = total_labels + 1u64 }
-                            if rec.has_host() { total_hosts = total_hosts + 1u64 }
-                            match rec.kind {
-                                LineShape::Plain => { k_plain = k_plain + 1u64 }
-                                LineShape::Syslog => { k_syslog = k_syslog + 1u64  f_syslog = f_syslog + 1u64 }
-                                LineShape::Datetime => { k_datetime = k_datetime + 1u64 }
-                                LineShape::Apache => { k_apache = k_apache + 1u64  f_apache = f_apache + 1u64 }
-                                LineShape::Epoch => { k_epoch = k_epoch + 1u64 }
-                            }
-                        }
-                    }
-                    Option::None => { more = false }
+        var lines: u64 = 0u64
+        var with_ts: u64 = 0u64
+        var f_syslog: u64 = 0u64
+        var f_apache: u64 = 0u64
+        while val Option::Some(l) = reader.next_line() {
+            if l.len > 0u64 {
+                if val Option::Some(sp) = reader.span() { record::parse_line(sp, l, &mut rec) }
+                lines = lines + 1u64
+                if rec.has_ts {
+                    with_ts = with_ts + 1u64
+                    if ts_min == 0i64 || rec.ts < ts_min { ts_min = rec.ts }
+                    if rec.ts > ts_max { ts_max = rec.ts }
+                }
+                if rec.has_labels() { total_labels = total_labels + 1u64 }
+                if rec.has_host() { total_hosts = total_hosts + 1u64 }
+                match rec.kind {
+                    LineShape::Plain => { k_plain = k_plain + 1u64 }
+                    LineShape::Syslog => { k_syslog = k_syslog + 1u64  f_syslog = f_syslog + 1u64 }
+                    LineShape::Datetime => { k_datetime = k_datetime + 1u64 }
+                    LineShape::Apache => { k_apache = k_apache + 1u64  f_apache = f_apache + 1u64 }
+                    LineShape::Epoch => { k_epoch = k_epoch + 1u64 }
                 }
             }
-            total_bytes = total_bytes + bytes
-            total_lines = total_lines + lines
-            total_ts = total_ts + with_ts
-
-            var shape = "mixed"
-            if lines == 0u64 { shape = "empty" }
-            if lines > 0u64 && f_syslog == lines { shape = "syslog" }
-            if lines > 0u64 && f_apache == lines { shape = "apache" }
-            println("  {path_str}  {bytes} B  {lines} lines  {with_ts} dated  {shape}")
         }
+        total_bytes = total_bytes + bytes
+        total_lines = total_lines + lines
+        total_ts = total_ts + with_ts
+
+        var shape = "mixed"
+        if lines == 0u64 { shape = "empty" }
+        if lines > 0u64 && f_syslog == lines { shape = "syslog" }
+        if lines > 0u64 && f_apache == lines { shape = "apache" }
+        println("  {path_str}  {bytes} B  {lines} lines  {with_ts} dated  {shape}")
     }
 
     val ms = watch.elapsed_ms()
@@ -251,41 +237,23 @@ fn cmd_archive(dir: str, spec: str, limit: u64) -> u64 {
         val path_str = path.to_str()
         fi = fi + 1u64
 
-        val loaded = reader.load(path_str)
-        var ok = true
-        match loaded {
-            Result::Ok(n) => { }
-            Result::Err(e) => { println("  {path_str}: {e}")  ok = false }
-        }
-        if ok {
-            read_files = read_files + 1u64
-            var more = true
-            while more {
-                val nx = reader.next_line()
-                match nx {
-                    Option::Some(l) => {
-                        if l.len > 0u64 {
-                            val win = reader.span()
-                            match win {
-                                Option::Some(sp) => {
-                                    record::parse_line(sp, l, &mut rec)
-                                    w.add(sp, l, &rec)
-                                }
-                                Option::None => { }
-                            }
-                            if w.is_full() {
-                                val done = store::place_segment(&mut w, &mut ms, &gens, segid, &crc)
-                                if done == 0u64 { bad = bad + 1u64 }
-                                raw_total = raw_total + w.arena_bytes()
-                                records_total = records_total + w.count()
-                                dat_total = dat_total + done
-                                segments = segments + 1u64
-                                segid = segid + 1u64
-                                w.reset()
-                            }
-                        }
-                    }
-                    Option::None => { more = false }
+        if val Result::Err(e) = reader.load(path_str) { println("  {path_str}: {e}")  continue }
+        read_files = read_files + 1u64
+        while val Option::Some(l) = reader.next_line() {
+            if l.len > 0u64 {
+                if val Option::Some(sp) = reader.span() {
+                    record::parse_line(sp, l, &mut rec)
+                    w.add(sp, l, &rec)
+                }
+                if w.is_full() {
+                    val done = store::place_segment(&mut w, &mut ms, &gens, segid, &crc)
+                    if done == 0u64 { bad = bad + 1u64 }
+                    raw_total = raw_total + w.arena_bytes()
+                    records_total = records_total + w.count()
+                    dat_total = dat_total + done
+                    segments = segments + 1u64
+                    segid = segid + 1u64
+                    w.reset()
                 }
             }
         }
@@ -667,10 +635,7 @@ fn prune_empty_days(day_dir: str) {
 fn drop_dir(path: &String) -> bool {
     val gone = fs::remove_dir(path.to_str())
     var ok = false
-    match gone {
-        Result::Ok(u) => { ok = true }
-        Result::Err(e) => { }
-    }
+    if val Result::Ok(u) = gone { ok = true }
     ok
 }
 
@@ -737,99 +702,86 @@ fn cmd_top_linked(dir: str, q: &Query, field: str, limit: u64) -> u64 {
         val seg_str = seg_path.to_str()
         si = si + 1u64
         val opened_f = File::open(seg_str)
-        match opened_f {
-            Result::Ok(f) => {
-                # Two sections and nothing else: the traversal never
-                # reads a frame, so a segment costs its directory plus
-                # the term and link sections.
-                val h = segfile::head_of(&f, &mut head_buf)
-                var got = h.ok && h.has_terms() && h.has_links()
-                if got {
-                    if !segfile::load_block(&f, h.terms_off, h.terms_len, &crc, &mut raw, &mut tsec) { got = false }
-                }
-                if got {
-                    if !segfile::load_block(&f, h.links_off, h.links_len, &crc, &mut raw, &mut lsec) { got = false }
-                }
-                if got {
-                        val tw = tsec.span()
-                        val lw = lsec.span()
-                        match tw {
-                        Option::Some(traw) => {
-                        match lw {
-                        Option::Some(lraw) => {
-                            val aw = anchor.as_span()
-                            match aw {
-                                Option::Some(want) => {
-                                    val id = archive::term_id_of(traw, tsec.len(), want, anchor.len())
-                                    if id != archive::TERM_NONE {
-                                        segs_hit = segs_hit + 1u64
-                                        var to_ids: Vec<u32> = Vec::new()
-                                        var to_counts: Vec<u32> = Vec::new()
-                                        val n = archive::links_of(lraw, lsec.len(), id, &mut to_ids, &mut to_counts)
-                                        rows = rows + n
-                                        val spans = archive::term_spans(traw, tsec.len())
-                                        var i: u64 = 0u64
-                                        while i < to_ids.size() {
-                                            val tid: u32 = to_ids.get(i)
-                                            val cnt: u32 = to_counts.get(i)
-                                            val sp: u64 = spans.get(tid as u64)
-                                            val at = record::span_start(sp)
-                                            val nlen = record::span_len(sp)
-                                            if nlen > plen {
-                                                var same = true
-                                                var k: u64 = 0u64
-                                                while k < plen && same {
-                                                    val a: u8 = traw.get(at + k)
-                                                    val b: u8 = want_prefix.get(k)
-                                                    if a != b { same = false }
-                                                    k = k + 1u64
-                                                }
-                                                if same {
-                                                    val vat = at + plen
-                                                    val vlen = nlen - plen
-                                                    val key = extract::hash_span(traw, vat, vlen)
-                                                    val mask = slot_bits - 1u64
-                                                    var slot = key & mask
-                                                    var placed = false
-                                                    while !placed {
-                                                        val cell: u64 = slots.get(slot)
-                                                        if cell == 0u64 {
-                                                            val pos = hashes.size()
-                                                            hashes.push(key)
-                                                            counts.push(cnt as u64)
-                                                            val nm = query::text_of(traw, vat, vlen)
-                                                            names.push(nm)
-                                                            slots.set(slot, pos + 1u64)
-                                                            placed = true
-                                                        } else {
-                                                            val pos = cell - 1u64
-                                                            val hv: u64 = hashes.get(pos)
-                                                            if hv == key {
-                                                                val prev: u64 = counts.get(pos)
-                                                                counts.set(pos, prev + (cnt as u64))
-                                                                placed = true
-                                                            } else {
-                                                                slot = (slot + 1u64) & mask
-                                                            }
-                                                        }
+        if val Result::Ok(f) = opened_f {
+            # Two sections and nothing else: the traversal never
+            # reads a frame, so a segment costs its directory plus
+            # the term and link sections.
+            val h = segfile::head_of(&f, &mut head_buf)
+            var got = h.ok && h.has_terms() && h.has_links()
+            if got {
+                if !segfile::load_block(&f, h.terms_off, h.terms_len, &crc, &mut raw, &mut tsec) { got = false }
+            }
+            if got {
+                if !segfile::load_block(&f, h.links_off, h.links_len, &crc, &mut raw, &mut lsec) { got = false }
+            }
+            if got {
+                val tw = tsec.span()
+                val lw = lsec.span()
+                if val Option::Some(traw) = tw {
+                    if val Option::Some(lraw) = lw {
+                        if val Option::Some(want) = anchor.as_span() {
+                            val id = archive::term_id_of(traw, tsec.len(), want, anchor.len())
+                            if id != archive::TERM_NONE {
+                                segs_hit = segs_hit + 1u64
+                                var to_ids: Vec<u32> = Vec::new()
+                                var to_counts: Vec<u32> = Vec::new()
+                                val n = archive::links_of(lraw, lsec.len(), id, &mut to_ids, &mut to_counts)
+                                rows = rows + n
+                                val spans = archive::term_spans(traw, tsec.len())
+                                var i: u64 = 0u64
+                                while i < to_ids.size() {
+                                    val tid: u32 = to_ids.get(i)
+                                    val cnt: u32 = to_counts.get(i)
+                                    val sp: u64 = spans.get(tid as u64)
+                                    val at = record::span_start(sp)
+                                    val nlen = record::span_len(sp)
+                                    if nlen > plen {
+                                        var same = true
+                                        var k: u64 = 0u64
+                                        while k < plen && same {
+                                            val a: u8 = traw.get(at + k)
+                                            val b: u8 = want_prefix.get(k)
+                                            if a != b { same = false }
+                                            k = k + 1u64
+                                        }
+                                        if same {
+                                            val vat = at + plen
+                                            val vlen = nlen - plen
+                                            val key = extract::hash_span(traw, vat, vlen)
+                                            val mask = slot_bits - 1u64
+                                            var slot = key & mask
+                                            var placed = false
+                                            while !placed {
+                                                val cell: u64 = slots.get(slot)
+                                                if cell == 0u64 {
+                                                    val pos = hashes.size()
+                                                    hashes.push(key)
+                                                    counts.push(cnt as u64)
+                                                    val nm = query::text_of(traw, vat, vlen)
+                                                    names.push(nm)
+                                                    slots.set(slot, pos + 1u64)
+                                                    placed = true
+                                                } else {
+                                                    val pos = cell - 1u64
+                                                    val hv: u64 = hashes.get(pos)
+                                                    if hv == key {
+                                                        val prev: u64 = counts.get(pos)
+                                                        counts.set(pos, prev + (cnt as u64))
+                                                        placed = true
+                                                    } else {
+                                                        slot = (slot + 1u64) & mask
                                                     }
                                                 }
                                             }
-                                            i = i + 1u64
                                         }
                                     }
+                                    i = i + 1u64
                                 }
-                                Option::None => { }
                             }
                         }
-                        Option::None => { }
-                        }
-                        }
-                        Option::None => { }
-                        }
+                    }
                 }
             }
-            Result::Err(e) => { }
         }
     }
 
@@ -1098,118 +1050,112 @@ fn cmd_fields(dir: str, field: str, limit: u64) -> u64 {
                     }
                 }
                 if good {
-                                val idx_w = recs.span()
-                                val aw = arena_buf.span()
-                                match idx_w {
-                                    Option::Some(idx) => {
-                                        match aw {
-                                            Option::Some(arena) => {
-                                                val count = h.records
-                                                var rd = ByteReader::new(recs.len())
-                                                var line_at: u64 = 0u64
-                                                var r: u64 = 0u64
-                                                while r < count && rd.remaining() > 0u64 {
-                                                    val flags = rd.take_varint(idx)
-                                                    val line_len = rd.take_varint(idx)
-                                                    val ts = rd.take_varint(idx)
-                                                    val host_rel = rd.take_varint(idx)
-                                                    val host_len = rd.take_varint(idx)
-                                                    val tag_rel = rd.take_varint(idx)
-                                                    val tag_len = rd.take_varint(idx)
-                                                    val labels_rel = rd.take_varint(idx)
-                                                    val labels_len = rd.take_varint(idx)
-                                                    val body_rel = rd.take_varint(idx)
-                                                    val body_len = rd.take_varint(idx)
-                                                    val kind = ((flags >> 1u64) & 7u64) as u32
-                                                    examined = examined + 1u64
+                    val idx_w = recs.span()
+                    val aw = arena_buf.span()
+                    if val Option::Some(idx) = idx_w {
+                        if val Option::Some(arena) = aw {
+                            val count = h.records
+                            var rd = ByteReader::new(recs.len())
+                            var line_at: u64 = 0u64
+                            var r: u64 = 0u64
+                            while r < count && rd.remaining() > 0u64 {
+                                val flags = rd.take_varint(idx)
+                                val line_len = rd.take_varint(idx)
+                                val ts = rd.take_varint(idx)
+                                val host_rel = rd.take_varint(idx)
+                                val host_len = rd.take_varint(idx)
+                                val tag_rel = rd.take_varint(idx)
+                                val tag_len = rd.take_varint(idx)
+                                val labels_rel = rd.take_varint(idx)
+                                val labels_len = rd.take_varint(idx)
+                                val body_rel = rd.take_varint(idx)
+                                val body_len = rd.take_varint(idx)
+                                val kind = ((flags >> 1u64) & 7u64) as u32
+                                examined = examined + 1u64
 
-                                                    var at: u64 = 0u64
-                                                    var flen: u64 = 0u64
-                                                    match code {
-                                                        Field::Host => {
-                                                            at = line_at + host_rel
-                                                            flen = host_len
-                                                        }
-                                                        Field::Tag => {
-                                                            at = line_at + tag_rel
-                                                            flen = tag_len
-                                                        }
-                                                        _ => {
-                                                            if kind == LineShape::Apache as u32 {
-                                                                val f = extract::http(arena, line_at, line_len)
-                                                                if f.ok {
-                                                                    val packed = match code {
-                                                                        Field::Status => f.status,
-                                                                        Field::Method => f.method,
-                                                                        Field::Path => f.path,
-                                                                        Field::Client => f.client,
-                                                                        Field::Vhost => f.vhost,
-                                                                        Field::Ua => f.ua,
-                                                                        Field::Proto => f.proto,
-                                                                        _ => 0u64,
-                                                                    }
-                                                                    at = extract::field_start(packed)
-                                                                    flen = extract::field_len(packed)
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-
-                                                    # `host` is also a reserved label (DATA_MODEL.md
-                                                    # section 2), and the index folds `host=web01`
-                                                    # into the same term as a syslog header host.
-                                                    # The reference has to do the same, or it is the
-                                                    # one that comes up short. A record that says the
-                                                    # same host both ways is one record.
-                                                    var at2: u64 = 0u64
-                                                    var flen2: u64 = 0u64
-                                                    val is_host = match code { Field::Host => true, _ => false }
-                                                    if is_host && labels_len > 0u64 {
-                                                        val lv = label_value(arena, line_at + labels_rel, labels_len, "host")
-                                                        val l_at = record::span_start(lv)
-                                                        val l_len = record::span_len(lv)
-                                                        if l_len > 0u64 && !same_bytes(arena, at, flen, l_at, l_len) {
-                                                            at2 = l_at
-                                                            flen2 = l_len
-                                                        }
-                                                    }
-                                                    var pass: u64 = 0u64
-                                                    while pass < 2u64 {
-                                                        var v_at = at
-                                                        var v_len = flen
-                                                        if pass == 1u64 {
-                                                            v_at = at2
-                                                            v_len = flen2
-                                                        }
-                                                        if v_len > 0u64 {
-                                                            carried = carried + 1u64
-                                                            val h = extract::hash_span(arena, v_at, v_len)
-                                                            val seen = index_of.get(h)
-                                                            match seen {
-                                                                Option::Some(pos) => {
-                                                                    val c: u64 = counts.get(pos)
-                                                                    counts.set(pos, c + 1u64)
-                                                                }
-                                                                Option::None => {
-                                                                    val pos = names.size()
-                                                                    val nm = query::text_of(arena, v_at, v_len)
-                                                                    names.push(nm)
-                                                                    counts.push(1u64)
-                                                                    index_of.insert(h, pos)
-                                                                }
-                                                            }
-                                                        }
-                                                        pass = pass + 1u64
-                                                    }
-                                                    line_at = line_at + line_len
-                                                    r = r + 1u64
+                                var at: u64 = 0u64
+                                var flen: u64 = 0u64
+                                match code {
+                                    Field::Host => {
+                                        at = line_at + host_rel
+                                        flen = host_len
+                                    }
+                                    Field::Tag => {
+                                        at = line_at + tag_rel
+                                        flen = tag_len
+                                    }
+                                    _ => {
+                                        if kind == LineShape::Apache as u32 {
+                                            val f = extract::http(arena, line_at, line_len)
+                                            if f.ok {
+                                                val packed = match code {
+                                                    Field::Status => f.status,
+                                                    Field::Method => f.method,
+                                                    Field::Path => f.path,
+                                                    Field::Client => f.client,
+                                                    Field::Vhost => f.vhost,
+                                                    Field::Ua => f.ua,
+                                                    Field::Proto => f.proto,
+                                                    _ => 0u64,
                                                 }
+                                                at = extract::field_start(packed)
+                                                flen = extract::field_len(packed)
                                             }
-                                            Option::None => { }
                                         }
                                     }
-                                    Option::None => { }
                                 }
+
+                                # `host` is also a reserved label (DATA_MODEL.md
+                                # section 2), and the index folds `host=web01`
+                                # into the same term as a syslog header host.
+                                # The reference has to do the same, or it is the
+                                # one that comes up short. A record that says the
+                                # same host both ways is one record.
+                                var at2: u64 = 0u64
+                                var flen2: u64 = 0u64
+                                val is_host = match code { Field::Host => true, _ => false }
+                                if is_host && labels_len > 0u64 {
+                                    val lv = label_value(arena, line_at + labels_rel, labels_len, "host")
+                                    val l_at = record::span_start(lv)
+                                    val l_len = record::span_len(lv)
+                                    if l_len > 0u64 && !same_bytes(arena, at, flen, l_at, l_len) {
+                                        at2 = l_at
+                                        flen2 = l_len
+                                    }
+                                }
+                                var pass: u64 = 0u64
+                                while pass < 2u64 {
+                                    var v_at = at
+                                    var v_len = flen
+                                    if pass == 1u64 {
+                                        v_at = at2
+                                        v_len = flen2
+                                    }
+                                    if v_len > 0u64 {
+                                        carried = carried + 1u64
+                                        val h = extract::hash_span(arena, v_at, v_len)
+                                        val seen = index_of.get(h)
+                                        match seen {
+                                            Option::Some(pos) => {
+                                                val c: u64 = counts.get(pos)
+                                                counts.set(pos, c + 1u64)
+                                            }
+                                            Option::None => {
+                                                val pos = names.size()
+                                                val nm = query::text_of(arena, v_at, v_len)
+                                                names.push(nm)
+                                                counts.push(1u64)
+                                                index_of.insert(h, pos)
+                                            }
+                                        }
+                                    }
+                                    pass = pass + 1u64
+                                }
+                                line_at = line_at + line_len
+                                r = r + 1u64
+                            }
+                        }
+                    }
                 }
             }
             Result::Err(e) => { println("  {seg_str}: {e}") }
@@ -1295,40 +1241,28 @@ fn cmd_object(dir: str, spec: str) -> u64 {
                 val h = segfile::head_of(&f, &mut head_buf)
                 if h.ok && h.has_terms() {
                     if segfile::load_block(&f, h.terms_off, h.terms_len, &crc, &mut raw, &mut tsec) {
-                        val tw = tsec.span()
-                        match tw {
-                            Option::Some(traw) => {
-                                val nw = want.as_span()
-                                match nw {
-                                    Option::Some(wsp) => {
-                                        val post = archive::term_postings(traw, tsec.len(), wsp, want.len())
-                                        if post.found {
-                                            held = held + 1u64
-                                            count = count + post.doc_count
-                                            val id = archive::term_id_of(traw, tsec.len(), wsp, want.len())
-                                            if h.has_objects() {
-                                                tabled = tabled + 1u64
-                                                if segfile::load_block(&f, h.objs_off, h.objs_len, &crc, &mut raw, &mut osec) {
-                                                    val ow = osec.span()
-                                                    match ow {
-                                                        Option::Some(oraw) => {
-                                                            val sp = archive::object_span(oraw, osec.len(), id)
-                                                            if sp.found {
-                                                                dated = dated + 1u64
-                                                                if sp.first < first { first = sp.first }
-                                                                if sp.last > last { last = sp.last }
-                                                            }
-                                                        }
-                                                        Option::None => { }
-                                                    }
+                        if val Option::Some(traw) = tsec.span() {
+                            if val Option::Some(wsp) = want.as_span() {
+                                val post = archive::term_postings(traw, tsec.len(), wsp, want.len())
+                                if post.found {
+                                    held = held + 1u64
+                                    count = count + post.doc_count
+                                    val id = archive::term_id_of(traw, tsec.len(), wsp, want.len())
+                                    if h.has_objects() {
+                                        tabled = tabled + 1u64
+                                        if segfile::load_block(&f, h.objs_off, h.objs_len, &crc, &mut raw, &mut osec) {
+                                            if val Option::Some(oraw) = osec.span() {
+                                                val sp = archive::object_span(oraw, osec.len(), id)
+                                                if sp.found {
+                                                    dated = dated + 1u64
+                                                    if sp.first < first { first = sp.first }
+                                                    if sp.last > last { last = sp.last }
                                                 }
                                             }
                                         }
                                     }
-                                    Option::None => { }
                                 }
                             }
-                            Option::None => { }
                         }
                     }
                 }
@@ -1465,28 +1399,19 @@ fn e2e_fixture(n: u64) -> String {
 fn e2e_wipe(path: str) {
     if fs::is_dir(path) {
         val listed = fs::list_dir(path)
-        match listed {
-            Result::Ok(names) => {
-                var i = 0u64
-                while i < names.size() {
-                    val nm: &String = names.borrow(i)
-                    e2e_wipe("{path}/{nm.to_str()}")
-                    i = i + 1u64
-                }
+        if val Result::Ok(names) = listed {
+            var i = 0u64
+            while i < names.size() {
+                val nm: &String = names.borrow(i)
+                e2e_wipe("{path}/{nm.to_str()}")
+                i = i + 1u64
             }
-            Result::Err(e) => { }
         }
         val gone = fs::remove_dir(path)
-        match gone {
-            Result::Ok(u) => { }
-            Result::Err(e) => { panic("e2e: cannot remove {path}: {e}") }
-        }
+        if val Result::Err(e) = gone { panic("e2e: cannot remove {path}: {e}") }
     } elif fs::is_file(path) {
         val gone = fs::remove_file(path)
-        match gone {
-            Result::Ok(u) => { }
-            Result::Err(e) => { panic("e2e: cannot remove {path}: {e}") }
-        }
+        if val Result::Err(e) = gone { panic("e2e: cannot remove {path}: {e}") }
     }
 }
 
@@ -1495,16 +1420,10 @@ fn e2e_logs(stem: str, lines: u64) -> String {
     val dir = "{stem}-logs"
     e2e_wipe(dir)
     val made = fs::mkdir_all(dir)
-    match made {
-        Result::Ok(u) => { }
-        Result::Err(e) => { panic("e2e: cannot make {dir}: {e}") }
-    }
+    if val Result::Err(e) = made { panic("e2e: cannot make {dir}: {e}") }
     val body = e2e_fixture(lines)
     val wrote = io::write_file("{dir}/app.log", body.to_str())
-    match wrote {
-        Result::Ok(k) => { }
-        Result::Err(e) => { panic("e2e: cannot write the fixture log: {e}") }
-    }
+    if val Result::Err(e) = wrote { panic("e2e: cannot write the fixture log: {e}") }
     val out = String::from_str(dir)
     out
 }
@@ -1570,10 +1489,7 @@ test "archiving a directory with no logs is not a success" {
     val dir = "build/e2e-empty-logs"
     e2e_wipe(dir)
     val made = fs::mkdir_all(dir)
-    match made {
-        Result::Ok(u) => { }
-        Result::Err(e) => { panic("cannot make {dir}: {e}") }
-    }
+    if val Result::Err(e) = made { panic("cannot make {dir}: {e}") }
     assert_eq(cmd_archive(dir, "build/e2e-empty-arch", 10u64), 1u64)
 }
 
@@ -1668,10 +1584,7 @@ unsafe fn e2e_flip_byte(path: &String, at: u64) {
     match sp {
         Option::Some(bytes) => {
             val wrote = io::write_file_bytes(ps, bytes)
-            match wrote {
-                Result::Ok(k) => { }
-                Result::Err(e) => { panic("e2e: cannot write {ps}: {e}") }
-            }
+            if val Result::Err(e) = wrote { panic("e2e: cannot write {ps}: {e}") }
         }
         Option::None => { panic("e2e: empty segment") }
     }

@@ -124,11 +124,7 @@ test "a mount that is full or readonly is not picked" {
     # quota に達したら full になり、選ばれなくなる。
     ms.set_used(1u64, 107374182400u64)
     assert_eq(mount::state_name(ms.state_of(1u64)), "full")
-    val none = ms.pick()
-    match none {
-        Option::Some(i) => { panic("a full mount must not be picked") }
-        Option::None => { }
-    }
+    if val Option::Some(i) = ms.pick() { panic("a full mount must not be picked") }
 }
 
 test "a degraded mount stops taking writes" {
@@ -150,10 +146,7 @@ test "a mount directory keeps the identity it was given" {
     val dir = "build/mount-identity"
     val meta = "{dir}/meta"
     val made = fs::mkdir_all(meta)
-    match made {
-        Result::Ok(u) => { }
-        Result::Err(e) => { panic("mkdir {meta}: {e}") }
-    }
+    if val Result::Err(e) = made { panic("mkdir {meta}: {e}") }
     val f = mount::meta_file(dir)
     val gone = fs::remove_file(f.to_str())
     match gone {

@@ -58,10 +58,7 @@ fn write_fixture(stem: str) -> String {
     val body = fixture()
     val log = joined(stem, ".log")
     val wrote = io::write_file(log.to_str(), body.to_str())
-    match wrote {
-        Result::Ok(n) => { }
-        Result::Err(e) => { panic("fixture: cannot write {log}: {e}") }
-    }
+    if val Result::Err(e) = wrote { panic("fixture: cannot write {log}: {e}") }
     log
 }
 
@@ -185,42 +182,23 @@ fn build_and_count(stem: str, oracle: &mut Oracle) -> String {
     val crc = Crc32::new()
     var terms: Vec<String> = Vec::new()
 
-    val loaded = reader.load(log.to_str())
-    match loaded {
-        Result::Ok(n) => { }
-        Result::Err(e) => { panic("fixture: cannot read back {log}: {e}") }
-    }
-    var more = true
-    while more {
-        val nx = reader.next_line()
-        match nx {
-            Option::Some(l) => {
-                if l.len > 0u64 {
-                    val win = reader.span()
-                    match win {
-                        Option::Some(sp) => {
-                            record::parse_line(sp, l, &mut rec)
-                            record_terms(sp, l, &rec, &mut terms)
-                            var i = 0u64
-                            while i < terms.size() {
-                                val t: &String = terms.borrow(i)
-                                oracle.add(&t)
-                                i = i + 1u64
-                            }
-                            w.add(sp, l, &rec)
-                        }
-                        Option::None => { }
-                    }
+    if val Result::Err(e) = reader.load(log.to_str()) { panic("fixture: cannot read back {log}: {e}") }
+    while val Option::Some(l) = reader.next_line() {
+        if l.len > 0u64 {
+            if val Option::Some(sp) = reader.span() {
+                record::parse_line(sp, l, &mut rec)
+                record_terms(sp, l, &rec, &mut terms)
+                var i = 0u64
+                while i < terms.size() {
+                    val t: &String = terms.borrow(i)
+                    oracle.add(&t)
+                    i = i + 1u64
                 }
+                w.add(sp, l, &rec)
             }
-            Option::None => { more = false }
         }
     }
-    val done = w.finish(stem, 1u64, &crc)
-    match done {
-        Result::Ok(n) => { }
-        Result::Err(e) => { panic("fixture: cannot write segment: {e}") }
-    }
+    if val Result::Err(e) = w.finish(stem, 1u64, &crc) { panic("fixture: cannot write segment: {e}") }
     val seg = joined(stem, ".seg")
     seg
 }

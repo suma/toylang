@@ -102,6 +102,16 @@ fn describe_net(e: NetError) -> str {
     }
 }
 
+# `$TMPDIR` when set, so parallel runs of this example do not share a
+# file; `/tmp` otherwise.
+fn temp_dir() -> str {
+    val v = io::env_var("TMPDIR")
+    match v {
+        Result::Ok(dir) => dir,
+        Result::Err(_) => "/tmp",
+    }
+}
+
 fn main() -> u64 {
     # A path that is not there. The reason survives the conversion and
     # prints through `Display`.
@@ -116,7 +126,7 @@ fn main() -> u64 {
 
     # The same code path with a file that exists but does not hold a
     # number: a different library, a different error, one return type.
-    val path = "/tmp/toylang_error_model_demo.txt"
+    val path: str = "{temp_dir()}/toylang_error_model_demo.txt"
     val w = io::write_file(path, "not-a-number")
     val b = match w {
         Result::Ok(_) => {

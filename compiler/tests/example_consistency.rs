@@ -398,12 +398,33 @@ fn check_example(path: &Path) -> Result<(), String> {
 /// a shard down to about that, which is as far as widening helps.
 const SHARDS: usize = 12;
 
+/// Give this test process a `TMPDIR` of its own (EXAMPLE-TEMP-PATH-RACE).
+///
+/// Examples that touch the filesystem (`fs_file.t`, `error_model.t`)
+/// write a fixed file name under `$TMPDIR`. The plain sweep and the
+/// poison sweep run the same example in parallel processes, and with a
+/// shared directory one rewrote the other's file mid-run — a flake seen
+/// every few full runs. nextest runs one test per process, so setting
+/// the variable at the start of the test is setting it for the whole
+/// process, the AOT binaries it spawns included.
+fn own_scratch_dir(sweep: &str, shard: usize) {
+    let dir = std::env::temp_dir().join(format!(
+        "toylang-examples-{sweep}-{shard}-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("create a scratch directory");
+    // SAFETY: nextest runs each test in its own process, and this runs
+    // before the test starts any thread that could read the environment.
+    unsafe { std::env::set_var("TMPDIR", &dir) };
+}
+
 /// Shard the sweep so nextest runs the parts in parallel; one serial
 /// pass over ~140 programs takes about `SHARDS` times as long.
 fn check_shard(shard: usize, shards: usize) {
     if skip_e2e() {
         return;
     }
+    own_scratch_dir("agree", shard);
     // Without the feature, `RunOptions::jit = true` is silently ignored
     // and the JIT column below is a second tree-walker run — a third of
     // the sweep comparing a backend against itself and always agreeing.
@@ -579,6 +600,7 @@ fn check_poison_shard(shard: usize) {
     if skip_e2e() {
         return;
     }
+    own_scratch_dir("poison", shard);
     let failures: Vec<String> = all_examples()
         .into_iter()
         .enumerate()

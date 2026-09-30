@@ -12,6 +12,9 @@
 
 ### 2026-09-30
 
+- **EXAMPLE-TEMP-PATH-RACE — example の一時ファイル競合** — `example_consistency` の通常 /
+  poison の各シャードが自分専用の `TMPDIR` を持つ。`error_model.t` も `/tmp` 直書きをやめて
+  `TMPDIR` を読む。全体実行 5 回連続でフレークなし。
 - **LLM-TOOLING-FIX-REST** — `toy fix --dry-run` はパッケージの複製で全巡を回して報告する
   (元のファイルは触らない)。同 impl の同名 method は全組を最初の宣言に対して報告。
   呼び出し式への数値キャスト提案 (`f() as u8`) は既存方針どおり出さない (閉じる)。
@@ -2626,13 +2629,6 @@
   含まない連鎖 (壊れた struct の variant 経由の誤り等) は拾えない。
   パーサが**壊れた宣言の**範囲も記録すれば本文に頼らずに済む。
   宣言ごと 1 件のパースエラー抑制 (P1) はそのまま。
-- **EXAMPLE-TEMP-PATH-RACE** — `interpreter/example/fs_file.t`
-  (`$TMPDIR/toylang_example_fs_file.bin`) と `error_model.t`
-  (`/tmp/toylang_error_model_demo.txt`) が固定パスに書くので、
-  `example_consistency` の通常レーンと poison レーンが並列に走ると
-  互いのファイルを書き換えてフレークする (2026-09-29/30 に全体実行で
-  数回に 1 回観測)。パスをレーンごとに変えるか、両テストを直列にする。
-
 - **TREE-WALKER-DYNAMIC-GENERIC-SCOPE — 呼び出し先が呼び出し元の型引数を
   見る** — tree-walker の `merged_generic_scope` は**実行中の全呼び出し**の
   scope を合わせたもの (動的スコープ) なので、generic でない関数の中でも

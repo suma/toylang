@@ -12,6 +12,8 @@
 
 ### 2026-09-30
 
+- **LLM-TOOLING-QUERY-REST — `toy query` の残り** — trait のメソッド宣言 (refs は全 impl
+  への呼び出し)、match パターンの variant と束縛、値として渡した関数名。
 - **NEWLINE-BINARY-AMP — 行頭の `&` は新しい式** — `-` と同じ規則。`val n = 5u64` の次行の
   `&n` が `5u64 & n` と読まれていた (REBORROW-CHECK-GAPS (2) の正体)。AST キャッシュ 63。
 - **REBORROW-CHECK-GAPS (1) — 値渡しの引数への参照を返す関数を拒否** — 検査が本体の
@@ -2614,11 +2616,11 @@
 以下 LLM-TOOLING-* は 2026-09-29/30 の LLM 向け道具の第 2 ラウンド
 ([`LLM_TOOLING.md`](LLM_TOOLING.md)) で残ったもの。
 
-- **LLM-TOOLING-QUERY-REST — `toy query` の残り** — trait のメソッド宣言
-  (`trait Area { fn area }` の `area`) の上での `def` / `refs`、match の
-  **パターン**の中の variant・束縛 (パターンは式ではないので位置プールに
-  載らない)、関数名を値として渡した先。ブロックスコープは本文の波括弧で
-  判定しているので、マクロ的な脱糖で生えた束縛は対象外。
+- **LLM-TOOLING-QUERY-TEXT — `toy query` の本文頼みの部分** — match パターンの
+  variant (`Owner::Variant` の本文検索)、パターンの束縛 (同じ行の `=>` / `if val`
+  の `=` より前の同名の語)、値として渡した関数名 (呼び出しでない語) は本文から
+  探している (コメントと文字列は除く)。パターンに位置がないため。パーサが
+  パターンの位置を位置プールに載せれば木から引ける。
 - **LLM-TOOLING-PARSE-RECOVERY-HEURISTIC** — 関数の外で壊れた宣言の範囲は
   **本文の行頭のキーワード**で求め、その宣言の名前を名指す型エラーを捨てる
   (`interpreter::top_level_declarations`)。字下げした宣言や、名前を

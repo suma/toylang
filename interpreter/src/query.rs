@@ -61,6 +61,9 @@ enum Target {
     Const(DefaultSymbol),
     /// `Shape::Circle`: a variant of an enum.
     Variant { owner: DefaultSymbol, variant: DefaultSymbol },
+    /// A method a trait declares; its uses are the calls that reach
+    /// any implementation of it.
+    TraitMethod { owner: DefaultSymbol, method: DefaultSymbol, decl: Place },
 }
 
 pub struct Index<'a> {
@@ -435,6 +438,16 @@ impl<'a> Index<'a> {
                         }
                     }
                 }
+                Some(Stmt::TraitDecl { name, methods, .. }) => {
+                    for sig in &methods {
+                        match self.word_place(file, sig.node.start, usize::MAX, sig.name) {
+                            Some(decl) if on(&decl) => {
+                                return Some(Target::TraitMethod { owner: name, method: sig.name, decl });
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 Some(Stmt::Val(name, _, _)) | Some(Stmt::Var(name, _, _)) => {
                     let Some(decl) = self.word_place(file, loc.offset as usize, usize::MAX, name) else {
                         continue;
@@ -550,7 +563,7 @@ impl<'a> Index<'a> {
                 _ => {}
             }
         }
-        None
+        self.target_from_text(file, offset)
     }
 
     /// The declaration a local name used at `at` refers to: the latest
@@ -580,9 +593,139 @@ impl<'a> Index<'a> {
         let place = match decl {
             Some(off) => self.word_place(file, off, at, name)?,
             None if c.params.contains(&name) => self.word_place(file, c.start, c.end, name)?,
-            None => return None,
+            None => self.pattern_binding(file, c.start, at, name)?,
         };
         Some(Target::Local { scope, name, decl: place })
+    }
+
+    /// A name a `match` arm or `if val` binds. Patterns are not
+    /// expressions, so they are not in the location pool; the binding
+    /// is the latest occurrence of the name before its use that sits in
+    /// a pattern — before the `=>` of its line, or before the `=` of an
+    /// `if val`.
+    fn pattern_binding(&self, file: FileId, from: usize, at: usize, name: DefaultSymbol) -> Option<Place> {
+        let source = self.program.source_map.source(file)?;
+        let word = self.interner.resolve(name)?;
+        let mut best = None;
+        let mut cursor = from;
+        while let Some(found) = self.program.source_map.find_word(file, cursor, at, word) {
+            let off = found.offset as usize;
+            cursor = found.end_offset as usize;
+            let line_start = source[..off].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let line_end = source[off..].find('\n').map(|i| off + i).unwrap_or(source.len());
+            let after = &source[found.end_offset as usize..line_end];
+            let before = &source[line_start..off];
+            let in_arm = after.contains("=>");
+            let in_if_val = before.contains("if val") && after.contains('=');
+            if in_arm || in_if_val {
+                best = Some(self.place(&found));
+            }
+        }
+        best
+    }
+
+    /// The identifier under `offset`, from the text.
+    fn word_at(&self, file: FileId, offset: usize) -> Option<(usize, usize, String)> {
+        let source = self.program.source_map.source(file)?;
+        let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+        let bytes = source.as_bytes();
+        if offset >= bytes.len() || !is_ident(bytes[offset]) {
+            return None;
+        }
+        let start = (0..offset).rev().take_while(|i| is_ident(bytes[*i])).last().unwrap_or(offset);
+        let end = (offset..bytes.len()).find(|i| !is_ident(bytes[*i])).unwrap_or(bytes.len());
+        Some((start, end, source[start..end].to_string()))
+    }
+
+    /// Resolve from the text what the tree does not record: a variant in
+    /// a pattern (`Shape::Circle(r) =>`), and a function named as a
+    /// value (`apply(twice, 3)`, which the checker rewrote into a
+    /// closure).
+    fn target_from_text(&self, file: FileId, offset: usize) -> Option<Target> {
+        let (start, _, word) = self.word_at(file, offset)?;
+        let source = self.program.source_map.source(file)?;
+        let sym = self.interner.get(&word)?;
+        let before = source[..start].trim_end();
+        if let Some(q) = before.strip_suffix("::") {
+            let q = q.trim_end();
+            let owner_text: String = q.chars().rev().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect::<Vec<_>>().into_iter().rev().collect();
+            if let Some(owner) = self.interner.get(&owner_text) {
+                let is_variant = (0..self.program.statement.len()).any(|i| {
+                    matches!(self.program.statement.get(&StmtRef(i as u32)),
+                        Some(Stmt::EnumDecl { name, variants, .. }) if name == owner && variants.iter().any(|v| v.name == sym))
+                });
+                if is_variant {
+                    return Some(Target::Variant { owner, variant: sym });
+                }
+            }
+        }
+        if let Some(t) = self.local(file, offset, sym) {
+            return Some(t);
+        }
+        self.callables
+            .iter()
+            .position(|c| c.owner.is_none() && c.bare == sym)
+            .map(Target::Callable)
+    }
+
+    /// Every whole-word `Owner::Variant` in the program's text — how a
+    /// variant written in a pattern is found.
+    fn qualified_in_text(&self, owner: DefaultSymbol, variant: DefaultSymbol) -> Vec<Place> {
+        let (Some(o), Some(v)) = (self.interner.resolve(owner), self.interner.resolve(variant)) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (file, f) in self.program.source_map.iter() {
+            let skip = frontend::source_map::non_code_ranges(&f.source);
+            let mut cursor = 0;
+            while let Some(found) = self.program.source_map.find_word(file, cursor, usize::MAX, o) {
+                cursor = found.end_offset as usize;
+                if in_ranges(&skip, found.offset as usize) {
+                    continue;
+                }
+                let rest = &f.source[cursor..];
+                let trimmed = rest.trim_start();
+                if let Some(after) = trimmed.strip_prefix("::") {
+                    let gap = rest.len() - after.len();
+                    let vstart = cursor + gap + (after.len() - after.trim_start().len());
+                    if let Some(p) = self.program.source_map.find_word(file, vstart, vstart + v.len(), v) {
+                        out.push(self.place(&p));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Where a free function is named as a value rather than called:
+    /// the whole word, not followed by `(`, not its own declaration,
+    /// and not a local of the same name.
+    fn value_uses(&self, i: usize) -> Vec<Place> {
+        let c = &self.callables[i];
+        let Some(word) = self.interner.resolve(c.bare) else { return Vec::new() };
+        let mut out = Vec::new();
+        for (file, f) in self.program.source_map.iter() {
+            let skip = frontend::source_map::non_code_ranges(&f.source);
+            let mut cursor = 0;
+            while let Some(found) = self.program.source_map.find_word(file, cursor, usize::MAX, word) {
+                cursor = found.end_offset as usize;
+                if in_ranges(&skip, found.offset as usize) {
+                    continue;
+                }
+                let after = f.source[cursor..].trim_start();
+                let before = f.source[..found.offset as usize].trim_end();
+                let is_value = !after.starts_with('(')
+                    && !before.ends_with("fn")
+                    && !before.ends_with("::")
+                    && !before.ends_with('.')
+                    && self.local(file, found.offset as usize, c.bare).is_none()
+                    && self.enclosing_callable(file, found.offset as usize).is_some();
+                if is_value {
+                    out.push(self.place(&found));
+                }
+            }
+        }
+        out
     }
 
     fn describe(&self, target: &Target) -> String {
@@ -597,6 +740,9 @@ impl<'a> Index<'a> {
             Target::Field { owner, field } => format!("field {}.{}", name(*owner), name(*field)),
             Target::Const(s) => format!("constant {}", name(*s)),
             Target::Variant { owner, variant } => format!("variant {}::{}", name(*owner), name(*variant)),
+            Target::TraitMethod { owner, method, .. } => {
+                format!("trait method {}::{}", name(*owner), name(*method))
+            }
         }
     }
 
@@ -613,6 +759,7 @@ impl<'a> Index<'a> {
                 let name_at = self.word_place(loc.file, loc.offset as usize, usize::MAX, *owner)?;
                 self.word_place(loc.file, name_at.end_offset as usize, usize::MAX, *field)
             }
+            Target::TraitMethod { decl, .. } => Some(decl.clone()),
             Target::Variant { owner, variant } => {
                 let (_, loc) = self.struct_decl(*owner)?;
                 let name_at = self.word_place(loc.file, loc.offset as usize, usize::MAX, *owner)?;
@@ -654,6 +801,11 @@ impl<'a> Index<'a> {
 
     fn references(&self, target: &Target) -> Vec<Place> {
         let mut out: Vec<Place> = Vec::new();
+        // Once, not per expression: the statement pool is long.
+        let implementors = match target {
+            Target::TraitMethod { owner, .. } => self.implementors_of(*owner),
+            _ => Vec::new(),
+        };
         for (e, loc) in self.all_exprs() {
             if let Target::Variant { owner, variant } = target {
                 if self.variant_of(e) == Some((*owner, *variant)) {
@@ -662,6 +814,16 @@ impl<'a> Index<'a> {
                     if let Some(p) = self.word_place(loc.file, from, usize::MAX, *variant) {
                         out.push(p);
                     }
+                }
+                continue;
+            }
+            if let Target::TraitMethod { method, .. } = target {
+                let reaches = self.resolve_call(e).iter().any(|i| {
+                    let c = &self.callables[*i];
+                    c.bare == *method && c.owner.is_some_and(|o| implementors.contains(&o))
+                });
+                if reaches {
+                    out.extend(self.call_name_place(e, &loc));
                 }
                 continue;
             }
@@ -694,6 +856,11 @@ impl<'a> Index<'a> {
             if let Some(p) = hit {
                 out.push(p);
             }
+        }
+        match target {
+            Target::Variant { owner, variant } => out.extend(self.qualified_in_text(*owner, *variant)),
+            Target::Callable(i) if self.callables[*i].owner.is_none() => out.extend(self.value_uses(*i)),
+            _ => {}
         }
         out.sort_by(|a, b| (&a.file, a.offset).cmp(&(&b.file, b.offset)));
         out.dedup();
@@ -836,4 +1003,10 @@ pub fn answer(index: &Index, kind: &str, subject: &str) -> serde_json::Value {
         }
         other => fail(format!("unknown query `{other}` (type, def, refs, callers, callees)")),
     }
+}
+
+/// Whether `offset` lies inside one of `ranges` (sorted, disjoint).
+fn in_ranges(ranges: &[(usize, usize)], offset: usize) -> bool {
+    let i = ranges.partition_point(|(start, _)| *start <= offset);
+    i > 0 && offset < ranges[i - 1].1
 }

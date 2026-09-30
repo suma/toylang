@@ -2466,3 +2466,46 @@ fn main() -> u64 {
     let edge = &r["answers"][0]["results"][0]["callees"][0];
     assert_eq!((edge["function"].as_str(), edge["dynamic"].as_bool()), (Some("Sq::area"), Some(true)), "{r:#}");
 }
+
+// LLM-TOOLING-QUERY-REST: trait method declarations, what a pattern
+// writes, and a function named as a value.
+#[test]
+fn query_follows_trait_methods_patterns_and_function_values() {
+    let pkg = scratch("query_rest");
+    write(
+        &pkg,
+        "main.t",
+        "enum Shape { Circle(u64), Point }
+trait Area { fn area(&self) -> u64 }
+struct Sq { s: u64 }
+impl Area for Sq { fn area(&self) -> u64 { self.s * self.s } }
+fn twice(n: u64) -> u64 { n * 2u64 }
+fn apply(f: fn (u64) -> u64, x: u64) -> u64 { f(x) }
+fn size(s: Shape) -> u64 {
+    match s {
+        Shape::Circle(r) => r * r,
+        Shape::Point => 0u64,
+    }
+}
+fn main() -> u64 {
+    val q = Sq { s: 2u64 }
+    q.area() + size(Shape::Point) + apply(twice, 3u64)
+}
+",
+    );
+    let m = pkg.0.join("main.t").to_str().unwrap().to_string();
+    let r = query(&pkg, &["def", &format!("{m}:2:20"), &format!("{m}:9:16"), &format!("{m}:9:29"), &format!("{m}:15:43")]);
+    let defs: Vec<(String, u64, u64)> =
+        r["answers"].as_array().unwrap().iter().map(|a| at(&a["definition"])).collect();
+    let main_t = |l, c| ("main.t".to_string(), l, c);
+    assert_eq!(defs, [main_t(2, 17), main_t(1, 14), main_t(9, 23), main_t(5, 4)], "{r:#}");
+
+    let r = query(&pkg, &["refs", &format!("{m}:1:15"), &format!("{m}:5:4"), &format!("{m}:2:20")]);
+    let refs: Vec<Vec<(String, u64, u64)>> = r["answers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["references"].as_array().unwrap().iter().map(at).collect())
+        .collect();
+    assert_eq!(refs, [vec![main_t(9, 16)], vec![main_t(15, 43)], vec![main_t(15, 7)]], "{r:#}");
+}

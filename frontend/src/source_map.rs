@@ -297,3 +297,57 @@ pub fn brace_pairs(source: &str) -> Vec<(usize, usize)> {
     }
     pairs
 }
+
+/// The byte ranges of `source` that are not code: comments and string
+/// and character literals. A search of the text for a name uses it to
+/// skip the prose and the data around the code.
+pub fn non_code_ranges(source: &str) -> Vec<(usize, usize)> {
+    let bytes = source.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let start = i;
+        match bytes[i] {
+            b'#' => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                out.push((start, i));
+                continue;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i = (i + 2).min(bytes.len());
+                out.push((start, i));
+                continue;
+            }
+            b'"' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'"' {
+                    if bytes[i] == b'\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                i = (i + 1).min(bytes.len());
+                out.push((start, i));
+                continue;
+            }
+            b'\'' => {
+                if let Some(close) = source[i + 1..].find('\'').map(|c| i + 1 + c)
+                    && close - i <= 12
+                {
+                    out.push((start, close + 1));
+                    i = close + 1;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    out
+}

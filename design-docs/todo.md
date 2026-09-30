@@ -12,6 +12,10 @@
 
 ### 2026-09-30
 
+- **LLM-TOOLING-NO-SPAN — 位置のない型エラー** — 宣言の検査 (未定義の型・重複 variant 等)、
+  `never_allocates` / `const fn` / `extern fn` の ABI、`?` の被演算子、`return` の不一致、
+  `??` の連鎖に位置を付けた。テスト全体の位置なしは 174 → 3 件 (単体テストが直接作る 1 件と
+  `return` まわりの型不一致 2 件)。
 - **LLM-TOOLING-E0010-REST — 汎用エラーの分類** — 211 か所のうち 203 か所を既存コードか
   新コード `E0040`〜`E0049` (内部 / 個数 / SIMD / 推論 / val への書き込み / フィールド /
   ループ制御 / 契約節 / C ABI / 曖昧なパス) へ。残り 8 か所は稀な経路。
@@ -2583,13 +2587,6 @@
   `fn bad() -> &u64 { val n = 5u64 \n &n }` は E0026 ではなく
   **`[E0003] Identifier 'n' not found`** になる (誤った診断)。
   どちらも E0026 の例として説明文に載せようとして見つけた。
-- **LLM-TOOLING-NO-SPAN — 位置のない型エラー** — 2026-09-30 の集計で
-  位置なしが 174 件 (単体テストが直接作るものを含む)。直していない
-  上位は `Type 'X' not found` (27)、`never_allocates` / `const fn` の
-  到達検査 (E0016 6 / E0017 3)、`Duplicate field` / `duplicate variant` /
-  `trait has duplicate method`、`struct field declares a reference type`、
-  `extern fn` の ABI 検査。宣言ノードは開始位置しか持たないので、
-  `TypeCheckError::at_word` (名前で位置を確定) で付けられる。
 - **LLM-TOOLING-RELATED-REST — 関連箇所を埋めていない診断** — `related`
   を埋めたのは E0031 / E0014 / E0001 (引数) / E0038 / 条件付き移動だけ。
   E0003 の did-you-mean (候補の定義位置)、E0023 (trait 側の契約)、

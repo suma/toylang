@@ -828,12 +828,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                             .unwrap_or("?")
                             .to_string();
                         let pty_str = self.type_name_for_error(pty);
-                        return Err(TypeCheckError::coded(crate::diagnostic::codes::FFI_ABI, format!(
+                        let err = TypeCheckError::coded(crate::diagnostic::codes::FFI_ABI, format!(
                             "extern fn `{fn_name}`: parameter `{param_name}` has type `{pty_str}`, \
                              which cannot cross the C ABI boundary (FFI_PLAN P1 allows only \
                              scalars: ints, f64, bool, ptr, usize; pass `str` as \
                              `__builtin_str_to_ptr(s)`)"
-                        )));
+                        ));
+                        return Err(self.at_extern_declaration(err, &func, &param_name));
                     }
                 }
                 if let Some(ret) = func.return_type.as_ref()
@@ -841,10 +842,11 @@ impl<'a> TypeCheckerVisitor<'a> {
                     && !is_ffi_boundary_scalar(ret)
                 {
                     let ret_str = self.type_name_for_error(ret);
-                    return Err(TypeCheckError::coded(crate::diagnostic::codes::FFI_ABI, format!(
+                    let err = TypeCheckError::coded(crate::diagnostic::codes::FFI_ABI, format!(
                         "extern fn `{fn_name}`: return type `{ret_str}` cannot cross the C ABI \
                          boundary (FFI_PLAN P1 allows only scalars: ints, f64, bool, ptr, usize)"
-                    )));
+                    ));
+                    return Err(self.at_extern_declaration(err, &func, &fn_name));
                 }
             }
             let declared = func.return_type.clone().unwrap_or(TypeDecl::Unit);
@@ -1253,6 +1255,26 @@ impl<'a> TypeCheckerVisitor<'a> {
     ///
     /// Anything else — a borrow of a local, most of all — is refused,
     /// which is what the old blanket rule was protecting against.
+    /// Place an `extern fn` error on `word` (a parameter or the
+    /// function's name) in its declaration. An `extern fn` has no body
+    /// with a position, so the file is the entry's unless its code
+    /// statement says otherwise.
+    fn at_extern_declaration(
+        &self,
+        err: TypeCheckError,
+        func: &crate::ast::Function,
+        word: &str,
+    ) -> TypeCheckError {
+        let file = self
+            .core
+            .location_pool
+            .get_stmt_location(&func.code)
+            .map(|l| l.file)
+            .unwrap_or(crate::source_map::FileId::ENTRY);
+        let start = func.node.start as u32;
+        err.at_word(crate::type_checker::SourceLocation::new_in(file, 0, 0, start, start), word)
+    }
+
     fn check_reborrow_returns(&mut self, func: &crate::ast::Function) -> Result<(), TypeCheckError> {
         let mut refs: Vec<DefaultSymbol> = Vec::new();
         for p in func.parameter.iter() {

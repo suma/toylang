@@ -45,7 +45,12 @@ pub fn check_never_allocates(
         if let Some(witness) = effects.witness(Effect::Alloc) {
             let path = render_path(&name, &witness.path);
             let opaque = witness.is_opaque().then(|| witness.what());
-            errors.push(TypeCheckError::never_allocates(name, path, opaque));
+            errors.push(TypeCheckError::never_allocates(name, path, opaque).at_declaration(
+                program,
+                &function.code,
+                function.node.start,
+                interner.resolve(function.name).unwrap_or(""),
+            ));
         }
     }
 
@@ -70,7 +75,12 @@ pub fn check_never_allocates(
             if let Some(witness) = effects.witness(Effect::Alloc) {
                 let path = render_path(&name, &witness.path);
                 let opaque = witness.is_opaque().then(|| witness.what());
-                errors.push(TypeCheckError::never_allocates(name, path, opaque));
+                errors.push(TypeCheckError::never_allocates(name, path, opaque).at_declaration(
+                    program,
+                    &method.code,
+                    method.node.start,
+                    interner.resolve(method.name).unwrap_or(""),
+                ));
             }
         }
     }

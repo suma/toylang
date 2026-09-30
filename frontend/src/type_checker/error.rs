@@ -758,6 +758,25 @@ impl TypeCheckError {
         self
     }
 
+    /// Place the error on the name of a declared function or method:
+    /// `start` is where its declaration begins and `body` its code,
+    /// which says which file it is in.
+    pub fn at_declaration(
+        self,
+        program: &crate::ast::File,
+        body: &crate::ast::StmtRef,
+        start: usize,
+        name: &str,
+    ) -> Self {
+        match program.location_pool.get_stmt_location(body) {
+            Some(b) if !name.is_empty() => self.at_word(
+                SourceLocation::new_in(b.file, 0, 0, start as u32, start as u32),
+                name,
+            ),
+            _ => self,
+        }
+    }
+
     /// Point at another place the error concerns.
     pub fn with_related(mut self, location: SourceLocation, message: impl Into<String>) -> Self {
         self.anchors

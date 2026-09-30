@@ -85,11 +85,12 @@ pub fn check_const_fn(
         let effects = table.of_function(index);
         if let Some((_, witness)) = effects.first(FORBIDDEN) {
             let path = render_path(&name, &witness.path);
-            errors.push(TypeCheckError::const_fn(
-                name,
-                path,
-                witness.what(),
-                witness.is_opaque(),
+            let error = TypeCheckError::const_fn(name, path, witness.what(), witness.is_opaque());
+            errors.push(error.at_declaration(
+                program,
+                &function.code,
+                function.node.start,
+                interner.resolve(function.name).unwrap_or(""),
             ));
         }
     }

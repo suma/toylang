@@ -825,7 +825,31 @@ fn check_typing_collecting(
                 ))
                 .unwrap_or(false);
             if should_visit {
-                if let Err(err) = tc.visit_stmt(&stmt_ref) {
+                if let Err(mut err) = tc.visit_stmt(&stmt_ref) {
+                    // A declaration's error without a position lands on
+                    // the name it is about: the type a field names but
+                    // nothing declares, else the declaration's own name.
+                    if err.location.is_none() {
+                        let decl_name = match tc.core.stmt_pool.get(&stmt_ref) {
+                            Some(frontend::ast::Stmt::StructDecl { name, .. })
+                            | Some(frontend::ast::Stmt::EnumDecl { name, .. })
+                            | Some(frontend::ast::Stmt::TraitDecl { name, .. }) => Some(name),
+                            _ => None,
+                        };
+                        let word = match &*err.kind {
+                            frontend::type_checker::TypeCheckErrorKind::NotFound { name, .. } => {
+                                Some(name.clone())
+                            }
+                            _ => decl_name
+                                .and_then(|n| tc.core.string_interner.resolve(n))
+                                .map(str::to_string),
+                        };
+                        if let (Some(at), Some(word)) =
+                            (tc.core.location_pool.get_stmt_location(&stmt_ref).copied(), word)
+                        {
+                            err = err.at_word(at, &word);
+                        }
+                    }
                     errors.push(Diagnostic::from_type_check_error(&err, diag_file, Some(tc.core.string_interner)));
                 }
             }

@@ -883,3 +883,25 @@ fn main() -> u64 {
     assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
     assert!(diagnostics[0].message.starts_with("Unknown field 'z'"));
 }
+
+// LLM-TOOLING-NO-SPAN: errors about a declaration, or found after the
+// checker has left the expression, still land on a name.
+
+#[test]
+fn declaration_level_errors_have_a_span_on_the_name() {
+    for (source, code, text) in [
+        ("struct P { x: Missing }\nfn main() -> u64 { 0u64 }", "E0003", "Missing"),
+        (
+            "never_allocates fn make() -> u64 {\n    val v: Vec<u64> = Vec::new()\n    0u64\n}\nfn main() -> u64 { make() }",
+            "E0016",
+            "make",
+        ),
+        ("const fn f() -> u64 { println(1u64)\n 0u64 }\nfn main() -> u64 { f() }", "E0017", "f"),
+        ("extern fn bad(s: str) -> i64 from \"toytest\"\nfn main() -> u64 { 0u64 }", "E0048", "s"),
+        ("fn f() -> Option<u64> { val n = 5u64\n val m = n?\n Option::Some(m) }\nfn main() -> u64 { 0u64 }", "E0037", "n"),
+    ] {
+        let diagnostics = check_all(source);
+        let d = diagnostics.iter().find(|d| d.code == code).unwrap_or_else(|| panic!("{code} in {diagnostics:#?}"));
+        assert_eq!(span_text(source, d), text, "{source}\n{d:#?}");
+    }
+}

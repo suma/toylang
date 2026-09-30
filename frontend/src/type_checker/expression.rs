@@ -2917,10 +2917,11 @@ impl<'a> TypeCheckerVisitor<'a> {
             TypeDecl::Identifier(name) if self.context.enum_definitions.contains_key(name) => *name,
             TypeDecl::Struct(name, _) if self.context.enum_definitions.contains_key(name) => *name,
             _ => {
-                return Err(TypeCheckError::coded(crate::diagnostic::codes::TRY_OPERAND, format!(
+                let err = TypeCheckError::coded(crate::diagnostic::codes::TRY_OPERAND, format!(
                     "`?` requires Result<T, E> or Option<T>, got {}",
                     self.type_name_for_error(&inner_ty)
-                )));
+                ));
+                return Err(self.error_with_location(err, &inner));
             }
         };
         let enum_name_str = stdlib_enum_name(
@@ -2934,10 +2935,11 @@ impl<'a> TypeCheckerVisitor<'a> {
             "Result" => ("Ok", "Err", false),
             "Option" => ("Some", "None", true),
             _ => {
-                return Err(TypeCheckError::coded(crate::diagnostic::codes::TRY_OPERAND, format!(
+                let err = TypeCheckError::coded(crate::diagnostic::codes::TRY_OPERAND, format!(
                     "`?` requires Result or Option, got enum `{}`",
                     enum_name_str
-                )));
+                ));
+                return Err(self.error_with_location(err, &inner));
             }
         };
 
@@ -3272,8 +3274,12 @@ impl<'a> TypeCheckerVisitor<'a> {
             lhs_ty
         } else {
             self.null_coalesce_lhs_types.get(&lhs).map(|(t, _)| t.clone()).ok_or_else(|| {
-                TypeCheckError::coded(crate::diagnostic::codes::INTERNAL, 
-                    "desugar_null_coalesce: left operand was never typed",
+                self.error_with_location(
+                    TypeCheckError::coded(
+                        crate::diagnostic::codes::INTERNAL,
+                        "desugar_null_coalesce: left operand was never typed",
+                    ),
+                    &lhs,
                 )
             })?
         };

@@ -171,7 +171,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                 Some(fn_ret) => self.coerce_number_expr(e, &return_type, &fn_ret)?,
                 None => return_type,
             };
-            self.validate_return_type(&coerced)?;
+            self.validate_return_type(&coerced)
+                .map_err(|err| self.error_with_location(err, e))?;
             Ok(coerced)
         }
     }

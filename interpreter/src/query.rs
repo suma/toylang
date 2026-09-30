@@ -149,22 +149,6 @@ impl<'a> Index<'a> {
                 });
             }
         }
-        // A declaration's node does not always record its end (the last
-        // function of a file has `end == 0`). Such a range runs to the
-        // next declaration that starts after it in the same file, or to
-        // the end of the file.
-        let starts: Vec<(FileId, usize)> = callables.iter().map(|c| (c.file, c.start)).collect();
-        for c in &mut callables {
-            if c.end > c.start {
-                continue;
-            }
-            c.end = starts
-                .iter()
-                .filter(|(f, s)| *f == c.file && *s > c.start)
-                .map(|(_, s)| *s)
-                .min()
-                .unwrap_or_else(|| program.source_map.source(c.file).map(str::len).unwrap_or(usize::MAX));
-        }
         // A block expression's recorded location is a brace, not its
         // extent, so scopes come from the text: every matched `{ .. }`.
         let blocks: Vec<(FileId, usize, usize)> = program

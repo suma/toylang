@@ -12,6 +12,9 @@
 
 ### 2026-09-30
 
+- **PARSER-DECL-END — 宣言ノードの終わり** — ファイル末尾の宣言の `node.end` が 0 だった
+  (次のトークンが無いとき)。入力末尾にし、`toy query` / `diagnose_parse_failure` の補いを外した。
+  AST キャッシュのスキーマを 62 に。
 - **LLM-TOOLING-PARSE-RECOVERY-REST** — 関数の外 (壊れた struct 等) のパースエラーでも
   型検査を続け、壊れた宣言の範囲とその名前を名指す誤りを捨てる。未知フィールドの文言に
   struct 名を入れた (`struct \`P\` has no field \`y\``)。
@@ -2618,12 +2621,8 @@
   **本文の行頭のキーワード**で求め、その宣言の名前を名指す型エラーを捨てる
   (`interpreter::top_level_declarations`)。字下げした宣言や、名前を
   含まない連鎖 (壊れた struct の variant 経由の誤り等) は拾えない。
-  パーサが宣言の範囲を記録すれば (PARSER-DECL-END と同じ根) 本文に頼らずに済む。
+  パーサが**壊れた宣言の**範囲も記録すれば本文に頼らずに済む。
   宣言ごと 1 件のパースエラー抑制 (P1) はそのまま。
-- **PARSER-DECL-END — 宣言ノードの終わりが記録されない** — ファイル
-  末尾の関数は `Function::node.end == 0`。`toy query` と
-  `diagnose_parse_failure` は「次の宣言の手前まで」で補っている。
-  パーサで終わり位置を入れれば両方の補いが要らなくなる。
 - **LLM-TOOLING-FIX-REST — `toy fix` の細部** — `--dry-run` は書き込まない
   ので 1 巡目の編集しか出せない (2 巡目は 1 巡目を当てた後にしか
   見えない)。`find_duplicate_impl_method` は最初の 1 組しか報告しない

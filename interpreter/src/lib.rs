@@ -2520,8 +2520,7 @@ pub fn diagnose_parse_failure(
         return diagnostics;
     }
 
-    // Each declaration's byte range. A node without an end (the last
-    // one in the file) runs to the next declaration, or to the end.
+    // Each declaration's byte range.
     let mut ranges: Vec<(usize, usize)> =
         program.function.iter().map(|f| (f.node.start, f.node.end)).collect();
     for i in 0..program.statement.len() {
@@ -2529,12 +2528,6 @@ pub fn diagnose_parse_failure(
             program.statement.get(&StmtRef(i as u32))
         {
             ranges.extend(methods.iter().map(|m| (m.node.start, m.node.end)));
-        }
-    }
-    let starts: Vec<usize> = ranges.iter().map(|(s, _)| *s).collect();
-    for r in &mut ranges {
-        if r.1 <= r.0 {
-            r.1 = starts.iter().copied().filter(|s| *s > r.0).min().unwrap_or(source.len());
         }
     }
     let containing = |offset: usize| {

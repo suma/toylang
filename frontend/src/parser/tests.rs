@@ -1346,4 +1346,25 @@ mod parser_tests {
         let result = parser.parse_program();
         assert!(result.is_ok(), "`with allocator = <identifier>` should parse: {:?}", result);
     }
+
+    // PARSER-DECL-END: a declaration's node ends after it, the last one
+    // in the file included (it used to end at 0, before its own start).
+    #[test]
+    fn every_declaration_node_ends_after_it_starts() {
+        let source = "struct P { x: u64 }\nimpl P {\n    fn get(&self) -> u64 { self.x }\n}\nfn main() -> u64 { 0u64 }";
+        let mut parser = ParserWithInterner::new(source);
+        let program = parser.parse_program().expect("parse");
+        for f in &program.function {
+            assert!(f.node.end > f.node.start, "{:?}", f.node);
+        }
+        let last = program.function.last().unwrap();
+        assert_eq!(last.node.end, source.len());
+        for i in 0..program.statement.len() {
+            if let Some(crate::ast::Stmt::ImplBlock { methods, .. }) = program.statement.get(&crate::ast::StmtRef(i as u32)) {
+                for m in &methods {
+                    assert!(m.node.end > m.node.start, "method {:?}", m.node);
+                }
+            }
+        }
+    }
 }

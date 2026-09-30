@@ -233,7 +233,7 @@ impl<'a> Parser<'a> {
                     .replace(format!("test \"{display_name}\""));
                 let block = super::expr::parse_block(self)?;
                 self.current_function = outer_function;
-                let test_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
+                let test_end_pos = self.declaration_end();
                 out.saw_end(test_end_pos);
 
                 // Lowered to a regular function so the type checker and
@@ -481,7 +481,7 @@ impl<'a> Parser<'a> {
             };
             extern_link = Some(ExternLink { lib, symbol });
         }
-        let fn_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
+        let fn_end_pos = self.declaration_end();
         out.saw_end(fn_end_pos);
         // Use a placeholder `Stmt::Break` as the body slot.
         // Backends consult `is_extern` before walking it, so
@@ -573,7 +573,7 @@ impl<'a> Parser<'a> {
                     .replace(self.string_interner.resolve(fn_name).unwrap_or("<fn>").to_string());
                 let block = super::expr::parse_block(self)?;
                 self.current_function = outer_function;
-                let fn_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
+                let fn_end_pos = self.declaration_end();
                 out.saw_end(fn_end_pos);
 
                 out.functions.push(Rc::new(Function {
@@ -640,7 +640,7 @@ impl<'a> Parser<'a> {
         let errors_before = self.errors.len();
         let value = self.parse_expr_impl()?;
         self.retarget_float_suffix(errors_before, &const_ty, value);
-        let const_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
+        let const_end_pos = self.declaration_end();
         out.saw_end(const_end_pos);
 
         // COMPILE-TIME-EVAL C5: remember the value if it is one an
@@ -728,7 +728,7 @@ impl<'a> Parser<'a> {
             alias_generic_params.iter().copied().collect();
         let target_ty =
             self.parse_type_declaration_with_generic_context(&generic_context)?;
-        let alias_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
+        let alias_end_pos = self.declaration_end();
         out.saw_end(alias_end_pos);
 
         // Register before emitting so the AST node carries
@@ -791,7 +791,7 @@ impl<'a> Parser<'a> {
                     self.expect_err(&Kind::BraceClose)?;
                     fields
                 };
-                let struct_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
+                let struct_end_pos = self.declaration_end();
                 out.saw_end(struct_end_pos);
 
                 self.ast_builder.struct_decl_stmt(struct_symbol, generic_params, generic_bounds, fields, visibility, Some(location));
@@ -953,7 +953,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 self.expect_err(&Kind::BraceClose)?;
-                let enum_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
+                let enum_end_pos = self.declaration_end();
                 out.saw_end(enum_end_pos);
                 self.ast_builder.add_stmt_with_location(Stmt::EnumDecl {
                     name: enum_symbol,
@@ -1151,7 +1151,7 @@ impl<'a> Parser<'a> {
                 let methods = super::stmt::parse_impl_methods_with_generic_context(self, vec![], &generic_params, &generic_bounds)?;
                 self.current_impl_target = outer_target;
                 self.expect_err(&Kind::BraceClose)?;
-                let impl_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
+                let impl_end_pos = self.declaration_end();
                 out.saw_end(impl_end_pos);
 
                 self.ast_builder.impl_block_stmt_with_trait_args(
@@ -1217,7 +1217,7 @@ impl<'a> Parser<'a> {
                     &trait_generic_params,
                 )?;
                 self.expect_err(&Kind::BraceClose)?;
-                let trait_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
+                let trait_end_pos = self.declaration_end();
                 out.saw_end(trait_end_pos);
                 self.ast_builder.trait_decl_stmt_with_generics(
                     trait_symbol,

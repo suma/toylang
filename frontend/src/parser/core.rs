@@ -666,6 +666,17 @@ impl<'a> Parser<'a> {
     }
 
     /// Collect error without stopping parse, used for multiple error collection
+    /// Where the declaration just parsed ends, for its `Node`: the end
+    /// of the token after it, or the end of the input when there is
+    /// none. The last declaration of a file used to get `0` here, an end
+    /// before its own start (PARSER-DECL-END).
+    pub(crate) fn declaration_end(&mut self) -> usize {
+        match self.peek_position_n(0) {
+            Some(position) => position.end,
+            None => self.input.len(),
+        }
+    }
+
     /// Mark the start of a top-level declaration.
     ///
     /// LLM-LOOP P1: the parser resynchronises reliably at declaration

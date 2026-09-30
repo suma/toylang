@@ -1410,7 +1410,15 @@ Two ways out when the check fires:
 The check does not follow a window through a closure, and it does not
 know about reallocation: a `push` that grows a `Vec` invalidates every
 window on it, which is a separate hazard the type system does not
-cover.";
+cover.
+
+**A returned reference is held to the same rule.** A function may hand
+back `&T` only as a reborrow of a reference parameter; a borrow of a
+local or of a by-value parameter points at a copy that is gone when the
+function returns:
+
+    fn bad(x: u64) -> &u64 { &x }       # E0026: the caller holds no `x`
+    fn ok(x: &u64) -> &u64 { &x }       # fine: a reborrow";
 
 #[cfg(test)]
 mod tests {

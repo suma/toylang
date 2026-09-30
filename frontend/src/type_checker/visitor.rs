@@ -1346,7 +1346,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     if i + 1 == n
                         && let Some(Stmt::Expression(tail)) = self.core.stmt_pool.get(st)
                     {
-                        if self.expr_is_reference(&tail) && !self.is_reborrow_expr(&tail, refs) {
+                        if self.returns_a_reference(&tail) && !self.is_reborrow_expr(&tail, refs) {
                             *bad = true;
                         }
                         continue;
@@ -1367,6 +1367,17 @@ impl<'a> TypeCheckerVisitor<'a> {
 
     /// Whether this expression's type is a reference (so a tail that
     /// merely computes a number is not asked to be a reborrow).
+    /// Whether a return site's value is a reference. The check runs
+    /// before the body is typed, so an expression written as a borrow
+    /// (`&x`) is recognised by its shape; anything else by the type
+    /// recorded for it, when there is one.
+    fn returns_a_reference(&self, expr_ref: &ExprRef) -> bool {
+        matches!(
+            self.core.expr_pool.get(expr_ref),
+            Some(Expr::Unary(crate::ast::UnaryOp::Borrow | crate::ast::UnaryOp::BorrowMut, _))
+        ) || self.expr_is_reference(expr_ref)
+    }
+
     fn expr_is_reference(&self, expr_ref: &ExprRef) -> bool {
         match self.optimization.get_cached_type(expr_ref) {
             Some(ty) => ty.contains_ref(),
@@ -1381,6 +1392,13 @@ impl<'a> TypeCheckerVisitor<'a> {
         };
         match expr {
             Expr::Identifier(sym) => refs.contains(&sym),
+            // `&path` / `&mut path` hands back a borrow of `path`: a
+            // reborrow when `path` is rooted at a reference parameter,
+            // a dangling reference when it names a local or a by-value
+            // parameter (the caller does not hold that copy).
+            Expr::Unary(crate::ast::UnaryOp::Borrow | crate::ast::UnaryOp::BorrowMut, inner) => {
+                self.is_reborrow_expr(&inner, refs)
+            }
             Expr::FieldAccess(obj, _) => self.is_reborrow_expr(&obj, refs),
             Expr::SliceAccess(obj, _) => self.is_reborrow_expr(&obj, refs),
             Expr::BuiltinCall(BuiltinFunction::PtrRefTyped(_), _) => true,

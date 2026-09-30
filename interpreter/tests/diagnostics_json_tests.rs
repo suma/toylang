@@ -1071,3 +1071,19 @@ fn main() -> u64 { 0u64 }";
         .collect();
     assert_eq!(found, [(4, 3), (6, 5), (7, 3)], "{diagnostics:#?}");
 }
+
+// REBORROW-CHECK-GAPS (1): a returned `&x` is a reborrow only when `x`
+// is rooted at a reference parameter. The check runs before the body is
+// typed, so it used to see no reference in `&x` and let it through.
+#[test]
+fn returning_a_borrow_of_a_by_value_parameter_is_refused() {
+    for (source, refused) in [
+        ("fn bad(x: u64) -> &u64 {\n    &x\n}\nfn main() -> u64 { 0u64 }", true),
+        ("struct P { a: u64 }\nfn bad(p: P) -> &u64 {\n    return &p.a\n}\nfn main() -> u64 { 0u64 }", true),
+        ("fn ok(x: &u64) -> &u64 {\n    &x\n}\nfn main() -> u64 { 0u64 }", false),
+        ("struct P { a: u64 }\nfn ok(p: &P) -> &u64 {\n    &p.a\n}\nfn main() -> u64 { 0u64 }", false),
+    ] {
+        let diagnostics = check_all(source);
+        assert_eq!(diagnostics.iter().any(|d| d.code == "E0026"), refused, "{source}\n{diagnostics:#?}");
+    }
+}

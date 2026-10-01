@@ -290,7 +290,10 @@ fn build_object_module(
 /// + `get_finalized_function`).
 pub(crate) struct CodegenSession<M: Module> {
     pub(crate) module: M,
-    fn_ids: HashMap<FuncId, cranelift_module::FuncId>,
+    /// IR `FuncId` → cranelift `FuncId`, indexed by the IR id (dense:
+    /// `0..functions.len()`). `None` for a function `declare_all` left
+    /// out as unreachable.
+    fn_ids: Vec<Option<cranelift_module::FuncId>>,
     /// Imported libc symbols used to lower `panic` / `assert`. Populated
     /// once at session-start; declaring them unconditionally is harmless
     /// even when no panic site is reached, and keeps the codegen path
@@ -500,7 +503,9 @@ pub(crate) struct CodegenSession<M: Module> {
     /// Cached function declarations (signature + colocated flag) so
     /// the read-only `declare_func_in_func_readonly` helper can
     /// operate without `&mut Module`.
-    fn_decls: HashMap<cranelift_module::FuncId, (cranelift_codegen::ir::Signature, bool)>,
+    /// Indexed by the cranelift id, which `declare_function` hands out
+    /// densely from 0.
+    fn_decls: Vec<Option<(cranelift_codegen::ir::Signature, bool)>>,
     /// Cached data declarations (colocated flag) for
     /// `declare_data_in_func_readonly`.
     data_decls: HashMap<cranelift_module::DataId, bool>,
@@ -896,7 +901,7 @@ impl<M: Module> CodegenSession<M> {
 
         Ok(Self {
             module,
-            fn_ids: HashMap::default(),
+            fn_ids: Vec::new(),
             libc_puts,
             libc_exit,
             libc_malloc,
@@ -996,7 +1001,7 @@ impl<M: Module> CodegenSession<M> {
             raw_print_strings: HashMap::default(),
             const_str_bytes: HashMap::default(),
             vtable_data_ids: HashMap::default(),
-            fn_decls: HashMap::default(),
+            fn_decls: Vec::new(),
             data_decls: HashMap::default(),
         })
     }
@@ -1005,7 +1010,7 @@ impl<M: Module> CodegenSession<M> {
     /// function during `declare_all`. The JIT entry point uses this
     /// to fetch the finalized address of `main`.
     pub(crate) fn fn_id(&self, ir_id: FuncId) -> Option<cranelift_module::FuncId> {
-        self.fn_ids.get(&ir_id).copied()
+        self.fn_ids.get(ir_id.0 as usize).copied().flatten()
     }
 
     pub(crate) fn declare_all(
@@ -1041,15 +1046,21 @@ impl<M: Module> CodegenSession<M> {
                 .module
                 .declare_function(&func.export_name, linkage, &sig)
                 .map_err(|e| format!("declare {}: {e}", func.export_name))?;
-            self.fn_ids.insert(id, cl_id);
+            if self.fn_ids.len() <= i {
+                self.fn_ids.resize(i + 1, None);
+            }
+            self.fn_ids[i] = Some(cl_id);
         }
 
         // Build read-only caches used by the parallel codegen path.
         let func_decl_map: rustc_hash::FxHashMap<_, _> =
             self.module.declarations().get_functions().collect();
         for (cl_id, decl) in func_decl_map {
-            self.fn_decls
-                .insert(cl_id, (decl.signature.clone(), decl.linkage.is_final()));
+            let index = cl_id.as_u32() as usize;
+            if self.fn_decls.len() <= index {
+                self.fn_decls.resize(index + 1, None);
+            }
+            self.fn_decls[index] = Some((decl.signature.clone(), decl.linkage.is_final()));
         }
         let data_decl_map: rustc_hash::FxHashMap<_, _> =
             self.module.declarations().get_data_objects().collect();
@@ -1260,7 +1271,7 @@ impl<M: Module> CodegenSession<M> {
             let payload = vec![0u8; func_ids.len() * 8];
             desc.define(payload.into_boxed_slice());
             for (slot_idx, ir_func_id) in func_ids.iter().enumerate() {
-                let cl_id = self.fn_ids.get(ir_func_id).copied().ok_or_else(|| {
+                let cl_id = self.fn_id(*ir_func_id).ok_or_else(|| {
                     format!(
                         "vtable {}: IR FuncId {:?} not registered with cranelift",
                         name, ir_func_id
@@ -1655,7 +1666,7 @@ impl<M: Module> CodegenSession<M> {
         func_id: cranelift_module::FuncId,
         func: &mut cranelift_codegen::ir::Function,
     ) -> cranelift_codegen::ir::FuncRef {
-        let (sig, colocated) = self.fn_decls.get(&func_id).unwrap();
+        let (sig, colocated) = self.fn_decls[func_id.as_u32() as usize].as_ref().unwrap();
         let signature = func.import_signature(sig.clone());
         let user_name_ref = func.declare_imported_user_function(
             cranelift_codegen::ir::UserExternalName {
@@ -1698,9 +1709,8 @@ impl<M: Module> CodegenSession<M> {
         func_id: FuncId,
     ) -> Result<(), String> {
         let export_name = ir_module.function(func_id).export_name.clone();
-        let cl_id = *self
-            .fn_ids
-            .get(&func_id)
+        let cl_id = self
+            .fn_id(func_id)
             .ok_or_else(|| format!("function {export_name} not declared"))?;
         let mut ctx = self.prepare_function_context(ir_module, func_id)?;
         self.module

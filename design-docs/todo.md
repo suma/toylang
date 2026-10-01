@@ -12,6 +12,10 @@
 
 ### 2026-10-01
 
+- **COMPILE-CONST-FACTORS — コンパイラの定数倍 5 件** — codegen は各関数が呼ぶ関数だけを import
+  (以前は全関数、2 乗)、site の行は行頭テーブル + site / frame の intern をハッシュ索引に、lowering の
+  宣言走査は `StmtPool::refs_of` で種別から引く、lowering / codegen / IR の内部マップを FxHash、
+  codegen の `FuncId` 表を `Vec` に。logsearch のリンク前 211 → 111 ms (−48%)、出力はバイト一致。
 - **CTFE-LOWER-ROOTS / CRANELIFT-VERIFIER — コンパイル時間の 2 件** — const fold の lowering を
   `main` ではなく wrapper と `const fn` だけから辿る (`lower_program_for_entries`、logsearch の
   `const_fold` 86 → 14 ms)。cranelift の verifier は release ビルドのコンパイラで off

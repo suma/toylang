@@ -43,8 +43,8 @@ impl<M: Module> CodegenSession<M> {
         targets.dedup();
         let mut imports = HashMap::with_capacity_and_hasher(targets.len(), Default::default());
         for ir_id in targets {
-            if let Some(cl_id) = self.fn_ids.get(&ir_id) {
-                let func_ref = self.declare_func_in_func_readonly(*cl_id, func);
+            if let Some(cl_id) = self.fn_id(ir_id) {
+                let func_ref = self.declare_func_in_func_readonly(cl_id, func);
                 imports.insert(ir_id, func_ref);
             }
         }

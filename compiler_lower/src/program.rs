@@ -24,7 +24,7 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use frontend::ast::{ExprRef, File, Stmt};
+use frontend::ast::{ExprRef, File, Stmt, StmtType};
 use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
@@ -1022,15 +1022,13 @@ fn declare_methods(
     // entry. Generic-typed impl methods are skipped (MVP-A only
     // covers monomorphic impls); a generic-trait dispatch would
     // need a per-instantiation vtable, deferred to a later phase.
-    for i in 0..program.statement.len() {
-        let stmt_ref = frontend::ast::StmtRef(i as u32);
+    for stmt_ref in program.statement.refs_of(StmtType::TraitDecl) {
         if let Some(frontend::ast::Stmt::TraitDecl { name, methods, .. }) = program.statement.get(&stmt_ref) {
             let order: Vec<DefaultSymbol> = methods.iter().map(|m| m.name).collect();
             module.trait_method_order.insert(name, order);
         }
     }
-    for i in 0..program.statement.len() {
-        let stmt_ref = frontend::ast::StmtRef(i as u32);
+    for stmt_ref in program.statement.refs_of(StmtType::ImplBlock) {
         let stmt = match program.statement.get(&stmt_ref) {
             Some(s) => s,
             None => continue,
@@ -1058,8 +1056,7 @@ fn declare_methods(
         // impl has trailing writeback returns.
         let trait_method_sigs: HashMap<DefaultSymbol, (Vec<Type>, Type, bool)> = {
             let mut sigs: HashMap<DefaultSymbol, (Vec<Type>, Type, bool)> = HashMap::new();
-            for j in 0..program.statement.len() {
-                let sref = frontend::ast::StmtRef(j as u32);
+            for sref in program.statement.refs_of(StmtType::TraitDecl) {
                 if let Some(frontend::ast::Stmt::TraitDecl { name, methods, .. }) =
                     program.statement.get(&sref)
                     && name == trait_sym {
@@ -1306,8 +1303,7 @@ fn lower_program_inner(
     // structs. Explicit `arena.drop()` calls are still safe — the
     // second invocation at scope exit is a no-op.
     if let Some(drop_sym) = interner.get("Drop") {
-        for i in 0..program.statement.len() {
-            let stmt_ref = frontend::ast::StmtRef(i as u32);
+        for stmt_ref in program.statement.refs_of(StmtType::ImplBlock) {
             if let Some(frontend::ast::Stmt::ImplBlock {
                 target_type,
                 trait_name: Some(trait_sym),

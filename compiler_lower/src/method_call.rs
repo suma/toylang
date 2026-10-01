@@ -1925,8 +1925,7 @@ impl<'a> FunctionLower<'a> {
         // `compiler/src/lower/program.rs` thunk pre-declare loop).
         let mut method_param_decls: Option<Vec<frontend::type_decl::TypeDecl>> = None;
         let mut method_ret_decl: Option<frontend::type_decl::TypeDecl> = None;
-        for i in 0..self.program.statement.len() {
-            let stmt_ref = frontend::ast::StmtRef(i as u32);
+        for stmt_ref in self.program.statement.refs_of(frontend::ast::StmtType::TraitDecl) {
             if let Some(frontend::ast::Stmt::TraitDecl { name, methods, .. }) =
                 self.program.statement.get(&stmt_ref)
                 && name == trait_sym {

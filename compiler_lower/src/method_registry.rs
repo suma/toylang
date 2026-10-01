@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use frontend::ast::{File, Stmt, StmtRef};
+use frontend::ast::{File, Stmt, StmtType};
 use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
 
@@ -247,8 +247,7 @@ pub(super) struct PendingMethodInstance {
 /// given target type.
 pub(super) fn collect_method_decls(program: &File) -> Result<MethodRegistry, String> {
     let mut registry: MethodRegistry = HashMap::new();
-    for i in 0..program.statement.len() {
-        let stmt_ref = StmtRef(i as u32);
+    for stmt_ref in program.statement.refs_of(StmtType::ImplBlock) {
         let stmt = match program.statement.get(&stmt_ref) {
             Some(s) => s,
             None => continue,

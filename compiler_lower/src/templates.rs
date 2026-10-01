@@ -19,7 +19,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use frontend::ast::{File, Stmt, StmtRef};
+use frontend::ast::{File, Stmt, StmtType};
 use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
@@ -156,9 +156,7 @@ pub(super) fn collect_struct_defs(
 ) -> Result<StructDefs, String> {
     let _ = interner;
     let mut defs: StructDefs = HashMap::new();
-    let stmt_count = program.statement.len();
-    for i in 0..stmt_count {
-        let stmt_ref = StmtRef(i as u32);
+    for stmt_ref in program.statement.refs_of(StmtType::StructDecl) {
         let stmt = match program.statement.get(&stmt_ref) {
             Some(s) => s,
             None => continue,
@@ -186,9 +184,7 @@ pub(super) fn collect_enum_defs(
 ) -> Result<EnumDefs, String> {
     let _ = interner;
     let mut defs: EnumDefs = HashMap::new();
-    let stmt_count = program.statement.len();
-    for i in 0..stmt_count {
-        let stmt_ref = StmtRef(i as u32);
+    for stmt_ref in program.statement.refs_of(StmtType::EnumDecl) {
         let stmt = match program.statement.get(&stmt_ref) {
             Some(s) => s,
             None => continue,

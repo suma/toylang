@@ -1115,6 +1115,19 @@ impl StmtPool {
         self.trait_generic_params[index] = None;
     }
 
+    /// The statements of one kind, in pool order, without building any
+    /// of them. [`Self::get`] assembles an owned `Stmt` (an impl block
+    /// clones its method list), so a pass that wants only the trait or
+    /// impl declarations should pick them out here first instead of
+    /// building every statement in the program to look at its tag.
+    pub fn refs_of(&self, kind: StmtType) -> impl Iterator<Item = StmtRef> + '_ {
+        self.stmt_types
+            .iter()
+            .enumerate()
+            .filter(move |(_, t)| **t == kind)
+            .map(|(i, _)| StmtRef(i as u32))
+    }
+
     pub fn get(&self, stmt_ref: &StmtRef) -> Option<Stmt> {
         let index = stmt_ref.to_index();
         if index >= self.stmt_types.len() {

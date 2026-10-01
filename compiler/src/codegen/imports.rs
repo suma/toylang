@@ -17,19 +17,36 @@ use super::{ShadowImports, CodegenSession, RuntimeRefs};
 impl<M: Module> CodegenSession<M> {
     pub(super) fn declare_imports(
         &self,
+        ir_module: &IrModule,
+        func_id: FuncId,
         func: &mut cranelift_codegen::ir::Function,
     ) -> HashMap<FuncId, cranelift_codegen::ir::FuncRef> {
-        let mut imports = HashMap::with_capacity(self.fn_ids.len());
+        // Only the functions this body can reach: the targets of its
+        // calls, taken addresses, closures and `parallel for` bodies
+        // (`call_edges`, the same edges AOT reachability follows).
+        // Importing every function into every body was quadratic —
+        // cranelift computes an ABI for each imported signature, and
+        // on a 750-function program that was a fifth of the build.
+        let mut targets: Vec<FuncId> = ir_module
+            .function(func_id)
+            .blocks
+            .iter()
+            .flat_map(|blk| blk.instructions.iter())
+            .flat_map(|inst| ir_module.call_edges(&inst.kind))
+            .collect();
         // Sorted, because the order these are declared in is the order
-        // cranelift numbers them: iterating the HashMap made `fn3` in one
+        // cranelift numbers them: iterating a HashMap made `fn3` in one
         // run be `fn24` in the next, so `--emit clif` did not reproduce
         // between two runs of the same binary and neither did the object
         // file's import order.
-        let mut entries: Vec<_> = self.fn_ids.iter().map(|(k, v)| (*k, *v)).collect();
-        entries.sort_by_key(|(ir_id, _)| ir_id.0);
-        for (ir_id, cl_id) in entries {
-            let func_ref = self.declare_func_in_func_readonly(cl_id, func);
-            imports.insert(ir_id, func_ref);
+        targets.sort_by_key(|id| id.0);
+        targets.dedup();
+        let mut imports = HashMap::with_capacity(targets.len());
+        for ir_id in targets {
+            if let Some(cl_id) = self.fn_ids.get(&ir_id) {
+                let func_ref = self.declare_func_in_func_readonly(*cl_id, func);
+                imports.insert(ir_id, func_ref);
+            }
         }
         imports
     }

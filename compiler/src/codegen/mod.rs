@@ -1721,7 +1721,7 @@ impl<M: Module> CodegenSession<M> {
         let func = ir_module.function(func_id);
         let mut ctx = Context::new();
         ctx.func.signature = self.cranelift_signature_for(ir_module, func);
-        let imports = self.declare_imports(&mut ctx.func);
+        let imports = self.declare_imports(ir_module, func_id, &mut ctx.func);
         let panic_imports = self.declare_panic_imports(ir_module, func_id, &mut ctx.func);
         let frame_imports = self.declare_frame_imports(ir_module, func_id, &mut ctx.func);
         let shadow = self.declare_shadow_imports(ir_module, func_id, &mut ctx.func);

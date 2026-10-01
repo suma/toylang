@@ -1038,7 +1038,7 @@ pub fn resolve_array_lengths(
     // The consts whose initialisers the fold (or the parser) turned
     // into literals. Built leniently: a `str` const has no scalar
     // value and is simply absent from the map.
-    let mut const_values: HashMap<DefaultSymbol, compiler_ir::Const> = HashMap::new();
+    let mut const_values = compiler_lower::ConstValues::default();
     for c in &program.consts {
         if let Some(v) =
             compiler_lower::eval_const_expr(&c.value, program, &const_values, interner)
@@ -1202,7 +1202,7 @@ fn resolve_size_in_type(
     ty: &mut TypeDecl,
     expression: &frontend::ast::ExprPool,
     location_pool: &frontend::ast::LocationPool,
-    const_values: &HashMap<DefaultSymbol, compiler_ir::Const>,
+    const_values: &compiler_lower::ConstValues,
     interner: &DefaultStringInterner,
     const_fn_names: &HashSet<DefaultSymbol>,
     errors: &mut Vec<TypeCheckError>,
@@ -1278,7 +1278,7 @@ fn describe_length_failure(
     expression: &frontend::ast::ExprPool,
     expr_ref: &ExprRef,
     interner: &DefaultStringInterner,
-    const_values: &HashMap<DefaultSymbol, compiler_ir::Const>,
+    const_values: &compiler_lower::ConstValues,
     const_fn_names: &HashSet<DefaultSymbol>,
 ) -> String {
     let mut found: Option<String> = None;

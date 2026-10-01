@@ -10,7 +10,7 @@
 //! `lookup_method_template` (3-tier fallback: exact match on type
 //! args → empty-args → lone-spec).
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::rc::Rc;
 
 use frontend::ast::{File, Stmt, StmtType};
@@ -246,7 +246,7 @@ pub(super) struct PendingMethodInstance {
 /// this layer — Phase R1 only cares that the method exists for a
 /// given target type.
 pub(super) fn collect_method_decls(program: &File) -> Result<MethodRegistry, String> {
-    let mut registry: MethodRegistry = HashMap::new();
+    let mut registry: MethodRegistry = HashMap::default();
     for stmt_ref in program.statement.refs_of(StmtType::ImplBlock) {
         let stmt = match program.statement.get(&stmt_ref) {
             Some(s) => s,

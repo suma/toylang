@@ -123,7 +123,7 @@ impl<'a> FunctionLower<'a> {
         let elements = table.elements.clone();
         let name = self.interner.resolve(sym).unwrap_or("?").to_string();
         let elem_ty = self
-            .lower_type_with_subst(&decl, &std::collections::HashMap::new())
+            .lower_type_with_subst(&decl, &rustc_hash::FxHashMap::default())
             .ok_or_else(|| format!("compiler MVP cannot lay out the elements of `const {name}`"))?;
         let leaves = self
             .compute_leaf_layout(elem_ty)

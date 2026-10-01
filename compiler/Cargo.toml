@@ -15,6 +15,7 @@ path = "src/main.rs"
 frontend = { path = "../frontend", features = ["serde"] }
 compiler_core = { path = "../compiler_core" }
 compiler_ir = { path = "../compiler_ir" }
+rustc-hash.workspace = true
 compiler_lower = { path = "../compiler_lower" }
 interpreter = { path = "../interpreter", default-features = false }
 toylang_rt = { path = "../compiler/runtime/toylang_rt" }

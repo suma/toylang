@@ -44,7 +44,7 @@
 //! - `Type` only carries scalars today; struct / tuple / enum entries
 //!   will be added when those land in codegen.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::fmt;
 
 use string_interner::{DefaultSymbol, Symbol};
@@ -130,7 +130,7 @@ pub struct Module {
     /// scanning `program.statement` for `Stmt::ImplBlock { trait_name:
     /// Some("Drop"), .. }`. Empty for programs that don't reference
     /// the stdlib `Drop` trait.
-    pub drop_trait_structs: std::collections::HashSet<DefaultSymbol>,
+    pub drop_trait_structs: rustc_hash::FxHashSet<DefaultSymbol>,
     /// DROP-GLUE: memoized per-type drop-glue functions. Each entry
     /// frees everything a value of that type owns (recursively),
     /// then runs the type's user `drop()` body where one exists.
@@ -139,7 +139,7 @@ pub struct Module {
     /// is bounded by the value's depth, not the type graph. Filled
     /// lazily by `FunctionLower::ensure_drop_glue`; the bodies are
     /// synthesized when the driver drains `pending_glue_work`.
-    pub drop_glue: std::collections::HashMap<Type, FuncId>,
+    pub drop_glue: rustc_hash::FxHashMap<Type, FuncId>,
     /// A5-P2: ordered list of method symbols for each `trait` decl,
     /// keyed by the trait's symbol. Lookup of `(trait_sym, method_sym)`
     /// yields the **vtable slot index** for that method on any
@@ -492,7 +492,7 @@ impl Module {
             resident_compounds: Vec::new(),
             locals: Vec::new(),
             array_slots: Vec::new(),
-            address_taken_locals: std::collections::HashSet::new(),
+            address_taken_locals: rustc_hash::FxHashSet::default(),
             blocks: Vec::new(),
             entry: BlockId(0),
         });
@@ -552,7 +552,7 @@ impl Module {
             resident_compounds: Vec::new(),
             locals: Vec::new(),
             array_slots: Vec::new(),
-            address_taken_locals: std::collections::HashSet::new(),
+            address_taken_locals: rustc_hash::FxHashSet::default(),
             blocks: Vec::new(),
             entry: BlockId(0),
         });
@@ -650,8 +650,8 @@ impl Module {
     /// runtime value have no static edge. Used to prune codegen /
     /// lowering to the live set — the auto-loaded stdlib declares far
     /// more functions than a program actually touches.
-    pub fn reachable_from(&self, start: FuncId) -> std::collections::HashSet<FuncId> {
-        let mut seen = std::collections::HashSet::new();
+    pub fn reachable_from(&self, start: FuncId) -> rustc_hash::FxHashSet<FuncId> {
+        let mut seen = rustc_hash::FxHashSet::default();
         let mut stack = vec![start];
         while let Some(fid) = stack.pop() {
             if !seen.insert(fid) {
@@ -980,7 +980,7 @@ pub struct Function {
     /// `AddressOf` instruction's `stack_addr` value points at the
     /// canonical storage. Locals not in this set keep the original
     /// SSA `Variable` path.
-    pub address_taken_locals: std::collections::HashSet<LocalId>,
+    pub address_taken_locals: rustc_hash::FxHashSet<LocalId>,
     pub blocks: Vec<Block>,
     pub entry: BlockId,
 }

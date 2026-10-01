@@ -15,7 +15,7 @@
 //!   before deciding whether to emit `CallStruct` / `CallTuple` /
 //!   `CallEnum`.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use frontend::ast::{Expr, ExprRef};
 use frontend::type_decl::TypeDecl;
@@ -265,7 +265,7 @@ impl<'a> FunctionLower<'a> {
                 self.interner.resolve(method_sym).unwrap_or("?"),
             ));
         }
-        let mut subst: HashMap<DefaultSymbol, Type> = HashMap::new();
+        let mut subst: HashMap<DefaultSymbol, Type> = HashMap::default();
         for (i, p) in template.generic_params.iter().enumerate() {
             if let Some(ty) = recv_type_args.get(i).copied() {
                 subst.insert(*p, ty);

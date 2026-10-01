@@ -999,7 +999,7 @@ impl<'a> FunctionLower<'a> {
         if let Some(t) = self.lower_scalar_with_subst(ty) {
             return Some(t);
         }
-        let subst: std::collections::HashMap<DefaultSymbol, Type> = self.active_subst.clone();
+        let subst: rustc_hash::FxHashMap<DefaultSymbol, Type> = self.active_subst.clone();
         self.lower_type_with_subst(ty, &subst)
     }
 

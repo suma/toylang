@@ -21,7 +21,7 @@
 //! definition stay in `mod.rs` so every other sub-module can
 //! reach them through `super::FunctionLower`.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::rc::Rc;
 
 use frontend::ast::{ExprRef, File, Stmt, StmtType};
@@ -817,9 +817,9 @@ fn declare_methods(
     // `impl<T> Cell<T> { fn get(self: Self) -> T }`) are deferred:
     // they're stashed in `generic_methods` and lazily monomorphised
     // by call sites — same shape as Phase L for generic functions.
-    let mut method_func_ids: MethodFuncIds = HashMap::new();
-    let mut generic_methods: GenericMethods = HashMap::new();
-    let method_instances: MethodInstances = HashMap::new();
+    let mut method_func_ids: MethodFuncIds = HashMap::default();
+    let mut generic_methods: GenericMethods = HashMap::default();
+    let method_instances: MethodInstances = HashMap::default();
     let pending_method_work: Vec<PendingMethodInstance> = Vec::new();
     // A5-P2-MVP-B: dyn-trait dispatch thunk queue. Each entry pre-declares
     // a `(U64 data_ptr, ...user_args) -> R` thunk that, at drain time,
@@ -1055,7 +1055,7 @@ fn declare_methods(
         // thunk can route through `CallWithSelfWriteback` when the
         // impl has trailing writeback returns.
         let trait_method_sigs: HashMap<DefaultSymbol, (Vec<Type>, Type, bool)> = {
-            let mut sigs: HashMap<DefaultSymbol, (Vec<Type>, Type, bool)> = HashMap::new();
+            let mut sigs: HashMap<DefaultSymbol, (Vec<Type>, Type, bool)> = HashMap::default();
             for sref in program.statement.refs_of(StmtType::TraitDecl) {
                 if let Some(frontend::ast::Stmt::TraitDecl { name, methods, .. }) =
                     program.statement.get(&sref)
@@ -1352,7 +1352,7 @@ fn lower_program_inner(
     // collect them into a side table keyed by name; the call lowerer
     // reaches in here via `instantiate_generic_function` on demand.
     let mut generic_funcs: HashMap<DefaultSymbol, Rc<frontend::ast::Function>> =
-        HashMap::new();
+        HashMap::default();
 
     // Inherent / trait methods. Pre-scan all `impl` blocks (Phase R1
     // accepts only non-generic methods on non-generic structs) and
@@ -1366,8 +1366,8 @@ fn lower_program_inner(
     // `scheduled` is the set of `FuncId`s that are already queued for
     // body lowering (or already lowered) — the reachability scan uses
     // it to enqueue each declared-but-bodyless function at most once.
-    let mut plain_sources: HashMap<FuncId, PlainSource> = HashMap::new();
-    let mut scheduled: HashSet<FuncId> = HashSet::new();
+    let mut plain_sources: HashMap<FuncId, PlainSource> = HashMap::default();
+    let mut scheduled: HashSet<FuncId> = HashSet::default();
 
     let decl_ctx = DeclCtx {
         program,
@@ -1411,7 +1411,7 @@ fn lower_program_inner(
     // them. A program that uses a handful of stdlib functions now lowers
     // a handful of bodies instead of the whole ~190-function auto-loaded
     // core.
-    let mut generic_instances: GenericInstances = HashMap::new();
+    let mut generic_instances: GenericInstances = HashMap::default();
     let mut pending_generic_work: Vec<PendingGenericInstance> = Vec::new();
     // Closures Phase 5a: queue of closure bodies awaiting lowering.
     // The lift step (`lower_let` of `Expr::Closure`) declares the
@@ -1430,7 +1430,7 @@ fn lower_program_inner(
     let mut pending_plain_work: Vec<PendingPlainBody> = Vec::new();
     // `(trait, struct)` pairs whose vtable a reachable body referenced.
     // Only these thunks get their body lowered.
-    let mut used_vtables: HashSet<(DefaultSymbol, DefaultSymbol)> = HashSet::new();
+    let mut used_vtables: HashSet<(DefaultSymbol, DefaultSymbol)> = HashSet::default();
 
     // Seed the queue with the entry points. Every runnable program has
     // `main`; `test "name"` blocks are zero-argument functions that the
@@ -1915,21 +1915,21 @@ impl<'a> FunctionLower<'a> {
             print_stderr: false,
             current_expr: None,
             located_error: None,
-            bindings: HashMap::new(),
-            pending_block_enums: HashMap::new(),
+            bindings: HashMap::default(),
+            pending_block_enums: HashMap::default(),
             loop_stack: Vec::new(),
             with_scope_depth: 0,
             with_scope_arena_drops: Vec::new(),
             drop_scopes: Vec::new(),
-            not_owned_locals: std::collections::HashSet::new(),
+            not_owned_locals: rustc_hash::FxHashSet::default(),
             borrowed_self: false,
-            drop_flag_locals: HashMap::new(),
+            drop_flag_locals: HashMap::default(),
             compound_block_depth: 0,
             pending_param_drops: Vec::new(),
             current_let_stmt: None,
             current_block: None,
             next_value: 0,
-            block_consts: HashMap::new(),
+            block_consts: HashMap::default(),
             pending_struct_value: None,
             pending_tuple_value: None,
             range_return: None,
@@ -1943,14 +1943,14 @@ impl<'a> FunctionLower<'a> {
             generic_methods,
             method_instances,
             pending_method_work,
-            active_subst: HashMap::new(),
+            active_subst: HashMap::default(),
             pending_return_hint: None,
             self_writeback_locals: None,
             pending_self_writeback_param: None,
             pending_ptr_self_param: None,
             struct_alloc_depth: 0,
             binding_params: false,
-            closure_bindings: HashMap::new(),
+            closure_bindings: HashMap::default(),
             pending_closure_work,
             pending_par_work,
             in_par_body: false,

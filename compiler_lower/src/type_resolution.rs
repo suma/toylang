@@ -24,7 +24,7 @@
 //!   `Type` for use as a type argument (recurses through
 //!   generic struct / enum shapes and tuples).
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use frontend::ast::ExprRef;
 use frontend::type_decl::TypeDecl;
@@ -225,7 +225,7 @@ impl<'a> FunctionLower<'a> {
                     self.interner.resolve(variant_name).unwrap_or("?"),
                 )
             })?;
-        let mut inferred: HashMap<DefaultSymbol, Type> = HashMap::new();
+        let mut inferred: HashMap<DefaultSymbol, Type> = HashMap::default();
         for (pt, arg) in variant.payload_types.iter().zip(args.iter()) {
             let generic = match pt {
                 TypeDecl::Generic(g) => Some(*g),

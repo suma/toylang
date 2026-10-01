@@ -26,7 +26,7 @@
 //!   `lower_call_args`, then `resolve_call_target`, then emits
 //!   the `Call` instruction with the resolved return type.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use frontend::ast::{Expr, ExprRef, UnaryOp};
 use frontend::type_decl::TypeDecl;
@@ -104,7 +104,7 @@ impl<'a> FunctionLower<'a> {
                     arg_exprs.len(),
                 ));
             }
-            let mut inferred: HashMap<DefaultSymbol, Type> = HashMap::new();
+            let mut inferred: HashMap<DefaultSymbol, Type> = HashMap::default();
             for ((_pname, ptype), arg) in template.parameter.iter().zip(arg_exprs.iter())
             {
                 self.infer_generic_args_from_param(

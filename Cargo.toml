@@ -14,6 +14,10 @@ members = [
 
 [workspace.dependencies]
 string-interner = "0.20.0"
+# Fast non-cryptographic hashing for the compiler's internal maps (keys are
+# dense ids and symbols, never attacker-chosen). Already in the lockfile via
+# cranelift.
+rustc-hash = "2.1"
 
 # Common metadata for all crates in the workspace
 [workspace.package]

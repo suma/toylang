@@ -30,7 +30,7 @@
 //!   counterparts of the pre-allocated write path, also called
 //!   recursively from the enum payload code.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use frontend::ast::{Expr, ExprRef, MatchArm, Pattern, Stmt, StmtRef};
 use frontend::type_decl::TypeDecl;
@@ -666,7 +666,7 @@ impl<'a> FunctionLower<'a> {
                 names.insert(name);
             }
         }
-        let mut kept: HashSet<LocalId> = HashSet::new();
+        let mut kept: HashSet<LocalId> = HashSet::default();
         for name in names {
             match self.bindings.get(&name) {
                 Some(Binding::Struct { fields, .. }) => {
@@ -1904,7 +1904,7 @@ fn mentioned_names(
         }
         Some(())
     }
-    let mut out = HashSet::new();
+    let mut out = HashSet::default();
     let mut reads = Vec::new();
     walk(program, expr, &mut out, &mut reads)?;
     Some((out, reads))

@@ -13,7 +13,7 @@
 //! the same module tree, which lets us split this big struct's
 //! methods by topic without touching its public API.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use frontend::ast::{Expr, ExprRef, Operator, Stmt, UnaryOp};
 use frontend::type_decl::TypeDecl;
@@ -522,10 +522,10 @@ impl<'a> FunctionLower<'a> {
                             Some(Expr::ExprList(items)) => items,
                             _ => return None,
                         };
-                        let mut inferred: std::collections::HashMap<
+                        let mut inferred: rustc_hash::FxHashMap<
                             DefaultSymbol,
                             Type,
-                        > = std::collections::HashMap::new();
+                        > = rustc_hash::FxHashMap::default();
                         for ((_pname, ptype), arg) in
                             template.parameter.iter().zip(arg_exprs.iter())
                         {
@@ -562,7 +562,7 @@ impl<'a> FunctionLower<'a> {
                             .iter()
                             .map(|p| inferred.get(p).copied())
                             .collect();
-                        let subst: std::collections::HashMap<DefaultSymbol, Type> =
+                        let subst: rustc_hash::FxHashMap<DefaultSymbol, Type> =
                             template
                                 .generic_params
                                 .iter()
@@ -895,7 +895,7 @@ impl<'a> FunctionLower<'a> {
             Some(super::method_registry::ResolvedMethodTarget::Template(template)) => {
                 if let Some((self_ty, recv_type_args)) = recv_self
                     && template.generic_params.len() >= recv_type_args.len() {
-                        let mut subst: HashMap<DefaultSymbol, Type> = HashMap::new();
+                        let mut subst: HashMap<DefaultSymbol, Type> = HashMap::default();
                         for (i, p) in template.generic_params.iter().enumerate() {
                             if let Some(t) = recv_type_args.get(i).copied() {
                                 subst.insert(*p, t);

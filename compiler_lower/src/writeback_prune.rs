@@ -51,7 +51,7 @@
 //! one post-pass is what keeps them in agreement; doing it during
 //! lowering would need the callee's body before its callers.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use compiler_ir::{FuncId, InstKind, LocalId, Module, Terminator};
 
@@ -84,7 +84,7 @@ fn prune_once(module: &mut Module) -> usize {
     //    `kept[f]` is the list of surviving indices into the old
     //    `self_writeback_types`; a function absent from the map keeps
     //    everything.
-    let mut kept: HashMap<FuncId, (usize, Vec<usize>)> = HashMap::new();
+    let mut kept: HashMap<FuncId, (usize, Vec<usize>)> = HashMap::default();
     let mut removed = 0usize;
 
     for (idx, func) in module.functions.iter().enumerate() {
@@ -108,7 +108,7 @@ fn prune_once(module: &mut Module) -> usize {
 
         // A local that fills two slots is not something this pass
         // reasons about; keep every slot in that case.
-        let mut seen: HashSet<LocalId> = HashSet::new();
+        let mut seen: HashSet<LocalId> = HashSet::default();
         let duplicated = !func.self_writeback_locals.iter().all(|l| seen.insert(*l));
 
         let keep: Vec<usize> = (0..n)
@@ -129,7 +129,7 @@ fn prune_once(module: &mut Module) -> usize {
     //     address, a closure, a vtable slot. Those call through a
     //     signature we do not rewrite here.
     {
-        let mut escaped: HashSet<FuncId> = HashSet::new();
+        let mut escaped: HashSet<FuncId> = HashSet::default();
         for slots in module.vtables.values() {
             escaped.extend(slots.iter().copied());
         }
@@ -160,7 +160,7 @@ fn prune_once(module: &mut Module) -> usize {
 
     // 1b. Veto any callee whose pruning would leave a caller holding
     //     an undefined dest local (see the module docs: `dyn` thunks).
-    let mut vetoed: HashSet<FuncId> = HashSet::new();
+    let mut vetoed: HashSet<FuncId> = HashSet::default();
     for func in &module.functions {
         // Locals `0..param_leaves` are the flattened parameters, and
         // the entry block defines them all.

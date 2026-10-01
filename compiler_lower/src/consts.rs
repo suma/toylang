@@ -17,7 +17,7 @@
 //! on the other three. The operators below therefore delegate to
 //! [`crate::fold`], the same table body lowering folds with.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use frontend::ast::{Expr, ExprRef, File};
 use string_interner::{DefaultStringInterner, DefaultSymbol};
@@ -60,8 +60,8 @@ pub(super) fn evaluate_consts(
     interner: &DefaultStringInterner,
     struct_defs: &crate::templates::StructDefs,
 ) -> Result<(ConstValues, ConstArrays), String> {
-    let mut values: ConstValues = HashMap::new();
-    let mut arrays: ConstArrays = HashMap::new();
+    let mut values: ConstValues = HashMap::default();
+    let mut arrays: ConstArrays = HashMap::default();
     for c in &program.consts {
         if let Some(array) = eval_const_array(c, program, &values, interner, struct_defs)? {
             arrays.insert(c.name, array);

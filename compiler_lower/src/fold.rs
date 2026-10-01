@@ -256,8 +256,8 @@ fn compare(op: BinOp, ordering: std::cmp::Ordering) -> Option<Const> {
 /// whose match is exhaustive precisely so that a new operand-carrying
 /// variant cannot silently make this delete a live definition.
 pub(crate) fn drop_dead_consts(function: &mut compiler_ir::Function) {
-    let mut used: std::collections::HashSet<compiler_ir::ValueId> =
-        std::collections::HashSet::new();
+    let mut used: rustc_hash::FxHashSet<compiler_ir::ValueId> =
+        rustc_hash::FxHashSet::default();
     for block in &function.blocks {
         for inst in &block.instructions {
             inst.kind.for_each_operand(&mut |v| {

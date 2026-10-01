@@ -17,7 +17,7 @@
 //! gnarly visibility dance.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use frontend::ast::{File, Stmt, StmtType};
 use frontend::type_decl::TypeDecl;
@@ -46,7 +46,7 @@ use crate::ir::{EnumId, EnumVariant, Module, StructId, Type};
 type InstanceKey = (bool, DefaultSymbol, Vec<Type>);
 
 thread_local! {
-    static IN_PROGRESS: RefCell<HashSet<InstanceKey>> = RefCell::new(HashSet::new());
+    static IN_PROGRESS: RefCell<HashSet<InstanceKey>> = RefCell::new(HashSet::default());
 
     /// The cycle message from the innermost refused `Guard::enter`.
     ///
@@ -155,7 +155,7 @@ pub(super) fn collect_struct_defs(
     interner: &DefaultStringInterner,
 ) -> Result<StructDefs, String> {
     let _ = interner;
-    let mut defs: StructDefs = HashMap::new();
+    let mut defs: StructDefs = HashMap::default();
     for stmt_ref in program.statement.refs_of(StmtType::StructDecl) {
         let stmt = match program.statement.get(&stmt_ref) {
             Some(s) => s,
@@ -183,7 +183,7 @@ pub(super) fn collect_enum_defs(
     interner: &DefaultStringInterner,
 ) -> Result<EnumDefs, String> {
     let _ = interner;
-    let mut defs: EnumDefs = HashMap::new();
+    let mut defs: EnumDefs = HashMap::default();
     for stmt_ref in program.statement.refs_of(StmtType::EnumDecl) {
         let stmt = match program.statement.get(&stmt_ref) {
             Some(s) => s,
@@ -1102,7 +1102,7 @@ mod tests {
         let mut interner = DefaultStringInterner::new();
         let list = interner.get_or_intern("List");
         let cons = interner.get_or_intern("Cons");
-        let mut enum_defs: EnumDefs = HashMap::new();
+        let mut enum_defs: EnumDefs = HashMap::default();
         enum_defs.insert(
             list,
             EnumTemplate {
@@ -1113,7 +1113,7 @@ mod tests {
                 }],
             },
         );
-        let struct_defs: StructDefs = HashMap::new();
+        let struct_defs: StructDefs = HashMap::default();
         let mut module = Module::new();
 
         let err = instantiate_enum(
@@ -1132,7 +1132,7 @@ mod tests {
     fn a_self_referential_struct_errors_instead_of_recursing() {
         let mut interner = DefaultStringInterner::new();
         let node = interner.get_or_intern("Node");
-        let mut struct_defs: StructDefs = HashMap::new();
+        let mut struct_defs: StructDefs = HashMap::default();
         struct_defs.insert(
             node,
             StructTemplate {
@@ -1140,7 +1140,7 @@ mod tests {
                 fields: vec![("next".to_string(), TypeDecl::Identifier(node))],
             },
         );
-        let enum_defs: EnumDefs = HashMap::new();
+        let enum_defs: EnumDefs = HashMap::default();
         let mut module = Module::new();
 
         let err = instantiate_struct(
@@ -1172,7 +1172,7 @@ mod tests {
         let vec = interner.get_or_intern("Vec");
         let t_param = interner.get_or_intern("T");
 
-        let mut struct_defs: StructDefs = HashMap::new();
+        let mut struct_defs: StructDefs = HashMap::default();
         struct_defs.insert(
             vec,
             StructTemplate {
@@ -1198,7 +1198,7 @@ mod tests {
                 ],
             },
         );
-        let enum_defs: EnumDefs = HashMap::new();
+        let enum_defs: EnumDefs = HashMap::default();
         let mut module = Module::new();
 
         let id = instantiate_struct(
@@ -1227,7 +1227,7 @@ mod tests {
     fn the_guard_does_not_leak_between_instantiations() {
         let mut interner = DefaultStringInterner::new();
         let point = interner.get_or_intern("Point");
-        let mut struct_defs: StructDefs = HashMap::new();
+        let mut struct_defs: StructDefs = HashMap::default();
         struct_defs.insert(
             point,
             StructTemplate {
@@ -1235,7 +1235,7 @@ mod tests {
                 fields: vec![("x".to_string(), TypeDecl::Int64)],
             },
         );
-        let enum_defs: EnumDefs = HashMap::new();
+        let enum_defs: EnumDefs = HashMap::default();
         let mut module = Module::new();
 
         let first =

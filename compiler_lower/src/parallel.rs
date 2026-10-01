@@ -341,11 +341,11 @@ impl FunctionLower<'_> {
         var_name: DefaultSymbol,
         body: &ExprRef,
     ) -> Result<Vec<ParCapture>, String> {
-        use std::collections::HashSet;
-        let mut bound: HashSet<DefaultSymbol> = HashSet::new();
+        use rustc_hash::FxHashSet as HashSet;
+        let mut bound: HashSet<DefaultSymbol> = HashSet::default();
         bound.insert(var_name);
         let mut found: Vec<(DefaultSymbol, Option<Type>)> = Vec::new();
-        let mut seen: HashSet<DefaultSymbol> = HashSet::new();
+        let mut seen: HashSet<DefaultSymbol> = HashSet::default();
         self.walk_closure_for_captures(body, &mut bound, &mut found, &mut seen);
 
         let mut captures = Vec::with_capacity(found.len());
@@ -670,7 +670,7 @@ pub(crate) fn reject_capture_writes(
     interner: &string_interner::DefaultStringInterner,
     checks: &[ParCheck],
 ) -> Result<(), String> {
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap as HashMap;
     for check in checks {
         let owner: HashMap<LocalId, DefaultSymbol> =
             check.capture_locals.iter().copied().collect();

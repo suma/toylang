@@ -28,7 +28,7 @@
 //! and suffix are spelled in both places, and the consistency tests pin
 //! them by comparing stderr across engines.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 /// First byte of a record. Rendered text starts with a letter or a
 /// newline, never with this.

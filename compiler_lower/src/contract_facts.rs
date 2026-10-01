@@ -29,7 +29,7 @@
 //! (`shadowed`), since the guard site would then be reading the new
 //! binding rather than the parameter.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use frontend::ast::{Expr, ExprRef, File, Operator, ParameterList, Stmt, StmtRef, UnaryOp};
 use string_interner::{DefaultStringInterner, DefaultSymbol};
@@ -502,7 +502,7 @@ fn integer_literal_value(
 /// costs an optimisation; being wrong the other way removes a guard
 /// that was doing something.
 pub(super) fn mutated_names(program: &File, body: &ExprRef) -> HashSet<DefaultSymbol> {
-    let mut found = HashSet::new();
+    let mut found = HashSet::default();
     walk_expr(program, body, &mut found);
     found
 }
@@ -620,7 +620,7 @@ fn walk_expr(program: &File, expr: &ExprRef, out: &mut HashSet<DefaultSymbol>) {
         // A closure body runs somewhere this walk cannot place, so
         // anything it touches is assumed written.
         Expr::Closure { body, .. } => {
-            let mut inner = HashSet::new();
+            let mut inner = HashSet::default();
             walk_expr(program, &body, &mut inner);
             out.extend(inner);
             collect_identifiers(program, &body, out);
@@ -671,7 +671,7 @@ fn collect_identifiers(program: &File, expr: &ExprRef, out: &mut HashSet<Default
     if let Some(Expr::Identifier(sym)) = program.expression.get(expr) {
         out.insert(sym);
     }
-    let mut nested = HashSet::new();
+    let mut nested = HashSet::default();
     walk_expr(program, expr, &mut nested);
     out.extend(nested);
 }

@@ -29,7 +29,7 @@
 //! adds methods to `FunctionLower` through its own
 //! `impl<'a> super::FunctionLower<'a> { ... }` block.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use frontend::ast::ExprRef;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
@@ -104,7 +104,7 @@ impl ContractMessages {
 
 pub mod consts;
 pub use consts::{eval_const_expr, eval_const_expr_in_pool};
-use consts::ConstValues;
+pub use consts::ConstValues;
 
 /// COMPILE-TIME-EVAL C2: what a constant operation produces.
 mod fold;
@@ -399,7 +399,7 @@ struct FunctionLower<'a> {
     /// neither may give one to a `match` arm — an arm that dropped a
     /// payload read through `v.borrow(i)` closed the container's
     /// descriptor while the container still listed it.
-    not_owned_locals: std::collections::HashSet<crate::ir::LocalId>,
+    not_owned_locals: rustc_hash::FxHashSet<crate::ir::LocalId>,
     /// DOUBLE-DROP-LANE-DIVERGENCE: the body being lowered takes its
     /// receiver by reference (`&self` / `&mut self`), so the receiver's
     /// leaves are the caller's, like a `&T` parameter's.
@@ -920,10 +920,10 @@ impl<'a> FunctionLower<'a> {
         params: &frontend::ast::ParameterList,
         body_ref: &frontend::ast::ExprRef,
     ) -> Result<Vec<(DefaultSymbol, Type)>, String> {
-        use std::collections::HashSet;
+        use rustc_hash::FxHashSet as HashSet;
         let mut bound: HashSet<DefaultSymbol> = params.iter().map(|(n, _)| *n).collect();
         let mut out: Vec<(DefaultSymbol, Option<Type>)> = Vec::new();
-        let mut seen: HashSet<DefaultSymbol> = HashSet::new();
+        let mut seen: HashSet<DefaultSymbol> = HashSet::default();
         self.walk_closure_for_captures(body_ref, &mut bound, &mut out, &mut seen);
         // CLOSURE-CAPTURE E5: a name the enclosing scope holds in a
         // shape the env cannot carry used to be dropped here in
@@ -947,9 +947,9 @@ impl<'a> FunctionLower<'a> {
     fn walk_closure_for_captures(
         &self,
         expr_ref: &frontend::ast::ExprRef,
-        bound: &mut std::collections::HashSet<DefaultSymbol>,
+        bound: &mut rustc_hash::FxHashSet<DefaultSymbol>,
         out: &mut Vec<(DefaultSymbol, Option<Type>)>,
-        seen: &mut std::collections::HashSet<DefaultSymbol>,
+        seen: &mut rustc_hash::FxHashSet<DefaultSymbol>,
     ) {
         use frontend::ast::Expr;
         let expr = match self.program.expression.get(expr_ref) {
@@ -958,7 +958,7 @@ impl<'a> FunctionLower<'a> {
         };
         let record = |s: DefaultSymbol,
                           out: &mut Vec<(DefaultSymbol, Option<Type>)>,
-                          seen: &mut std::collections::HashSet<DefaultSymbol>| {
+                          seen: &mut rustc_hash::FxHashSet<DefaultSymbol>| {
             if bound.contains(&s) || seen.contains(&s) {
                 return;
             }
@@ -1133,9 +1133,9 @@ impl<'a> FunctionLower<'a> {
     fn walk_stmt_for_captures(
         &self,
         stmt: &frontend::ast::Stmt,
-        bound: &mut std::collections::HashSet<DefaultSymbol>,
+        bound: &mut rustc_hash::FxHashSet<DefaultSymbol>,
         out: &mut Vec<(DefaultSymbol, Option<Type>)>,
-        seen: &mut std::collections::HashSet<DefaultSymbol>,
+        seen: &mut rustc_hash::FxHashSet<DefaultSymbol>,
     ) {
         use frontend::ast::Stmt;
         match stmt {
@@ -1177,7 +1177,7 @@ impl<'a> FunctionLower<'a> {
 
     fn pattern_bound_names(
         pat: &frontend::ast::Pattern,
-        bound: &mut std::collections::HashSet<DefaultSymbol>,
+        bound: &mut rustc_hash::FxHashSet<DefaultSymbol>,
     ) {
         use frontend::ast::Pattern;
         match pat {

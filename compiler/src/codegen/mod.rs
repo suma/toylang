@@ -22,7 +22,7 @@ mod imports;
 mod diag_pool;
 mod simd;
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use cranelift::codegen::ir::{types, AbiParam, InstBuilder, Signature};
 use cranelift::frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
@@ -896,7 +896,7 @@ impl<M: Module> CodegenSession<M> {
 
         Ok(Self {
             module,
-            fn_ids: HashMap::new(),
+            fn_ids: HashMap::default(),
             libc_puts,
             libc_exit,
             libc_malloc,
@@ -984,20 +984,20 @@ impl<M: Module> CodegenSession<M> {
             rt_format_f32,
             rt_format_bool,
             rt_format_str,
-            panic_strings: HashMap::new(),
-            frame_strings: HashMap::new(),
+            panic_strings: HashMap::default(),
+            frame_strings: HashMap::default(),
             diag_pool: diag_pool::DiagPool::default(),
             diag_pool_id: None,
-            frame_blobs: HashMap::new(),
-            alloc_file_blobs: HashMap::new(),
+            frame_blobs: HashMap::default(),
+            alloc_file_blobs: HashMap::default(),
             entry_frame_blob: None,
             records_frames: false,
-            print_strings: HashMap::new(),
-            raw_print_strings: HashMap::new(),
-            const_str_bytes: HashMap::new(),
-            vtable_data_ids: HashMap::new(),
-            fn_decls: HashMap::new(),
-            data_decls: HashMap::new(),
+            print_strings: HashMap::default(),
+            raw_print_strings: HashMap::default(),
+            const_str_bytes: HashMap::default(),
+            vtable_data_ids: HashMap::default(),
+            fn_decls: HashMap::default(),
+            data_decls: HashMap::default(),
         })
     }
 
@@ -1045,13 +1045,13 @@ impl<M: Module> CodegenSession<M> {
         }
 
         // Build read-only caches used by the parallel codegen path.
-        let func_decl_map: std::collections::HashMap<_, _> =
+        let func_decl_map: rustc_hash::FxHashMap<_, _> =
             self.module.declarations().get_functions().collect();
         for (cl_id, decl) in func_decl_map {
             self.fn_decls
                 .insert(cl_id, (decl.signature.clone(), decl.linkage.is_final()));
         }
-        let data_decl_map: std::collections::HashMap<_, _> =
+        let data_decl_map: rustc_hash::FxHashMap<_, _> =
             self.module.declarations().get_data_objects().collect();
         for (data_id, decl) in data_decl_map {
             self.data_decls.insert(data_id, decl.linkage.is_final());
@@ -1186,7 +1186,7 @@ impl<M: Module> CodegenSession<M> {
         self.define_vtables(ir_module, interner)?;
         // Refresh the data-declaration cache after all `.rodata`
         // entries and vtables have been declared.
-        let data_decl_map: std::collections::HashMap<_, _> =
+        let data_decl_map: rustc_hash::FxHashMap<_, _> =
             self.module.declarations().get_data_objects().collect();
         self.data_decls.clear();
         for (data_id, decl) in data_decl_map {
@@ -1220,8 +1220,8 @@ impl<M: Module> CodegenSession<M> {
         // `ir_module.vtables` entry, but a missing one falls
         // through to a clean codegen error at the dispatch site
         // rather than a malformed object).
-        let mut referenced: std::collections::HashSet<(DefaultSymbol, DefaultSymbol)> =
-            std::collections::HashSet::new();
+        let mut referenced: rustc_hash::FxHashSet<(DefaultSymbol, DefaultSymbol)> =
+            rustc_hash::FxHashSet::default();
         for func in &ir_module.functions {
             for blk in &func.blocks {
                 for inst in &blk.instructions {
@@ -2140,14 +2140,14 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             const_str_bytes_imports,
             vtable_imports,
             runtime,
-            block_map: HashMap::new(),
-            locals: HashMap::new(),
-            values: HashMap::new(),
-            array_slots: HashMap::new(),
-            addr_taken_slots: HashMap::new(),
-            ptr_self_leaves: HashMap::new(),
-            resident_leaves: HashMap::new(),
-            dyn_coerce_stack_slots: HashMap::new(),
+            block_map: HashMap::default(),
+            locals: HashMap::default(),
+            values: HashMap::default(),
+            array_slots: HashMap::default(),
+            addr_taken_slots: HashMap::default(),
+            ptr_self_leaves: HashMap::default(),
+            resident_leaves: HashMap::default(),
+            dyn_coerce_stack_slots: HashMap::default(),
         }
     }
 

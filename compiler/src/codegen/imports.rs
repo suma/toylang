@@ -5,7 +5,7 @@
 //! `CodegenSession` via an `impl<M: Module> super::CodegenSession<M>`
 //! block.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use cranelift_module::Module;
 use string_interner::DefaultSymbol;
@@ -41,7 +41,7 @@ impl<M: Module> CodegenSession<M> {
         // file's import order.
         targets.sort_by_key(|id| id.0);
         targets.dedup();
-        let mut imports = HashMap::with_capacity(targets.len());
+        let mut imports = HashMap::with_capacity_and_hasher(targets.len(), Default::default());
         for ir_id in targets {
             if let Some(cl_id) = self.fn_ids.get(&ir_id) {
                 let func_ref = self.declare_func_in_func_readonly(*cl_id, func);
@@ -65,7 +65,7 @@ impl<M: Module> CodegenSession<M> {
         let mut imports: HashMap<
             (DefaultSymbol, Option<compiler_ir::SiteId>),
             (cranelift_codegen::ir::GlobalValue, i64),
-        > = HashMap::new();
+        > = HashMap::default();
         let mut pool: Option<cranelift_codegen::ir::GlobalValue> = None;
         let ir_func = ir_module.function(func_id);
         for blk in &ir_func.blocks {
@@ -112,7 +112,7 @@ impl<M: Module> CodegenSession<M> {
         (Option<compiler_ir::SiteId>, Option<String>),
         ((cranelift_codegen::ir::GlobalValue, i64), (cranelift_codegen::ir::GlobalValue, i64)),
     > {
-        let mut imports = HashMap::new();
+        let mut imports = HashMap::default();
         let mut pool: Option<cranelift_codegen::ir::GlobalValue> = None;
         let ir_func = ir_module.function(func_id);
         for blk in &ir_func.blocks {
@@ -157,7 +157,7 @@ impl<M: Module> CodegenSession<M> {
         if !self.records_frames {
             return None;
         }
-        let mut frames = HashMap::new();
+        let mut frames = HashMap::default();
         let ir_func = ir_module.function(func_id);
         for blk in &ir_func.blocks {
             for inst in &blk.instructions {
@@ -189,7 +189,7 @@ impl<M: Module> CodegenSession<M> {
         func_id: FuncId,
         func: &mut cranelift_codegen::ir::Function,
     ) -> HashMap<String, cranelift_codegen::ir::GlobalValue> {
-        let mut imports = HashMap::new();
+        let mut imports = HashMap::default();
         let ir_func = ir_module.function(func_id);
         for blk in &ir_func.blocks {
             for inst in &blk.instructions {
@@ -231,7 +231,7 @@ impl<M: Module> CodegenSession<M> {
         func: &mut cranelift_codegen::ir::Function,
     ) -> HashMap<(DefaultSymbol, DefaultSymbol), cranelift_codegen::ir::GlobalValue> {
         let mut imports: HashMap<(DefaultSymbol, DefaultSymbol), cranelift_codegen::ir::GlobalValue> =
-            HashMap::new();
+            HashMap::default();
         let ir_func = ir_module.function(func_id);
         for blk in &ir_func.blocks {
             for inst in &blk.instructions {
@@ -263,7 +263,7 @@ impl<M: Module> CodegenSession<M> {
         func_id: FuncId,
         func: &mut cranelift_codegen::ir::Function,
     ) -> HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue> {
-        let mut imports: HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue> = HashMap::new();
+        let mut imports: HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue> = HashMap::default();
         let ir_func = ir_module.function(func_id);
         for blk in &ir_func.blocks {
             for inst in &blk.instructions {
@@ -297,7 +297,7 @@ impl<M: Module> CodegenSession<M> {
         func_id: FuncId,
         func: &mut cranelift_codegen::ir::Function,
     ) -> HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue> {
-        let mut imports: HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue> = HashMap::new();
+        let mut imports: HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue> = HashMap::default();
         let ir_func = ir_module.function(func_id);
         for blk in &ir_func.blocks {
             for inst in &blk.instructions {
@@ -326,7 +326,7 @@ impl<M: Module> CodegenSession<M> {
         func: &mut cranelift_codegen::ir::Function,
     ) -> HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue> {
         let mut imports: HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue> =
-            HashMap::new();
+            HashMap::default();
         let ir_func = ir_module.function(func_id);
         for blk in &ir_func.blocks {
             for inst in &blk.instructions {

@@ -1057,7 +1057,7 @@ impl<'a, 'b> State<'a, 'b> {
             Some(path) => path,
         };
         let snippet =
-            file.and_then(|f| f.source.lines().nth(loc.line.saturating_sub(1) as usize));
+            file.and_then(|f| f.line(loc.line));
         let prefix = format!(
             "Runtime error occurred:\n{}",
             compiler_ir::format_diagnostic_frame_prefix(

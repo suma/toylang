@@ -2048,7 +2048,7 @@ impl<'a> FunctionLower<'a> {
             Some(path) => path,
         };
         let snippet = file
-            .and_then(|f| f.source.lines().nth(loc.line.saturating_sub(1) as usize))
+            .and_then(|f| f.line(loc.line))
             .map(str::to_string);
         Some(self.module.intern_site(
             path,

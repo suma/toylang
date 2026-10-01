@@ -167,6 +167,11 @@ pub struct Module {
     /// when the lowering pass was asked for debug info; a `--release`
     /// build leaves it empty and emits no shadow-stack traffic.
     pub frames: Vec<Frame>,
+    /// Reverse indices of `sites` / `frames`, so interning one is a
+    /// lookup rather than a scan of everything recorded so far (which
+    /// was quadratic in the number of sites on a large program).
+    site_index: HashMap<Site, u32>,
+    frame_index: HashMap<Frame, u32>,
     /// Whether this module records backtraces at all.
     ///
     /// Distinct from `frames.is_empty()`, which is also true of a
@@ -274,13 +279,13 @@ impl Module {
             width,
             snippet: snippet.map(str::to_string),
         };
-        match self.sites.iter().position(|s| *s == site) {
-            Some(i) => SiteId(i as u32),
-            None => {
-                self.sites.push(site);
-                SiteId(self.sites.len() as u32 - 1)
-            }
+        if let Some(&i) = self.site_index.get(&site) {
+            return SiteId(i);
         }
+        let id = self.sites.len() as u32;
+        self.site_index.insert(site.clone(), id);
+        self.sites.push(site);
+        SiteId(id)
     }
 
     pub fn site(&self, id: SiteId) -> Option<&Site> {
@@ -314,13 +319,13 @@ impl Module {
     /// many times it runs.
     pub fn intern_frame(&mut self, name: &str, site: Option<SiteId>) -> FrameId {
         let frame = Frame { name: name.to_string(), site };
-        match self.frames.iter().position(|f| *f == frame) {
-            Some(i) => FrameId(i as u32),
-            None => {
-                self.frames.push(frame);
-                FrameId(self.frames.len() as u32 - 1)
-            }
+        if let Some(&i) = self.frame_index.get(&frame) {
+            return FrameId(i);
         }
+        let id = self.frames.len() as u32;
+        self.frame_index.insert(frame.clone(), id);
+        self.frames.push(frame);
+        FrameId(id)
     }
 
     /// Name this function by what the user wrote.
@@ -1061,7 +1066,7 @@ pub fn format_alloc_budget_violation(stat: u64, entry: u64, current: u64, limit:
 /// changed, or never existed on that machine — so the line it needs to
 /// quote travels with it. Only sites that can actually fail carry one,
 /// which is a bounded set: panics, trap guards, budget checks.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Site {
     /// Index into [`Module::files`].
     pub file: u32,
@@ -1084,7 +1089,7 @@ pub struct Site {
 /// so a frame reads "this function, entered from that line". That
 /// pairing is why frames are recorded at call sites rather than at
 /// function entries: the callee cannot know where it was called from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Frame {
     pub name: String,
     pub site: Option<SiteId>,

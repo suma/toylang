@@ -52,7 +52,59 @@ pub struct SourceFile {
     pub path: String,
     /// The text positions in this file index into.
     pub source: String,
+    /// Where each line starts, built on the first [`Self::line`] call.
+    /// Derived from `source`, so it is neither cached on disk nor
+    /// compared.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    line_starts: LineStarts,
 }
+
+impl SourceFile {
+    pub fn new(path: impl Into<String>, source: impl Into<String>) -> Self {
+        Self { path: path.into(), source: source.into(), line_starts: LineStarts::default() }
+    }
+
+    /// The text of 1-based `line`, without its line ending — what
+    /// `source.lines().nth(line - 1)` answers, in O(1) after the first
+    /// call. Lowering asks this once per site it records, and counting
+    /// lines from the top each time was quadratic in the file's length.
+    pub fn line(&self, line: u32) -> Option<&str> {
+        let starts = self.line_starts.0.get_or_init(|| {
+            std::iter::once(0)
+                .chain(self.source.match_indices('\n').map(|(i, _)| i as u32 + 1))
+                .collect()
+        });
+        // `0` reads as the first line, as `nth(line.saturating_sub(1))` did.
+        let index = (line as usize).saturating_sub(1);
+        let start = *starts.get(index)? as usize;
+        if start >= self.source.len() {
+            return None;
+        }
+        match starts.get(index + 1) {
+            // Ended by `\n` (or `\r\n`), both of which `lines()` drops.
+            Some(next) => {
+                let text = &self.source[start..*next as usize - 1];
+                Some(text.strip_suffix('\r').unwrap_or(text))
+            }
+            // The last line, with no line ending to drop.
+            None => Some(&self.source[start..]),
+        }
+    }
+}
+
+/// [`SourceFile::line_starts`]: equal to any other, so two files with
+/// the same path and text compare equal whether or not either has been
+/// asked for a line yet.
+#[derive(Debug, Clone, Default)]
+struct LineStarts(std::sync::OnceLock<Vec<u32>>);
+
+impl PartialEq for LineStarts {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for LineStarts {}
 
 /// Every file a program was built from, in the order they were added.
 ///
@@ -90,7 +142,7 @@ impl SourceMap {
         if let Some(existing) = self.files.iter().position(|f| f.path == path) {
             return FileId(existing as u32);
         }
-        self.files.push(SourceFile { path, source: source.into() });
+        self.files.push(SourceFile::new(path, source));
         FileId(self.files.len() as u32 - 1)
     }
 
@@ -101,7 +153,7 @@ impl SourceMap {
     /// start and this sets what it resolves to. Later calls overwrite,
     /// which is what a driver that reparses the same program wants.
     pub fn set_entry(&mut self, path: impl Into<String>, source: impl Into<String>) {
-        let entry = SourceFile { path: path.into(), source: source.into() };
+        let entry = SourceFile::new(path, source);
         match self.files.first_mut() {
             Some(slot) => *slot = entry,
             None => self.files.push(entry),
@@ -298,3 +350,25 @@ pub fn brace_pairs(source: &str) -> Vec<(usize, usize)> {
     pairs
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::SourceFile;
+
+    /// `line` must answer exactly what `lines().nth(line - 1)` did,
+    /// line endings and the missing final line included.
+    #[test]
+    fn line_matches_str_lines() {
+        let texts = [
+            "", "a", "a\n", "a\nb", "a\n\n", "\n", "a\r\nb\r\n", "a\r\nb", "a\rb\n", "x\ny\r",
+            "é\nü\n漢字",
+        ];
+        for text in texts {
+            let file = SourceFile::new("f.t", text);
+            for line in 0..6u32 {
+                let expected = text.lines().nth(line.saturating_sub(1) as usize);
+                assert_eq!(file.line(line), expected, "{text:?} line {line}");
+            }
+        }
+    }
+}

@@ -48,6 +48,7 @@ toy build mypkg --profile=compile [--format=json]
 | `input` / `emit` / `release` | 何をどうコンパイルしたか (`release` は toylang の `--release` = 契約を外す) |
 | `compiler_build` (`debug` / `release`) | **コンパイラ自身**のビルド。debug ビルドは数倍遅く、他の差を全部埋もれさせる |
 | `cranelift_opt_level` (`TOYLANG_CRANELIFT_OPT_LEVEL`) | codegen 時間が ~20x 変わる |
+| `cranelift_verifier` (`TOYLANG_CRANELIFT_VERIFY`、既定は debug ビルドのコンパイラだけ on) | codegen の CPU が ~14% 変わる (2026-10-01、logsearch) |
 | `ast_cache` (有効 / 無効、ディレクトリ) | モジュールのパースが丸ごと消える |
 | `link_cache` (有効 / 無効) | リンクが丸ごと消える |
 | `codegen.threads` (counter。codegen の rayon プール) | 並列区間の wall と CPU の比を読むため |

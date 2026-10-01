@@ -28,6 +28,9 @@ struct Conditions {
     /// compiler is several times slower, which swamps everything else.
     compiler_build: &'static str,
     opt_level: &'static str,
+    /// Cranelift's IR verifier (`TOYLANG_CRANELIFT_VERIFY`); it moves
+    /// codegen time, so two profiles compare only when it matches.
+    verifier: bool,
     ast_cache_dir: Option<String>,
     link_cache_dir: Option<String>,
     usage: Usage,
@@ -75,6 +78,7 @@ fn conditions(options: &CompilerOptions) -> Conditions {
         release: options.release,
         compiler_build: if cfg!(debug_assertions) { "debug" } else { "release" },
         opt_level: crate::codegen::cranelift_opt_level(),
+        verifier: crate::codegen::cranelift_verifier() == "true",
         ast_cache_dir,
         link_cache_dir: crate::driver::link_cache_dir(options.link_cache_dir.as_deref())
             .map(|d| d.display().to_string()),
@@ -159,6 +163,7 @@ fn to_json(profile: &Profile, c: &Conditions) -> Value {
         "release": c.release,
         "compiler_build": c.compiler_build,
         "cranelift_opt_level": c.opt_level,
+        "cranelift_verifier": c.verifier,
         "ast_cache_dir": c.ast_cache_dir,
         "link_cache_dir": c.link_cache_dir,
         "total_ms": ms(profile.wall),
@@ -197,11 +202,12 @@ fn to_text(profile: &Profile, c: &Conditions) -> String {
     };
     let _ = writeln!(
         out,
-        "compile profile: {} (emit {}, contracts {}, cranelift opt {}, {} build of the compiler)",
+        "compile profile: {} (emit {}, contracts {}, cranelift opt {}{}, {} build of the compiler)",
         c.input,
         c.emit,
         if c.release { "off (--release)" } else { "on" },
         c.opt_level,
+        if c.verifier { " + verifier" } else { "" },
         c.compiler_build,
     );
     let _ = writeln!(

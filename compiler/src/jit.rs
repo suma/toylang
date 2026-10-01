@@ -244,6 +244,7 @@ fn compile_program_to_jit(
     let mut jit_builder = JITBuilder::with_flags(
         &[
             ("opt_level", crate::codegen::cranelift_opt_level()),
+            ("enable_verifier", crate::codegen::cranelift_verifier()),
             ("enable_multi_ret_implicit_sret", "true"),
         ],
         cranelift_module::default_libcall_names(),

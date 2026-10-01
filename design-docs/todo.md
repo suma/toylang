@@ -12,6 +12,10 @@
 
 ### 2026-10-01
 
+- **CTFE-LOWER-ROOTS / CRANELIFT-VERIFIER — コンパイル時間の 2 件** — const fold の lowering を
+  `main` ではなく wrapper と `const fn` だけから辿る (`lower_program_for_entries`、logsearch の
+  `const_fold` 86 → 14 ms)。cranelift の verifier は release ビルドのコンパイラで off
+  (`TOYLANG_CRANELIFT_VERIFY` で上書き、codegen CPU −14%)。
 - **MATCH-SCRUTINEE-CALL-AOT — 呼び出しの enum を scrutinee にすると compiled レーンが位置なしで
   落ちる** — `if val Result::Ok(n) = parse::to_u64(s)` は MATCH-TEMP-EXIT-LEAK の束縛で通るように
   なり、型検査器が合成する `match` (`Pal::pick(1u64) as u32`) も被演算子を `__enum_cast` に

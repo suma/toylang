@@ -1254,6 +1254,36 @@ pub fn lower_program_with(
     release: bool,
     heap_check: bool,
 ) -> Result<Module, String> {
+    lower_program_inner(program, interner, contract_msgs, release, heap_check, None)
+}
+
+/// [`lower_program`] seeded with `entries` instead of `main` and the
+/// `test` blocks: only the bodies reachable from them are lowered.
+///
+/// The compile-time fold runs a handful of `const fn`s; seeding it
+/// with `main` lowered the whole program a second time just to reach
+/// them (26% of a 25k-line build). An entry with no plain body (a
+/// generic `const fn`) is skipped, and unlike `main`-less sources the
+/// "lower everything" fallback never applies — the caller said what
+/// it will run.
+pub fn lower_program_for_entries(
+    program: &File,
+    interner: &DefaultStringInterner,
+    contract_msgs: &crate::ContractMessages,
+    release: bool,
+    entries: &[DefaultSymbol],
+) -> Result<Module, String> {
+    lower_program_inner(program, interner, contract_msgs, release, false, Some(entries))
+}
+
+fn lower_program_inner(
+    program: &File,
+    interner: &DefaultStringInterner,
+    contract_msgs: &crate::ContractMessages,
+    release: bool,
+    heap_check: bool,
+    entries: Option<&[DefaultSymbol]>,
+) -> Result<Module, String> {
     use frontend::compile_profile as prof;
     let declare_phase = prof::phase("declare");
     let mut module = Module::new();
@@ -1410,10 +1440,14 @@ pub fn lower_program_with(
     // `main`; `test "name"` blocks are zero-argument functions that the
     // interpreter runs under `--test`.
     let mut entry_syms: Vec<DefaultSymbol> = Vec::new();
-    if let Some(s) = interner.get("main") {
-        entry_syms.push(s);
+    if let Some(explicit) = entries {
+        entry_syms.extend_from_slice(explicit);
+    } else {
+        if let Some(s) = interner.get("main") {
+            entry_syms.push(s);
+        }
+        entry_syms.extend(program.tests.iter().map(|t| t.function));
     }
-    entry_syms.extend(program.tests.iter().map(|t| t.function));
     // TEST-TOOL T2: a *test* is an entry point too. Before this only
     // `main` counted, so a `tests/*.t` file -- which has no `main` on
     // purpose -- fell into the "lower everything" fallback below and
@@ -1439,7 +1473,7 @@ pub fn lower_program_with(
     // (partial / library source fed to `--emit=ir`) falls back to
     // lowering every non-generic body, in declaration (FuncId) order
     // for determinism.
-    if !seeded_an_entry {
+    if !seeded_an_entry && entries.is_none() {
         let mut all: Vec<FuncId> = plain_sources.keys().copied().collect();
         all.sort_by_key(|f| f.0);
         for func_id in all {

@@ -156,7 +156,7 @@ mod method_registry;
 use method_registry::{GenericMethods, MethodFuncIds, MethodInstances, MethodRegistry, PendingMethodInstance};
 
 mod program;
-pub use program::{install_test_driver, lower_program, lower_program_with};
+pub use program::{install_test_driver, lower_program, lower_program_for_entries, lower_program_with};
 use program::{GenericFuncs, GenericInstances, PendingGenericInstance};
 
 mod type_inference;

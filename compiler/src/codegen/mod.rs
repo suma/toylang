@@ -568,6 +568,22 @@ pub(crate) fn cranelift_opt_level() -> &'static str {
     }
 }
 
+/// Resolve cranelift's `enable_verifier` flag. The verifier re-checks
+/// every function's IR before codegen; it is what turns a lowering bug
+/// into a loud error instead of a wrong binary, and it costs a
+/// noticeable slice of codegen. It stays on in a debug build of the
+/// compiler — which is what the test suite runs, so every program the
+/// tests compile is still verified — and is off in a release build.
+/// `TOYLANG_CRANELIFT_VERIFY=1` / `=0` overrides either way.
+pub(crate) fn cranelift_verifier() -> &'static str {
+    match std::env::var("TOYLANG_CRANELIFT_VERIFY") {
+        Ok(v) if v == "1" || v == "true" => "true",
+        Ok(v) if v == "0" || v == "false" => "false",
+        _ if cfg!(debug_assertions) => "true",
+        _ => "false",
+    }
+}
+
 /// Construct the host-targeted ObjectModule used by the AOT pipeline.
 /// Pulled out of `CodegenSession::new` so the JIT path can build a
 /// `JITModule` with its own ISA settings and still funnel into the
@@ -602,6 +618,9 @@ pub(crate) fn make_object_module() -> Result<ObjectModule, String> {
         .map_err(|e| format!("flag set: {e}"))?;
     // PIC is required by some platform linkers (notably recent macOS)
     // for relocatable objects feeding into PIE executables.
+    flag_builder
+        .set("enable_verifier", cranelift_verifier())
+        .map_err(|e| format!("flag set: {e}"))?;
     flag_builder
         .set("is_pic", "true")
         .map_err(|e| format!("flag set: {e}"))?;

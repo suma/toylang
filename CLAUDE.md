@@ -249,7 +249,10 @@ echo 'fn main() -> u64 { 7u64 }' | cargo run -q -p compiler -- - --all-backends
 `cargo build --release -p compiler` した `target/release/compiler` で測る。
 `TOYLANG_CRANELIFT_OPT_LEVEL` (テスト用に `.cargo/config.toml` が `none`
 にしている) も codegen を ~20x 変えるので、見出しに出る値を揃えて
-比べること。親フェーズの `self ms` が大きいのは計測点の無い時間がある印。
+比べること。cranelift の IR verifier は**コンパイラ自身が debug ビルドの
+ときだけ on** (テストは全部 debug なので検査は続く)、release では off で、
+`TOYLANG_CRANELIFT_VERIFY=1|0` で上書きできる。on のとき見出しに
+`+ verifier` が出る (codegen CPU が ~14% 変わる)。親フェーズの `self ms` が大きいのは計測点の無い時間がある印。
 
 **型ホール**: `val x: _ = expr` と書くと推論結果を報告して停止する
 (`[E0011] type hole: \`x\` has type \`i64\``)。1 回の実行でファイル中の

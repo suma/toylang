@@ -77,7 +77,7 @@ use std::rc::Rc;
 use compiler_ir::{Module, Type};
 use compiler_lower::ContractMessages;
 use compiler_vm::slot::RawSlot;
-use frontend::ast::{Expr, ExprRef, File, Function, Node, Stmt, StmtRef, TestCase, Visibility};
+use frontend::ast::{Expr, ExprRef, File, Function, Node, Stmt, StmtRef, Visibility};
 use frontend::type_checker::error::TypeCheckError;
 use frontend::type_decl::{ArraySize, TypeDecl};
 use string_interner::{DefaultStringInterner, DefaultSymbol};
@@ -378,11 +378,10 @@ fn evaluate(
 /// Lower `program` for the fold: every const named in `stub_syms` has
 /// its initialiser temporarily replaced with `stub_ref`, and (when
 /// `wrapper` is given) that const's real initialiser travels in a
-/// synthetic zero-argument function registered as a `test` block, so
-/// the lowering treats it as an entry point and lowers its body.
+/// synthetic zero-argument function, and the lowering is seeded with
+/// it as an entry point.
 ///
-/// `const_fn_entries` registers every `const fn` as an entry point as
-/// well: the fold also runs calls that live in *type annotations*
+/// Every `const fn` is an entry point as well: the fold also runs calls that live in *type annotations*
 /// (an array length `[i64; double(2u64)]`), which no function body
 /// calls, so without this the callee's body would never be lowered
 /// and the VM could not execute it.
@@ -437,39 +436,26 @@ fn lower_for_fold(
             module_path: None,
         });
         program.function.push(Rc::clone(&function));
-        program.tests.push(TestCase {
-            name: format!("__ctfe_{idx}"),
-            function: sym,
-            line: 0,
-            file: None,
-            expect_panic: None,
-            // A synthesised evaluation, never reported or scheduled.
-            serial: false,
-        });
     }
-    for (i, sym) in const_fn_entries.iter().enumerate() {
-        program.tests.push(TestCase {
-            name: format!("__ctfe_fn_{i}"),
-            function: *sym,
-            line: 0,
-            file: None,
-            expect_panic: None,
-            // A synthesised evaluation, never reported or scheduled.
-            serial: false,
-        });
-    }
-    // 3. Lower. COMPILE-PROFILE: a phase of its own, and quiet, so this
-    // second lowering is not read as (or mixed into) the real one.
+    // 3. Lower from the wrapper and the `const fn`s only. Seeding with
+    // `main` would lower every reachable body of the program — the
+    // fold runs none of them, and on a 25k-line program that was a
+    // second full lowering. COMPILE-PROFILE: a phase of its own, and
+    // quiet, so this lowering is not read as (or mixed into) the real
+    // one.
+    let mut entries: Vec<DefaultSymbol> = wrapper.iter().map(|(_, _, sym)| *sym).collect();
+    let mut fns: Vec<DefaultSymbol> = const_fn_entries.iter().copied().collect();
+    // Declaration order, not hash order: the queue order decides the
+    // FuncIds the fold's module gets.
+    fns.sort_by_key(|sym| program.function.iter().position(|f| f.name == *sym));
+    entries.extend(fns);
     let lower_phase = frontend::compile_profile::phase("ctfe_lower");
     let quiet = frontend::compile_profile::quiet();
-    let module = compiler_lower::lower_program(program, interner, contract_msgs, false).ok();
+    let module =
+        compiler_lower::lower_program_for_entries(program, interner, contract_msgs, false, &entries).ok();
     drop(quiet);
     drop(lower_phase);
     // 4. Restore (wrapper first, then the stubs).
-    let extra = const_fn_entries.len();
-    for _ in 0..extra + usize::from(wrapper.is_some()) {
-        program.tests.pop();
-    }
     if wrapper.is_some() {
         program.function.pop();
     }

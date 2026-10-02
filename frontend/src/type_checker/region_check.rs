@@ -171,10 +171,10 @@ pub fn check_regions(
     }
     for index in 0..program.statement.len() {
         let stmt_ref = StmtRef(index as u32);
-        let Some(Stmt::ImplBlock { methods, .. }) = program.statement.get(&stmt_ref) else {
+        let Some(Stmt::ImplBlock { methods, .. }) = program.statement.get_ref(&stmt_ref) else {
             continue;
         };
-        for method in &methods {
+        for method in methods {
             let params: Vec<DefaultSymbol> = method.parameter.iter().map(|(n, _)| *n).collect();
             check.run_body(&params, &method.code);
         }
@@ -272,26 +272,27 @@ impl RegionCheck<'_> {
     }
 
     fn walk_stmt(&mut self, stmt_ref: &StmtRef) -> Taint {
-        let stmt = self.program.statement.get(stmt_ref)?;
+        let program = self.program;
+        let stmt = program.statement.get_ref(stmt_ref)?;
         match stmt {
-            Stmt::Expression(e) => self.walk_expr(&e),
+            Stmt::Expression(e) => self.walk_expr(e),
             Stmt::Val(name, _, e) | Stmt::Var(name, _, Some(e)) => {
-                let taint = self.walk_expr(&e);
+                let taint = self.walk_expr(e);
                 let depth = self.scopes.len().saturating_sub(1);
                 if let Some(index) = self.escapes_to(taint, depth) {
                     let place = format!(
                         "it is bound to `{}`, which outlives it",
-                        self.interner.resolve(name).unwrap_or("?")
+                        self.interner.resolve(*name).unwrap_or("?")
                     );
                     self.report(Some(index), &place, self.stmt_location(stmt_ref));
                 } else if let Some(index) = taint {
-                    self.tainted.insert(name, index);
+                    self.tainted.insert(*name, index);
                 }
-                self.declare(name);
+                self.declare(*name);
                 None
             }
             Stmt::Var(name, _, None) => {
-                self.declare(name);
+                self.declare(*name);
                 None
             }
             Stmt::Return(e) => {
@@ -300,17 +301,17 @@ impl RegionCheck<'_> {
                 None
             }
             Stmt::For(_, var, start, end, body) => {
-                self.walk_expr(&start);
-                self.walk_expr(&end);
+                self.walk_expr(start);
+                self.walk_expr(end);
                 self.enter_scope();
-                self.declare(var);
-                self.walk_expr(&body);
+                self.declare(*var);
+                self.walk_expr(body);
                 self.leave_scope();
                 None
             }
             Stmt::While(_, cond, body) => {
-                self.walk_expr(&cond);
-                self.walk_expr(&body);
+                self.walk_expr(cond);
+                self.walk_expr(body);
                 None
             }
             _ => None,
@@ -318,13 +319,14 @@ impl RegionCheck<'_> {
     }
 
     fn walk_expr(&mut self, expr_ref: &ExprRef) -> Taint {
-        let expr = self.program.expression.get(expr_ref)?;
+        let program = self.program;
+        let expr = program.expression.get_ref(expr_ref)?;
         match expr {
-            Expr::With(allocator, body) => self.walk_with(expr_ref, &allocator, &body),
+            Expr::With(allocator, body) => self.walk_with(expr_ref, allocator, body),
             Expr::Block(stmts) => {
                 self.enter_scope();
                 let mut taint = None;
-                for stmt in &stmts {
+                for stmt in stmts {
                     taint = self.walk_stmt(stmt);
                 }
                 self.leave_scope();
@@ -333,9 +335,9 @@ impl RegionCheck<'_> {
                 taint
             }
             Expr::Assign(lhs, rhs) => {
-                let taint = self.walk_expr(&rhs);
-                self.walk_expr(&lhs);
-                let root = self.assign_root(&lhs)?;
+                let taint = self.walk_expr(rhs);
+                self.walk_expr(lhs);
+                let root = self.assign_root(lhs)?;
                 let depth = self.depth_of(root).unwrap_or(0);
                 if let Some(index) = self.escapes_to(taint, depth) {
                     let place = format!(
@@ -345,7 +347,7 @@ impl RegionCheck<'_> {
                     // Blame the target: `expr_ref` is the whole
                     // assignment, whose recorded position sits after
                     // the value.
-                    let where_ = self.expr_location(&lhs).or_else(|| self.expr_location(expr_ref));
+                    let where_ = self.expr_location(lhs).or_else(|| self.expr_location(expr_ref));
                     self.report(Some(index), &place, where_);
                 } else if let Some(index) = taint {
                     // Same scope or deeper: the binding now holds it.
@@ -353,20 +355,20 @@ impl RegionCheck<'_> {
                 }
                 None
             }
-            Expr::Identifier(name) => self.tainted.get(&name).copied(),
+            Expr::Identifier(name) => self.tainted.get(name).copied(),
             Expr::IfElifElse(cond, then_block, elifs, else_block) => {
-                self.walk_expr(&cond);
-                let mut taint = self.walk_expr(&then_block);
-                for (c, b) in &elifs {
+                self.walk_expr(cond);
+                let mut taint = self.walk_expr(then_block);
+                for (c, b) in elifs {
                     self.walk_expr(c);
                     taint = innermost(taint, self.walk_expr(b));
                 }
-                innermost(taint, self.walk_expr(&else_block))
+                innermost(taint, self.walk_expr(else_block))
             }
             Expr::Match(scrutinee, arms) => {
-                self.walk_expr(&scrutinee);
+                self.walk_expr(scrutinee);
                 let mut taint = None;
-                for arm in &arms {
+                for arm in arms {
                     if let Some(guard) = arm.guard {
                         self.walk_expr(&guard);
                     }
@@ -374,17 +376,17 @@ impl RegionCheck<'_> {
                 }
                 taint
             }
-            Expr::Cast(inner, _) => self.walk_expr(&inner),
+            Expr::Cast(inner, _) => self.walk_expr(inner),
             Expr::FieldAccess(obj, _) | Expr::TupleAccess(obj, _) => {
-                let taint = self.walk_expr(&obj);
+                let taint = self.walk_expr(obj);
                 let carried = self.through(expr_ref, taint);
                 // WINDOW-ESCAPE: `ps.mass` on a local array is a
                 // `Column<T>` — the other way a window is opened
                 // (DATA-ORIENTED Phase 1).
-                innermost(carried, self.window_from(expr_ref, &obj))
+                innermost(carried, self.window_from(expr_ref, obj))
             }
             Expr::SliceAccess(obj, info) => {
-                let taint = self.walk_expr(&obj);
+                let taint = self.walk_expr(obj);
                 if let Some(start) = info.start {
                     self.walk_expr(&start);
                 }
@@ -395,33 +397,33 @@ impl RegionCheck<'_> {
             }
             Expr::ArrayLiteral(items) | Expr::TupleLiteral(items) | Expr::ExprList(items) => {
                 let mut taint = None;
-                for item in &items {
+                for item in items {
                     taint = innermost(taint, self.walk_expr(item));
                 }
                 self.through(expr_ref, taint)
             }
             Expr::StructLiteral(_, fields) => {
                 let mut taint = None;
-                for (_, value) in &fields {
+                for (_, value) in fields {
                     taint = innermost(taint, self.walk_expr(value));
                 }
                 self.through(expr_ref, taint)
             }
             Expr::DictLiteral(entries) => {
                 let mut taint = None;
-                for (k, v) in &entries {
+                for (k, v) in entries {
                     taint = innermost(taint, self.walk_expr(k));
                     taint = innermost(taint, self.walk_expr(v));
                 }
                 self.through(expr_ref, taint)
             }
             Expr::Call(_, args) => {
-                self.walk_expr(&args);
+                self.walk_expr(args);
                 self.call_result(expr_ref)
             }
             Expr::MethodCall(receiver, method, args) => {
-                let receiver_taint = self.walk_expr(&receiver);
-                for arg in &args {
+                let receiver_taint = self.walk_expr(receiver);
+                for arg in args {
                     self.walk_expr(arg);
                 }
                 // A method can hand back part of its receiver, so the
@@ -435,7 +437,7 @@ impl RegionCheck<'_> {
                 // the *carried* taint is dropped — a clone that
                 // allocates inside a scoped allocator still belongs to
                 // that allocator, which `call_result` answers for.
-                let receiver_taint = if self.interner.resolve(method) == Some("clone")
+                let receiver_taint = if self.interner.resolve(*method) == Some("clone")
                     && !self.is_window_type(expr_ref)
                 {
                     None
@@ -446,17 +448,17 @@ impl RegionCheck<'_> {
                     innermost(self.through(expr_ref, receiver_taint), self.call_result(expr_ref));
                 // WINDOW-ESCAPE: `v.as_span()` on a buffer this frame
                 // owns opens a view whose lifetime is that buffer's.
-                innermost(carried, self.window_from(expr_ref, &receiver))
+                innermost(carried, self.window_from(expr_ref, receiver))
             }
             Expr::AssociatedFunctionCall(_, _, args) => {
-                for arg in &args {
+                for arg in args {
                     self.walk_expr(arg);
                 }
                 self.call_result(expr_ref)
             }
             Expr::BuiltinCall(func, args) => {
                 let mut arg_taints = Vec::new();
-                for arg in &args {
+                for arg in args {
                     arg_taints.push(self.walk_expr(arg));
                 }
                 match func {
@@ -470,35 +472,35 @@ impl RegionCheck<'_> {
                 }
             }
             Expr::BuiltinMethodCall(receiver, _, args) => {
-                self.walk_expr(&receiver);
-                for arg in &args {
+                self.walk_expr(receiver);
+                for arg in args {
                     self.walk_expr(arg);
                 }
                 None
             }
             Expr::Binary(_, lhs, rhs) => {
-                self.walk_expr(&lhs);
-                self.walk_expr(&rhs);
+                self.walk_expr(lhs);
+                self.walk_expr(rhs);
                 None
             }
             Expr::Unary(_, operand) => {
-                self.walk_expr(&operand);
+                self.walk_expr(operand);
                 None
             }
             Expr::SliceAssign(obj, start, end, value) => {
-                self.walk_expr(&obj);
+                self.walk_expr(obj);
                 if let Some(start) = start {
-                    self.walk_expr(&start);
+                    self.walk_expr(start);
                 }
                 if let Some(end) = end {
-                    self.walk_expr(&end);
+                    self.walk_expr(end);
                 }
-                self.walk_expr(&value);
+                self.walk_expr(value);
                 None
             }
             Expr::Range(start, end) => {
-                self.walk_expr(&start);
-                self.walk_expr(&end);
+                self.walk_expr(start);
+                self.walk_expr(end);
                 None
             }
             // A closure body runs where the value is called, which this

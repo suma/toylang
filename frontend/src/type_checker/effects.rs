@@ -50,6 +50,7 @@
 //! walk rather than one per path into it.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
@@ -201,7 +202,7 @@ pub struct Witness {
     /// `middle -> inner -> __builtin_heap_alloc`, innermost last, and
     /// relative to the node that owns the witness (the root's own name
     /// is prepended by [`render_path`]).
-    pub path: Vec<String>,
+    pub path: WitnessPath,
     /// When this witness was discovered. Lets a check with several
     /// effects in its mask report the one the walk met first, which is
     /// the one closest to the code the author is looking at.
@@ -219,18 +220,52 @@ impl Witness {
         matches!(self.kind, WitnessKind::Opaque(_))
     }
 
-    fn prefixed(&self, step: &str) -> Witness {
-        let mut path = Vec::with_capacity(self.path.len() + 1);
-        path.push(step.to_string());
-        path.extend(self.path.iter().cloned());
-        Witness { kind: self.kind, path, order: self.order }
+    fn prefixed(&self, step: &Rc<str>) -> Witness {
+        Witness { kind: self.kind, path: self.path.prefixed(step), order: self.order }
+    }
+}
+
+/// A witness's path, outermost step first.
+///
+/// A shared list rather than a `Vec<String>`: every call edge the walk
+/// climbs prefixes a step onto every witness the callee had, and every
+/// merge copies witnesses, so an owned vector was rebuilt string by
+/// string at each level — for paths that only a failing check ever
+/// reads. Prefixing is now one node and copying one count.
+#[derive(Clone, Debug, Default)]
+pub struct WitnessPath(Option<Rc<PathStep>>);
+
+#[derive(Debug)]
+struct PathStep {
+    step: Rc<str>,
+    rest: WitnessPath,
+}
+
+impl WitnessPath {
+    fn single(step: &str) -> WitnessPath {
+        WitnessPath::default().prefixed(&Rc::from(step))
+    }
+
+    fn prefixed(&self, step: &Rc<str>) -> WitnessPath {
+        WitnessPath(Some(Rc::new(PathStep { step: Rc::clone(step), rest: self.clone() })))
+    }
+
+    /// The outermost step: the call (or builtin) in the root's own
+    /// body that the evidence goes through.
+    pub fn first(&self) -> Option<&str> {
+        self.0.as_ref().map(|node| &*node.step)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &str> {
+        std::iter::successors(self.0.as_deref(), |node| node.rest.0.as_deref())
+            .map(|node| &*node.step)
     }
 }
 
 /// `f -> g -> __builtin_heap_alloc`, innermost last.
-pub fn render_path(function: &str, path: &[String]) -> String {
+pub fn render_path(function: &str, path: &WitnessPath) -> String {
     let mut rendered = String::from(function);
-    for step in path {
+    for step in path.iter() {
         rendered.push_str(" -> ");
         rendered.push_str(step);
     }
@@ -238,10 +273,14 @@ pub fn render_path(function: &str, path: &[String]) -> String {
 }
 
 /// What some piece of code can do, with the evidence for each effect.
+///
+/// The witnesses are boxed because almost every node the walk visits
+/// has no effect at all: an unboxed array made each of those a
+/// 200-byte value to build, return and merge.
 #[derive(Clone, Debug, Default)]
 pub struct Effects {
     set: EffectSet,
-    witness: [Option<Witness>; 7],
+    witness: Option<Box<[Option<Witness>; 7]>>,
 }
 
 impl Effects {
@@ -250,7 +289,7 @@ impl Effects {
     }
 
     pub fn witness(&self, effect: Effect) -> Option<&Witness> {
-        self.witness[effect as usize].as_ref()
+        self.witness.as_ref()?[effect as usize].as_ref()
     }
 
     /// The effect in `mask` that the walk met first, and its witness.
@@ -265,7 +304,7 @@ impl Effects {
     }
 
     fn add(&mut self, effect: Effect, witness: Witness) {
-        let slot = &mut self.witness[effect as usize];
+        let slot = &mut self.witness.get_or_insert_with(Default::default)[effect as usize];
         // Keep the earliest evidence: a later path to the same effect
         // says nothing new, and the first one found is the one nearest
         // the code that was being read.
@@ -276,6 +315,9 @@ impl Effects {
     }
 
     fn merge(&mut self, other: &Effects) {
+        if other.set.is_empty() {
+            return;
+        }
         for effect in other.set.iter() {
             if let Some(witness) = other.witness(effect) {
                 self.add(effect, witness.clone());
@@ -284,11 +326,11 @@ impl Effects {
     }
 
     /// The same effects seen from one call further out.
-    fn prefixed(&self, step: &str) -> Effects {
-        let mut out = Effects { set: self.set, witness: Default::default() };
+    fn prefixed(&self, step: &Rc<str>) -> Effects {
+        let mut out = Effects::default();
         for effect in self.set.iter() {
             if let Some(witness) = self.witness(effect) {
-                out.witness[effect as usize] = Some(witness.prefixed(step));
+                out.add(effect, witness.prefixed(step));
             }
         }
         out
@@ -300,7 +342,7 @@ impl Effects {
         for effect in set.iter() {
             out.add(
                 effect,
-                Witness { kind: WitnessKind::Opaque(what), path: Vec::new(), order },
+                Witness { kind: WitnessKind::Opaque(what), path: WitnessPath::default(), order },
             );
         }
         out
@@ -308,7 +350,9 @@ impl Effects {
 
     fn remove(&mut self, effect: Effect) {
         self.set.remove(effect);
-        self.witness[effect as usize] = None;
+        if let Some(witness) = self.witness.as_mut() {
+            witness[effect as usize] = None;
+        }
     }
 }
 
@@ -317,7 +361,7 @@ impl Effects {
 /// The single place that answers "is this builtin an effect": adding a
 /// `BuiltinFunction` variant means adding a row here, and every check
 /// picks the change up through its mask.
-pub fn builtin_effect(func: BuiltinFunction) -> (EffectSet, &'static str) {
+pub fn builtin_effect(func: &BuiltinFunction) -> (EffectSet, &'static str) {
     use BuiltinFunction::*;
     match func {
         HeapAlloc => (EffectSet::of(&[Effect::Alloc]), "__builtin_heap_alloc"),
@@ -455,6 +499,9 @@ pub struct EffectTable<'a> {
     /// fn` must not make the caller unsafe, or every program that
     /// calls `Vec::push` would need the declaration.
     direct_only: bool,
+    /// Callee names as path steps, made once per name rather than once
+    /// per call site.
+    names: HashMap<DefaultSymbol, Rc<str>>,
 }
 
 impl<'a> EffectTable<'a> {
@@ -474,10 +521,10 @@ impl<'a> EffectTable<'a> {
         for index in 0..program.statement.len() {
             let stmt_ref = StmtRef(index as u32);
             if let Some(Stmt::ImplBlock { target_type, methods: impl_methods, .. }) =
-                program.statement.get(&stmt_ref)
+                program.statement.get_ref(&stmt_ref)
             {
-                for method in &impl_methods {
-                    methods.entry((target_type, method.name)).or_default().push(method.code);
+                for method in impl_methods {
+                    methods.entry((*target_type, method.name)).or_default().push(method.code);
                     by_method_name.entry(method.name).or_default().push(method.code);
                 }
             }
@@ -490,10 +537,10 @@ impl<'a> EffectTable<'a> {
         for index in 0..program.statement.len() {
             let stmt_ref = StmtRef(index as u32);
             if let Some(Stmt::EnumDecl { name, variants: defs, .. }) =
-                program.statement.get(&stmt_ref)
+                program.statement.get_ref(&stmt_ref)
             {
-                for variant in &defs {
-                    variants.insert((name, variant.name));
+                for variant in defs {
+                    variants.insert((*name, variant.name));
                 }
             }
         }
@@ -510,6 +557,7 @@ impl<'a> EffectTable<'a> {
             cycles: 0,
             order: 0,
             direct_only: false,
+            names: HashMap::new(),
         }
     }
 
@@ -621,24 +669,26 @@ impl<'a> EffectTable<'a> {
     }
 
     fn walk_stmt(&mut self, stmt_ref: &StmtRef) -> Effects {
-        let Some(stmt) = self.program.statement.get(stmt_ref) else {
+        let program = self.program;
+        let Some(stmt) = program.statement.get_ref(stmt_ref) else {
             return Effects::default();
         };
         match stmt {
-            Stmt::Expression(e) | Stmt::Val(_, _, e) => self.walk_expr(&e),
+            Stmt::Expression(e) | Stmt::Val(_, _, e) => self.walk_expr(e),
             Stmt::Var(_, _, e) => self.walk_opt(e.as_ref()),
             Stmt::Return(e) => self.walk_opt(e.as_ref()),
             Stmt::For(_, _, start, end, body) => {
-                self.walk_each(&[start, end, body])
+                self.walk_each(&[*start, *end, *body])
             }
-            Stmt::While(_, cond, body) => self.walk_each(&[cond, body]),
+            Stmt::While(_, cond, body) => self.walk_each(&[*cond, *body]),
             // Declarations introduce no execution at this point.
             _ => Effects::default(),
         }
     }
 
     fn walk_expr(&mut self, expr_ref: &ExprRef) -> Effects {
-        let Some(expr) = self.program.expression.get(expr_ref) else {
+        let program = self.program;
+        let Some(expr) = program.expression.get_ref(expr_ref) else {
             return Effects::default();
         };
         match expr {
@@ -652,30 +702,30 @@ impl<'a> EffectTable<'a> {
                             effect,
                             Witness {
                                 kind: WitnessKind::Sink(what),
-                                path: vec![what.to_string()],
+                                path: WitnessPath::single(what),
                                 order,
                             },
                         );
                     }
                 }
-                let arg_effects = self.walk_all(&args);
+                let arg_effects = self.walk_all(args);
                 effects.merge(&arg_effects);
                 effects
             }
             Expr::Call(callee, args) => {
-                let mut effects = self.walk_expr(&args);
+                let mut effects = self.walk_expr(args);
                 // POINTER P6: in direct_only mode the callee's body is
                 // not descended into — calling an `unsafe fn` does not
                 // make the caller unsafe.
                 if !self.direct_only {
-                    let callee_effects = self.enter(None, &callee);
+                    let callee_effects = self.enter(None, callee);
                     effects.merge(&callee_effects);
                 }
                 effects
             }
             Expr::MethodCall(receiver, method, args) => {
-                let mut effects = self.walk_expr(&receiver);
-                let arg_effects = self.walk_all(&args);
+                let mut effects = self.walk_expr(receiver);
+                let arg_effects = self.walk_all(args);
                 effects.merge(&arg_effects);
                 // A method on `str` itself is implemented by the
                 // runtime, not by toylang code. The receiver type is
@@ -683,47 +733,47 @@ impl<'a> EffectTable<'a> {
                 // stdlib code and does allocate. Interpolation
                 // desugars to the former, which is why a
                 // `never_allocates` function may still print `"{x}"`.
-                if matches!(self.expr_types.get(&receiver), Some(TypeDecl::String)) {
+                if matches!(self.expr_types.get(receiver), Some(TypeDecl::String)) {
                     return effects;
                 }
-                let owner = self.expr_types.get(&receiver).and_then(receiver_type_name);
+                let owner = self.expr_types.get(receiver).and_then(receiver_type_name);
                 if !self.direct_only {
-                    let callee_effects = self.enter(owner, &method);
+                    let callee_effects = self.enter(owner, method);
                     effects.merge(&callee_effects);
                 }
                 effects
             }
             Expr::AssociatedFunctionCall(type_name, function, args) => {
-                let mut effects = self.walk_all(&args);
+                let mut effects = self.walk_all(args);
                 // `Type::func()` names its owner outright. Direct-only
                 // mode skips the descent, same as the two arms above.
-                if !self.direct_only && !self.variants.contains(&(type_name, function)) {
-                    let callee_effects = self.enter(Some(type_name), &function);
+                if !self.direct_only && !self.variants.contains(&(*type_name, *function)) {
+                    let callee_effects = self.enter(Some(*type_name), function);
                     effects.merge(&callee_effects);
                 }
                 effects
             }
-            Expr::Binary(_, lhs, rhs) => self.walk_each(&[lhs, rhs]),
-            Expr::Unary(_, operand) => self.walk_expr(&operand),
+            Expr::Binary(_, lhs, rhs) => self.walk_each(&[*lhs, *rhs]),
+            Expr::Unary(_, operand) => self.walk_expr(operand),
             Expr::Block(stmts) => {
                 let mut effects = Effects::default();
-                for stmt in &stmts {
+                for stmt in stmts {
                     let stmt_effects = self.walk_stmt(stmt);
                     effects.merge(&stmt_effects);
                 }
                 effects
             }
             Expr::IfElifElse(cond, then_block, elifs, else_block) => {
-                let mut effects = self.walk_each(&[cond, then_block, else_block]);
-                for (c, b) in &elifs {
+                let mut effects = self.walk_each(&[*cond, *then_block, *else_block]);
+                for (c, b) in elifs {
                     let branch = self.walk_each(&[*c, *b]);
                     effects.merge(&branch);
                 }
                 effects
             }
             Expr::Match(scrutinee, arms) => {
-                let mut effects = self.walk_expr(&scrutinee);
-                for arm in &arms {
+                let mut effects = self.walk_expr(scrutinee);
+                for arm in arms {
                     let guard = self.walk_opt(arm.guard.as_ref());
                     effects.merge(&guard);
                     let body = self.walk_expr(&arm.body);
@@ -731,9 +781,9 @@ impl<'a> EffectTable<'a> {
                 }
                 effects
             }
-            Expr::Assign(lhs, rhs) => self.walk_each(&[lhs, rhs]),
+            Expr::Assign(lhs, rhs) => self.walk_each(&[*lhs, *rhs]),
             Expr::ExprList(items) | Expr::ArrayLiteral(items) | Expr::TupleLiteral(items) => {
-                self.walk_all(&items)
+                self.walk_all(items)
             }
             Expr::StructLiteral(_, fields) => {
                 let values: Vec<ExprRef> = fields.iter().map(|(_, v)| *v).collect();
@@ -744,16 +794,16 @@ impl<'a> EffectTable<'a> {
                 self.walk_all(&values)
             }
             Expr::FieldAccess(obj, _) | Expr::TupleAccess(obj, _) | Expr::Cast(obj, _) => {
-                self.walk_expr(&obj)
+                self.walk_expr(obj)
             }
             Expr::BuiltinMethodCall(receiver, _, args) => {
-                let mut effects = self.walk_expr(&receiver);
-                let arg_effects = self.walk_all(&args);
+                let mut effects = self.walk_expr(receiver);
+                let arg_effects = self.walk_all(args);
                 effects.merge(&arg_effects);
                 effects
             }
             Expr::SliceAccess(obj, info) => {
-                let mut effects = self.walk_expr(&obj);
+                let mut effects = self.walk_expr(obj);
                 let start = self.walk_opt(info.start.as_ref());
                 effects.merge(&start);
                 let end = self.walk_opt(info.end.as_ref());
@@ -761,15 +811,15 @@ impl<'a> EffectTable<'a> {
                 effects
             }
             Expr::SliceAssign(obj, start, end, value) => {
-                let mut effects = self.walk_each(&[obj, value]);
+                let mut effects = self.walk_each(&[*obj, *value]);
                 let start = self.walk_opt(start.as_ref());
                 effects.merge(&start);
                 let end = self.walk_opt(end.as_ref());
                 effects.merge(&end);
                 effects
             }
-            Expr::With(allocator, body) => self.walk_each(&[allocator, body]),
-            Expr::Range(start, end) => self.walk_each(&[start, end]),
+            Expr::With(allocator, body) => self.walk_each(&[*allocator, *body]),
+            Expr::Range(start, end) => self.walk_each(&[*start, *end]),
             // A closure body runs wherever the value is called, which
             // this pass cannot see. Creating one is harmless; calling
             // one is the opaque case, caught at the call site below.
@@ -800,7 +850,12 @@ impl<'a> EffectTable<'a> {
 
     /// Follow a call by name, prefixing the callee onto every path.
     fn enter(&mut self, owner: Option<DefaultSymbol>, callee: &DefaultSymbol) -> Effects {
-        let name = self.interner.resolve(*callee).unwrap_or("?").to_string();
+        let interner = self.interner;
+        let name = Rc::clone(
+            self.names
+                .entry(*callee)
+                .or_insert_with(|| Rc::from(interner.resolve(*callee).unwrap_or("?"))),
+        );
         if let Some(index) = self.by_name.get(callee).copied() {
             return self.node(Node::Function(index)).prefixed(&name);
         }

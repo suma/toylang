@@ -15,6 +15,9 @@
 - **BUILD-TOOL D6 — `toy build` / `toy run --backend aot` は入力が変わっていなければビルドを飛ばす** —
   `build/.stamp/` に入力 (toy 実行ファイル・フラグ・環境変数・entry・module root 以下の全エントリの
   size + mtime・出力) をテキストで残す。logsearch の無変更ビルド 80 ms → ~4 ms。
+- **POST-CHECKS-COST — effect 表と region 検査が AST を clone せず借用で読む** — 証拠の経路を
+  `Vec<String>` から共有リストに、証拠の配列を box に (効果の無いノードは 16 バイト)。logsearch の
+  post_checks 7.7 → 5.5 ms (unsafe 1.6 → 0.7 / regions 1.4 → 0.7 / never_allocates 0.5 → 0.2)。
 
 ### 2026-10-01
 

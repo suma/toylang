@@ -46,7 +46,7 @@ pub fn check_unsafe_declarations(
         if let Some((_, witness)) = effects.first(EffectSet::of(&RAW_MEMORY)) {
             let error = TypeCheckError::unsafe_required(
                 name,
-                witness.path.first().cloned().unwrap_or_else(|| "a raw builtin".to_string()),
+                witness.path.first().unwrap_or("a raw builtin").to_string(),
             );
             errors.push(at_declaration(
                 error,
@@ -78,7 +78,7 @@ pub fn check_unsafe_declarations(
             if let Some((_, witness)) = effects.first(EffectSet::of(&RAW_MEMORY)) {
                 let error = TypeCheckError::unsafe_required(
                     name,
-                    witness.path.first().cloned().unwrap_or_else(|| "a raw builtin".to_string()),
+                    witness.path.first().unwrap_or("a raw builtin").to_string(),
                 );
                 errors.push(at_declaration(
                     error,

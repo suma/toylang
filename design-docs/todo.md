@@ -10,6 +10,12 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-10-02
+
+- **BUILD-TOOL D6 — `toy build` / `toy run --backend aot` は入力が変わっていなければビルドを飛ばす** —
+  `build/.stamp/` に入力 (toy 実行ファイル・フラグ・環境変数・entry・module root 以下の全エントリの
+  size + mtime・出力) をテキストで残す。logsearch の無変更ビルド 80 ms → ~4 ms。
+
 ### 2026-10-01
 
 - **AST-BORROW — AST を clone せずに借用で読む** — `ExprPool` / `StmtPool` を列ごとの配列から

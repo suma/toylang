@@ -19,6 +19,7 @@
 mod clean;
 mod collide;
 mod fix;
+mod fresh;
 mod hook;
 mod package;
 mod scaffold;
@@ -572,24 +573,47 @@ fn cmd_build(args: &Args) -> Result<(), String> {
             out.display()
         );
     }
-    if args.compile_profile {
-        frontend::compile_profile::enable();
+    let stamp = pkg.stamp_path(&out);
+    let inputs = fresh::Inputs::collect(&pkg.entry, &pkg.module_roots, &build_flags(args, &out));
+    // `--profile=compile` asks to watch a compile, so it always gets one.
+    let up_to_date = !args.compile_profile && inputs.is_fresh(&stamp, &out);
+    if up_to_date {
+        if args.verbose {
+            eprintln!("toy: `{}` is up to date", out.display());
+        }
+    } else {
+        fresh::invalidate(&stamp);
+        if args.compile_profile {
+            frontend::compile_profile::enable();
+        }
+        let result = compiler::compile_file(&options);
+        if let Some(recorded) = frontend::compile_profile::finish() {
+            eprint!("{}", compiler::compile_profile::render(&recorded, &options, args.json));
+        }
+        result?;
+        inputs.record(&stamp, &out);
     }
-    let result = compiler::compile_file(&options);
-    if let Some(recorded) = frontend::compile_profile::finish() {
-        eprint!("{}", compiler::compile_profile::render(&recorded, &options, args.json));
-    }
-    result?;
     if args.json {
         print_json(&serde_json::json!({
             "entry": pkg.entry.display().to_string(),
             "output": out.display().to_string(),
             "release": args.release,
+            "up_to_date": up_to_date,
         }));
     } else {
         println!("{}", out.display());
     }
     Ok(())
+}
+
+/// The flags that make two builds of the same sources different
+/// programs — what a build stamp has to agree on besides the files.
+fn build_flags(args: &Args, out: &Path) -> Vec<String> {
+    vec![
+        format!("release={}", args.release),
+        format!("heap-check={}", args.show_heap_check().trim_end()),
+        format!("output={}", out.display()),
+    ]
 }
 
 fn cmd_run(args: &Args) -> Result<(), String> {
@@ -670,7 +694,13 @@ fn run_aot(args: &Args, pkg: &package::Package) -> Result<(), String> {
     options.verbose = args.verbose;
     options.diagnostics_json = args.json;
     args.instrument(&mut options);
-    compiler::compile_file(&options)?;
+    let stamp = pkg.stamp_path(&out);
+    let inputs = fresh::Inputs::collect(&pkg.entry, &pkg.module_roots, &build_flags(args, &out));
+    if !inputs.is_fresh(&stamp, &out) {
+        fresh::invalidate(&stamp);
+        compiler::compile_file(&options)?;
+        inputs.record(&stamp, &out);
+    }
     if args.verbose {
         eprintln!("toy: {} {}", out.display(), args.program_args.join(" "));
     }

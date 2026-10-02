@@ -35,8 +35,10 @@ cargo build --release -p toy
 `lsz` / `crc` / `bytes` の境界条件がその場で捕まるので、開発中はこちら
 (出力は `build/debug/logsearch`)。配布時は付ける (契約が消え、境界検査も落ちる)。
 
-ビルドは **0.22 秒** (5,067 行 + stdlib、warm)。`toy` はリンクキャッシュを
-`build/.link/` に置くので、2 回目以降は `cc` の呼び出しも消える。
+ビルドは **0.08 秒** (12,461 行 + stdlib、2026-10-02 の warm)。`toy` は
+リンクキャッシュを `build/.link/` に置くので、2 回目以降は `cc` の呼び出しも
+消える。**何も変えていなければビルド自体を飛ばす** (数 ms、
+[`BUILD_TOOL.md`](../../design-docs/BUILD_TOOL.md) D6)。
 
 ### そのほかの `toy`
 

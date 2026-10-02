@@ -122,6 +122,20 @@ impl Package {
         self.profile_dir(profile).join("tests").join(name)
     }
 
+    /// Where the build stamp for `output` lives (`fresh.rs`). Keyed
+    /// on the output path, not the profile, because `-o` can put the
+    /// same profile's binary anywhere; kept under `build/` so a `-o`
+    /// elsewhere does not grow a stray file beside it.
+    pub fn stamp_path(&self, output: &Path) -> PathBuf {
+        let name = output
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("out");
+        self.build_dir
+            .join(".stamp")
+            .join(format!("{}_{:08x}", sanitise(name), short_hash(&output.to_string_lossy())))
+    }
+
     /// The profile directories that exist, in a stable order.
     pub fn existing_profile_dirs(&self) -> Vec<PathBuf> {
         [Profile::Debug, Profile::Release]

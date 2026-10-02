@@ -576,6 +576,55 @@ fn debug_and_release_do_not_share_a_path() {
 }
 
 #[test]
+fn build_skips_when_nothing_changed() {
+    // BUILD-TOOL D6: a build whose stamp matches does nothing; any
+    // change to a source, the module tree, the flags or the output
+    // itself makes the next one compile again.
+    let pkg = scratch("fresh");
+    write(&pkg, "src/greet.t", greeter());
+    write(
+        &pkg,
+        "main.t",
+        "fn main() -> u64 {\n    val g: String = greet::hello(\"world\")\n    println(g)\n    0u64\n}\n",
+    );
+    let path = pkg.0.to_str().unwrap();
+    let up_to_date = |extra: &[&str]| -> bool {
+        let mut args = vec!["build", path, "--format=json"];
+        args.extend_from_slice(extra);
+        let out = run(&pkg, &args);
+        assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+        let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+        doc["up_to_date"].as_bool().expect("up_to_date")
+    };
+    let exe = pkg.0.join("build/debug").join(pkg.0.file_name().unwrap());
+    let output_of = |exe: &PathBuf| {
+        String::from_utf8_lossy(&Command::new(exe).output().unwrap().stdout).into_owned()
+    };
+
+    assert!(!up_to_date(&[]), "the first build compiles");
+    assert!(up_to_date(&[]), "a second build with nothing changed does not");
+
+    // An edited module: the new binary says the new thing.
+    write(&pkg, "src/greet.t", &greeter().replace("hello, ", "hi, "));
+    assert!(!up_to_date(&[]));
+    assert!(output_of(&exe).contains("hi, world"));
+    assert!(up_to_date(&[]));
+
+    // A new file under a module root can change what a path resolves
+    // to, even though nothing imports it yet.
+    write(&pkg, "src/extra.t", "pub fn unused() -> u64 { 0u64 }\n");
+    assert!(!up_to_date(&[]));
+
+    // A different profile is a different output, and a replaced output
+    // is rebuilt rather than trusted.
+    assert!(!up_to_date(&["--release"]));
+    assert!(up_to_date(&[]), "the release build leaves the debug stamp alone");
+    std::fs::write(&exe, b"not the program").unwrap();
+    assert!(!up_to_date(&[]));
+    assert!(output_of(&exe).contains("hi, world"));
+}
+
+#[test]
 fn run_does_not_overwrite_what_build_left_behind() {
     // `build`'s output is a result — something to keep, copy or ship.
     // `run`'s is scratch. A `toy run` after handing the binary to

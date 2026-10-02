@@ -190,6 +190,9 @@ cargo run -q -p compiler -- --core-modules core --core-modules mypkg/src mypkg/m
 cargo run -q -p toy -- new   mypkg                    # 雛形 (main.t / src/greet.t / tests/basic.t)。そのまま run / test / check が通る
 cargo run -q -p toy -- init  [DIR]                    # 既存ディレクトリに同じ雛形。どちらも既存ファイルを上書きしない
 cargo run -q -p toy -- build mypkg [--release] [-o PATH] [--format=text|json]
+# 入力 (ソース木・フラグ・環境変数・toy 自身) が前回と同じで出力が手つかずなら
+# 何もしない (BUILD-TOOL D6、build/.stamp/)。JSON の `up_to_date` で分かる。
+# `--profile=compile` は常にコンパイルする
 cargo run -q -p toy -- run   mypkg [--backend aot|jit|vm] [--format=text|json] [-- ARGS...]
 cargo run -q -p toy -- run   mypkg --backend all      # 3 レーン突き合わせ (compiler --all-backends をパッケージで)
 cargo run -q -p toy -- test  mypkg --check [--seed=N] # 契約のプロパティテスト (interpreter --check をパッケージで)

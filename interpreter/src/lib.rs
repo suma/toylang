@@ -993,68 +993,91 @@ fn check_typing_collecting(
     // the map is cloned out so `tc`'s borrow of `program` can end.
     drop(rewrites_phase);
     let post_checks_phase = prof::phase("post_checks");
+    let expr_types_phase = prof::phase("expr_types");
     let expr_types = tc.get_expr_types();
     if let Some(sink) = collect_types {
         sink.clone_from(&expr_types);
     }
     drop(tc);
+    drop(expr_types_phase);
+    let moves_phase = prof::phase("moves");
     let mut analysis = frontend::type_checker::check_moves(program, string_interner, &expr_types);
+    drop(moves_phase);
     // NEVER-ALLOCATES: a function declared `never_allocates` must not
     // be able to reach the allocator. Runs here, with the move check,
     // because it reads the same `expr_types` — the receiver's type is
     // what separates a `concat` on `str` (runtime-internal, excluded
     // from the counters) from one on `String` (stdlib code that
     // allocates).
-    fn_errors.extend(frontend::type_checker::check_never_allocates(
-        program,
-        string_interner,
-        &expr_types,
-    ));
+    {
+        let _phase = prof::phase("never_allocates");
+        fn_errors.extend(frontend::type_checker::check_never_allocates(
+            program,
+            string_interner,
+            &expr_types,
+        ));
+    }
     // COMPILE-TIME-EVAL C1: a function declared `const fn` must not be
     // able to reach anything the compiler cannot run while compiling.
     // Same walk, same `expr_types`, a different sink set.
-    fn_errors.extend(frontend::type_checker::check_const_fn(
-        program,
-        string_interner,
-        &expr_types,
-    ));
+    {
+        let _phase = prof::phase("const_fn");
+        fn_errors.extend(frontend::type_checker::check_const_fn(
+            program,
+            string_interner,
+            &expr_types,
+        ));
+    }
     // POINTER P6: a body that performs a raw memory access must be
     // declared `unsafe fn`. Direct body walk — calling an `unsafe fn`
     // does not make the caller unsafe, which is what lets the stdlib
     // concentrate the raw builtins behind `Ptr<T>` / `Span<T>`.
-    fn_errors.extend(frontend::type_checker::check_unsafe_declarations(
-        program,
-        string_interner,
-        &expr_types,
-    ));
+    {
+        let _phase = prof::phase("unsafe");
+        fn_errors.extend(frontend::type_checker::check_unsafe_declarations(
+            program,
+            string_interner,
+            &expr_types,
+        ));
+    }
     // MODULE-SYSTEM P3: a call's module path has to be one that
     // exists. Needs nothing but the program — the module each
     // function came from is recorded on `File`.
-    fn_errors.extend(frontend::type_checker::check_module_paths(
-        program,
-        string_interner,
-    ));
+    {
+        let _phase = prof::phase("module_paths");
+        fn_errors.extend(frontend::type_checker::check_module_paths(
+            program,
+            string_interner,
+        ));
+    }
     // CONCURRENCY A1: a `parallel for` body may not print or switch
     // the allocator. Same effect walk as the two checks above, one
     // more mask; the roots are the loops the parser marked.
-    fn_errors.extend(frontend::type_checker::check_parallel_loops(
-        program,
-        string_interner,
-        &expr_types,
-    ));
+    {
+        let _phase = prof::phase("parallel_loops");
+        fn_errors.extend(frontend::type_checker::check_parallel_loops(
+            program,
+            string_interner,
+            &expr_types,
+        ));
+    }
     // REGION: memory taken from a scoped allocator must not outlive
     // it. Reads the same `expr_types` and the same effect walk as the
     // two checks above — an allocation is what the effect table says
     // is one.
-    fn_errors.extend(frontend::type_checker::check_regions(
-        program,
-        string_interner,
-        &expr_types,
-    ));
+    {
+        let _phase = prof::phase("regions");
+        fn_errors.extend(frontend::type_checker::check_regions(
+            program,
+            string_interner,
+            &expr_types,
+        ));
+    }
     // EFFECTS: the same walk the two checks above just ran, asked for
     // the whole answer rather than one mask. Only when someone is
     // listening (`--effects`).
     if let Some(sink) = collect_effects.as_mut() {
+        let _phase = prof::phase("effects");
         collect_entry_effects(program, string_interner, &expr_types, user_func_count, sink);
     }
     // COMPILE-TIME-EVAL C3: with the program type-checked, run the

@@ -80,8 +80,12 @@ toy build mypkg --profile=compile [--format=json]
 ├─ typecheck
 │  ├─ setup / declarations / consts / impl_blocks / functions
 │  ├─ rewrites                   newtype / ?? / Ord / ... の書き換え
-│  ├─ post_checks                moves / never_allocates / const_fn /
-│  │                             unsafe / module_paths / parallel / regions
+│  ├─ post_checks
+│  │  ├─ expr_types              型検査器から型表を取り出す (+ `toy query` 用の写し)
+│  │  ├─ moves                   所有の移動 (lend 表の固定点を含む)
+│  │  ├─ never_allocates / const_fn / unsafe / module_paths /
+│  │  │  parallel_loops / regions   各検査。effect 表はそれぞれが作る
+│  │  └─ effects                 `--effects` のときだけ
 │  ├─ const_fold                 const fold + 計算された配列長
 │  │  └─ ctfe_lower              fold が IR VM で走らせるための 2 度目の
 │  │                             lowering。`quiet()` の中なので lower の

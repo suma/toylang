@@ -2241,6 +2241,12 @@ fn compute_lend(
         }
         for (body, params) in &bodies {
             for (i, (name, ty)) in params.iter().enumerate() {
+                // A primitive owns nothing, so whether the callee lends it
+                // cannot change what anyone drops; walking the body for it
+                // was most of this loop's work.
+                if is_primitive(ty) {
+                    continue;
+                }
                 *analysis.param_ty.borrow_mut() = ty.clone();
                 if analysis.lend[body][i] && !analysis.body_only_reads(*body, *name) {
                     analysis.lend.get_mut(body).expect("seeded above")[i] = false;
@@ -2253,6 +2259,29 @@ fn compute_lend(
         }
     }
     analysis.lend
+}
+
+/// A type whose values own nothing and never will: the scalars, `str`
+/// and a raw `ptr`.
+fn is_primitive(ty: &TypeDecl) -> bool {
+    matches!(
+        ty,
+        TypeDecl::Unit
+            | TypeDecl::Bool
+            | TypeDecl::Int8
+            | TypeDecl::Int16
+            | TypeDecl::Int32
+            | TypeDecl::Int64
+            | TypeDecl::UInt8
+            | TypeDecl::UInt16
+            | TypeDecl::UInt32
+            | TypeDecl::UInt64
+            | TypeDecl::Float32
+            | TypeDecl::Float64
+            | TypeDecl::Vector(_)
+            | TypeDecl::String
+            | TypeDecl::Ptr
+    )
 }
 
 /// Whether position `i` of a call to one of `bodies` is lent: every

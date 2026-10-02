@@ -12,6 +12,9 @@
 
 ### 2026-10-01
 
+- **LEND-SKIP-PRIMITIVE — 読むだけ判定がスカラー引数の本体を歩かない** — `compute_lend` の固定点反復で
+  本体を歩く回数の 80% がスカラー / `str` / `ptr` 引数だった (何も所有しないので答えが結果に効かない)。
+  logsearch の型検査 35.5 → 31.6 ms (−11%)。
 - **COMPILE-CONST-FACTORS — コンパイラの定数倍 5 件** — codegen は各関数が呼ぶ関数だけを import
   (以前は全関数、2 乗)、site の行は行頭テーブル + site / frame の intern をハッシュ索引に、lowering の
   宣言走査は `StmtPool::refs_of` で種別から引く、lowering / codegen / IR の内部マップを FxHash、

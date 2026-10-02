@@ -208,20 +208,20 @@ pub fn check_moves(
     // which is what kept it hidden.
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
-        let Some(Stmt::ImplBlock { methods, .. }) = program.statement.get(&stmt_ref) else {
+        let Some(Stmt::ImplBlock { methods, .. }) = program.statement.get_ref(&stmt_ref) else {
             continue;
         };
-        let generic_impl = match program.statement.get(&stmt_ref) {
-            Some(Stmt::ImplBlock { target_type, .. }) => generic_structs.contains(&target_type),
+        let generic_impl = match program.statement.get_ref(&stmt_ref) {
+            Some(Stmt::ImplBlock { target_type, .. }) => generic_structs.contains(target_type),
             _ => true,
         };
-        let self_ty = match program.statement.get(&stmt_ref) {
+        let self_ty = match program.statement.get_ref(&stmt_ref) {
             Some(Stmt::ImplBlock { target_type, target_type_args, .. }) => {
-                Some(TypeDecl::Struct(target_type, target_type_args.clone()))
+                Some(TypeDecl::Struct(*target_type, target_type_args.clone()))
             }
             _ => None,
         };
-        for m in &methods {
+        for m in methods {
             let arity = m
                 .parameter
                 .iter()
@@ -372,17 +372,17 @@ impl Signatures {
         let mut enum_variants = HashSet::new();
         for i in 0..program.statement.len() {
             let stmt_ref = StmtRef(i as u32);
-            if let Some(Stmt::EnumDecl { name, variants, .. }) = program.statement.get(&stmt_ref) {
-                for v in &variants {
-                    enum_variants.insert((name, v.name));
+            if let Some(Stmt::EnumDecl { name, variants, .. }) = program.statement.get_ref(&stmt_ref) {
+                for v in variants {
+                    enum_variants.insert((*name, v.name));
                 }
             }
             let Some(Stmt::ImplBlock { target_type, methods: impl_methods, .. }) =
-                program.statement.get(&stmt_ref)
+                program.statement.get_ref(&stmt_ref)
             else {
                 continue;
             };
-            for m in &impl_methods {
+            for m in impl_methods {
                 // `&self` / `&mut self` never reach `parameter` — the
                 // parser consumes them — but the `self: Self` form does,
                 // through the ordinary parameter loop. Skipping on
@@ -396,8 +396,8 @@ impl Signatures {
                     .skip_while(|(name, _)| interner.resolve(*name) == Some("self"))
                     .map(|(_, t)| t.clone())
                     .collect();
-                associated.insert((target_type, m.name), params.clone());
-                associated_bodies.insert((target_type, m.name), m.code);
+                associated.insert((*target_type, m.name), params.clone());
+                associated_bodies.insert((*target_type, m.name), m.code);
                 method_bodies.entry((m.name, params.len())).or_default().push(m.code);
                 let reads = m.has_self_param && !m.self_is_mut;
                 let entry = method_reads_self.entry(m.name).or_insert(true);
@@ -529,11 +529,11 @@ fn collect_structs(program: &File) -> HashMap<DefaultSymbol, (Vec<DefaultSymbol>
     let mut out = HashMap::new();
     for i in 0..program.statement.len() {
         if let Some(Stmt::StructDecl { name, generic_params, fields, .. }) =
-            program.statement.get(&StmtRef(i as u32))
+            program.statement.get_ref(&StmtRef(i as u32))
         {
             out.insert(
-                name,
-                (generic_params, fields.into_iter().map(|f| (f.name, f.type_decl)).collect()),
+                *name,
+                (generic_params.clone(), fields.iter().map(|f| (f.name.clone(), f.type_decl.clone())).collect()),
             );
         }
     }
@@ -545,9 +545,9 @@ fn collect_enums(program: &File) -> HashMap<DefaultSymbol, (Vec<DefaultSymbol>, 
     let mut out = HashMap::new();
     for i in 0..program.statement.len() {
         if let Some(Stmt::EnumDecl { name, generic_params, variants, .. }) =
-            program.statement.get(&StmtRef(i as u32))
+            program.statement.get_ref(&StmtRef(i as u32))
         {
-            out.insert(name, (generic_params, variants));
+            out.insert(*name, (generic_params.clone(), variants.clone()));
         }
     }
     out
@@ -835,11 +835,11 @@ impl MoveCheck<'_> {
         }
         // The body is an expression statement holding a block; its
         // value is the function's.
-        match self.program.statement.get(&body) {
+        match self.program.statement.get_ref(&body) {
             Some(Stmt::Expression(e)) => {
-                self.anchors.push(Anchor::Stmt(body, Some(e)));
+                self.anchors.push(Anchor::Stmt(body, Some(*e)));
                 self.tail = true;
-                self.walk_expr(e, Use::Read, false);
+                self.walk_expr(*e, Use::Read, false);
                 self.anchors.pop();
             }
             _ => self.walk_stmt(body, false),
@@ -864,7 +864,7 @@ impl MoveCheck<'_> {
             // A field of anything is the same: the whole it belongs to
             // is what drops it. (A plain `val b = a` shares `a`'s value
             // outright, and the backends give the pair one drop.)
-            let field_path = !matches!(self.program.expression.get(&rhs), Some(Expr::Identifier(_)));
+            let field_path = !matches!(self.program.expression.get_ref(&rhs), Some(Expr::Identifier(_)));
             if field_path || self.lookup(root).is_some_and(|o| o.decl.is_none() && o.root.is_none()) {
                 self.transferred.insert(stmt_ref);
             }
@@ -926,8 +926,8 @@ impl MoveCheck<'_> {
     /// just that name -- a place whose value a `match` or a `val` can
     /// alias.
     fn owned_place(&self, expr: ExprRef) -> Option<DefaultSymbol> {
-        match self.program.expression.get(&expr) {
-            Some(Expr::Identifier(sym)) if self.lookup(sym).is_some() => Some(sym),
+        match self.program.expression.get_ref(&expr) {
+            Some(Expr::Identifier(sym)) if self.lookup(*sym).is_some() => Some(*sym),
             _ => None,
         }
     }
@@ -939,9 +939,9 @@ impl MoveCheck<'_> {
     /// dropped such a `b` and freed the caller's vector
     /// (`crypto_sha256.t`'s `Sum::to_hex`, found by HEAP-CHECK).
     fn aliased_place(&self, expr: ExprRef) -> Option<DefaultSymbol> {
-        match self.program.expression.get(&expr) {
+        match self.program.expression.get_ref(&expr) {
             Some(Expr::FieldAccess(inner, _)) | Some(Expr::TupleAccess(inner, _)) => {
-                self.aliased_place(inner)
+                self.aliased_place(*inner)
             }
             _ => self.owned_place(expr),
         }
@@ -953,12 +953,12 @@ impl MoveCheck<'_> {
     /// least one hands a name back, `x` names part of `a`'s value
     /// rather than a value of its own. Answers `a`.
     fn match_alias_source(&self, rhs: ExprRef) -> Option<DefaultSymbol> {
-        let Some(Expr::Match(scrutinee, arms)) = self.program.expression.get(&rhs) else {
+        let Some(Expr::Match(scrutinee, arms)) = self.program.expression.get_ref(&rhs) else {
             return None;
         };
-        let place = self.owned_place(scrutinee)?;
+        let place = self.owned_place(*scrutinee)?;
         let mut yields = false;
-        for arm in &arms {
+        for arm in arms {
             if self.arm_yields_own_name(arm) {
                 yields = true;
             } else if !self.diverges(arm.body) {
@@ -981,10 +981,10 @@ impl MoveCheck<'_> {
     /// `e`, or the last expression of a block ending in `e`, when that is
     /// a bare name.
     fn tail_identifier(&self, expr: ExprRef) -> Option<DefaultSymbol> {
-        match self.program.expression.get(&expr)? {
-            Expr::Identifier(sym) => Some(sym),
-            Expr::Block(stmts) => match self.program.statement.get(stmts.last()?)? {
-                Stmt::Expression(e) => self.tail_identifier(e),
+        match self.program.expression.get_ref(&expr)? {
+            Expr::Identifier(sym) => Some(*sym),
+            Expr::Block(stmts) => match self.program.statement.get_ref(stmts.last()?)? {
+                Stmt::Expression(e) => self.tail_identifier(*e),
                 _ => None,
             },
             _ => None,
@@ -995,11 +995,11 @@ impl MoveCheck<'_> {
     /// whose last statement leaves (`return` / `break` / `continue`) or
     /// panics.
     fn diverges(&self, expr: ExprRef) -> bool {
-        match self.program.expression.get(&expr) {
+        match self.program.expression.get_ref(&expr) {
             Some(Expr::BuiltinCall(crate::ast::BuiltinFunction::Panic, _)) => true,
-            Some(Expr::Block(stmts)) => match stmts.last().and_then(|s| self.program.statement.get(s)) {
+            Some(Expr::Block(stmts)) => match stmts.last().and_then(|s| self.program.statement.get_ref(s)) {
                 Some(Stmt::Return(_) | Stmt::Break(_) | Stmt::Continue(_)) => true,
-                Some(Stmt::Expression(e)) => self.diverges(e),
+                Some(Stmt::Expression(e)) => self.diverges(*e),
                 _ => false,
             },
             _ => false,
@@ -1109,8 +1109,8 @@ impl MoveCheck<'_> {
             TypeDecl::Ref { inner, .. } => *inner,
             other => {
                 let names_borrow = matches!(
-                    self.program.expression.get(&rhs),
-                    Some(Expr::Identifier(sym)) if self.borrows.contains(&sym)
+                    self.program.expression.get_ref(&rhs),
+                    Some(Expr::Identifier(sym)) if self.borrows.contains(sym)
                 );
                 if !names_borrow {
                     return;
@@ -1155,15 +1155,15 @@ impl MoveCheck<'_> {
         if Self::is_borrow(&ty) || !self.is_owning(&ty) {
             return;
         }
-        let Some(Expr::MethodCall(receiver, method, _)) = self.program.expression.get(&rhs) else {
+        let Some(Expr::MethodCall(receiver, method, _)) = self.program.expression.get_ref(&rhs) else {
             return;
         };
-        if self.interner.resolve(method) != Some("get") {
+        if self.interner.resolve(*method) != Some("get") {
             return;
         }
         let receiver_text = self
             .expr_types
-            .get(&receiver)
+            .get(receiver)
             .map(|t| t.spell_with(Some(self.interner)))
             .unwrap_or_else(|| "the container".to_string());
         let mut error = TypeCheckError::owning_element_copy(
@@ -1173,11 +1173,11 @@ impl MoveCheck<'_> {
         );
         if let Some(loc) = self.location(rhs) {
             error = error.with_location(loc);
-            if let Some(fix) = self.borrow_fix(stmt_ref, name, receiver, loc) {
+            if let Some(fix) = self.borrow_fix(stmt_ref, name, *receiver, loc) {
                 error.suggestions.push(fix);
             }
         }
-        if let Some(container) = self.program.location_pool.get_expr_location(&receiver).copied() {
+        if let Some(container) = self.program.location_pool.get_expr_location(receiver).copied() {
             error = error.with_related(container, "the container that keeps owning the element");
         }
         self.element_copies.push((stmt_ref, error));
@@ -1271,11 +1271,11 @@ impl MoveCheck<'_> {
     /// Remember the named type `name` is declared with, for
     /// [`Self::consumes_receiver`].
     fn note_binding_type(&mut self, name: DefaultSymbol, annotation: &Option<TypeDecl>, rhs: ExprRef) {
-        let ty = self.binding_type(annotation, rhs).or_else(|| match self.program.expression.get(&rhs) {
+        let ty = self.binding_type(annotation, rhs).or_else(|| match self.program.expression.get_ref(&rhs) {
             // `Type::new(..)` / a struct literal names its type even
             // where no type was recorded for the expression.
             Some(Expr::AssociatedFunctionCall(t, _, _)) | Some(Expr::StructLiteral(t, _)) => {
-                Some(TypeDecl::Identifier(t))
+                Some(TypeDecl::Identifier(*t))
             }
             _ => None,
         });
@@ -1293,8 +1293,8 @@ impl MoveCheck<'_> {
     /// receiver's type declares `method` with `self: Self`, or -- when
     /// the type is not known here -- every impl of the name does.
     fn consumes_receiver(&self, receiver: ExprRef, method: DefaultSymbol) -> bool {
-        let ty = match self.program.expression.get(&receiver) {
-            Some(Expr::Identifier(r)) => self.binding_types.get(&r).copied(),
+        let ty = match self.program.expression.get_ref(&receiver) {
+            Some(Expr::Identifier(r)) => self.binding_types.get(r).copied(),
             _ => None,
         }
         .or_else(|| match self.expr_types.get(&receiver) {
@@ -1330,23 +1330,23 @@ impl MoveCheck<'_> {
 
     /// `t` when `rhs` is `{ .. val t = .. .. match t { .. } }`.
     fn desugared_block_root(&self, rhs: ExprRef) -> Option<DefaultSymbol> {
-        let Some(Expr::Block(stmts)) = self.program.expression.get(&rhs) else {
+        let Some(Expr::Block(stmts)) = self.program.expression.get_ref(&rhs) else {
             return None;
         };
         let last = *stmts.last()?;
-        let Some(Stmt::Expression(tail)) = self.program.statement.get(&last) else {
+        let Some(Stmt::Expression(tail)) = self.program.statement.get_ref(&last) else {
             return None;
         };
-        let Some(Expr::Match(scrutinee, _)) = self.program.expression.get(&tail) else {
+        let Some(Expr::Match(scrutinee, _)) = self.program.expression.get_ref(tail) else {
             return None;
         };
-        let Some(Expr::Identifier(t)) = self.program.expression.get(&scrutinee) else {
+        let Some(Expr::Identifier(t)) = self.program.expression.get_ref(scrutinee) else {
             return None;
         };
         let declared_here = stmts.iter().any(|s| {
-            matches!(self.program.statement.get(s), Some(Stmt::Val(n, _, _)) if n == t)
+            matches!(self.program.statement.get_ref(s), Some(Stmt::Val(n, _, _)) if n == t)
         });
-        declared_here.then_some(t)
+        declared_here.then_some(*t)
     }
 
     /// Where a diagnostic about `expr` points: its own position, or --
@@ -1369,8 +1369,8 @@ impl MoveCheck<'_> {
     // ---- statements ----
 
     fn walk_stmt(&mut self, stmt_ref: StmtRef, conditional: bool) {
-        let anchor = match self.program.statement.get(&stmt_ref) {
-            Some(Stmt::Expression(e)) => Anchor::Stmt(stmt_ref, Some(e)),
+        let anchor = match self.program.statement.get_ref(&stmt_ref) {
+            Some(Stmt::Expression(e)) => Anchor::Stmt(stmt_ref, Some(*e)),
             _ => Anchor::Stmt(stmt_ref, None),
         };
         self.anchors.push(anchor);
@@ -1379,18 +1379,18 @@ impl MoveCheck<'_> {
     }
 
     fn walk_stmt_inner(&mut self, stmt_ref: StmtRef, conditional: bool) {
-        let Some(stmt) = self.program.statement.get(&stmt_ref) else {
+        let Some(stmt) = self.program.statement.get_ref(&stmt_ref) else {
             return;
         };
         match stmt {
             // `var` may be declared without an initializer; `val`
             // always has one.
             Stmt::Val(name, annotation, rhs) => {
-                self.walk_initializer(rhs, conditional);
-                self.note_binding_type(name, &annotation, rhs);
-                self.check_copy_out_of_borrow(name, &annotation, rhs);
-                self.check_owning_element_copy(stmt_ref, name, &annotation, rhs);
-                if let Some(ty) = self.binding_type(&annotation, rhs) {
+                self.walk_initializer(*rhs, conditional);
+                self.note_binding_type(*name, annotation, *rhs);
+                self.check_copy_out_of_borrow(*name, annotation, *rhs);
+                self.check_owning_element_copy(stmt_ref, *name, annotation, *rhs);
+                if let Some(ty) = self.binding_type(annotation, *rhs) {
                     if Self::is_borrow(&ty) {
                         // ELEMENT-BORROW E2: a binding that names a
                         // borrow owns nothing, so the backends must
@@ -1398,52 +1398,52 @@ impl MoveCheck<'_> {
                         // instruction, and it already reaches every
                         // lane.
                         self.transferred.insert(stmt_ref);
-                        self.borrows.insert(name);
+                        self.borrows.insert(*name);
                     } else if self.is_owning(&ty) {
-                        self.declare_owning(name, stmt_ref, rhs);
+                        self.declare_owning(*name, stmt_ref, *rhs);
                     }
                 }
             }
             Stmt::Var(name, annotation, Some(rhs)) => {
-                self.walk_initializer(rhs, conditional);
-                self.note_binding_type(name, &annotation, rhs);
-                self.check_copy_out_of_borrow(name, &annotation, rhs);
-                self.check_owning_element_copy(stmt_ref, name, &annotation, rhs);
-                if let Some(ty) = self.binding_type(&annotation, rhs) {
+                self.walk_initializer(*rhs, conditional);
+                self.note_binding_type(*name, annotation, *rhs);
+                self.check_copy_out_of_borrow(*name, annotation, *rhs);
+                self.check_owning_element_copy(stmt_ref, *name, annotation, *rhs);
+                if let Some(ty) = self.binding_type(annotation, *rhs) {
                     if Self::is_borrow(&ty) {
                         self.transferred.insert(stmt_ref);
-                        self.borrows.insert(name);
+                        self.borrows.insert(*name);
                     } else if self.is_owning(&ty) {
-                        self.declare_owning(name, stmt_ref, rhs);
+                        self.declare_owning(*name, stmt_ref, *rhs);
                     }
                 }
             }
             Stmt::Var(_, _, None) => {}
-            Stmt::Expression(e) => self.walk_expr(e, Use::Read, conditional),
+            Stmt::Expression(e) => self.walk_expr(*e, Use::Read, conditional),
             Stmt::Return(value) => {
                 if let Some(e) = value {
                     self.tail = true;
-                    self.walk_expr(e, Use::Read, conditional);
+                    self.walk_expr(*e, Use::Read, conditional);
                 }
             }
             Stmt::While(_, cond, body) => {
-                self.walk_expr(cond, Use::Read, conditional);
+                self.walk_expr(*cond, Use::Read, conditional);
                 self.loops.push(self.depth());
                 self.enter_scope();
                 self.cond_level += 1;
-                self.walk_expr(body, Use::Read, true);
+                self.walk_expr(*body, Use::Read, true);
                 self.cond_level -= 1;
                 self.exit_scope();
                 self.loops.pop();
             }
             Stmt::For(_, var, start, end, body) => {
-                self.walk_expr(start, Use::Read, conditional);
-                self.walk_expr(end, Use::Read, conditional);
+                self.walk_expr(*start, Use::Read, conditional);
+                self.walk_expr(*end, Use::Read, conditional);
                 self.loops.push(self.depth());
                 self.enter_scope();
                 let _ = var;
                 self.cond_level += 1;
-                self.walk_expr(body, Use::Read, true);
+                self.walk_expr(*body, Use::Read, true);
                 self.cond_level -= 1;
                 self.exit_scope();
                 self.loops.pop();
@@ -1463,15 +1463,15 @@ impl MoveCheck<'_> {
         // Only the positions below that pass the value on stay in the
         // tail; every other child is walked outside it.
         let tail = std::mem::replace(&mut self.tail, false);
-        let Some(expr) = self.program.expression.get(&expr_ref) else {
+        let Some(expr) = self.program.expression.get_ref(&expr_ref) else {
             return;
         };
         match expr {
             Expr::Identifier(name) => {
-                let into_binding = self.tail_root.is_none_or(|root| self.root_of(name) == root);
+                let into_binding = self.tail_root.is_none_or(|root| self.root_of(*name) == root);
                 let use_kind =
                     if tail && use_kind == Use::Read && into_binding { Use::Transfer } else { use_kind };
-                self.use_binding(name, expr_ref, use_kind, conditional)
+                self.use_binding(*name, expr_ref, use_kind, conditional)
             }
 
             Expr::Block(stmts) => {
@@ -1479,12 +1479,12 @@ impl MoveCheck<'_> {
                 for (i, s) in stmts.iter().enumerate() {
                     let exit = self.exit_of(&stmts[i..]);
                     self.exits.push((self.loops.len(), exit));
-                    match self.program.statement.get(s) {
+                    match self.program.statement.get_ref(s) {
                         // The block's value is its last expression.
                         Some(Stmt::Expression(e)) if tail && i + 1 == stmts.len() => {
-                            self.anchors.push(Anchor::Stmt(*s, Some(e)));
+                            self.anchors.push(Anchor::Stmt(*s, Some(*e)));
                             self.tail = true;
-                            self.walk_expr(e, Use::Read, conditional);
+                            self.walk_expr(*e, Use::Read, conditional);
                             self.anchors.pop();
                         }
                         _ => self.walk_stmt(*s, conditional),
@@ -1500,27 +1500,27 @@ impl MoveCheck<'_> {
             // before the branch, and what is moved after it is what any
             // path that carries on moved.
             Expr::IfElifElse(cond, then_block, elifs, else_block) => {
-                self.walk_expr(cond, Use::Read, conditional);
+                self.walk_expr(*cond, Use::Read, conditional);
                 self.cond_level += 1;
                 let before = self.moved.clone();
                 let mut after = before.clone();
                 self.tail = tail;
-                self.walk_expr(then_block, Use::Read, true);
-                self.merge_path(then_block, &before, &mut after);
-                for (c, b) in &elifs {
+                self.walk_expr(*then_block, Use::Read, true);
+                self.merge_path(*then_block, &before, &mut after);
+                for (c, b) in elifs {
                     self.walk_expr(*c, Use::Read, true);
                     self.tail = tail;
                     self.walk_expr(*b, Use::Read, true);
                     self.merge_path(*b, &before, &mut after);
                 }
                 self.tail = tail;
-                self.walk_expr(else_block, Use::Read, true);
-                self.merge_path(else_block, &before, &mut after);
+                self.walk_expr(*else_block, Use::Read, true);
+                self.merge_path(*else_block, &before, &mut after);
                 self.moved = after;
                 self.cond_level -= 1;
             }
             Expr::Match(scrutinee, arms) => {
-                self.walk_expr(scrutinee, Use::Read, conditional);
+                self.walk_expr(*scrutinee, Use::Read, conditional);
                 // MATCH-MOVE-OUT-DOUBLE-DROP: over a binding, a payload
                 // name is that binding's value under another name (the
                 // backends alias it), so it is declared as an alias and
@@ -1528,12 +1528,12 @@ impl MoveCheck<'_> {
                 // A scrutinee already moved was reported just above;
                 // its payload names would only repeat that.
                 let place_root = self
-                    .owned_place(scrutinee)
+                    .owned_place(*scrutinee)
                     .map(|s| self.root_of(s))
                     .filter(|root| !self.moved.contains_key(root));
                 let before = self.moved.clone();
                 let mut after = before.clone();
-                for arm in &arms {
+                for arm in arms {
                     self.cond_level += 1;
                     self.enter_scope();
                     let mut consuming = false;
@@ -1543,7 +1543,7 @@ impl MoveCheck<'_> {
                         for n in names {
                             self.declare_alias(n, None, root);
                         }
-                        if self.arm_consumes(scrutinee, &arm.pattern) {
+                        if self.arm_consumes(*scrutinee, &arm.pattern) {
                             self.consuming_arms.push((root, self.cond_level));
                             consuming = true;
                         }
@@ -1570,22 +1570,22 @@ impl MoveCheck<'_> {
             // value again -- after a move, or over one it still owns,
             // which is dropped first.
             Expr::Assign(lhs, rhs) => {
-                let reinit = match self.program.expression.get(&lhs) {
-                    Some(Expr::Identifier(x)) => self.reinit_target(x),
+                let reinit = match self.program.expression.get_ref(lhs) {
+                    Some(Expr::Identifier(x)) => self.reinit_target(*x),
                     _ => None,
                 };
                 if reinit.is_none() {
-                    self.walk_expr(lhs, Use::Read, conditional);
+                    self.walk_expr(*lhs, Use::Read, conditional);
                 }
-                self.walk_expr(rhs, Use::Transfer, conditional);
+                self.walk_expr(*rhs, Use::Transfer, conditional);
                 if let Some((x, decl)) = reinit {
-                    self.reinit(x, decl, lhs);
+                    self.reinit(x, decl, *lhs);
                 }
             }
 
             // Aggregates take ownership of what they are built from.
             Expr::StructLiteral(_, fields) => {
-                for (_, value) in &fields {
+                for (_, value) in fields {
                     self.walk_expr(*value, Use::Transfer, conditional);
                 }
             }
@@ -1596,25 +1596,25 @@ impl MoveCheck<'_> {
             // field access, which is the same alias-not-move shape
             // MOVE-ALIAS-GAP describes.
             Expr::StructUpdate { fields, base, .. } => {
-                for (_, value) in &fields {
+                for (_, value) in fields {
                     self.walk_expr(*value, Use::Transfer, conditional);
                 }
-                self.walk_expr(base, Use::Read, conditional);
+                self.walk_expr(*base, Use::Read, conditional);
             }
             Expr::TupleLiteral(elements) | Expr::ArrayLiteral(elements) => {
-                for e in &elements {
+                for e in elements {
                     self.walk_expr(*e, Use::Transfer, conditional);
                 }
             }
             Expr::DictLiteral(entries) => {
-                for (k, v) in &entries {
+                for (k, v) in entries {
                     self.walk_expr(*k, Use::Transfer, conditional);
                     self.walk_expr(*v, Use::Transfer, conditional);
                 }
             }
 
             Expr::Call(name, args) => {
-                let arity = match self.program.expression.get(&args) {
+                let arity = match self.program.expression.get_ref(args) {
                     Some(Expr::ExprList(items)) => items.len(),
                     Some(_) => 1,
                     None => 0,
@@ -1622,8 +1622,8 @@ impl MoveCheck<'_> {
                 // The entry file's own function wins a bare name;
                 // a module one answers only when the name is not
                 // taken and is unambiguous among the modules.
-                let target = self.signatures.call_target(name, arity);
-                self.walk_args(args, target.as_ref(), conditional);
+                let target = self.signatures.call_target(*name, arity);
+                self.walk_args(*args, target.as_ref(), conditional);
             }
             Expr::MethodCall(receiver, method, args) => {
                 // The receiver is read unless every impl of the method
@@ -1636,35 +1636,35 @@ impl MoveCheck<'_> {
                 // `part` and `w` (DOUBLE-DROP-LANE-DIVERGENCE, found by
                 // HEAP-CHECK). A name some impl declares `&self` stays
                 // a read: the call site cannot tell which it reaches.
-                if self.consumes_receiver(receiver, method) {
-                    let target = self.signatures.method_target(method, args.len());
-                    self.walk_expr(receiver, Use::Transfer, conditional);
-                    self.walk_arg_list(&args, target.as_ref(), conditional);
+                if self.consumes_receiver(*receiver, *method) {
+                    let target = self.signatures.method_target(*method, args.len());
+                    self.walk_expr(*receiver, Use::Transfer, conditional);
+                    self.walk_arg_list(args, target.as_ref(), conditional);
                     return;
                 }
                 // CALLEE-DROP-GENERIC: a scalar read off a probed
                 // parameter leaves no element behind.
-                let safe = match (self.program.expression.get(&receiver), &self.probe) {
+                let safe = match (self.program.expression.get_ref(receiver), &self.probe) {
                     (Some(Expr::Identifier(r)), Some(probe)) => probe
-                        .get(&r)
-                        .is_some_and(|(base, _)| self.scalar_readers.contains(&(*base, method))),
+                        .get(r)
+                        .is_some_and(|(base, _)| self.scalar_readers.contains(&(*base, *method))),
                     _ => false,
                 };
                 let prev_safe = std::mem::replace(
                     &mut self.safe_receiver,
-                    if safe { Some(receiver) } else { None },
+                    if safe { Some(*receiver) } else { None },
                 );
-                self.walk_expr(receiver, Use::Read, conditional);
+                self.walk_expr(*receiver, Use::Read, conditional);
                 self.safe_receiver = prev_safe;
-                let target = self.signatures.method_target(method, args.len());
-                self.walk_arg_list(&args, target.as_ref(), conditional);
+                let target = self.signatures.method_target(*method, args.len());
+                self.walk_arg_list(args, target.as_ref(), conditional);
             }
             Expr::AssociatedFunctionCall(type_name, fn_name, args) => {
                 // `Enum::Variant(payload)` puts the payload inside the
                 // enum, which outlives the expression — a transfer,
                 // with no signature to consult.
-                if self.signatures.enum_variants.contains(&(type_name, fn_name)) {
-                    for a in &args {
+                if self.signatures.enum_variants.contains(&(*type_name, *fn_name)) {
+                    for a in args {
                         self.walk_expr(*a, Use::Transfer, conditional);
                     }
                     return;
@@ -1673,70 +1673,70 @@ impl MoveCheck<'_> {
                 // `Type::f(args)`, so a name that is not an associated
                 // function is looked up among the free ones, where the
                 // qualifier names the module and the signature is exact.
-                let target = self.signatures.associated_target(type_name, fn_name, args.len());
-                self.walk_arg_list(&args, target.as_ref(), conditional);
+                let target = self.signatures.associated_target(*type_name, *fn_name, args.len());
+                self.walk_arg_list(args, target.as_ref(), conditional);
             }
 
             // Raw pointer traffic is unchecked on purpose — see the
             // module comment.
             Expr::BuiltinCall(_, args) => {
-                for a in &args {
+                for a in args {
                     self.walk_expr(*a, Use::Read, conditional);
                 }
             }
             Expr::BuiltinMethodCall(receiver, _, args) => {
-                self.walk_expr(receiver, Use::Read, conditional);
-                for a in &args {
+                self.walk_expr(*receiver, Use::Read, conditional);
+                for a in args {
                     self.walk_expr(*a, Use::Read, conditional);
                 }
             }
 
             Expr::Binary(_, lhs, rhs) => {
-                self.walk_expr(lhs, Use::Read, conditional);
-                self.walk_expr(rhs, Use::Read, conditional);
+                self.walk_expr(*lhs, Use::Read, conditional);
+                self.walk_expr(*rhs, Use::Read, conditional);
             }
-            Expr::Unary(_, operand) => self.walk_expr(operand, Use::Read, conditional),
+            Expr::Unary(_, operand) => self.walk_expr(*operand, Use::Read, conditional),
             Expr::FieldAccess(obj, _) | Expr::TupleAccess(obj, _) => {
-                self.walk_expr(obj, Use::Read, conditional)
+                self.walk_expr(*obj, Use::Read, conditional)
             }
             Expr::Cast(inner, _) | Expr::Try { inner, .. } => {
-                self.walk_expr(inner, Use::Read, conditional)
+                self.walk_expr(*inner, Use::Read, conditional)
             }
             // `a ?? b` — both operands are read (the desugar moves
             // them into a `val` + `match`); the type checker rewrites
             // the node before any backend sees it.
             Expr::NullCoalesce { lhs, rhs, .. } => {
-                self.walk_expr(lhs, Use::Read, conditional);
-                self.walk_expr(rhs, Use::Read, conditional);
+                self.walk_expr(*lhs, Use::Read, conditional);
+                self.walk_expr(*rhs, Use::Read, conditional);
             }
             Expr::Range(start, end) => {
-                self.walk_expr(start, Use::Read, conditional);
-                self.walk_expr(end, Use::Read, conditional);
+                self.walk_expr(*start, Use::Read, conditional);
+                self.walk_expr(*end, Use::Read, conditional);
             }
             Expr::ExprList(items) => {
-                for e in &items {
+                for e in items {
                     self.walk_expr(*e, Use::Read, conditional);
                 }
             }
-            Expr::SliceAccess(object, _) => self.walk_expr(object, Use::Read, conditional),
+            Expr::SliceAccess(object, _) => self.walk_expr(*object, Use::Read, conditional),
             Expr::SliceAssign(object, start, end, value) => {
-                self.walk_expr(object, Use::Read, conditional);
+                self.walk_expr(*object, Use::Read, conditional);
                 for bound in [start, end].into_iter().flatten() {
-                    self.walk_expr(bound, Use::Read, conditional);
+                    self.walk_expr(*bound, Use::Read, conditional);
                 }
-                self.walk_expr(value, Use::Read, conditional);
+                self.walk_expr(*value, Use::Read, conditional);
             }
             Expr::With(allocator, body) => {
                 // The allocator is borrowed for the block, not consumed.
-                self.walk_expr(allocator, Use::Read, conditional);
-                self.walk_expr(body, Use::Read, conditional);
+                self.walk_expr(*allocator, Use::Read, conditional);
+                self.walk_expr(*body, Use::Read, conditional);
             }
             // A closure captures by snapshot, so a name it mentions is
             // read rather than handed over.
             Expr::Closure { body, .. } => {
                 self.cond_level += 1;
                 self.closure_level += 1;
-                self.walk_expr(body, Use::Read, true);
+                self.walk_expr(*body, Use::Read, true);
                 self.closure_level -= 1;
                 self.cond_level -= 1;
             }
@@ -1764,8 +1764,8 @@ impl MoveCheck<'_> {
     /// `Expr::Call`'s argument list arrives as one `ExprRef` holding an
     /// `ExprList`.
     fn walk_args(&mut self, args: ExprRef, target: Option<&Target>, conditional: bool) {
-        match self.program.expression.get(&args) {
-            Some(Expr::ExprList(items)) => self.walk_arg_list(&items, target, conditional),
+        match self.program.expression.get_ref(&args) {
+            Some(Expr::ExprList(items)) => self.walk_arg_list(items, target, conditional),
             Some(_) => self.walk_arg_list(&[args], target, conditional),
             None => {}
         }
@@ -1993,10 +1993,10 @@ impl MoveCheck<'_> {
             Some(Anchor::Stmt(_, Some(e))) | Some(Anchor::Expr(e)) => e,
             _ => return false,
         };
-        let Some(Expr::Assign(lhs, _)) = self.program.expression.get(&e) else {
+        let Some(Expr::Assign(lhs, _)) = self.program.expression.get_ref(&e) else {
             return false;
         };
-        matches!(self.program.expression.get(&lhs), Some(Expr::Identifier(y)) if y == name || y == owner)
+        matches!(self.program.expression.get_ref(lhs), Some(Expr::Identifier(y)) if *y == name || *y == owner)
             && self.reinit_target(owner).is_some()
     }
 
@@ -2048,7 +2048,7 @@ impl MoveCheck<'_> {
     /// `return` / `break` / `continue` decides.
     fn exit_of(&self, rest: &[StmtRef]) -> Exit {
         for s in rest {
-            match self.program.statement.get(s) {
+            match self.program.statement.get_ref(s) {
                 Some(Stmt::Return(_)) => return Exit::Return,
                 Some(Stmt::Break(_)) => return Exit::Break,
                 Some(Stmt::Continue(_)) => return Exit::Through,
@@ -2175,13 +2175,13 @@ fn compute_lend(
     }
     for i in 0..program.statement.len() {
         if let Some(Stmt::ImplBlock { methods, target_type, target_type_args, .. }) =
-            program.statement.get(&StmtRef(i as u32))
+            program.statement.get_ref(&StmtRef(i as u32))
         {
             // The receiver's type, for `owning` on `self.field`. A
             // generic impl leaves its parameters as names, which is
             // what `field_type` substitutes.
-            let self_ty = TypeDecl::Struct(target_type, target_type_args.clone());
-            for m in &methods {
+            let self_ty = TypeDecl::Struct(*target_type, target_type_args.clone());
+            for m in methods {
                 let params: Vec<(DefaultSymbol, TypeDecl)> = m
                     .parameter
                     .iter()
@@ -2296,36 +2296,36 @@ fn lends(lend: &HashMap<StmtRef, Vec<bool>>, bodies: &[StmtRef], i: usize) -> bo
 impl LendAnalysis<'_> {
     fn body_only_reads(&self, body: StmtRef, p: DefaultSymbol) -> bool {
         self.aliases.borrow_mut().clear();
-        match self.program.statement.get(&body) {
+        match self.program.statement.get_ref(&body) {
             // The body's value is the function's return value.
-            Some(Stmt::Expression(e)) => self.expr_ok(e, p, Ctx::Keep),
+            Some(Stmt::Expression(e)) => self.expr_ok(*e, p, Ctx::Keep),
             Some(_) => self.stmt_ok(body, p),
             None => false,
         }
     }
 
     fn stmt_ok(&self, s: StmtRef, p: DefaultSymbol) -> bool {
-        match self.program.statement.get(&s) {
+        match self.program.statement.get_ref(&s) {
             // `var c = b`: `c` names the parameter's value from here on.
             Some(Stmt::Val(name, _, rhs)) | Some(Stmt::Var(name, _, Some(rhs)))
                 if !self.in_closure.get()
-                    && matches!(self.program.expression.get(&rhs), Some(Expr::Identifier(r)) if self.is_param(r, p)) =>
+                    && matches!(self.program.expression.get_ref(rhs), Some(Expr::Identifier(r)) if self.is_param(*r, p)) =>
             {
-                self.aliases.borrow_mut().push(name);
+                self.aliases.borrow_mut().push(*name);
                 true
             }
             Some(Stmt::Val(_, _, rhs)) | Some(Stmt::Var(_, _, Some(rhs))) => {
-                self.expr_ok(rhs, p, Ctx::Keep)
+                self.expr_ok(*rhs, p, Ctx::Keep)
             }
-            Some(Stmt::Expression(e)) => self.expr_ok(e, p, Ctx::Discard),
-            Some(Stmt::Return(Some(e))) => self.expr_ok(e, p, Ctx::Keep),
+            Some(Stmt::Expression(e)) => self.expr_ok(*e, p, Ctx::Discard),
+            Some(Stmt::Return(Some(e))) => self.expr_ok(*e, p, Ctx::Keep),
             Some(Stmt::While(_, cond, body)) => {
-                self.expr_ok(cond, p, Ctx::Read) && self.expr_ok(body, p, Ctx::Discard)
+                self.expr_ok(*cond, p, Ctx::Read) && self.expr_ok(*body, p, Ctx::Discard)
             }
             Some(Stmt::For(_, _, start, end, body)) => {
-                self.expr_ok(start, p, Ctx::Read)
-                    && self.expr_ok(end, p, Ctx::Read)
-                    && self.expr_ok(body, p, Ctx::Discard)
+                self.expr_ok(*start, p, Ctx::Read)
+                    && self.expr_ok(*end, p, Ctx::Read)
+                    && self.expr_ok(*body, p, Ctx::Discard)
             }
             _ => true,
         }
@@ -2344,9 +2344,9 @@ impl LendAnalysis<'_> {
         if let Some(ty) = self.expr_types.get(&e) {
             return self.drop_analysis.contains_drop(ty);
         }
-        if let Some(Expr::FieldAccess(obj, field)) = self.program.expression.get(&e)
-            && matches!(self.program.expression.get(&obj), Some(Expr::Identifier(s)) if self.is_param(s, p))
-            && let Some(ty) = self.field_type(&self.param_ty.borrow(), field)
+        if let Some(Expr::FieldAccess(obj, field)) = self.program.expression.get_ref(&e)
+            && matches!(self.program.expression.get_ref(obj), Some(Expr::Identifier(s)) if self.is_param(*s, p))
+            && let Some(ty) = self.field_type(&self.param_ty.borrow(), *field)
         {
             return self.drop_analysis.contains_drop(&ty);
         }
@@ -2360,7 +2360,7 @@ impl LendAnalysis<'_> {
     fn plain_container(&self, obj: ExprRef, p: DefaultSymbol) -> bool {
         let ty = match self.expr_types.get(&obj) {
             Some(ty) => ty.clone(),
-            None if matches!(self.program.expression.get(&obj), Some(Expr::Identifier(s)) if self.is_param(s, p)) => {
+            None if matches!(self.program.expression.get_ref(&obj), Some(Expr::Identifier(s)) if self.is_param(*s, p)) => {
                 self.param_ty.borrow().clone()
             }
             None => return false,
@@ -2400,44 +2400,44 @@ impl LendAnalysis<'_> {
 
     fn expr_ok(&self, e: ExprRef, p: DefaultSymbol, ctx: Ctx) -> bool {
         use crate::ast::{BuiltinFunction as B, UnaryOp};
-        let Some(expr) = self.program.expression.get(&e) else {
+        let Some(expr) = self.program.expression.get_ref(&e) else {
             return true;
         };
         match expr {
             Expr::Identifier(s) => {
-                !self.is_param(s, p)
+                !self.is_param(*s, p)
                     || (!self.in_closure.get()
                         && matches!(ctx, Ctx::Read | Ctx::Discard | Ctx::WriteThrough))
             }
             Expr::Block(stmts) => stmts.iter().enumerate().all(|(i, s)| {
-                match (i + 1 == stmts.len(), self.program.statement.get(s)) {
-                    (true, Some(Stmt::Expression(tail))) => self.expr_ok(tail, p, ctx),
+                match (i + 1 == stmts.len(), self.program.statement.get_ref(s)) {
+                    (true, Some(Stmt::Expression(tail))) => self.expr_ok(*tail, p, ctx),
                     _ => self.stmt_ok(*s, p),
                 }
             }),
             Expr::IfElifElse(c, t, elifs, el) => {
-                self.expr_ok(c, p, Ctx::Read)
-                    && self.expr_ok(t, p, ctx)
+                self.expr_ok(*c, p, Ctx::Read)
+                    && self.expr_ok(*t, p, ctx)
                     && elifs
                         .iter()
                         .all(|(c, b)| self.expr_ok(*c, p, Ctx::Read) && self.expr_ok(*b, p, ctx))
-                    && self.expr_ok(el, p, ctx)
+                    && self.expr_ok(*el, p, ctx)
             }
             // A payload name would alias the parameter, and those names
             // are not followed here: matching on it keeps it.
             Expr::Match(scrutinee, arms) => {
-                self.expr_ok(scrutinee, p, Ctx::Keep)
+                self.expr_ok(*scrutinee, p, Ctx::Keep)
                     && arms.iter().all(|arm| {
                         arm.guard.is_none_or(|g| self.expr_ok(g, p, Ctx::Read))
                             && self.expr_ok(arm.body, p, ctx)
                     })
             }
-            Expr::Assign(lhs, rhs) => self.expr_ok(lhs, p, Ctx::Write) && self.expr_ok(rhs, p, Ctx::Keep),
+            Expr::Assign(lhs, rhs) => self.expr_ok(*lhs, p, Ctx::Write) && self.expr_ok(*rhs, p, Ctx::Keep),
             Expr::FieldAccess(obj, _) | Expr::TupleAccess(obj, _) => {
                 let inner = match ctx {
                     // The written place owns nothing: its old value
                     // frees nothing, so the write only changes the copy.
-                    Ctx::Write if !self.owning(e, p) && self.plain_container(obj, p) => {
+                    Ctx::Write if !self.owning(e, p) && self.plain_container(*obj, p) => {
                         Ctx::WriteThrough
                     }
                     Ctx::Write => Ctx::Keep,
@@ -2445,7 +2445,7 @@ impl LendAnalysis<'_> {
                     _ if self.owning(e, p) => Ctx::Keep,
                     _ => Ctx::Read,
                 };
-                self.expr_ok(obj, p, inner)
+                self.expr_ok(*obj, p, inner)
             }
             Expr::SliceAccess(obj, info) => {
                 // An element write goes through `__setitem__` or into a
@@ -2455,20 +2455,20 @@ impl LendAnalysis<'_> {
                 } else {
                     Ctx::Read
                 };
-                self.expr_ok(obj, p, inner)
+                self.expr_ok(*obj, p, inner)
                     && [info.start, info.end]
                         .into_iter()
                         .flatten()
                         .all(|b| self.expr_ok(b, p, Ctx::Read))
             }
             Expr::SliceAssign(obj, start, end, value) => {
-                self.expr_ok(obj, p, Ctx::Keep)
-                    && [start, end].into_iter().flatten().all(|b| self.expr_ok(b, p, Ctx::Read))
-                    && self.expr_ok(value, p, Ctx::Keep)
+                self.expr_ok(*obj, p, Ctx::Keep)
+                    && [start, end].into_iter().flatten().all(|b| self.expr_ok(*b, p, Ctx::Read))
+                    && self.expr_ok(*value, p, Ctx::Keep)
             }
             Expr::StructLiteral(_, fields) => fields.iter().all(|(_, v)| self.expr_ok(*v, p, Ctx::Keep)),
             Expr::StructUpdate { fields, base, .. } => {
-                fields.iter().all(|(_, v)| self.expr_ok(*v, p, Ctx::Keep)) && self.expr_ok(base, p, Ctx::Keep)
+                fields.iter().all(|(_, v)| self.expr_ok(*v, p, Ctx::Keep)) && self.expr_ok(*base, p, Ctx::Keep)
             }
             Expr::TupleLiteral(items) | Expr::ArrayLiteral(items) | Expr::ExprList(items) => {
                 items.iter().all(|x| self.expr_ok(*x, p, Ctx::Keep))
@@ -2477,32 +2477,36 @@ impl LendAnalysis<'_> {
                 .iter()
                 .all(|(k, v)| self.expr_ok(*k, p, Ctx::Keep) && self.expr_ok(*v, p, Ctx::Keep)),
             Expr::Call(name, args) => {
-                let items = match self.program.expression.get(&args) {
+                let single;
+                let items: &[ExprRef] = match self.program.expression.get_ref(args) {
                     Some(Expr::ExprList(items)) => items,
-                    Some(_) => vec![args],
-                    None => Vec::new(),
+                    Some(_) => {
+                        single = [*args];
+                        &single
+                    }
+                    None => &[],
                 };
-                let target = self.signatures.call_target(name, items.len());
-                self.args_ok(&items, target, p)
+                let target = self.signatures.call_target(*name, items.len());
+                self.args_ok(items, target, p)
             }
             Expr::MethodCall(recv, method, args) => {
-                let reads = self.signatures.method_reads_self.get(&method).copied().unwrap_or(false);
+                let reads = self.signatures.method_reads_self.get(method).copied().unwrap_or(false);
                 let recv_ctx = if reads {
                     Ctx::Read
-                } else if self.receiver_lend.borrow().get(&method).copied().unwrap_or(false) {
+                } else if self.receiver_lend.borrow().get(method).copied().unwrap_or(false) {
                     Ctx::WriteThrough
                 } else {
                     Ctx::Keep
                 };
-                self.expr_ok(recv, p, recv_ctx)
-                    && self.args_ok(&args, self.signatures.method_target(method, args.len()), p)
+                self.expr_ok(*recv, p, recv_ctx)
+                    && self.args_ok(args, self.signatures.method_target(*method, args.len()), p)
             }
             Expr::AssociatedFunctionCall(type_name, fn_name, args) => {
-                if self.signatures.enum_variants.contains(&(type_name, fn_name)) {
+                if self.signatures.enum_variants.contains(&(*type_name, *fn_name)) {
                     return args.iter().all(|a| self.expr_ok(*a, p, Ctx::Keep));
                 }
-                let target = self.signatures.associated_target(type_name, fn_name, args.len());
-                self.args_ok(&args, target, p)
+                let target = self.signatures.associated_target(*type_name, *fn_name, args.len());
+                self.args_ok(args, target, p)
             }
             Expr::BuiltinCall(func, args) => {
                 let reads = matches!(
@@ -2512,24 +2516,24 @@ impl LendAnalysis<'_> {
                 args.iter().all(|a| self.expr_ok(*a, p, if reads { Ctx::Read } else { Ctx::Keep }))
             }
             Expr::BuiltinMethodCall(recv, _, args) => {
-                self.expr_ok(recv, p, Ctx::Read) && args.iter().all(|a| self.expr_ok(*a, p, Ctx::Read))
+                self.expr_ok(*recv, p, Ctx::Read) && args.iter().all(|a| self.expr_ok(*a, p, Ctx::Read))
             }
-            Expr::Binary(_, l, r) => self.expr_ok(l, p, Ctx::Read) && self.expr_ok(r, p, Ctx::Read),
+            Expr::Binary(_, l, r) => self.expr_ok(*l, p, Ctx::Read) && self.expr_ok(*r, p, Ctx::Read),
             Expr::Unary(op, x) => {
                 let inner = if matches!(op, UnaryOp::BorrowMut) { Ctx::Keep } else { Ctx::Read };
-                self.expr_ok(x, p, inner)
+                self.expr_ok(*x, p, inner)
             }
-            Expr::Cast(inner, _) => self.expr_ok(inner, p, Ctx::Read),
-            Expr::Range(a, b) => self.expr_ok(a, p, Ctx::Read) && self.expr_ok(b, p, Ctx::Read),
-            Expr::With(alloc, body) => self.expr_ok(alloc, p, Ctx::Keep) && self.expr_ok(body, p, ctx),
-            Expr::Try { inner, .. } => self.expr_ok(inner, p, Ctx::Keep),
+            Expr::Cast(inner, _) => self.expr_ok(*inner, p, Ctx::Read),
+            Expr::Range(a, b) => self.expr_ok(*a, p, Ctx::Read) && self.expr_ok(*b, p, Ctx::Read),
+            Expr::With(alloc, body) => self.expr_ok(*alloc, p, Ctx::Keep) && self.expr_ok(*body, p, ctx),
+            Expr::Try { inner, .. } => self.expr_ok(*inner, p, Ctx::Keep),
             Expr::NullCoalesce { lhs, rhs, .. } => {
-                self.expr_ok(lhs, p, Ctx::Keep) && self.expr_ok(rhs, p, Ctx::Keep)
+                self.expr_ok(*lhs, p, Ctx::Keep) && self.expr_ok(*rhs, p, Ctx::Keep)
             }
             // A closure may outlive the call; any mention keeps it.
             Expr::Closure { body, .. } => {
                 let outer = self.in_closure.replace(true);
-                let ok = self.expr_ok(body, p, Ctx::Keep);
+                let ok = self.expr_ok(*body, p, Ctx::Keep);
                 self.in_closure.set(outer);
                 ok
             }
@@ -2565,11 +2569,11 @@ fn collect_scalar_readers(
     let mut verdict: HashMap<(DefaultSymbol, DefaultSymbol), bool> = HashMap::new();
     for i in 0..program.statement.len() {
         let Some(Stmt::ImplBlock { target_type, methods, .. }) =
-            program.statement.get(&StmtRef(i as u32))
+            program.statement.get_ref(&StmtRef(i as u32))
         else {
             continue;
         };
-        for m in &methods {
+        for m in methods {
             let by_value_self = m
                 .parameter
                 .first()
@@ -2590,7 +2594,7 @@ fn collect_scalar_readers(
                     | TypeDecl::Float64
             );
             let ok = m.has_self_param && !by_value_self && scalar;
-            let entry = verdict.entry((target_type, m.name)).or_insert(true);
+            let entry = verdict.entry((*target_type, m.name)).or_insert(true);
             *entry = *entry && ok;
         }
     }
@@ -2612,15 +2616,15 @@ fn collect_consuming_methods(program: &File, interner: &DefaultStringInterner) -
     let mut by_type: HashMap<(DefaultSymbol, DefaultSymbol), bool> = HashMap::new();
     let mut by_name: HashMap<DefaultSymbol, bool> = HashMap::new();
     for i in 0..program.statement.len() {
-        let Some(Stmt::ImplBlock { target_type, methods, .. }) = program.statement.get(&StmtRef(i as u32)) else {
+        let Some(Stmt::ImplBlock { target_type, methods, .. }) = program.statement.get_ref(&StmtRef(i as u32)) else {
             continue;
         };
-        for m in &methods {
+        for m in methods {
             let by_value = m
                 .parameter
                 .first()
                 .is_some_and(|(n, _)| interner.resolve(*n) == Some("self"));
-            let e = by_type.entry((target_type, m.name)).or_insert(true);
+            let e = by_type.entry((*target_type, m.name)).or_insert(true);
             *e = *e && by_value;
             let e = by_name.entry(m.name).or_insert(true);
             *e = *e && by_value;

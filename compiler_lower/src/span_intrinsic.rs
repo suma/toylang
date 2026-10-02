@@ -97,10 +97,10 @@ impl FunctionLower<'_> {
     /// The window an argument names, when it is a plain name bound to
     /// a `Span`. Anything else (a temporary, a field) keeps the call.
     fn span_arg_window(&self, arg: &ExprRef) -> Option<Window> {
-        let Some(Expr::Identifier(sym)) = self.program.expression.get(arg) else {
+        let Some(Expr::Identifier(sym)) = self.expr_at(arg) else {
             return None;
         };
-        Self::span_window(self.bindings.get(&sym)?)
+        Self::span_window(self.bindings.get(sym)?)
     }
 
     fn load_u64(&mut self, local: LocalId) -> ValueId {
@@ -261,10 +261,10 @@ impl FunctionLower<'_> {
         }
         // The window argument has to be a name bound to a one-leaf
         // `Ptr`; anything else keeps the call.
-        let Some(Expr::Identifier(p)) = self.program.expression.get(&args[0]) else {
+        let Some(Expr::Identifier(p)) = self.expr_at(&args[0]) else {
             return Ok(false);
         };
-        let Some(Binding::Struct { fields: ptr_fields, .. }) = self.bindings.get(&p) else {
+        let Some(Binding::Struct { fields: ptr_fields, .. }) = self.bindings.get(p) else {
             return Ok(false);
         };
         let ptr_leaves = flatten_struct_locals(ptr_fields);

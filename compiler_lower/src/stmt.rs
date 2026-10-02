@@ -63,7 +63,7 @@ impl<'a> FunctionLower<'a> {
                 // *alias* of the slot it read — the slot's owner
                 // frees it, so the copy must not register.
                 let from_ptr_read = matches!(
-                    self.program.expression.get(&e),
+                    self.expr_at(&e),
                     Some(frontend::ast::Expr::BuiltinCall(
                         frontend::ast::BuiltinFunction::PtrReadTyped(_)
                             | frontend::ast::BuiltinFunction::PtrRefTyped(_),

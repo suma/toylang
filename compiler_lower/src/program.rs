@@ -1023,13 +1023,13 @@ fn declare_methods(
     // covers monomorphic impls); a generic-trait dispatch would
     // need a per-instantiation vtable, deferred to a later phase.
     for stmt_ref in program.statement.refs_of(StmtType::TraitDecl) {
-        if let Some(frontend::ast::Stmt::TraitDecl { name, methods, .. }) = program.statement.get(&stmt_ref) {
+        if let Some(frontend::ast::Stmt::TraitDecl { name, methods, .. }) = program.statement.get_ref(&stmt_ref) {
             let order: Vec<DefaultSymbol> = methods.iter().map(|m| m.name).collect();
-            module.trait_method_order.insert(name, order);
+            module.trait_method_order.insert(*name, order);
         }
     }
     for stmt_ref in program.statement.refs_of(StmtType::ImplBlock) {
-        let stmt = match program.statement.get(&stmt_ref) {
+        let stmt = match program.statement.get_ref(&stmt_ref) {
             Some(s) => s,
             None => continue,
         };
@@ -1042,7 +1042,7 @@ fn declare_methods(
             _ => continue,
         };
         // Trait must have been seen above; if not, skip (defensive).
-        let method_order = match module.trait_method_order.get(&trait_sym).cloned() {
+        let method_order = match module.trait_method_order.get(trait_sym).cloned() {
             Some(o) => o,
             None => continue,
         };
@@ -1058,9 +1058,9 @@ fn declare_methods(
             let mut sigs: HashMap<DefaultSymbol, (Vec<Type>, Type, bool)> = HashMap::default();
             for sref in program.statement.refs_of(StmtType::TraitDecl) {
                 if let Some(frontend::ast::Stmt::TraitDecl { name, methods, .. }) =
-                    program.statement.get(&sref)
+                    program.statement.get_ref(&sref)
                     && name == trait_sym {
-                        for sig in &methods {
+                        for sig in methods {
                             let mut user_param_tys: Vec<Type> = Vec::new();
                             let mut user_resolved = true;
                             for (i_par, (_, pty)) in sig.parameter.iter().enumerate() {
@@ -1115,7 +1115,7 @@ fn declare_methods(
         // means we skip thunk generation and the dispatch site
         // will surface a clean missing-vtable error.
         let self_ir_ty = lower_param_or_return_type(
-            &TypeDecl::Identifier(target_type),
+            &TypeDecl::Identifier(*target_type),
             struct_defs,
             enum_defs,
             module,
@@ -1135,7 +1135,7 @@ fn declare_methods(
             // a single spec suffices. Future phases that allow
             // generic-trait impls will fan out per concrete type.
             let impl_func_id = match method_func_ids
-                .get(&(target_type, *method_sym))
+                .get(&(*target_type, *method_sym))
                 .and_then(|specs| specs.first().map(|s| s.func_id))
             {
                 Some(fid) => fid,
@@ -1158,8 +1158,8 @@ fn declare_methods(
                 };
             // Declare the thunk FuncId with signature
             // `(U64 data_ptr, ...user_param_tys) -> ret_ty`.
-            let trait_str = interner.resolve(trait_sym).unwrap_or("trait");
-            let struct_str = interner.resolve(target_type).unwrap_or("struct");
+            let trait_str = interner.resolve(*trait_sym).unwrap_or("trait");
+            let struct_str = interner.resolve(*target_type).unwrap_or("struct");
             let method_str = interner.resolve(*method_sym).unwrap_or("method");
             let thunk_name = format!(
                 "toy_dyn_thunk_{}_{}_{}",
@@ -1190,8 +1190,8 @@ fn declare_methods(
                 user_param_tys,
                 ret_ty,
                 self_is_mut,
-                trait_sym,
-                target_type,
+                trait_sym: *trait_sym,
+                target_type: *target_type,
             });
             // Vtable entry points at the thunk, not the impl, so
             // every dyn dispatch site sees the uniform
@@ -1199,7 +1199,7 @@ fn declare_methods(
             vtable_funcs.push(thunk_func_id);
         }
         if all_resolved {
-            module.vtables.insert((trait_sym, target_type), vtable_funcs);
+            module.vtables.insert((*trait_sym, *target_type), vtable_funcs);
         }
     }
 
@@ -1308,9 +1308,9 @@ fn lower_program_inner(
                 target_type,
                 trait_name: Some(trait_sym),
                 ..
-            }) = program.statement.get(&stmt_ref)
-                && trait_sym == drop_sym {
-                    module.drop_trait_structs.insert(target_type);
+            }) = program.statement.get_ref(&stmt_ref)
+                && *trait_sym == drop_sym {
+                    module.drop_trait_structs.insert(*target_type);
                 }
         }
     }
@@ -2725,11 +2725,11 @@ impl<'a> FunctionLower<'a> {
     /// produces its value in one spot and can stay on the ordinary
     /// `lower_expr` path.
     pub(super) fn tail_is_composite(&self, expr_ref: &ExprRef) -> bool {
-        match self.program.expression.get(expr_ref) {
+        match self.expr_at(expr_ref) {
             Some(frontend::ast::Expr::IfElifElse(..)) | Some(frontend::ast::Expr::Match(..)) => true,
             Some(frontend::ast::Expr::Block(stmts)) => match stmts.last() {
-                Some(last) => match self.program.statement.get(last) {
-                    Some(Stmt::Expression(e)) => self.tail_is_composite(&e),
+                Some(last) => match self.stmt_at(last) {
+                    Some(Stmt::Expression(e)) => self.tail_is_composite(e),
                     _ => false,
                 },
                 None => false,
@@ -3081,7 +3081,7 @@ impl<'a> FunctionLower<'a> {
     ) -> Result<(), String> {
         use frontend::ast::{Expr, Operator};
 
-        let Some(Expr::Binary(Operator::LE, lhs, rhs)) = self.program.expression.get(clause) else {
+        let Some(Expr::Binary(Operator::LE, lhs, rhs)) = self.expr_at(clause) else {
             return self.emit_contract_checks(std::slice::from_ref(clause), "ensures", clause_index);
         };
         let Some(entry_sym) = self.interner.get(format!("__old_{old_index}")) else {
@@ -3092,10 +3092,10 @@ impl<'a> FunctionLower<'a> {
         };
 
         let current = self
-            .lower_expr(&lhs)?
+            .lower_expr(lhs)?
             .ok_or_else(|| "allocation budget lhs produced no value".to_string())?;
         let limit = self
-            .lower_expr(&rhs)?
+            .lower_expr(rhs)?
             .ok_or_else(|| "allocation budget rhs produced no value".to_string())?;
         let entry = self
             .emit(InstKind::LoadLocal(local), Some(ty))

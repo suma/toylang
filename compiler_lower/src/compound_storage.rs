@@ -117,12 +117,12 @@ impl<'a> FunctionLower<'a> {
         &mut self,
         expr_ref: &ExprRef,
     ) -> Option<BranchShape<ShapeSource<StructId>>> {
-        let expr = self.program.expression.get(expr_ref)?;
+        let expr = self.expr_at(expr_ref)?;
         match expr {
-            Expr::StructLiteral(name, _) if self.struct_defs.contains_key(&name) => {
-                Some(BranchShape::Produces(ShapeSource::Base(name)))
+            Expr::StructLiteral(name, _) if self.struct_defs.contains_key(name) => {
+                Some(BranchShape::Produces(ShapeSource::Base(*name)))
             }
-            Expr::Identifier(sym) => match self.bindings.get(&sym) {
+            Expr::Identifier(sym) => match self.bindings.get(sym) {
                 Some(Binding::Struct { struct_id, .. }) => {
                     Some(BranchShape::Produces(ShapeSource::Instance(*struct_id)))
                 }
@@ -132,7 +132,7 @@ impl<'a> FunctionLower<'a> {
             // version stops short of it: `if c { mk(1u64) } else {
             // mk(2u64) }` is the shape people write, and the callee's
             // declared return type says which struct it is.
-            Expr::Call(fn_name, _) => match self.lookup_fn_here(None, fn_name) {
+            Expr::Call(fn_name, _) => match self.lookup_fn_here(None, *fn_name) {
                 Some(func_id) => match self.module.function(func_id).return_type {
                     Type::Struct(struct_id) => {
                         Some(BranchShape::Produces(ShapeSource::Instance(struct_id)))
@@ -147,16 +147,16 @@ impl<'a> FunctionLower<'a> {
             // for the annotation, exactly as `val v: Vec<u8> =
             // Vec::new()` already does.
             Expr::AssociatedFunctionCall(struct_name, _, _)
-                if self.struct_defs.contains_key(&struct_name) =>
+                if self.struct_defs.contains_key(struct_name) =>
             {
-                Some(BranchShape::Produces(ShapeSource::Base(struct_name)))
+                Some(BranchShape::Produces(ShapeSource::Base(*struct_name)))
             }
             // COMPOUND-BLOCK-RHS: a struct-returning method
             // (`if c { x.twin() } else { .. }`). Resolving the target
             // may instantiate a template, which the call's own lowering
             // needs anyway, and emits nothing.
             Expr::MethodCall(recv, method, args) => {
-                match self.resolve_method_target(&recv, method, &args) {
+                match self.resolve_method_target(recv, *method, args) {
                     Ok(Some((func_id, _))) => match self.module.function(func_id).return_type {
                         Type::Struct(struct_id) => {
                             Some(BranchShape::Produces(ShapeSource::Instance(struct_id)))
@@ -170,19 +170,19 @@ impl<'a> FunctionLower<'a> {
                 Some(BranchShape::Diverges)
             }
             Expr::IfElifElse(_, then_body, elif_pairs, else_body) => {
-                let mut bodies = vec![then_body, else_body];
+                let mut bodies = vec![*then_body, *else_body];
                 bodies.extend(elif_pairs.iter().map(|(_, b)| *b));
                 self.agree_on_struct(&bodies)
             }
             Expr::Match(scrutinee, arms) => {
                 let mut found: Option<ShapeSource<StructId>> = None;
-                for arm in &arms {
+                for arm in arms {
                     let shape = match self.detect_struct_result(&arm.body) {
                         Some(shape) => shape,
                         // Not a shape detection can see on its own —
                         // try the arm's own binding.
                         None => {
-                            match self.arm_binding_payload_type(&scrutinee, &arm.pattern, &arm.body)?
+                            match self.arm_binding_payload_type(scrutinee, &arm.pattern, &arm.body)?
                             {
                                 Type::Struct(struct_id) => {
                                     BranchShape::Produces(ShapeSource::Instance(struct_id))
@@ -197,10 +197,10 @@ impl<'a> FunctionLower<'a> {
             }
             Expr::Block(stmts) => {
                 let last = *stmts.last()?;
-                match self.program.statement.get(&last)? {
+                match self.stmt_at(&last)? {
                     Stmt::Expression(e) => {
                         let saved = self.enter_block_pending(&stmts[..stmts.len() - 1]);
-                        let out = self.detect_struct_result(&e);
+                        let out = self.detect_struct_result(e);
                         self.pending_block_enums = saved;
                         out
                     }
@@ -240,16 +240,16 @@ impl<'a> FunctionLower<'a> {
     fn enter_block_pending(&mut self, leading: &[StmtRef]) -> HashMap<DefaultSymbol, EnumId> {
         let saved = self.pending_block_enums.clone();
         for stmt_ref in leading {
-            let Some(stmt) = self.program.statement.get(stmt_ref) else {
+            let Some(stmt) = self.stmt_at(stmt_ref) else {
                 continue;
             };
             let (name, annotation, rhs) = match stmt {
-                Stmt::Val(name, annotation, rhs) => (name, annotation, Some(rhs)),
-                Stmt::Var(name, annotation, rhs) => (name, annotation, rhs),
+                Stmt::Val(name, annotation, rhs) => (name, annotation, Some(*rhs)),
+                Stmt::Var(name, annotation, rhs) => (name, annotation, *rhs),
                 _ => continue,
             };
             if let Some(enum_id) = self.pending_enum_id(annotation.as_ref(), rhs.as_ref()) {
-                self.pending_block_enums.insert(name, enum_id);
+                self.pending_block_enums.insert(*name, enum_id);
             }
         }
         saved
@@ -275,10 +275,10 @@ impl<'a> FunctionLower<'a> {
         {
             return Some(enum_id);
         }
-        let Some(Expr::Call(fn_name, _)) = self.program.expression.get(rhs?) else {
+        let Some(Expr::Call(fn_name, _)) = self.expr_at(rhs?) else {
             return None;
         };
-        let func_id = self.lookup_fn_here(None, fn_name)?;
+        let func_id = self.lookup_fn_here(None, *fn_name)?;
         match self.module.function(func_id).return_type {
             Type::Enum(enum_id) => Some(enum_id),
             _ => None,
@@ -299,7 +299,7 @@ impl<'a> FunctionLower<'a> {
         pattern: &Pattern,
         body: &ExprRef,
     ) -> Option<Type> {
-        let Expr::Identifier(want) = self.program.expression.get(body)? else {
+        let Expr::Identifier(want) = self.expr_at(body)? else {
             return None;
         };
         let Pattern::EnumVariant(_, variant_name, subs) = pattern else {
@@ -307,16 +307,16 @@ impl<'a> FunctionLower<'a> {
         };
         let position = subs
             .iter()
-            .position(|p| matches!(p, Pattern::Name(n) if *n == want))?;
+            .position(|p| matches!(p, Pattern::Name(n) if *n == *want))?;
         // The scrutinee has to be a binding whose storage we already
         // hold — or one this block is about to introduce, which is the
         // same thing one lowering step later.
-        let Expr::Identifier(scrutinee_name) = self.program.expression.get(scrutinee)? else {
+        let Expr::Identifier(scrutinee_name) = self.expr_at(scrutinee)? else {
             return None;
         };
-        let enum_id = match self.bindings.get(&scrutinee_name) {
+        let enum_id = match self.bindings.get(scrutinee_name) {
             Some(Binding::Enum(storage)) => storage.enum_id,
-            _ => *self.pending_block_enums.get(&scrutinee_name)?,
+            _ => *self.pending_block_enums.get(scrutinee_name)?,
         };
         let def = self.module.enum_def(enum_id);
         let variant_idx = def.variants.iter().position(|v| v.name == *variant_name)?;
@@ -372,18 +372,18 @@ impl<'a> FunctionLower<'a> {
         &mut self,
         expr_ref: &ExprRef,
     ) -> Option<BranchShape<TupleShapeSource>> {
-        let expr = self.program.expression.get(expr_ref)?;
+        let expr = self.expr_at(expr_ref)?;
         match expr {
             Expr::TupleLiteral(elems) => {
-                Some(BranchShape::Produces(TupleShapeSource::Literal(elems)))
+                Some(BranchShape::Produces(TupleShapeSource::Literal(elems.clone())))
             }
-            Expr::Identifier(sym) => match self.bindings.get(&sym) {
+            Expr::Identifier(sym) => match self.bindings.get(sym) {
                 Some(Binding::Tuple { elements }) => Some(BranchShape::Produces(
                     TupleShapeSource::Binding(elements.clone()),
                 )),
                 _ => None,
             },
-            Expr::Call(fn_name, _) => match self.lookup_fn_here(None, fn_name) {
+            Expr::Call(fn_name, _) => match self.lookup_fn_here(None, *fn_name) {
                 Some(func_id) => match self.module.function(func_id).return_type {
                     Type::Tuple(tuple_id) => {
                         Some(BranchShape::Produces(TupleShapeSource::Interned(tuple_id)))
@@ -396,13 +396,13 @@ impl<'a> FunctionLower<'a> {
                 Some(BranchShape::Diverges)
             }
             Expr::IfElifElse(_, then_body, elif_pairs, else_body) => {
-                let mut bodies = vec![then_body, else_body];
+                let mut bodies = vec![*then_body, *else_body];
                 bodies.extend(elif_pairs.iter().map(|(_, b)| *b));
                 self.agree_on_tuple(&bodies)
             }
             Expr::Match(scrutinee, arms) => {
                 let mut found: Option<TupleShapeSource> = None;
-                for arm in &arms {
+                for arm in arms {
                     let shape = match self.detect_tuple_result(&arm.body) {
                         Some(shape) => shape,
                         // Same arm-binding fallback the struct side
@@ -410,7 +410,7 @@ impl<'a> FunctionLower<'a> {
                         // through the scrutinee's variant payload,
                         // which is already interned.
                         None => {
-                            match self.arm_binding_payload_type(&scrutinee, &arm.pattern, &arm.body)?
+                            match self.arm_binding_payload_type(scrutinee, &arm.pattern, &arm.body)?
                             {
                                 Type::Tuple(tuple_id) => {
                                     BranchShape::Produces(TupleShapeSource::Interned(tuple_id))
@@ -432,10 +432,10 @@ impl<'a> FunctionLower<'a> {
             }
             Expr::Block(stmts) => {
                 let last = *stmts.last()?;
-                match self.program.statement.get(&last)? {
+                match self.stmt_at(&last)? {
                     Stmt::Expression(e) => {
                         let saved = self.enter_block_pending(&stmts[..stmts.len() - 1]);
-                        let out = self.detect_tuple_result(&e);
+                        let out = self.detect_tuple_result(e);
                         self.pending_block_enums = saved;
                         out
                     }
@@ -738,10 +738,10 @@ impl<'a> FunctionLower<'a> {
     /// from further out is the move check's business -- it is handed
     /// over, and flagged, when it is the function's value.
     fn forget_escaping_binding(&mut self, expr: &ExprRef, start: usize) {
-        let Some(frontend::ast::Expr::Identifier(sym)) = self.program.expression.get(expr) else {
+        let Some(frontend::ast::Expr::Identifier(sym)) = self.expr_at(expr) else {
             return;
         };
-        let leaves = match self.bindings.get(&sym) {
+        let leaves = match self.bindings.get(sym) {
             Some(Binding::Struct { fields, .. }) => crate::bindings::flatten_struct_locals(fields),
             Some(Binding::Enum(storage)) => crate::bindings::flatten_enum_storage_locals(storage),
             Some(Binding::Tuple { elements }) => crate::bindings::flatten_tuple_element_locals(elements),
@@ -1072,7 +1072,7 @@ impl<'a> FunctionLower<'a> {
         &mut self,
         expr_ref: &ExprRef,
     ) -> Option<BranchShape<ShapeSource<EnumId>>> {
-        let expr = self.program.expression.get(expr_ref)?;
+        let expr = self.expr_at(expr_ref)?;
         match expr {
             Expr::QualifiedIdentifier(path)
                 if path.len() == 2 && self.enum_defs.contains_key(&path[0]) =>
@@ -1080,18 +1080,18 @@ impl<'a> FunctionLower<'a> {
                 Some(BranchShape::Produces(ShapeSource::Base(path[0])))
             }
             Expr::AssociatedFunctionCall(en, name, _)
-                if self.enum_defs.contains_key(&en)
+                if self.enum_defs.contains_key(en)
                     // FROM-INTO-ENUM-ERR: `Enum::Variant(args)` and
                     // `Enum::method(args)` parse to the same shape —
                     // only a declared variant name is a construction.
                     // An associated function (`MyErr::from(e)`) falls
                     // through so the let-rhs dispatch reaches the
                     // enum-associated-call intercept.
-                    && self.enum_variant_index(&en, &name).is_some() =>
+                    && self.enum_variant_index(en, name).is_some() =>
             {
-                Some(BranchShape::Produces(ShapeSource::Base(en)))
+                Some(BranchShape::Produces(ShapeSource::Base(*en)))
             }
-            Expr::Identifier(sym) => match self.bindings.get(&sym) {
+            Expr::Identifier(sym) => match self.bindings.get(sym) {
                 Some(Binding::Enum(storage)) => {
                     Some(BranchShape::Produces(ShapeSource::Instance(storage.enum_id)))
                 }
@@ -1100,7 +1100,7 @@ impl<'a> FunctionLower<'a> {
                 // the time the tail is lowered.
                 _ => self
                     .pending_block_enums
-                    .get(&sym)
+                    .get(sym)
                     .map(|id| BranchShape::Produces(ShapeSource::Instance(*id))),
             },
             // A branch that traps says nothing about which enum the
@@ -1110,20 +1110,20 @@ impl<'a> FunctionLower<'a> {
                 Some(BranchShape::Diverges)
             }
             Expr::IfElifElse(_, then_body, elif_pairs, else_body) => {
-                let mut bodies = vec![then_body, else_body];
+                let mut bodies = vec![*then_body, *else_body];
                 bodies.extend(elif_pairs.iter().map(|(_, b)| *b));
                 self.agree_on_enum(&bodies)
             }
             Expr::Match(scrutinee, arms) => {
                 let mut found: Option<ShapeSource<EnumId>> = None;
-                for arm in &arms {
+                for arm in arms {
                     let shape = match self.detect_enum_result(&arm.body) {
                         Some(shape) => shape,
                         // The arm's own binding, as on the struct and
                         // tuple sides: `Result::Ok(o) => o` where the
                         // payload is itself an enum (`Option<T>`).
                         None => {
-                            match self.arm_binding_payload_type(&scrutinee, &arm.pattern, &arm.body)?
+                            match self.arm_binding_payload_type(scrutinee, &arm.pattern, &arm.body)?
                             {
                                 Type::Enum(enum_id) => {
                                     BranchShape::Produces(ShapeSource::Instance(enum_id))
@@ -1138,10 +1138,10 @@ impl<'a> FunctionLower<'a> {
             }
             Expr::Block(stmts) => {
                 let last = *stmts.last()?;
-                match self.program.statement.get(&last)? {
+                match self.stmt_at(&last)? {
                     Stmt::Expression(e) => {
                         let saved = self.enter_block_pending(&stmts[..stmts.len() - 1]);
-                        let out = self.detect_enum_result(&e);
+                        let out = self.detect_enum_result(e);
                         self.pending_block_enums = saved;
                         out
                     }
@@ -1348,11 +1348,11 @@ impl<'a> FunctionLower<'a> {
                         self.interner.resolve(expected_base).unwrap_or("?"),
                     ));
                 }
-                let items: Vec<ExprRef> = match self.program.expression.get(&args_ref) {
+                let items: &[ExprRef] = match self.expr_at(&args_ref) {
                     Some(Expr::ExprList(items)) => items,
                     _ => return Err("call args missing".to_string()),
                 };
-                self.emit_enum_call_into_storage(target, target_id, &items)
+                self.emit_enum_call_into_storage(target, target_id, items)
             }
             // Same for an enum-returning *method* — `val o = it.next()`
             // worked, `Option::Some(it.next())` did not.
@@ -1780,9 +1780,9 @@ fn mentioned_names(
 ) -> Option<(HashSet<DefaultSymbol>, Vec<(DefaultSymbol, DefaultSymbol)>)> {
     type Reads = Vec<(DefaultSymbol, DefaultSymbol)>;
     fn walk(program: &frontend::ast::File, e: &ExprRef, out: &mut HashSet<DefaultSymbol>, reads: &mut Reads) -> Option<()> {
-        match program.expression.get(e)? {
+        match program.expression.get_ref(e)? {
             Expr::Identifier(s) => {
-                out.insert(s);
+                out.insert(*s);
             }
             Expr::True
             | Expr::False
@@ -1802,30 +1802,30 @@ fn mentioned_names(
             | Expr::String(_)
             | Expr::QualifiedIdentifier(_) => {}
             Expr::Assign(a, b) | Expr::Binary(_, a, b) | Expr::Range(a, b) | Expr::With(a, b) => {
-                walk(program, &a, out, reads)?;
-                walk(program, &b, out, reads)?;
+                walk(program, a, out, reads)?;
+                walk(program, b, out, reads)?;
             }
             // A field read straight off a binding is recorded apart:
             // the caller can tell a value copied out (a number) from a
             // part that stays shared (a pointer, a compound).
-            Expr::FieldAccess(a, field) => match program.expression.get(&a)? {
-                Expr::Identifier(s) => reads.push((s, field)),
-                _ => walk(program, &a, out, reads)?,
+            Expr::FieldAccess(a, field) => match program.expression.get_ref(a)? {
+                Expr::Identifier(s) => reads.push((*s, *field)),
+                _ => walk(program, a, out, reads)?,
             },
             Expr::Unary(_, a) | Expr::Cast(a, _) | Expr::TupleAccess(a, _) => {
-                walk(program, &a, out, reads)?
+                walk(program, a, out, reads)?
             }
             Expr::IfElifElse(c, t, elifs, f) => {
-                walk(program, &c, out, reads)?;
-                walk(program, &t, out, reads)?;
-                for (c, b) in &elifs {
+                walk(program, c, out, reads)?;
+                walk(program, t, out, reads)?;
+                for (c, b) in elifs {
                     walk(program, c, out, reads)?;
                     walk(program, b, out, reads)?;
                 }
-                walk(program, &f, out, reads)?;
+                walk(program, f, out, reads)?;
             }
             Expr::Block(stmts) => {
-                for st in &stmts {
+                for st in stmts {
                     walk_stmt(program, st, out, reads)?;
                 }
             }
@@ -1834,44 +1834,44 @@ fn mentioned_names(
             | Expr::TupleLiteral(items)
             | Expr::BuiltinCall(_, items)
             | Expr::AssociatedFunctionCall(_, _, items) => {
-                for i in &items {
+                for i in items {
                     walk(program, i, out, reads)?;
                 }
             }
-            Expr::Call(_, args) => walk(program, &args, out, reads)?,
+            Expr::Call(_, args) => walk(program, args, out, reads)?,
             Expr::MethodCall(r, _, items) | Expr::BuiltinMethodCall(r, _, items) => {
-                walk(program, &r, out, reads)?;
-                for i in &items {
+                walk(program, r, out, reads)?;
+                for i in items {
                     walk(program, i, out, reads)?;
                 }
             }
             Expr::StructLiteral(_, fields) => {
-                for (_, v) in &fields {
+                for (_, v) in fields {
                     walk(program, v, out, reads)?;
                 }
             }
             Expr::DictLiteral(entries) => {
-                for (k, v) in &entries {
+                for (k, v) in entries {
                     walk(program, k, out, reads)?;
                     walk(program, v, out, reads)?;
                 }
             }
             Expr::SliceAccess(obj, info) => {
-                walk(program, &obj, out, reads)?;
+                walk(program, obj, out, reads)?;
                 for part in [info.start, info.end].into_iter().flatten() {
                     walk(program, &part, out, reads)?;
                 }
             }
             Expr::SliceAssign(obj, a, b, v) => {
-                walk(program, &obj, out, reads)?;
+                walk(program, obj, out, reads)?;
                 for part in [a, b].into_iter().flatten() {
-                    walk(program, &part, out, reads)?;
+                    walk(program, part, out, reads)?;
                 }
-                walk(program, &v, out, reads)?;
+                walk(program, v, out, reads)?;
             }
             Expr::Match(scrutinee, arms) => {
-                walk(program, &scrutinee, out, reads)?;
-                for arm in &arms {
+                walk(program, scrutinee, out, reads)?;
+                for arm in arms {
                     if let Some(g) = arm.guard {
                         walk(program, &g, out, reads)?;
                     }
@@ -1883,22 +1883,22 @@ fn mentioned_names(
         Some(())
     }
     fn walk_stmt(program: &frontend::ast::File, st: &frontend::ast::StmtRef, out: &mut HashSet<DefaultSymbol>, reads: &mut Reads) -> Option<()> {
-        match program.statement.get(st)? {
-            Stmt::Expression(e) | Stmt::Val(_, _, e) => walk(program, &e, out, reads)?,
+        match program.statement.get_ref(st)? {
+            Stmt::Expression(e) | Stmt::Val(_, _, e) => walk(program, e, out, reads)?,
             Stmt::Var(_, _, e) | Stmt::Return(e) => {
                 if let Some(e) = e {
-                    walk(program, &e, out, reads)?;
+                    walk(program, e, out, reads)?;
                 }
             }
             Stmt::Break(_) | Stmt::Continue(_) => {}
             Stmt::For(_, _, a, b, body) => {
-                walk(program, &a, out, reads)?;
-                walk(program, &b, out, reads)?;
-                walk(program, &body, out, reads)?;
+                walk(program, a, out, reads)?;
+                walk(program, b, out, reads)?;
+                walk(program, body, out, reads)?;
             }
             Stmt::While(_, c, body) => {
-                walk(program, &c, out, reads)?;
-                walk(program, &body, out, reads)?;
+                walk(program, c, out, reads)?;
+                walk(program, body, out, reads)?;
             }
             _ => return None,
         }

@@ -41,10 +41,10 @@ impl<'a> FunctionLower<'a> {
         // Special-case string-literal arguments before evaluating the
         // expression so we route them through the dedicated `PrintStr`
         // instruction (avoiding a `Type::Str` value flow).
-        if let Some(Expr::String(sym)) = self.program.expression.get(&args[0]) {
-            let bytes_len = self.interner.resolve(sym).unwrap_or("").len();
+        if let Some(Expr::String(sym)) = self.expr_at(&args[0]) {
+            let bytes_len = self.interner.resolve(*sym).unwrap_or("").len();
             self.emit(
-                InstKind::PrintStr { message: sym, bytes_len, newline, stderr: self.print_stderr },
+                InstKind::PrintStr { message: *sym, bytes_len, newline, stderr: self.print_stderr },
                 None,
             );
             return Ok(None);
@@ -55,8 +55,8 @@ impl<'a> FunctionLower<'a> {
         // carry struct / tuple values in its SSA graph, so there is
         // no way to print an arbitrary compound expression without
         // first storing it into a binding.
-        if let Some(Expr::Identifier(sym)) = self.program.expression.get(&args[0])
-            && let Some(binding) = self.bindings.get(&sym).cloned() {
+        if let Some(Expr::Identifier(sym)) = self.expr_at(&args[0])
+            && let Some(binding) = self.bindings.get(sym).cloned() {
                 match binding {
                     Binding::Struct { struct_id, fields } => {
                         self.emit_print_struct(struct_id, &fields, newline)?;
@@ -146,7 +146,7 @@ impl<'a> FunctionLower<'a> {
         // chains rooted at a bare identifier") while `lower_expr`
         // lowers it to a single leaf load (DATA-ORIENTED). Binding it
         // to a `val` first worked; printing it directly did not.
-        if let Some(arg_expr) = self.program.expression.get(&args[0])
+        if let Some(arg_expr) = self.expr_at(&args[0])
             && matches!(arg_expr, Expr::FieldAccess(_, _) | Expr::TupleAccess(_, _))
             && let Ok(chain) = self.resolve_field_chain(&args[0])
         {
@@ -176,16 +176,16 @@ impl<'a> FunctionLower<'a> {
         // same `emit_print_*` helpers as for identifier bindings.
         // Generic struct / enum literals still need an enclosing
         // `val` annotation (no annotation hint reaches this path).
-        if let Some(arg_expr) = self.program.expression.get(&args[0]) {
+        if let Some(arg_expr) = self.expr_at(&args[0]) {
             match arg_expr {
                 Expr::StructLiteral(struct_name, literal_fields) => {
                     let struct_id =
-                        self.resolve_struct_instance(struct_name, None)?;
+                        self.resolve_struct_instance(*struct_name, None)?;
                     let fields = self.allocate_struct_fields(struct_id);
                     self.store_struct_literal_fields(
                         struct_id,
                         &fields,
-                        &literal_fields,
+                        literal_fields,
                     )?;
                     self.emit_print_struct(struct_id, &fields, newline)?;
                     return Ok(None);
@@ -240,7 +240,7 @@ impl<'a> FunctionLower<'a> {
                 }
                 Expr::Call(fn_name, args_ref)
                     if self
-                        .lookup_fn_here(None, fn_name)
+                        .lookup_fn_here(None, *fn_name)
                         .map(|id| {
                             let ret = self.module.function(id).return_type;
                             matches!(ret, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_))
@@ -252,9 +252,9 @@ impl<'a> FunctionLower<'a> {
                     // matching CallStruct / CallTuple / CallEnum
                     // (same shape `lower_let` uses), then dispatch
                     // to the corresponding `emit_print_*` helper.
-                    let target_id = self.lookup_fn_here(None, fn_name).unwrap();
+                    let target_id = self.lookup_fn_here(None, *fn_name).unwrap();
                     let target_ret = self.module.function(target_id).return_type;
-                    let arg_values = self.lower_call_args(&args_ref)?;
+                    let arg_values = self.lower_call_args(args_ref)?;
                     match target_ret {
                         Type::Struct(struct_id) => {
                             let fields = self.allocate_struct_fields(struct_id);
@@ -316,7 +316,7 @@ impl<'a> FunctionLower<'a> {
                     // generic value_scalar+Print path otherwise (so
                     // scalar-returning methods still work).
                     let recv_expr =
-                        self.program.expression.get(&recv).ok_or_else(|| {
+                        self.expr_at(recv).ok_or_else(|| {
                             "method-call receiver missing".to_string()
                         })?;
                     let recv_sym = match recv_expr {
@@ -324,7 +324,7 @@ impl<'a> FunctionLower<'a> {
                         _ => None,
                     };
                     if let Some(rs) = recv_sym
-                        && let Some(binding) = self.bindings.get(&rs).cloned() {
+                        && let Some(binding) = self.bindings.get(rs).cloned() {
                             let target_sym_opt = match &binding {
                                 Binding::Struct { struct_id, .. } => Some(
                                     self.module.struct_def(*struct_id).base_name,
@@ -353,20 +353,20 @@ impl<'a> FunctionLower<'a> {
                                     self.method_func_ids,
                                     self.generic_methods,
                                     target_sym,
-                                    method_sym,
+                                    *method_sym,
                                     &recv_args,
                                 ) {
                                     Some(super::method_registry::ResolvedMethodTarget::Concrete(id)) => Some(id),
                                     Some(super::method_registry::ResolvedMethodTarget::Template(t)) => {
                                         match &binding {
                                             Binding::Struct { struct_id, .. } => self.instantiate_generic_method_with_args(
-                                                target_sym, method_sym, &t, *struct_id, &method_args,
+                                                target_sym, *method_sym, &t, *struct_id, method_args,
                                             ).ok(),
                                             Binding::Enum(storage) => {
                                                 let enum_id = storage.enum_id;
                                                 let args = self.module.enum_def(enum_id).type_args.clone();
                                                 self.instantiate_generic_method_with_self_type(
-                                                    target_sym, method_sym, &t, Type::Enum(enum_id), args, &method_args,
+                                                    target_sym, *method_sym, &t, Type::Enum(enum_id), args, method_args,
                                                 ).ok()
                                             }
                                             _ => None,
@@ -404,7 +404,7 @@ impl<'a> FunctionLower<'a> {
                                             }
                                             _ => unreachable!(),
                                         }
-                                        for a in &method_args {
+                                        for a in method_args {
                                             let v = self.lower_expr(a)?.ok_or_else(
                                                 || {
                                                     "method argument produced no value"
@@ -479,24 +479,24 @@ impl<'a> FunctionLower<'a> {
                     let _ = method_args;
                 }
                 Expr::AssociatedFunctionCall(enum_name, variant_name, ctor_args)
-                    if self.enum_defs.contains_key(&enum_name) =>
+                    if self.enum_defs.contains_key(enum_name) =>
                 {
                     let enum_id = self.resolve_enum_instance_with_args(
-                        enum_name,
-                        variant_name,
-                        &ctor_args,
+                        *enum_name,
+                        *variant_name,
+                        ctor_args,
                         None,
                     )?;
                     let enum_def = self.module.enum_def(enum_id).clone();
                     let variant_idx = enum_def
                         .variants
                         .iter()
-                        .position(|v| v.name == variant_name)
+                        .position(|v| v.name == *variant_name)
                         .ok_or_else(|| {
                             format!(
                                 "unknown enum variant `{}::{}`",
-                                self.interner.resolve(enum_name).unwrap_or("?"),
-                                self.interner.resolve(variant_name).unwrap_or("?"),
+                                self.interner.resolve(*enum_name).unwrap_or("?"),
+                                self.interner.resolve(*variant_name).unwrap_or("?"),
                             )
                         })?;
                     let expected =
@@ -504,14 +504,14 @@ impl<'a> FunctionLower<'a> {
                     if ctor_args.len() != expected {
                         return Err(format!(
                             "enum variant `{}::{}` expects {} payload value(s), got {}",
-                            self.interner.resolve(enum_name).unwrap_or("?"),
-                            self.interner.resolve(variant_name).unwrap_or("?"),
+                            self.interner.resolve(*enum_name).unwrap_or("?"),
+                            self.interner.resolve(*variant_name).unwrap_or("?"),
                             expected,
                             ctor_args.len(),
                         ));
                     }
                     let storage = self.allocate_enum_storage(enum_id);
-                    self.write_variant_into_storage(&storage, variant_idx, &ctor_args)?;
+                    self.write_variant_into_storage(&storage, variant_idx, ctor_args)?;
                     self.emit_print_enum(&storage, newline)?;
                     return Ok(None);
                 }

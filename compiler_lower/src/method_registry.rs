@@ -248,18 +248,18 @@ pub(super) struct PendingMethodInstance {
 pub(super) fn collect_method_decls(program: &File) -> Result<MethodRegistry, String> {
     let mut registry: MethodRegistry = HashMap::default();
     for stmt_ref in program.statement.refs_of(StmtType::ImplBlock) {
-        let stmt = match program.statement.get(&stmt_ref) {
+        let stmt = match program.statement.get_ref(&stmt_ref) {
             Some(s) => s,
             None => continue,
         };
         if let Stmt::ImplBlock { target_type, target_type_args, methods, .. } = stmt {
-            for m in &methods {
-                let key = (target_type, m.name);
+            for m in methods {
+                let key = (*target_type, m.name);
                 let specs = registry.entry(key).or_default();
                 // Same target_type_args = exact duplicate (front-end
                 // type-checker also catches this for inherent impls);
                 // defensive guard against silently masking one impl.
-                if specs.iter().any(|s| s.target_type_args == target_type_args) {
+                if specs.iter().any(|s| s.target_type_args == *target_type_args) {
                     return Err(
                         "duplicate method definition in impl blocks for the same type"
                             .to_string(),

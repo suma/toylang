@@ -464,7 +464,7 @@ impl<'a> FunctionLower<'a> {
         let TypeDecl::Function(declared_params, declared_ret) = declared else {
             return;
         };
-        let Some(arg_expr) = self.program.expression.get(arg_ref) else {
+        let Some(arg_expr) = self.expr_at(arg_ref) else {
             return;
         };
         match arg_expr {
@@ -477,7 +477,7 @@ impl<'a> FunctionLower<'a> {
                     }
                 }
                 if let Some(actual_ret) = return_type
-                    && let Some(ty) = crate::types::lower_scalar(&actual_ret)
+                    && let Some(ty) = crate::types::lower_scalar(actual_ret)
                 {
                     self.bind_method_only_param(declared_ret, ty, params, subst);
                 }
@@ -487,7 +487,7 @@ impl<'a> FunctionLower<'a> {
             // signature.
             Expr::Identifier(sym) => {
                 if let Some(Binding::FunctionPtr { param_tys, ret_ty, .. }) =
-                    self.bindings.get(&sym)
+                    self.bindings.get(sym)
                 {
                     for (declared_p, actual) in declared_params.iter().zip(param_tys.iter()) {
                         self.bind_method_only_param(declared_p, *actual, params, subst);
@@ -696,11 +696,11 @@ impl<'a> FunctionLower<'a> {
         // Receiver must be a bare identifier bound to a struct
         // (other shapes — chained method calls, field access —
         // can be added later if needed).
-        let sym = match self.program.expression.get(obj) {
+        let sym = match self.expr_at(obj) {
             Some(Expr::Identifier(s)) => s,
             _ => return Ok(None),
         };
-        let (struct_id, field_bindings) = match self.bindings.get(&sym) {
+        let (struct_id, field_bindings) = match self.bindings.get(sym) {
             Some(Binding::Struct { struct_id, fields }) => (*struct_id, fields.clone()),
             _ => return Ok(None),
         };
@@ -1345,8 +1345,8 @@ impl<'a> FunctionLower<'a> {
     /// locals, so it expands, and borrows by address, exactly as a
     /// binding does.
     pub(super) fn compound_arg_binding(&self, expr: &ExprRef) -> Option<Binding> {
-        match self.program.expression.get(expr)? {
-            Expr::Identifier(sym) => match self.bindings.get(&sym)? {
+        match self.expr_at(expr)? {
+            Expr::Identifier(sym) => match self.bindings.get(sym)? {
                 b @ (Binding::Struct { .. } | Binding::Tuple { .. } | Binding::Enum(_)) => {
                     Some(b.clone())
                 }
@@ -1793,9 +1793,9 @@ impl<'a> FunctionLower<'a> {
             // Peel any explicit borrow so compound borrows
             // (`&p` / `&mut p` of a struct/tuple/enum binding) flow
             // through the identifier-expansion path below.
-            let arg_expr_ref = match self.program.expression.get(a) {
+            let arg_expr_ref = match self.expr_at(a) {
                 Some(Expr::Unary(frontend::ast::UnaryOp::Borrow | frontend::ast::UnaryOp::BorrowMut, inner)) => {
-                    inner
+                    *inner
                 }
                 _ => *a,
             };
@@ -1927,9 +1927,9 @@ impl<'a> FunctionLower<'a> {
         let mut method_ret_decl: Option<frontend::type_decl::TypeDecl> = None;
         for stmt_ref in self.program.statement.refs_of(frontend::ast::StmtType::TraitDecl) {
             if let Some(frontend::ast::Stmt::TraitDecl { name, methods, .. }) =
-                self.program.statement.get(&stmt_ref)
-                && name == trait_sym {
-                    for sig in &methods {
+                self.stmt_at(&stmt_ref)
+                && *name == trait_sym {
+                    for sig in methods {
                         if sig.name == method {
                             method_param_decls = Some(
                                 sig.parameter
@@ -2198,15 +2198,15 @@ impl<'a> FunctionLower<'a> {
             // identifier intentionally returns `Ok(None)` (the value
             // is held in the binding's leaf locals, not in the IR
             // value graph).
-            let arg_expr_ref = match self.program.expression.get(a) {
+            let arg_expr_ref = match self.expr_at(a) {
                 Some(Expr::Unary(
                     frontend::ast::UnaryOp::Borrow | frontend::ast::UnaryOp::BorrowMut,
                     inner,
-                )) => inner,
+                )) => *inner,
                 _ => *a,
             };
-            if let Some(Expr::Identifier(sym)) = self.program.expression.get(&arg_expr_ref) {
-                if let Some(Binding::Struct { fields, .. }) = self.bindings.get(&sym).cloned() {
+            if let Some(Expr::Identifier(sym)) = self.expr_at(&arg_expr_ref) {
+                if let Some(Binding::Struct { fields, .. }) = self.bindings.get(sym).cloned() {
                     let leaves = flatten_struct_locals(&fields);
                     // CODE-SIZE-SELF-ABI: the same check the
                     // scalar-returning sibling makes -- a parameter the
@@ -2227,7 +2227,7 @@ impl<'a> FunctionLower<'a> {
                     }
                     continue;
                 }
-                if let Some(Binding::Tuple { elements }) = self.bindings.get(&sym).cloned() {
+                if let Some(Binding::Tuple { elements }) = self.bindings.get(sym).cloned() {
                     for (local, ty) in flatten_tuple_element_locals(&elements) {
                         let v = self
                             .emit(InstKind::LoadLocal(local), Some(ty))
@@ -2236,7 +2236,7 @@ impl<'a> FunctionLower<'a> {
                     }
                     continue;
                 }
-                if let Some(Binding::Enum(storage)) = self.bindings.get(&sym).cloned() {
+                if let Some(Binding::Enum(storage)) = self.bindings.get(sym).cloned() {
                     let vs = self.load_enum_locals(&storage);
                     args.extend(vs);
                     continue;

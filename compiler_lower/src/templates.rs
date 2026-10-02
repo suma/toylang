@@ -157,7 +157,7 @@ pub(super) fn collect_struct_defs(
     let _ = interner;
     let mut defs: StructDefs = HashMap::default();
     for stmt_ref in program.statement.refs_of(StmtType::StructDecl) {
-        let stmt = match program.statement.get(&stmt_ref) {
+        let stmt = match program.statement.get_ref(&stmt_ref) {
             Some(s) => s,
             None => continue,
         };
@@ -167,7 +167,7 @@ pub(super) fn collect_struct_defs(
                 .map(|f| (f.name.clone(), f.type_decl.clone()))
                 .collect();
             defs.insert(
-                name,
+                *name,
                 StructTemplate {
                     generic_params: generic_params.clone(),
                     fields: template_fields,
@@ -185,7 +185,7 @@ pub(super) fn collect_enum_defs(
     let _ = interner;
     let mut defs: EnumDefs = HashMap::default();
     for stmt_ref in program.statement.refs_of(StmtType::EnumDecl) {
-        let stmt = match program.statement.get(&stmt_ref) {
+        let stmt = match program.statement.get_ref(&stmt_ref) {
             Some(s) => s,
             None => continue,
         };
@@ -198,7 +198,7 @@ pub(super) fn collect_enum_defs(
                 })
                 .collect();
             defs.insert(
-                name,
+                *name,
                 EnumTemplate {
                     generic_params: generic_params.clone(),
                     variants: template_variants,

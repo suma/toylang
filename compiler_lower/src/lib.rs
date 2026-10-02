@@ -31,7 +31,7 @@
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
-use frontend::ast::ExprRef;
+use frontend::ast::{Expr, ExprRef, Stmt, StmtRef};
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
 /// Re-export the IR crate as `ir` so the moved lowering files keep
@@ -728,6 +728,18 @@ impl FunctionLower<'_> {
 }
 
 impl<'a> FunctionLower<'a> {
+    /// The expression at `expr_ref`, borrowed from the program for as
+    /// long as the lowering lives -- not from `self`, so the caller can
+    /// keep it across `&mut self` calls without cloning it.
+    fn expr_at(&self, expr_ref: &ExprRef) -> Option<&'a Expr> {
+        self.program.expression.get_ref(expr_ref)
+    }
+
+    /// As [`Self::expr_at`], for a statement.
+    fn stmt_at(&self, stmt_ref: &StmtRef) -> Option<&'a Stmt> {
+        self.program.statement.get_ref(stmt_ref)
+    }
+
     /// Closures Phase 5a: lift a `val name = fn(params) -> R { body }`
     /// closure literal into a synthesized top-level function. The
     /// function gets a unique mangled export name, the FuncId is
@@ -952,7 +964,7 @@ impl<'a> FunctionLower<'a> {
         seen: &mut rustc_hash::FxHashSet<DefaultSymbol>,
     ) {
         use frontend::ast::Expr;
-        let expr = match self.program.expression.get(expr_ref) {
+        let expr = match self.expr_at(expr_ref) {
             Some(e) => e,
             None => return,
         };
@@ -992,72 +1004,72 @@ impl<'a> FunctionLower<'a> {
             }
         };
         match expr {
-            Expr::Identifier(s) => record(s, out, seen),
+            Expr::Identifier(s) => record(*s, out, seen),
             Expr::Call(name, args_ref) => {
-                record(name, out, seen);
-                self.walk_closure_for_captures(&args_ref, bound, out, seen);
+                record(*name, out, seen);
+                self.walk_closure_for_captures(args_ref, bound, out, seen);
             }
             Expr::Assign(lhs, rhs)
             | Expr::Binary(_, lhs, rhs)
             | Expr::Range(lhs, rhs)
             | Expr::With(lhs, rhs) => {
-                self.walk_closure_for_captures(&lhs, bound, out, seen);
-                self.walk_closure_for_captures(&rhs, bound, out, seen);
+                self.walk_closure_for_captures(lhs, bound, out, seen);
+                self.walk_closure_for_captures(rhs, bound, out, seen);
             }
             Expr::IfElifElse(c, t, elif_pairs, e) => {
-                self.walk_closure_for_captures(&c, bound, out, seen);
-                self.walk_closure_for_captures(&t, bound, out, seen);
-                for (cc, bb) in &elif_pairs {
+                self.walk_closure_for_captures(c, bound, out, seen);
+                self.walk_closure_for_captures(t, bound, out, seen);
+                for (cc, bb) in elif_pairs {
                     self.walk_closure_for_captures(cc, bound, out, seen);
                     self.walk_closure_for_captures(bb, bound, out, seen);
                 }
-                self.walk_closure_for_captures(&e, bound, out, seen);
+                self.walk_closure_for_captures(e, bound, out, seen);
             }
             Expr::Unary(_, operand) => {
-                self.walk_closure_for_captures(&operand, bound, out, seen);
+                self.walk_closure_for_captures(operand, bound, out, seen);
             }
             Expr::Block(stmts) => {
                 let mut bound = bound.clone();
-                for s in &stmts {
-                    if let Some(stmt) = self.program.statement.get(s) {
-                        self.walk_stmt_for_captures(&stmt, &mut bound, out, seen);
+                for s in stmts {
+                    if let Some(stmt) = self.stmt_at(s) {
+                        self.walk_stmt_for_captures(stmt, &mut bound, out, seen);
                     }
                 }
             }
             Expr::ExprList(items)
             | Expr::ArrayLiteral(items)
             | Expr::TupleLiteral(items) => {
-                for e in &items {
+                for e in items {
                     self.walk_closure_for_captures(e, bound, out, seen);
                 }
             }
             Expr::FieldAccess(obj, _) | Expr::TupleAccess(obj, _) => {
-                self.walk_closure_for_captures(&obj, bound, out, seen);
+                self.walk_closure_for_captures(obj, bound, out, seen);
             }
             Expr::MethodCall(obj, _, args) => {
-                self.walk_closure_for_captures(&obj, bound, out, seen);
-                for a in &args {
+                self.walk_closure_for_captures(obj, bound, out, seen);
+                for a in args {
                     self.walk_closure_for_captures(a, bound, out, seen);
                 }
             }
             Expr::BuiltinMethodCall(receiver, _, args) => {
-                self.walk_closure_for_captures(&receiver, bound, out, seen);
-                for a in &args {
+                self.walk_closure_for_captures(receiver, bound, out, seen);
+                for a in args {
                     self.walk_closure_for_captures(a, bound, out, seen);
                 }
             }
             Expr::BuiltinCall(_, args) | Expr::AssociatedFunctionCall(_, _, args) => {
-                for a in &args {
+                for a in args {
                     self.walk_closure_for_captures(a, bound, out, seen);
                 }
             }
             Expr::StructLiteral(_, fields) => {
-                for (_, e) in &fields {
+                for (_, e) in fields {
                     self.walk_closure_for_captures(e, bound, out, seen);
                 }
             }
             Expr::SliceAccess(obj, info) => {
-                self.walk_closure_for_captures(&obj, bound, out, seen);
+                self.walk_closure_for_captures(obj, bound, out, seen);
                 if let Some(s) = info.start {
                     self.walk_closure_for_captures(&s, bound, out, seen);
                 }
@@ -1066,25 +1078,25 @@ impl<'a> FunctionLower<'a> {
                 }
             }
             Expr::SliceAssign(obj, start, end, value) => {
-                self.walk_closure_for_captures(&obj, bound, out, seen);
+                self.walk_closure_for_captures(obj, bound, out, seen);
                 if let Some(s) = start {
-                    self.walk_closure_for_captures(&s, bound, out, seen);
+                    self.walk_closure_for_captures(s, bound, out, seen);
                 }
                 if let Some(e) = end {
-                    self.walk_closure_for_captures(&e, bound, out, seen);
+                    self.walk_closure_for_captures(e, bound, out, seen);
                 }
-                self.walk_closure_for_captures(&value, bound, out, seen);
+                self.walk_closure_for_captures(value, bound, out, seen);
             }
             Expr::DictLiteral(entries) => {
-                for (k, v) in &entries {
+                for (k, v) in entries {
                     self.walk_closure_for_captures(k, bound, out, seen);
                     self.walk_closure_for_captures(v, bound, out, seen);
                 }
             }
-            Expr::Cast(e, _) => self.walk_closure_for_captures(&e, bound, out, seen),
+            Expr::Cast(e, _) => self.walk_closure_for_captures(e, bound, out, seen),
             Expr::Match(scrut, arms) => {
-                self.walk_closure_for_captures(&scrut, bound, out, seen);
-                for arm in &arms {
+                self.walk_closure_for_captures(scrut, bound, out, seen);
+                for arm in arms {
                     let mut arm_bound = bound.clone();
                     Self::pattern_bound_names(&arm.pattern, &mut arm_bound);
                     if let Some(g) = arm.guard {
@@ -1095,29 +1107,29 @@ impl<'a> FunctionLower<'a> {
             }
             Expr::Closure { params: inner_params, body, .. } => {
                 let mut nested_bound = bound.clone();
-                for (p, _) in &inner_params {
+                for (p, _) in inner_params {
                     nested_bound.insert(*p);
                 }
-                self.walk_closure_for_captures(&body, &mut nested_bound, out, seen);
+                self.walk_closure_for_captures(body, &mut nested_bound, out, seen);
             }
             // `?` operator — type checker rewrites to Match before
             // lowering, but descend for defence-in-depth.
             Expr::Try { inner, .. } => {
-                self.walk_closure_for_captures(&inner, bound, out, seen);
+                self.walk_closure_for_captures(inner, bound, out, seen);
             }
             // `a ?? b` — both operands are ordinary expressions; same
             // defence-in-depth (the desugar runs before lowering).
             Expr::NullCoalesce { lhs, rhs, .. } => {
-                self.walk_closure_for_captures(&lhs, bound, out, seen);
-                self.walk_closure_for_captures(&rhs, bound, out, seen);
+                self.walk_closure_for_captures(lhs, bound, out, seen);
+                self.walk_closure_for_captures(rhs, bound, out, seen);
             }
             // `P { x: e, ..base }` — same story: the type checker
             // rewrites it to a `Block` before lowering.
             Expr::StructUpdate { fields, base, .. } => {
-                for (_, value) in &fields {
+                for (_, value) in fields {
                     self.walk_closure_for_captures(value, bound, out, seen);
                 }
-                self.walk_closure_for_captures(&base, bound, out, seen);
+                self.walk_closure_for_captures(base, bound, out, seen);
             }
             Expr::QualifiedIdentifier(_)
             | Expr::Int64(_) | Expr::UInt64(_) | Expr::Float64(_)

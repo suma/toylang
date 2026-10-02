@@ -254,36 +254,36 @@ impl ContractFacts {
         allow: &Allow<'_>,
         negated: bool,
     ) {
-        let Some(expr) = program.expression.get(clause) else {
+        let Some(expr) = program.expression.get_ref(clause) else {
             return;
         };
         match expr {
             // `!e` is the same reading with the sense flipped, which is
             // how an `else` branch learns from its `if`.
             Expr::Unary(UnaryOp::LogicalNot, inner) => {
-                self.collect(program, interner, &inner, allow, !negated);
+                self.collect(program, interner, inner, allow, !negated);
             }
             // `a && b` gives both halves; `||` gives neither, since
             // either side alone may be the one that held. Negated, De
             // Morgan swaps which is which: `!(a || b)` is `!a && !b`.
             Expr::Binary(Operator::LogicalAnd, lhs, rhs) if !negated => {
-                self.collect(program, interner, &lhs, allow, false);
-                self.collect(program, interner, &rhs, allow, false);
+                self.collect(program, interner, lhs, allow, false);
+                self.collect(program, interner, rhs, allow, false);
             }
             Expr::Binary(Operator::LogicalOr, lhs, rhs) if negated => {
-                self.collect(program, interner, &lhs, allow, true);
-                self.collect(program, interner, &rhs, allow, true);
+                self.collect(program, interner, lhs, allow, true);
+                self.collect(program, interner, rhs, allow, true);
             }
             Expr::Binary(Operator::LogicalAnd | Operator::LogicalOr, _, _) => {}
             Expr::Binary(op, lhs, rhs) => {
-                let Some(op) = (if negated { negate(op) } else { Some(op) }) else {
+                let Some(op) = (if negated { negate(op.clone()) } else { Some(op.clone()) }) else {
                     return;
                 };
-                let left = ident_of(program, &lhs).filter(|s| allow.permits(*s));
-                let right = ident_of(program, &rhs).filter(|s| allow.permits(*s));
-                let left_zero = is_literal(program, interner, &lhs, 0);
-                let right_zero = is_literal(program, interner, &rhs, 0);
-                let right_one = is_literal(program, interner, &rhs, 1);
+                let left = ident_of(program, lhs).filter(|s| allow.permits(*s));
+                let right = ident_of(program, rhs).filter(|s| allow.permits(*s));
+                let left_zero = is_literal(program, interner, lhs, 0);
+                let right_zero = is_literal(program, interner, rhs, 0);
+                let right_one = is_literal(program, interner, rhs, 1);
                 match op {
                     // x != 0 / 0 != x
                     Operator::NE => {
@@ -295,10 +295,10 @@ impl ContractFacts {
                         }
                         // `x != -1` / `-1 != x` rules out the rhs half
                         // of the signed `MIN / -1` guard.
-                        if is_literal(program, interner, &rhs, -1) && let Some(sym) = left {
+                        if is_literal(program, interner, rhs, -1) && let Some(sym) = left {
                             self.not_minus_one.insert(sym);
                         }
-                        if is_literal(program, interner, &lhs, -1) && let Some(sym) = right {
+                        if is_literal(program, interner, lhs, -1) && let Some(sym) = right {
                             self.not_minus_one.insert(sym);
                         }
                     }
@@ -310,7 +310,7 @@ impl ContractFacts {
                             self.nonneg.insert(sym);
                         }
                         // `x > -1` ⟺ `x >= 0` for integers
-                        if is_literal(program, interner, &rhs, -1) && let Some(sym) = left {
+                        if is_literal(program, interner, rhs, -1) && let Some(sym) = left {
                             self.nonneg.insert(sym);
                         }
                         if let (Some(a), Some(b)) = (left, right) {
@@ -341,17 +341,17 @@ impl ContractFacts {
                             self.at_least.insert((b, a));
                         }
                         if let (Some(sym), Some(limit)) =
-                            (left, integer_literal_value(program, interner, &rhs))
+                            (left, integer_literal_value(program, interner, rhs))
                             && let Ok(limit) = u128::try_from(limit)
                         {
                             self.record_below(sym, limit);
                         }
                         // `-1 < x` ⟺ `x >= 0`
-                        if is_literal(program, interner, &lhs, -1) && let Some(sym) = right {
+                        if is_literal(program, interner, lhs, -1) && let Some(sym) = right {
                             self.nonneg.insert(sym);
                         }
                         // `0 < x` — the mirror of `x > 0`
-                        if is_literal(program, interner, &lhs, 0) && let Some(sym) = right {
+                        if is_literal(program, interner, lhs, 0) && let Some(sym) = right {
                             self.nonzero.insert(sym);
                             self.nonneg.insert(sym);
                         }
@@ -361,17 +361,17 @@ impl ContractFacts {
                             self.at_least.insert((b, a));
                         }
                         if let (Some(sym), Some(limit)) =
-                            (left, integer_literal_value(program, interner, &rhs))
+                            (left, integer_literal_value(program, interner, rhs))
                             && let Ok(limit) = u128::try_from(limit)
                         {
                             self.record_below(sym, limit + 1);
                         }
                         // `0 <= x` ⟺ `x >= 0`; `1 <= x` the mirror of
                         // `x >= 1`
-                        if is_literal(program, interner, &lhs, 0) && let Some(sym) = right {
+                        if is_literal(program, interner, lhs, 0) && let Some(sym) = right {
                             self.nonneg.insert(sym);
                         }
-                        if is_literal(program, interner, &lhs, 1) && let Some(sym) = right {
+                        if is_literal(program, interner, lhs, 1) && let Some(sym) = right {
                             self.nonzero.insert(sym);
                             self.nonneg.insert(sym);
                         }
@@ -381,12 +381,12 @@ impl ContractFacts {
                     // condition far more often than by a contract.
                     Operator::EQ => {
                         if let (Some(sym), Some(value)) =
-                            (left, integer_literal_value(program, interner, &rhs))
+                            (left, integer_literal_value(program, interner, rhs))
                         {
                             self.record_equal(sym, value);
                         }
                         if let (Some(sym), Some(value)) =
-                            (right, integer_literal_value(program, interner, &lhs))
+                            (right, integer_literal_value(program, interner, lhs))
                         {
                             self.record_equal(sym, value);
                         }
@@ -451,8 +451,8 @@ fn negate(op: Operator) -> Option<Operator> {
 }
 
 fn ident_of(program: &File, expr: &ExprRef) -> Option<DefaultSymbol> {
-    match program.expression.get(expr)? {
-        Expr::Identifier(sym) => Some(sym),
+    match program.expression.get_ref(expr)? {
+        Expr::Identifier(sym) => Some(*sym),
         _ => None,
     }
 }
@@ -474,21 +474,21 @@ fn integer_literal_value(
     interner: &DefaultStringInterner,
     expr: &ExprRef,
 ) -> Option<i128> {
-    match program.expression.get(expr)? {
-        Expr::UInt64(v) => Some(v as i128),
-        Expr::Int64(v) => Some(v as i128),
-        Expr::UInt8(v) => Some(v as i128),
-        Expr::UInt16(v) => Some(v as i128),
-        Expr::UInt32(v) | Expr::CharLiteral(v) => Some(v as i128),
-        Expr::Int8(v) => Some(v as i128),
-        Expr::Int16(v) => Some(v as i128),
-        Expr::Int32(v) => Some(v as i128),
-        Expr::Number(sym) => interner.resolve(sym)?.parse::<i128>().ok(),
+    match program.expression.get_ref(expr)? {
+        Expr::UInt64(v) => Some(*v as i128),
+        Expr::Int64(v) => Some(*v as i128),
+        Expr::UInt8(v) => Some(*v as i128),
+        Expr::UInt16(v) => Some(*v as i128),
+        Expr::UInt32(v) | Expr::CharLiteral(v) => Some(*v as i128),
+        Expr::Int8(v) => Some(*v as i128),
+        Expr::Int16(v) => Some(*v as i128),
+        Expr::Int32(v) => Some(*v as i128),
+        Expr::Number(sym) => interner.resolve(*sym)?.parse::<i128>().ok(),
         // `- 1i64` with a space between the minus and the literal
         // parses as unary negation rather than a folded literal; peel
         // it so `requires b != - 1i64` reads like `b != -1i64`.
         Expr::Unary(UnaryOp::Negate, inner) => {
-            integer_literal_value(program, interner, &inner).map(i128::wrapping_neg)
+            integer_literal_value(program, interner, inner).map(i128::wrapping_neg)
         }
         _ => None,
     }
@@ -508,111 +508,111 @@ pub(super) fn mutated_names(program: &File, body: &ExprRef) -> HashSet<DefaultSy
 }
 
 fn note_root(program: &File, expr: &ExprRef, out: &mut HashSet<DefaultSymbol>) {
-    match program.expression.get(expr) {
+    match program.expression.get_ref(expr) {
         Some(Expr::Identifier(sym)) => {
-            out.insert(sym);
+            out.insert(*sym);
         }
         Some(Expr::FieldAccess(obj, _)) | Some(Expr::TupleAccess(obj, _)) => {
-            note_root(program, &obj, out)
+            note_root(program, obj, out)
         }
-        Some(Expr::SliceAccess(obj, _)) => note_root(program, &obj, out),
+        Some(Expr::SliceAccess(obj, _)) => note_root(program, obj, out),
         _ => {}
     }
 }
 
 fn walk_expr(program: &File, expr: &ExprRef, out: &mut HashSet<DefaultSymbol>) {
-    let Some(node) = program.expression.get(expr) else {
+    let Some(node) = program.expression.get_ref(expr) else {
         return;
     };
     match node {
         Expr::Assign(lhs, rhs) => {
-            note_root(program, &lhs, out);
-            walk_expr(program, &lhs, out);
-            walk_expr(program, &rhs, out);
+            note_root(program, lhs, out);
+            walk_expr(program, lhs, out);
+            walk_expr(program, rhs, out);
         }
         Expr::Unary(UnaryOp::BorrowMut, inner) => {
-            note_root(program, &inner, out);
-            walk_expr(program, &inner, out);
+            note_root(program, inner, out);
+            walk_expr(program, inner, out);
         }
         Expr::MethodCall(receiver, _, args) => {
-            note_root(program, &receiver, out);
-            walk_expr(program, &receiver, out);
-            for arg in &args {
+            note_root(program, receiver, out);
+            walk_expr(program, receiver, out);
+            for arg in args {
                 walk_expr(program, arg, out);
             }
         }
         Expr::SliceAssign(obj, start, end, value) => {
-            note_root(program, &obj, out);
-            walk_expr(program, &obj, out);
+            note_root(program, obj, out);
+            walk_expr(program, obj, out);
             for part in [start, end].into_iter().flatten() {
-                walk_expr(program, &part, out);
+                walk_expr(program, part, out);
             }
-            walk_expr(program, &value, out);
+            walk_expr(program, value, out);
         }
         Expr::Block(stmts) => {
-            for stmt in &stmts {
+            for stmt in stmts {
                 walk_stmt(program, stmt, out);
             }
         }
         Expr::Binary(_, lhs, rhs) | Expr::Range(lhs, rhs) | Expr::With(lhs, rhs) => {
-            walk_expr(program, &lhs, out);
-            walk_expr(program, &rhs, out);
+            walk_expr(program, lhs, out);
+            walk_expr(program, rhs, out);
         }
         Expr::Unary(_, inner)
         | Expr::Cast(inner, _)
         | Expr::FieldAccess(inner, _)
-        | Expr::TupleAccess(inner, _) => walk_expr(program, &inner, out),
+        | Expr::TupleAccess(inner, _) => walk_expr(program, inner, out),
         Expr::IfElifElse(cond, then_body, elifs, else_body) => {
-            walk_expr(program, &cond, out);
-            walk_expr(program, &then_body, out);
-            for (c, b) in &elifs {
+            walk_expr(program, cond, out);
+            walk_expr(program, then_body, out);
+            for (c, b) in elifs {
                 walk_expr(program, c, out);
                 walk_expr(program, b, out);
             }
-            walk_expr(program, &else_body, out);
+            walk_expr(program, else_body, out);
         }
         Expr::Match(scrutinee, arms) => {
-            walk_expr(program, &scrutinee, out);
-            for arm in &arms {
+            walk_expr(program, scrutinee, out);
+            for arm in arms {
                 if let Some(guard) = arm.guard {
                     walk_expr(program, &guard, out);
                 }
                 walk_expr(program, &arm.body, out);
             }
         }
-        Expr::Call(_, args) => walk_expr(program, &args, out),
+        Expr::Call(_, args) => walk_expr(program, args, out),
         Expr::AssociatedFunctionCall(_, _, args)
         | Expr::ExprList(args)
         | Expr::ArrayLiteral(args)
         | Expr::TupleLiteral(args) => {
-            for arg in &args {
+            for arg in args {
                 walk_expr(program, arg, out);
             }
         }
         Expr::BuiltinCall(_, args) => {
-            for arg in &args {
+            for arg in args {
                 walk_expr(program, arg, out);
             }
         }
         Expr::BuiltinMethodCall(receiver, _, args) => {
-            walk_expr(program, &receiver, out);
-            for arg in &args {
+            walk_expr(program, receiver, out);
+            for arg in args {
                 walk_expr(program, arg, out);
             }
         }
         Expr::StructLiteral(_, fields) => {
-            for (_, value) in &fields {
+            for (_, value) in fields {
                 walk_expr(program, value, out);
             }
         }
         Expr::DictLiteral(entries) => {
-            for (k, v) in &entries {
+            for (k, v) in entries {
                 walk_expr(program, k, out);
                 walk_expr(program, v, out);
             }
         }
         Expr::SliceAccess(obj, info) => {
-            walk_expr(program, &obj, out);
+            walk_expr(program, obj, out);
             for part in [info.start, info.end].into_iter().flatten() {
                 walk_expr(program, &part, out);
             }
@@ -621,45 +621,45 @@ fn walk_expr(program: &File, expr: &ExprRef, out: &mut HashSet<DefaultSymbol>) {
         // anything it touches is assumed written.
         Expr::Closure { body, .. } => {
             let mut inner = HashSet::default();
-            walk_expr(program, &body, &mut inner);
+            walk_expr(program, body, &mut inner);
             out.extend(inner);
-            collect_identifiers(program, &body, out);
+            collect_identifiers(program, body, out);
         }
         _ => {}
     }
 }
 
 fn walk_stmt(program: &File, stmt: &StmtRef, out: &mut HashSet<DefaultSymbol>) {
-    let Some(node) = program.statement.get(stmt) else {
+    let Some(node) = program.statement.get_ref(stmt) else {
         return;
     };
     match node {
         // A re-binding makes the name mean something else from here on.
         Stmt::Val(name, _, value) => {
-            out.insert(name);
-            walk_expr(program, &value, out);
+            out.insert(*name);
+            walk_expr(program, value, out);
         }
         Stmt::Var(name, _, value) => {
-            out.insert(name);
+            out.insert(*name);
             if let Some(value) = value {
-                walk_expr(program, &value, out);
+                walk_expr(program, value, out);
             }
         }
-        Stmt::Expression(e) => walk_expr(program, &e, out),
+        Stmt::Expression(e) => walk_expr(program, e, out),
         Stmt::Return(e) => {
             if let Some(e) = e {
-                walk_expr(program, &e, out);
+                walk_expr(program, e, out);
             }
         }
         Stmt::For(_, var, start, end, body) => {
-            out.insert(var);
-            walk_expr(program, &start, out);
-            walk_expr(program, &end, out);
-            walk_expr(program, &body, out);
+            out.insert(*var);
+            walk_expr(program, start, out);
+            walk_expr(program, end, out);
+            walk_expr(program, body, out);
         }
         Stmt::While(_, cond, body) => {
-            walk_expr(program, &cond, out);
-            walk_expr(program, &body, out);
+            walk_expr(program, cond, out);
+            walk_expr(program, body, out);
         }
         _ => {}
     }
@@ -668,8 +668,8 @@ fn walk_stmt(program: &File, stmt: &StmtRef, out: &mut HashSet<DefaultSymbol>) {
 /// Every name mentioned in `expr`. Used only for a closure body, where
 /// "mentioned" is as close as this walk gets to "may be written".
 fn collect_identifiers(program: &File, expr: &ExprRef, out: &mut HashSet<DefaultSymbol>) {
-    if let Some(Expr::Identifier(sym)) = program.expression.get(expr) {
-        out.insert(sym);
+    if let Some(Expr::Identifier(sym)) = program.expression.get_ref(expr) {
+        out.insert(*sym);
     }
     let mut nested = HashSet::default();
     walk_expr(program, expr, &mut nested);

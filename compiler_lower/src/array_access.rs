@@ -965,17 +965,17 @@ impl<'a> FunctionLower<'a> {
     /// accepts `Int64` / `UInt64` / `Number` literals only;
     /// arbitrary const-expression folding is deferred.
     pub(super) fn try_constant_index(&self, expr_ref: &ExprRef) -> Option<usize> {
-        let e = self.program.expression.get(expr_ref)?;
+        let e = self.expr_at(expr_ref)?;
         match e {
-            Expr::UInt64(v) => Some(v as usize),
-            Expr::Int64(v) if v >= 0 => Some(v as usize),
+            Expr::UInt64(v) => Some(*v as usize),
+            Expr::Int64(v) if *v >= 0 => Some(*v as usize),
             Expr::Number(_) => {
                 // `Number` is a type-unspecified literal — usually
                 // emitted as u64 by the parser when no suffix is
                 // present. Fall back to a u64 view.
                 None
             }
-            Expr::Identifier(sym) => self.const_values.get(&sym).and_then(|c| match c {
+            Expr::Identifier(sym) => self.const_values.get(sym).and_then(|c| match c {
                 Const::U64(v) => Some(*v as usize),
                 Const::I64(v) if *v >= 0 => Some(*v as usize),
                 _ => None,
@@ -1006,13 +1006,13 @@ impl<'a> FunctionLower<'a> {
     /// `Int64` / `UInt64` / `Number` literals, `-<literal>`
     /// (`Unary::Negate`), and top-level `const` references.
     fn const_signed_index(&self, expr_ref: &ExprRef) -> Option<i128> {
-        let e = self.program.expression.get(expr_ref)?;
+        let e = self.expr_at(expr_ref)?;
         match e {
-            Expr::UInt64(v) => Some(v as i128),
-            Expr::Int64(v) => Some(v as i128),
-            Expr::Number(sym) => self.interner.resolve(sym)?.parse::<i128>().ok(),
-            Expr::Unary(UnaryOp::Negate, inner) => self.const_signed_index(&inner).map(|x| -x),
-            Expr::Identifier(sym) => self.const_values.get(&sym).and_then(|c| match c {
+            Expr::UInt64(v) => Some(*v as i128),
+            Expr::Int64(v) => Some(*v as i128),
+            Expr::Number(sym) => self.interner.resolve(*sym)?.parse::<i128>().ok(),
+            Expr::Unary(UnaryOp::Negate, inner) => self.const_signed_index(inner).map(|x| -x),
+            Expr::Identifier(sym) => self.const_values.get(sym).and_then(|c| match c {
                 Const::U64(v) => Some(*v as i128),
                 Const::I64(v) => Some(*v as i128),
                 _ => None,

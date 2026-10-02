@@ -773,6 +773,9 @@ fn main() -> u64 {
 
 - **Frontend**:
   - AST は memory pool (`StmtPool` / `ExprPool`) に置き、位置は `LocationPool`。
+    **読むだけなら `get_ref` (借用) を使う** — `get` は子のリストごと clone する。
+    `FunctionLower` では `self.expr_at` / `self.stmt_at` が `&'a` で返すので
+    `&mut self` を呼びながら持てる
     木に位置を持たない構文 (パターンの名前、宣言の範囲、`parallel` 等) は
     `File` の side table に載り、モジュール統合がそれも運ぶ
   - 型検査器は検査するだけでなく**書き換える** (下の「型検査の対象」)

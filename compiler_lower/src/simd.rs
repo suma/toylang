@@ -184,11 +184,11 @@ impl<'a> FunctionLower<'a> {
         if !op.needs_result_annotation() || args.len() != op.arity() + 1 {
             return None;
         }
-        let frontend::ast::Expr::UInt64(code) = self.program.expression.get(&args[op.arity()])?
+        let frontend::ast::Expr::UInt64(code) = self.expr_at(&args[op.arity()])?
         else {
             return None;
         };
-        VectorType::from_code(code).map(vector_to_ir)
+        VectorType::from_code(*code).map(vector_to_ir)
     }
 
     fn simd_require_stamp(&self, op: SimdOp, stamped: Option<VecTy>) -> Result<VecTy, String> {
@@ -266,7 +266,7 @@ impl<'a> FunctionLower<'a> {
         args: &[ExprRef],
         ty: VecTy,
     ) -> Result<[u8; 16], String> {
-        let word = |i: usize| match self.program.expression.get(&args[i]) {
+        let word = |i: usize| match self.expr_at(&args[i]) {
             Some(frontend::ast::Expr::UInt64(v)) => Some(v),
             _ => None,
         };
@@ -275,7 +275,7 @@ impl<'a> FunctionLower<'a> {
                 "{name}: the lane mask did not survive type checking as two literals"
             ));
         };
-        let lanes = SimdOp::unpack_shuffle_mask(lo, hi);
+        let lanes = SimdOp::unpack_shuffle_mask(*lo, *hi);
         if lanes.len() != ty.lanes() {
             return Err(format!(
                 "{name}: the mask has {} indices but {} has {} lanes",
@@ -291,11 +291,11 @@ impl<'a> FunctionLower<'a> {
 
     /// A lane index, which has to be a literal the compiler can read.
     fn simd_lane_literal(&self, name: &str, arg: &ExprRef, ty: VecTy) -> Result<u8, String> {
-        let k = match self.program.expression.get(arg) {
-            Some(frontend::ast::Expr::UInt64(v)) => v,
-            Some(frontend::ast::Expr::Int64(v)) if v >= 0 => v as u64,
-            Some(frontend::ast::Expr::UInt32(v) | frontend::ast::Expr::CharLiteral(v)) => v as u64,
-            Some(frontend::ast::Expr::UInt8(v)) => v as u64,
+        let k = match self.expr_at(arg) {
+            Some(frontend::ast::Expr::UInt64(v)) => *v,
+            Some(frontend::ast::Expr::Int64(v)) if *v >= 0 => *v as u64,
+            Some(frontend::ast::Expr::UInt32(v) | frontend::ast::Expr::CharLiteral(v)) => *v as u64,
+            Some(frontend::ast::Expr::UInt8(v)) => *v as u64,
             _ => {
                 return Err(format!(
                     "{name} needs a literal lane index (the lane is part of the instruction)"

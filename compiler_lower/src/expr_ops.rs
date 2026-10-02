@@ -219,8 +219,8 @@ impl<'a> FunctionLower<'a> {
         if self.facts.is_empty() {
             return None;
         }
-        match self.program.expression.get(expr)? {
-            frontend::ast::Expr::Identifier(sym) => Some(sym),
+        match self.expr_at(expr)? {
+            frontend::ast::Expr::Identifier(sym) => Some(*sym),
             _ => None,
         }
     }

@@ -109,24 +109,24 @@ impl<'a> FunctionLower<'a> {
                 .flatten();
             specs.into_iter().any(|spec| returns_range(&spec.method.return_type))
         };
-        match self.program.expression.get(expr) {
+        match self.expr_at(expr) {
             Some(Expr::Call(fname, _)) => self
                 .program
                 .function
                 .iter()
-                .any(|f| f.name == fname && returns_range(&f.return_type)),
+                .any(|f| f.name == *fname && returns_range(&f.return_type)),
             Some(Expr::AssociatedFunctionCall(target, method, _)) => {
-                method_returns_range(target, method)
+                method_returns_range(*target, *method)
             }
             Some(Expr::MethodCall(recv, method, _)) => {
-                let Some(Expr::Identifier(sym)) = self.program.expression.get(&recv) else {
+                let Some(Expr::Identifier(sym)) = self.expr_at(recv) else {
                     return false;
                 };
-                let Some(Binding::Struct { struct_id, .. }) = self.bindings.get(&sym) else {
+                let Some(Binding::Struct { struct_id, .. }) = self.bindings.get(sym) else {
                     return false;
                 };
                 let base = self.module.struct_def(*struct_id).base_name;
-                method_returns_range(base, method)
+                method_returns_range(base, *method)
             }
             _ => false,
         }
@@ -236,9 +236,9 @@ impl<'a> FunctionLower<'a> {
         // each leaf read out of the read-only bytes into `p`'s locals.
         if let Expr::SliceAccess(arr_obj, info) = rhs.clone()
             && matches!(info.slice_type, frontend::ast::SliceType::SingleElement)
-            && let Some(Expr::Identifier(sym)) = self.program.expression.get(&arr_obj)
+            && let Some(Expr::Identifier(sym)) = self.expr_at(&arr_obj)
             && let Some(index_ref) = info.start
-            && let Some((elem_ty, size, bytes, length)) = self.const_table_layout(sym)?
+            && let Some((elem_ty, size, bytes, length)) = self.const_table_layout(*sym)?
         {
             let columns = self.soa_columns(elem_ty).ok_or_else(|| {
                 "compiler MVP cannot lay out a const table element".to_string()
@@ -566,9 +566,9 @@ impl<'a> FunctionLower<'a> {
         // (`core/std/column.t`). Compiler-side because a stack
         // array's storage has no source-level name to point at.
         if let Expr::FieldAccess(base, field) = rhs.clone()
-            && let Some(Expr::Identifier(source_sym)) = self.program.expression.get(&base)
+            && let Some(Expr::Identifier(source_sym)) = self.expr_at(&base)
         {
-            match self.bindings.get(&source_sym).cloned() {
+            match self.bindings.get(source_sym).cloned() {
                 Some(Binding::Array { element_ty, length, storage }) => {
                     if let Some(result) =
                         self.lower_let_column_window(name, element_ty, length, &storage, field)?
@@ -650,8 +650,8 @@ impl<'a> FunctionLower<'a> {
         // A bare identifier is looked up directly: `resolve_field_chain`
         // rejects tuple roots (a tuple can't be *stepped into* by
         // field name), but a tuple binding is a perfectly good rhs.
-        if let Some(Expr::Identifier(sym)) = self.program.expression.get(rhs_ref) {
-            return Ok(match self.bindings.get(&sym).cloned() {
+        if let Some(Expr::Identifier(sym)) = self.expr_at(rhs_ref) {
+            return Ok(match self.bindings.get(sym).cloned() {
                 Some(Binding::Struct { struct_id, fields }) => {
                     self.bindings
                         .insert(name, Binding::Struct { struct_id, fields });
@@ -1221,7 +1221,7 @@ impl<'a> FunctionLower<'a> {
     /// `Vec<ExprRef>` directly. Both funnel into
     /// `lower_call_arg_items`.
     fn call_arg_items(&self, args_ref: &ExprRef) -> Result<Vec<ExprRef>, String> {
-        match self.program.expression.get(args_ref) {
+        match self.expr_at(args_ref) {
             Some(Expr::ExprList(items)) => Ok(items.clone()),
             _ => Err("call args missing".to_string()),
         }
@@ -1563,17 +1563,17 @@ impl<'a> FunctionLower<'a> {
                                 all_args.push(ptr);
                                 continue;
                             }
-                            let arg_expr_ref = match self.program.expression.get(a) {
+                            let arg_expr_ref = match self.expr_at(a) {
                                 Some(Expr::Unary(frontend::ast::UnaryOp::Borrow | frontend::ast::UnaryOp::BorrowMut, inner)) => {
-                                    inner
+                                    *inner
                                 }
                                 _ => *a,
                             };
                             if let Some(Expr::Identifier(sym)) =
-                                self.program.expression.get(&arg_expr_ref)
+                                self.expr_at(&arg_expr_ref)
                             {
                                 if let Some(Binding::Struct { fields, .. }) =
-                                    self.bindings.get(&sym).cloned()
+                                    self.bindings.get(sym).cloned()
                                 {
                                     for (local, ty) in flatten_struct_locals(&fields) {
                                         let v = self
@@ -1584,7 +1584,7 @@ impl<'a> FunctionLower<'a> {
                                     continue;
                                 }
                                 if let Some(Binding::Tuple { elements }) =
-                                    self.bindings.get(&sym).cloned()
+                                    self.bindings.get(sym).cloned()
                                 {
                                     for (local, ty) in flatten_tuple_element_locals(&elements) {
                                         let v = self
@@ -1595,7 +1595,7 @@ impl<'a> FunctionLower<'a> {
                                     continue;
                                 }
                                 if let Some(Binding::Enum(storage)) =
-                                    self.bindings.get(&sym).cloned()
+                                    self.bindings.get(sym).cloned()
                                 {
                                     let vs = self.load_enum_locals(&storage);
                                     all_args.extend(vs);

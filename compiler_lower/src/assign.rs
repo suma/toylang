@@ -176,7 +176,7 @@ impl<'a> FunctionLower<'a> {
                 if let Some(Binding::Struct { struct_id, fields }) =
                     self.bindings.get(&sym).cloned()
                     && let Some(Expr::Binary(op, b_lhs, b_rhs)) =
-                        self.program.expression.get(rhs)
+                        self.expr_at(rhs)
                     {
                         let op_method: Option<&'static str> = match op {
                             frontend::ast::Operator::IAdd => Some("add"),
@@ -199,14 +199,14 @@ impl<'a> FunctionLower<'a> {
                                     target_sym,
                                     method_sym,
                                     struct_id,
-                                    &[b_rhs],
+                                    &[*b_rhs],
                                 )?
                                 {
                                     use super::bindings::flatten_struct_locals;
                                     let lhs_leaves = match self
                                         .program
                                         .expression
-                                        .get(&b_lhs)
+                                        .get(b_lhs)
                                     {
                                         Some(Expr::Identifier(s)) => match self
                                             .bindings
@@ -231,7 +231,7 @@ impl<'a> FunctionLower<'a> {
                                     let rhs_leaves = match self
                                         .program
                                         .expression
-                                        .get(&b_rhs)
+                                        .get(b_rhs)
                                     {
                                         Some(Expr::Identifier(s)) => match self
                                             .bindings
@@ -291,14 +291,14 @@ impl<'a> FunctionLower<'a> {
                 // Both new bounds are evaluated before either is
                 // stored, so `r = r.end..r.start` reads the old pair.
                 if let Some(Binding::Range { start, end, ty }) = self.bindings.get(&sym).cloned() {
-                    let (s_val, e_val) = match self.program.expression.get(rhs) {
+                    let (s_val, e_val) = match self.expr_at(rhs) {
                         Some(Expr::Range(a, b)) => (
-                            self.lower_expr(&a)?
+                            self.lower_expr(a)?
                                 .ok_or_else(|| "range start produced no value".to_string())?,
-                            self.lower_expr(&b)?
+                            self.lower_expr(b)?
                                 .ok_or_else(|| "range end produced no value".to_string())?,
                         ),
-                        Some(Expr::Identifier(src)) => match self.bindings.get(&src).cloned() {
+                        Some(Expr::Identifier(src)) => match self.bindings.get(src).cloned() {
                             Some(Binding::Range { start: from_s, end: from_e, .. }) => (
                                 self.emit(InstKind::LoadLocal(from_s), Some(ty))
                                     .expect("LoadLocal returns a value"),

@@ -943,11 +943,11 @@ impl<'a> FunctionLower<'a> {
                 if !matches!(ret, Type::Enum(_) | Type::Struct(_) | Type::Tuple(_)) {
                     return Ok(None);
                 }
-                let items: Vec<ExprRef> = match self.program.expression.get(&args_ref) {
+                let items: &[ExprRef] = match self.expr_at(&args_ref) {
                     Some(Expr::ExprList(items)) => items,
                     _ => return Ok(None),
                 };
-                self.lower_compound_call_arg(target_id, &items)
+                self.lower_compound_call_arg(target_id, items)
             }
             // OP-OVERLOAD-CHAIN: an overloaded operator whose result
             // is a struct (`take(a + b)`, and the inner `a + b` of
@@ -1252,8 +1252,8 @@ impl<'a> FunctionLower<'a> {
         target: Option<crate::ir::FuncId>,
         param_index: usize,
     ) -> Result<(Vec<ValueId>, ReceiverReload), String> {
-        if let Some(Expr::Identifier(sym)) = self.program.expression.get(a) {
-            match self.bindings.get(&sym).cloned() {
+        if let Some(Expr::Identifier(sym)) = self.expr_at(a) {
+            match self.bindings.get(sym).cloned() {
                 Some(Binding::Struct { fields, .. }) => {
                     let leaves = flatten_struct_locals(&fields);
                     if target
@@ -1325,14 +1325,14 @@ impl<'a> FunctionLower<'a> {
         let Some(pointee) = pointee else {
             return Ok(None);
         };
-        if let Some(Expr::Identifier(sym)) = self.program.expression.get(arg) {
-            if let Some(Binding::RefScalar { local, .. }) = self.bindings.get(&sym).cloned() {
+        if let Some(Expr::Identifier(sym)) = self.expr_at(arg) {
+            if let Some(Binding::RefScalar { local, .. }) = self.bindings.get(sym).cloned() {
                 return Ok(Some(
                     self.emit(InstKind::LoadLocal(local), Some(Type::U64))
                         .expect("LoadLocal returns a value"),
                 ));
             }
-            if let Some(Binding::Scalar { local, .. }) = self.bindings.get(&sym).cloned() {
+            if let Some(Binding::Scalar { local, .. }) = self.bindings.get(sym).cloned() {
                 self.module
                     .function_mut(self.func_id)
                     .address_taken_locals
@@ -1413,11 +1413,11 @@ impl<'a> FunctionLower<'a> {
         &mut self,
         arg: &ExprRef,
     ) -> Result<Option<ValueId>, String> {
-        if let Some(Expr::Unary(op, inner)) = self.program.expression.get(arg)
+        if let Some(Expr::Unary(op, inner)) = self.expr_at(arg)
             && matches!(op, UnaryOp::Borrow | UnaryOp::BorrowMut) {
-                if let Some(Expr::Identifier(sym)) = self.program.expression.get(&inner) {
+                if let Some(Expr::Identifier(sym)) = self.expr_at(inner) {
                     if let Some(Binding::Scalar { local, ty }) =
-                        self.bindings.get(&sym).cloned()
+                        self.bindings.get(sym).cloned()
                         && super::templates::is_scalar_pointee(ty) {
                             self.module
                                 .function_mut(self.func_id)
@@ -1432,7 +1432,7 @@ impl<'a> FunctionLower<'a> {
                     // pointer (the binding's local already
                     // holds the U64 ptr).
                     if let Some(Binding::RefScalar { local, .. }) =
-                        self.bindings.get(&sym).cloned()
+                        self.bindings.get(sym).cloned()
                     {
                         let v = self
                             .emit(InstKind::LoadLocal(local), Some(Type::U64))
@@ -1451,11 +1451,11 @@ impl<'a> FunctionLower<'a> {
                 // mid-chain) fall through to the regular
                 // erasure path below.
                 if matches!(
-                    self.program.expression.get(&inner),
+                    self.expr_at(inner),
                     Some(Expr::FieldAccess(_, _)) | Some(Expr::TupleAccess(_, _))
                 )
                     && let Ok(super::bindings::FieldChainResult::Scalar { local, ty }) =
-                        self.resolve_field_chain(&inner)
+                        self.resolve_field_chain(inner)
                         && super::templates::is_scalar_pointee(ty) {
                             self.module
                                 .function_mut(self.func_id)
@@ -1474,12 +1474,12 @@ impl<'a> FunctionLower<'a> {
                 // first so any side effect inside it stays
                 // visible.
                 if let Some(Expr::SliceAccess(arr_expr, info)) =
-                    self.program.expression.get(&inner)
+                    self.expr_at(inner)
                         && matches!(info.slice_type, frontend::ast::SliceType::SingleElement)
                             && let Some(Expr::Identifier(arr_sym)) =
-                                self.program.expression.get(&arr_expr)
+                                self.expr_at(arr_expr)
                                     && let Some(Binding::Array { element_ty, storage, .. }) =
-                                        self.bindings.get(&arr_sym).cloned()
+                                        self.bindings.get(arr_sym).cloned()
                                         && super::templates::is_scalar_pointee(element_ty)
                                             && let Some(idx_ref) = info.start {
                                                 let idx_v = self
@@ -1513,13 +1513,13 @@ impl<'a> FunctionLower<'a> {
     /// slot), or a borrowed array being passed on. An explicit `&` /
     /// `&mut` is peeled; the borrow is what the parameter says anyway.
     pub(super) fn array_ref_arg(&mut self, arg: &ExprRef) -> Result<Option<ValueId>, String> {
-        let inner = match self.program.expression.get(arg) {
-            Some(Expr::Unary(UnaryOp::Borrow | UnaryOp::BorrowMut, inner)) => inner,
+        let inner = match self.expr_at(arg) {
+            Some(Expr::Unary(UnaryOp::Borrow | UnaryOp::BorrowMut, inner)) => *inner,
             _ => *arg,
         };
         // An array literal argument (`f([1u8, 2u8])`) is written into a
         // slot of its own first, and that slot's address is passed.
-        if let Some(Expr::ArrayLiteral(elems)) = self.program.expression.get(&inner) {
+        if let Some(Expr::ArrayLiteral(elems)) = self.expr_at(&inner) {
             let Some(first) = elems.first() else {
                 return Ok(None);
             };
@@ -1544,10 +1544,10 @@ impl<'a> FunctionLower<'a> {
                 Some(Type::U64),
             ));
         }
-        let Some(Expr::Identifier(sym)) = self.program.expression.get(&inner) else {
+        let Some(Expr::Identifier(sym)) = self.expr_at(&inner) else {
             return Ok(None);
         };
-        match self.bindings.get(&sym).cloned() {
+        match self.bindings.get(sym).cloned() {
             Some(Binding::ArrayRef { ptr, .. }) => {
                 Ok(self.emit(InstKind::LoadLocal(ptr), Some(Type::U64)))
             }
@@ -1561,7 +1561,7 @@ impl<'a> FunctionLower<'a> {
                 ))
             }
             Some(_) => Ok(None),
-            None => match self.const_arrays.get(&sym).filter(|a| a.table.is_none()) {
+            None => match self.const_arrays.get(sym).filter(|a| a.table.is_none()) {
                 Some(array) => {
                     let bytes = array.bytes.clone();
                     Ok(self.emit(InstKind::ConstBytesAddr { bytes }, Some(Type::U64)))
@@ -1578,17 +1578,17 @@ impl<'a> FunctionLower<'a> {
         &mut self,
         expr: &ExprRef,
     ) -> Result<Option<[ValueId; 2]>, String> {
-        match self.program.expression.get(expr) {
+        match self.expr_at(expr) {
             Some(Expr::Range(start, end)) => {
                 let s = self
-                    .lower_expr(&start)?
+                    .lower_expr(start)?
                     .ok_or_else(|| "range start produced no value".to_string())?;
                 let e = self
-                    .lower_expr(&end)?
+                    .lower_expr(end)?
                     .ok_or_else(|| "range end produced no value".to_string())?;
                 Ok(Some([s, e]))
             }
-            Some(Expr::Identifier(sym)) => match self.bindings.get(&sym).cloned() {
+            Some(Expr::Identifier(sym)) => match self.bindings.get(sym).cloned() {
                 Some(Binding::Range { start, end, ty }) => {
                     let s = self.emit(InstKind::LoadLocal(start), Some(ty)).expect("LoadLocal returns a value");
                     let e = self.emit(InstKind::LoadLocal(end), Some(ty)).expect("LoadLocal returns a value");
@@ -1689,9 +1689,9 @@ impl<'a> FunctionLower<'a> {
                 // both the auto-borrow form (`describe(d)`) and the
                 // explicit form (`describe(&d)`) reach the same
                 // coercion path.
-                let inner_expr_ref = match self.program.expression.get(a) {
+                let inner_expr_ref = match self.expr_at(a) {
                     Some(Expr::Unary(UnaryOp::Borrow | UnaryOp::BorrowMut, inner)) => {
-                        inner
+                        *inner
                     }
                     _ => *a,
                 };
@@ -1843,9 +1843,9 @@ impl<'a> FunctionLower<'a> {
             // REF-Stage-2: fall back — peel an explicit borrow so the
             // same identifier-expansion path below runs (compound
             // borrows / non-identifier operands).
-            let arg_expr_ref = match self.program.expression.get(a) {
+            let arg_expr_ref = match self.expr_at(a) {
                 Some(Expr::Unary(UnaryOp::Borrow | UnaryOp::BorrowMut, inner)) => {
-                    inner
+                    *inner
                 }
                 _ => *a,
             };
@@ -1920,7 +1920,7 @@ impl<'a> FunctionLower<'a> {
             // explicit `&mut <enum field>` borrow keeps falling
             // through to the compound-borrow rejection.
             if matches!(
-                self.program.expression.get(a),
+                self.expr_at(a),
                 Some(Expr::FieldAccess(..))
             ) && let Ok(super::bindings::FieldChainResult::Enum(storage)) =
                 self.resolve_field_chain(a)
@@ -2668,10 +2668,10 @@ impl<'a> FunctionLower<'a> {
             Arena,
             FixedBuffer(frontend::ast::ExprRef),
         }
-        let inline_kind: Option<InlineAlloc> = match self.program.expression.get(allocator_expr) {
+        let inline_kind: Option<InlineAlloc> = match self.expr_at(allocator_expr) {
             Some(Expr::AssociatedFunctionCall(struct_sym, fn_sym, args)) => {
-                let s = self.interner.resolve(struct_sym);
-                let f = self.interner.resolve(fn_sym);
+                let s = self.interner.resolve(*struct_sym);
+                let f = self.interner.resolve(*fn_sym);
                 if f == Some("new") && s == Some("Arena") && args.is_empty() {
                     Some(InlineAlloc::Arena)
                 } else if f == Some("new") && s == Some("FixedBuffer") && args.len() == 1 {
@@ -3578,8 +3578,8 @@ impl<'a> FunctionLower<'a> {
                 }
                 // RANGE-FOR: `"{r}"` renders `start..end`, the
                 // tree-walker's `Object::Range` form.
-                if let Some(Expr::Identifier(sym)) = self.program.expression.get(&args[0])
-                    && let Some(Binding::Range { start, end, ty }) = self.bindings.get(&sym).cloned()
+                if let Some(Expr::Identifier(sym)) = self.expr_at(&args[0])
+                    && let Some(Binding::Range { start, end, ty }) = self.bindings.get(sym).cloned()
                 {
                     let mut parts = Vec::with_capacity(3);
                     for (i, local) in [start, end].into_iter().enumerate() {
@@ -3612,13 +3612,13 @@ impl<'a> FunctionLower<'a> {
                 // surface a Tuple shape (the binding doesn't carry
                 // `tuple_id`), so peek the binding directly.
                 if let Some(Expr::Identifier(sym)) =
-                    self.program.expression.get(&args[0])
-                    && matches!(self.bindings.get(&sym), Some(Binding::Tuple { .. })) {
+                    self.expr_at(&args[0])
+                    && matches!(self.bindings.get(sym), Some(Binding::Tuple { .. })) {
                         return self.lower_tuple_to_string(&args[0]);
                     }
                 // Tuple-typed field / element (`"{o.pair}"`) — same
                 // blind spot, resolved through the field chain.
-                if let Some(arg_expr) = self.program.expression.get(&args[0])
+                if let Some(arg_expr) = self.expr_at(&args[0])
                     && matches!(arg_expr, Expr::FieldAccess(_, _) | Expr::TupleAccess(_, _))
                     && matches!(
                         self.resolve_field_chain(&args[0]),
@@ -3658,7 +3658,7 @@ impl<'a> FunctionLower<'a> {
                 // value — nothing downstream has to keep a register
                 // alive for it.
                 expect_args(args, 2, "__builtin_format takes 2 arguments")?;
-                let Some(Expr::UInt64(spec)) = self.program.expression.get(&args[1]) else {
+                let Some(Expr::UInt64(spec)) = self.expr_at(&args[1]) else {
                     return Err(
                         "__builtin_format: spec must be the parser-generated u64 constant"
                             .to_string(),
@@ -3683,7 +3683,7 @@ impl<'a> FunctionLower<'a> {
                     ));
                 }
                 Ok(self.emit(
-                    InstKind::Format { value: arg_value, value_ty, spec },
+                    InstKind::Format { value: arg_value, value_ty, spec: *spec },
                     Some(Type::Str),
                 ))
             }

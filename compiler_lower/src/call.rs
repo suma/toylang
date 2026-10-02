@@ -49,11 +49,11 @@ impl<'a> FunctionLower<'a> {
         fn_name: DefaultSymbol,
         args_ref: &ExprRef,
     ) -> Result<FuncId, String> {
-        let arg_exprs: Vec<ExprRef> = match self.program.expression.get(args_ref) {
+        let arg_exprs: &[ExprRef] = match self.expr_at(args_ref) {
             Some(Expr::ExprList(items)) => items,
             _ => return Err("call arguments must be an ExprList".to_string()),
         };
-        self.resolve_call_target_from_args(fn_name, &arg_exprs)
+        self.resolve_call_target_from_args(fn_name, arg_exprs)
     }
 
     /// The same resolution starting from the argument expressions
@@ -186,8 +186,8 @@ impl<'a> FunctionLower<'a> {
                     return;
                 }
                 // Non-scalar: try identifier → struct/enum binding.
-                if let Some(Expr::Identifier(sym)) = self.program.expression.get(arg)
-                    && let Some(binding) = self.bindings.get(&sym) {
+                if let Some(Expr::Identifier(sym)) = self.expr_at(arg)
+                    && let Some(binding) = self.bindings.get(sym) {
                         match binding {
                             Binding::Struct { struct_id, .. } => {
                                 inferred.entry(*g).or_insert(Type::Struct(*struct_id));
@@ -240,9 +240,9 @@ impl<'a> FunctionLower<'a> {
             // monomorphise, which is most of the reason a bound could
             // be written but not used.
             TypeDecl::Ref { inner, .. } => {
-                let arg = match self.program.expression.get(arg) {
+                let arg = match self.expr_at(arg) {
                     Some(Expr::Unary(UnaryOp::Borrow, e))
-                    | Some(Expr::Unary(UnaryOp::BorrowMut, e)) => e,
+                    | Some(Expr::Unary(UnaryOp::BorrowMut, e)) => *e,
                     _ => *arg,
                 };
                 self.infer_generic_args_from_param(inner, &arg, generic_params, inferred);
@@ -258,8 +258,8 @@ impl<'a> FunctionLower<'a> {
                 // A tuple *binding* carries only per-element shapes,
                 // not an interned tuple id (`value_scalar` returns
                 // None for it), so walk the shapes directly.
-                if let Some(Expr::Identifier(sym)) = self.program.expression.get(arg)
-                    && let Some(Binding::Tuple { elements }) = self.bindings.get(&sym) {
+                if let Some(Expr::Identifier(sym)) = self.expr_at(arg)
+                    && let Some(Binding::Tuple { elements }) = self.bindings.get(sym) {
                         for (d, el) in elems.iter().zip(elements.iter()) {
                             let ty = match &el.shape {
                                 TupleElementShape::Scalar { ty, .. } => *ty,
@@ -740,11 +740,11 @@ impl<'a> FunctionLower<'a> {
         args_ref: &ExprRef,
         target: Option<crate::ir::FuncId>,
     ) -> Result<Vec<LocalId>, String> {
-        let items = match self.program.expression.get(args_ref) {
+        let items = match self.expr_at(args_ref) {
             Some(frontend::ast::Expr::ExprList(items)) => items,
             _ => return Ok(Vec::new()),
         };
-        self.collect_compound_writeback_dests_for(&items, target, 0)
+        self.collect_compound_writeback_dests_for(items, target, 0)
     }
 
     /// Slice-based variant for `MethodCall` (which carries args as
@@ -780,7 +780,7 @@ impl<'a> FunctionLower<'a> {
             {
                 continue;
             }
-            let inner = match self.program.expression.get(a) {
+            let inner = match self.expr_at(a) {
                 Some(frontend::ast::Expr::Unary(frontend::ast::UnaryOp::BorrowMut, inner)) => {
                     inner
                 }
@@ -789,7 +789,7 @@ impl<'a> FunctionLower<'a> {
             // COMPOUND-FIELD-ARG: `&mut o.p` writes back into the
             // owner's own leaf locals, the same as `&mut p` does into a
             // binding's.
-            match self.compound_arg_binding(&inner) {
+            match self.compound_arg_binding(inner) {
                 Some(super::bindings::Binding::Struct { fields, .. }) => {
                     for (l, _) in super::bindings::flatten_struct_locals(&fields) {
                         dests.push(l);

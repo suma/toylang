@@ -12,6 +12,10 @@
 
 ### 2026-10-01
 
+- **AST-BORROW — AST を clone せずに借用で読む** — `ExprPool` / `StmtPool` を列ごとの配列から
+  `Vec<Expr>` / `Vec<Stmt>` にし、`get_ref` を足した。所有の検査と lowering を移行。logsearch の
+  リンク前 106 → 98 ms (−8%、モジュール統合 −43%)、fib.t 21 → 17 ms (−17%)。型検査器本体は未移行
+  (残る AST の clone は全体の 0.8%)。
 - **LEND-SKIP-PRIMITIVE — 読むだけ判定がスカラー引数の本体を歩かない** — `compute_lend` の固定点反復で
   本体を歩く回数の 80% がスカラー / `str` / `ptr` 引数だった (何も所有しないので答えが結果に効かない)。
   logsearch の型検査 35.5 → 31.6 ms (−11%)。

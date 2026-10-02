@@ -138,12 +138,12 @@ impl<'a> FunctionLower<'a> {
         &mut self,
         expr: &ExprRef,
     ) -> Result<Option<Vec<super::bindings::FieldBinding>>, String> {
-        match self.program.expression.get(expr) {
+        match self.expr_at(expr) {
             Some(Expr::Binary(op, lhs, rhs)) => {
-                Ok(self.emit_binary_overload(op, lhs, rhs)?.map(|(_, f)| f))
+                Ok(self.emit_binary_overload(op.clone(), *lhs, *rhs)?.map(|(_, f)| f))
             }
             Some(Expr::Unary(op, operand)) => {
-                Ok(self.emit_unary_overload(op, operand)?.map(|(_, f)| f))
+                Ok(self.emit_unary_overload(op.clone(), *operand)?.map(|(_, f)| f))
             }
             _ => Ok(None),
         }
@@ -153,10 +153,10 @@ impl<'a> FunctionLower<'a> {
     /// that holds that bound and its type. `None` for anything else, so
     /// every caller falls through to its struct path unchanged.
     pub(super) fn range_bound(&self, obj: &ExprRef, field: DefaultSymbol) -> Option<(LocalId, Type)> {
-        let Some(Expr::Identifier(sym)) = self.program.expression.get(obj) else {
+        let Some(Expr::Identifier(sym)) = self.expr_at(obj) else {
             return None;
         };
-        let Some(Binding::Range { start, end, ty }) = self.bindings.get(&sym) else {
+        let Some(Binding::Range { start, end, ty }) = self.bindings.get(sym) else {
             return None;
         };
         match self.interner.resolve(field)? {
@@ -536,7 +536,7 @@ impl<'a> FunctionLower<'a> {
                         return Ok(None);
                     };
                     let Some(Expr::Identifier(sym)) =
-                        self.program.expression.get(&obj)
+                        self.expr_at(&obj)
                     else {
                         return Ok(None);
                     };
@@ -547,7 +547,7 @@ impl<'a> FunctionLower<'a> {
                 _ => return Ok(None),
             }
         }
-        let Some(Binding::Array { element_ty, .. }) = self.bindings.get(&arr_sym).cloned() else {
+        let Some(Binding::Array { element_ty, .. }) = self.bindings.get(arr_sym).cloned() else {
             return Ok(None);
         };
         // A scalar element has no fields to name; leave it to the
@@ -566,7 +566,7 @@ impl<'a> FunctionLower<'a> {
             None => return Ok(None),
         };
         Ok(Some(ArrayElementLeaf {
-            arr_sym,
+            arr_sym: *arr_sym,
             index_ref,
             leaf,
             leaf_ty,
@@ -621,20 +621,20 @@ impl<'a> FunctionLower<'a> {
         let mut steps: Vec<AccessStep> = Vec::new();
         let mut cursor = *expr;
         let (index_ref, arr_sym, slice_ref) = loop {
-            match self.program.expression.get(&cursor) {
+            match self.expr_at(&cursor) {
                 Some(Expr::FieldAccess(inner, field)) => {
-                    steps.push(AccessStep::Field(field));
-                    cursor = inner;
+                    steps.push(AccessStep::Field(*field));
+                    cursor = *inner;
                 }
                 Some(Expr::TupleAccess(inner, idx)) => {
-                    steps.push(AccessStep::TupleIdx(idx));
-                    cursor = inner;
+                    steps.push(AccessStep::TupleIdx(*idx));
+                    cursor = *inner;
                 }
                 Some(Expr::SliceAccess(obj, info))
                     if matches!(info.slice_type, frontend::ast::SliceType::SingleElement) =>
                 {
                     let (Some(index), Some(Expr::Identifier(sym))) =
-                        (info.start, self.program.expression.get(&obj))
+                        (info.start, self.expr_at(obj))
                     else {
                         return Ok(None);
                     };
@@ -643,7 +643,7 @@ impl<'a> FunctionLower<'a> {
                 _ => return Ok(None),
             }
         };
-        let Some((elem_ty, size, bytes, length)) = self.const_table_layout(arr_sym)? else {
+        let Some((elem_ty, size, bytes, length)) = self.const_table_layout(*arr_sym)? else {
             return Ok(None);
         };
         let Some((leaf, leaf_ty)) =

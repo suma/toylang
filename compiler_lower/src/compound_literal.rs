@@ -748,18 +748,18 @@ impl<'a> FunctionLower<'a> {
     /// the element shape can't be resolved (forces the caller to
     /// emit a clear error).
     pub(super) fn infer_tuple_element_type(&mut self, expr_ref: &ExprRef) -> Option<Type> {
-        let expr = self.program.expression.get(expr_ref)?;
+        let expr = self.expr_at(expr_ref)?;
         match expr {
             Expr::TupleLiteral(elems) => {
                 let mut element_tys: Vec<Type> = Vec::with_capacity(elems.len());
-                for e in &elems {
+                for e in elems {
                     element_tys.push(self.infer_tuple_element_type(e)?);
                 }
                 let id = intern_tuple(self.module, element_tys);
                 Some(Type::Tuple(id))
             }
             Expr::StructLiteral(name, _) => {
-                let id = self.resolve_struct_instance(name, None).ok()?;
+                let id = self.resolve_struct_instance(*name, None).ok()?;
                 Some(Type::Struct(id))
             }
             // DATA-ORIENTED Phase 3: enum elements. A unit variant
@@ -774,10 +774,10 @@ impl<'a> FunctionLower<'a> {
             {
                 self.resolve_enum_instance(path[0], None).ok().map(Type::Enum)
             }
-            Expr::AssociatedFunctionCall(base, _, _) if self.enum_defs.contains_key(&base) => {
-                self.resolve_enum_instance(base, None).ok().map(Type::Enum)
+            Expr::AssociatedFunctionCall(base, _, _) if self.enum_defs.contains_key(base) => {
+                self.resolve_enum_instance(*base, None).ok().map(Type::Enum)
             }
-            Expr::Identifier(sym) => match self.bindings.get(&sym) {
+            Expr::Identifier(sym) => match self.bindings.get(sym) {
                 Some(Binding::Scalar { ty, .. }) => Some(*ty),
                 Some(Binding::RefScalar { pointee_ty, .. }) => Some(*pointee_ty),
                 Some(Binding::Struct { struct_id, .. }) => Some(Type::Struct(*struct_id)),
@@ -810,7 +810,7 @@ impl<'a> FunctionLower<'a> {
                 // compiled lanes can hold; `None` reports it.
                 Some(Binding::Range { .. }) => None,
                 Some(Binding::ArrayRef { .. }) => None,
-                None => self.const_values.get(&sym).map(|c| c.ty()),
+                None => self.const_values.get(sym).map(|c| c.ty()),
             },
             _ => self.value_scalar(expr_ref),
         }

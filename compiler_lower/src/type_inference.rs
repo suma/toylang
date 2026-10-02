@@ -46,7 +46,7 @@ impl<'a> FunctionLower<'a> {
         arm: &frontend::ast::MatchArm,
     ) -> Option<Type> {
         use frontend::ast::Pattern;
-        let Expr::Identifier(body_sym) = self.program.expression.get(&arm.body)? else {
+        let Expr::Identifier(body_sym) = self.expr_at(&arm.body)? else {
             return None;
         };
         let Pattern::EnumVariant(_, variant_sym, sub_patterns) = &arm.pattern else {
@@ -54,7 +54,7 @@ impl<'a> FunctionLower<'a> {
         };
         let slot = sub_patterns
             .iter()
-            .position(|p| matches!(p, Pattern::Name(s) if *s == body_sym))?;
+            .position(|p| matches!(p, Pattern::Name(s) if *s == *body_sym))?;
         let enum_id = self.scrutinee_enum_id(scrutinee)?;
         let variant = self
             .module
@@ -82,13 +82,13 @@ impl<'a> FunctionLower<'a> {
         arm: &frontend::ast::MatchArm,
     ) -> Option<Type> {
         use frontend::ast::Pattern;
-        let Expr::Identifier(body_sym) = self.program.expression.get(&arm.body)? else {
+        let Expr::Identifier(body_sym) = self.expr_at(&arm.body)? else {
             return None;
         };
         // `size` and `size @ 0i64` both name the field.
         let names_body = |p: &Pattern| match p {
-            Pattern::Name(s) => *s == body_sym,
-            Pattern::Binding(s, _) => *s == body_sym,
+            Pattern::Name(s) => *s == *body_sym,
+            Pattern::Binding(s, _) => *s == *body_sym,
             _ => false,
         };
         match &arm.pattern {
@@ -132,8 +132,8 @@ impl<'a> FunctionLower<'a> {
     /// identifier or a field-access chain, the two shapes
     /// `classify_match_scrutinee` accepts without lowering anything.
     fn scrutinee_struct_fields(&self, scrutinee: &ExprRef) -> Option<Vec<FieldBinding>> {
-        match self.program.expression.get(scrutinee)? {
-            Expr::Identifier(sym) => match self.bindings.get(&sym)? {
+        match self.expr_at(scrutinee)? {
+            Expr::Identifier(sym) => match self.bindings.get(sym)? {
                 Binding::Struct { fields, .. } => Some(fields.clone()),
                 _ => None,
             },
@@ -150,8 +150,8 @@ impl<'a> FunctionLower<'a> {
         &self,
         scrutinee: &ExprRef,
     ) -> Option<Vec<TupleElementBinding>> {
-        match self.program.expression.get(scrutinee)? {
-            Expr::Identifier(sym) => match self.bindings.get(&sym)? {
+        match self.expr_at(scrutinee)? {
+            Expr::Identifier(sym) => match self.bindings.get(sym)? {
                 Binding::Tuple { elements } => Some(elements.clone()),
                 _ => None,
             },
@@ -166,8 +166,8 @@ impl<'a> FunctionLower<'a> {
     /// The interned enum a match scrutinee produces, when that can be
     /// determined without lowering anything.
     fn scrutinee_enum_id(&self, scrutinee: &ExprRef) -> Option<crate::ir::EnumId> {
-        match self.program.expression.get(scrutinee)? {
-            Expr::Identifier(sym) => match self.bindings.get(&sym)? {
+        match self.expr_at(scrutinee)? {
+            Expr::Identifier(sym) => match self.bindings.get(sym)? {
                 Binding::Enum(storage) => Some(storage.enum_id),
                 _ => None,
             },
@@ -175,7 +175,7 @@ impl<'a> FunctionLower<'a> {
             // takes `&mut self` and would queue a monomorphisation from
             // what is supposed to be a peek.
             Expr::Call(fn_name, _) => {
-                let target = self.lookup_fn_here(None, fn_name)?;
+                let target = self.lookup_fn_here(None, *fn_name)?;
                 match self.module.function(target).return_type {
                     Type::Enum(id) => Some(id),
                     _ => None,
@@ -209,12 +209,12 @@ impl<'a> FunctionLower<'a> {
     ) -> Option<Type> {
         let mut found = None;
         for stmt_ref in stmts {
-            let (bound, annotation, rhs) = match self.program.statement.get(stmt_ref) {
-                Some(Stmt::Val(bound, annotation, rhs)) => (bound, annotation, Some(rhs)),
-                Some(Stmt::Var(bound, annotation, rhs)) => (bound, annotation, rhs),
+            let (bound, annotation, rhs) = match self.stmt_at(stmt_ref) {
+                Some(Stmt::Val(bound, annotation, rhs)) => (bound, annotation, Some(*rhs)),
+                Some(Stmt::Var(bound, annotation, rhs)) => (bound, annotation, *rhs),
                 _ => continue,
             };
-            if bound != name {
+            if *bound != name {
                 continue;
             }
             found = annotation
@@ -233,26 +233,26 @@ impl<'a> FunctionLower<'a> {
         let mut steps: Vec<Result<DefaultSymbol, usize>> = Vec::new();
         let mut cursor = *expr_ref;
         let arr_sym = loop {
-            match self.program.expression.get(&cursor)? {
+            match self.expr_at(&cursor)? {
                 Expr::FieldAccess(inner, field) => {
-                    steps.push(Ok(field));
-                    cursor = inner;
+                    steps.push(Ok(*field));
+                    cursor = *inner;
                 }
                 Expr::TupleAccess(inner, idx) => {
-                    steps.push(Err(idx));
-                    cursor = inner;
+                    steps.push(Err(*idx));
+                    cursor = *inner;
                 }
-                Expr::SliceAccess(obj, _) => match self.program.expression.get(&obj)? {
+                Expr::SliceAccess(obj, _) => match self.expr_at(obj)? {
                     Expr::Identifier(sym) => break sym,
                     _ => return None,
                 },
                 _ => return None,
             }
         };
-        if self.bindings.contains_key(&arr_sym) {
+        if self.bindings.contains_key(arr_sym) {
             return None;
         }
-        let mut decl = self.const_arrays.get(&arr_sym)?.table.as_ref()?.elem_decl.clone();
+        let mut decl = self.const_arrays.get(arr_sym)?.table.as_ref()?.elem_decl.clone();
         for step in steps.iter().rev() {
             decl = match (step, &decl) {
                 (Ok(field), TypeDecl::Struct(name, _) | TypeDecl::Identifier(name)) => {
@@ -273,7 +273,7 @@ impl<'a> FunctionLower<'a> {
     }
 
     pub(super) fn value_scalar(&self, expr_ref: &ExprRef) -> Option<Type> {
-        let e = self.program.expression.get(expr_ref)?;
+        let e = self.expr_at(expr_ref)?;
         match e {
             Expr::Int64(_) => Some(Type::I64),
             Expr::UInt64(_) => Some(Type::U64),
@@ -293,12 +293,12 @@ impl<'a> FunctionLower<'a> {
             // expression takes its value from the body, so peek the
             // body for type inference. This lets `val x = with ... { e }`
             // bind to the right scalar type.
-            Expr::With(_, body) => self.value_scalar(&body),
+            Expr::With(_, body) => self.value_scalar(body),
             // A closure is its environment's address (FN-NAME-AS-VALUE:
             // `if c { twice } else { fn(x: u64) -> u64 { x } }`).
             Expr::Closure { .. } => Some(Type::U64),
-            Expr::Cast(_, target_ty) => lower_scalar(&target_ty),
-            Expr::Identifier(sym) => match self.bindings.get(&sym) {
+            Expr::Cast(_, target_ty) => lower_scalar(target_ty),
+            Expr::Identifier(sym) => match self.bindings.get(sym) {
                 Some(Binding::Scalar { ty, .. }) => Some(*ty),
                 // Compound bindings — surface the IR type so callers
                 // like `__builtin_sizeof(value)` (compute_byte_size
@@ -329,12 +329,12 @@ impl<'a> FunctionLower<'a> {
                 // name yields the value behind it.
                 Some(Binding::RefScalar { pointee_ty, .. }) => Some(*pointee_ty),
                 Some(_) => None,
-                None => self.const_values.get(&sym).map(|c| c.ty()),
+                None => self.const_values.get(sym).map(|c| c.ty()),
             },
             // MODULE-CONST-PATH: `mod::K`, lowered as the const `K`
             // (`lower_expr`'s arm for it says why the bindings are not
             // consulted).
-            Expr::QualifiedIdentifier(ref path)
+            Expr::QualifiedIdentifier(path)
                 if path.len() >= 2
                     && !self.enum_defs.contains_key(&path[0])
                     && path.last().is_some_and(|name| self.const_values.contains_key(name)) =>
@@ -342,7 +342,7 @@ impl<'a> FunctionLower<'a> {
                 path.last().and_then(|name| self.const_values.get(name)).map(|c| c.ty())
             }
             Expr::FieldAccess(obj, field) => {
-                if let Some((_, ty)) = self.range_bound(&obj, field) {
+                if let Some((_, ty)) = self.range_bound(obj, *field) {
                     return Some(ty);
                 }
                 if let Some(ty) = self.const_table_leaf_type(expr_ref) {
@@ -356,14 +356,14 @@ impl<'a> FunctionLower<'a> {
                 if let Ok(Some(leaf)) = self.resolve_array_element_leaf(expr_ref) {
                     return Some(leaf.leaf_ty);
                 }
-                let inner = self.resolve_field_chain(&obj).ok()?;
+                let inner = self.resolve_field_chain(obj).ok()?;
                 let fields = match inner {
                     FieldChainResult::Struct { fields, .. } => fields,
                     FieldChainResult::Scalar { .. }
                     | FieldChainResult::Tuple { .. }
                     | FieldChainResult::Enum(_) => return None,
                 };
-                let field_str = self.interner.resolve(field)?;
+                let field_str = self.interner.resolve(*field)?;
                 fields
                     .iter()
                     .find(|f| f.name == field_str)
@@ -393,10 +393,10 @@ impl<'a> FunctionLower<'a> {
                 if let Ok(Some(leaf)) = self.resolve_array_element_leaf(expr_ref) {
                     return Some(leaf.leaf_ty);
                 }
-                let elements = self.resolve_tuple_chain_elements(&tuple).ok()?;
+                let elements = self.resolve_tuple_chain_elements(tuple).ok()?;
                 elements
                     .iter()
-                    .find(|e| e.index == index)
+                    .find(|e| e.index == *index)
                     .map(|e| match &e.shape {
                         TupleElementShape::Scalar { ty, .. } => *ty,
                         TupleElementShape::Struct { struct_id, .. } => {
@@ -412,7 +412,7 @@ impl<'a> FunctionLower<'a> {
                 // is `&self`), so fall back to looking up the existing
                 // shape if it's already in the IR module's table.
                 let mut element_tys: Vec<Type> = Vec::with_capacity(elems.len());
-                for e in &elems {
+                for e in elems {
                     element_tys.push(self.value_scalar(e)?);
                 }
                 self.module
@@ -427,7 +427,7 @@ impl<'a> FunctionLower<'a> {
                 | Operator::LT
                 | Operator::LE
                 | Operator::GT
-                | Operator::GE => match self.value_scalar(&lhs) {
+                | Operator::GE => match self.value_scalar(lhs) {
                     // SIMD: a lane-wise comparison produces a mask,
                     // not one `bool` — the lane count is the number of
                     // answers.
@@ -435,18 +435,18 @@ impl<'a> FunctionLower<'a> {
                     _ => Some(Type::Bool),
                 },
                 Operator::LogicalAnd | Operator::LogicalOr => Some(Type::Bool),
-                _ => self.value_scalar(&lhs),
+                _ => self.value_scalar(lhs),
             },
             Expr::Unary(op, operand) => match op {
                 UnaryOp::LogicalNot => Some(Type::Bool),
-                _ => self.value_scalar(&operand),
+                _ => self.value_scalar(operand),
             },
             Expr::Block(stmts) => {
                 let last = stmts.last()?;
-                let Some(Stmt::Expression(tail)) = self.program.statement.get(last) else {
+                let Some(Stmt::Expression(tail)) = self.stmt_at(last) else {
                     return None;
                 };
-                if let Some(ty) = self.value_scalar(&tail) {
+                if let Some(ty) = self.value_scalar(tail) {
                     return Some(ty);
                 }
                 // AOT-MATCH-ARM-BLOCK: the tail may be a name the
@@ -462,12 +462,12 @@ impl<'a> FunctionLower<'a> {
                 // interpreter runs. Recorded as
                 // AOT-MATCH-STR-ARM-BLOCK, which named the type it
                 // was first met with rather than the shape.
-                let Some(Expr::Identifier(name)) = self.program.expression.get(&tail) else {
+                let Some(Expr::Identifier(name)) = self.expr_at(tail) else {
                     return None;
                 };
-                self.block_binding_type(&stmts, name)
+                self.block_binding_type(stmts, *name)
             }
-            Expr::IfElifElse(_, then_body, _, _) => self.value_scalar(&then_body),
+            Expr::IfElifElse(_, then_body, _, _) => self.value_scalar(then_body),
             Expr::Match(scrutinee, arms) => {
                 // An arm body that stands on its own: a literal, a call,
                 // an expression over bindings from an enclosing scope.
@@ -483,10 +483,10 @@ impl<'a> FunctionLower<'a> {
                 // and a `val` over it is rejected, even though lowering
                 // would have handled it.
                 arms.iter()
-                    .find_map(|a| self.arm_payload_binding_type(&scrutinee, a))
+                    .find_map(|a| self.arm_payload_binding_type(scrutinee, a))
                     .or_else(|| {
                         arms.iter()
-                            .find_map(|a| self.arm_compound_binding_type(&scrutinee, a))
+                            .find_map(|a| self.arm_compound_binding_type(scrutinee, a))
                     })
             }
             Expr::Call(fn_name, args_ref) => {
@@ -496,7 +496,7 @@ impl<'a> FunctionLower<'a> {
                 // map first so `val r = f(x)` infers correctly
                 // even when `f` isn't a top-level function.
                 if let Some(super::bindings::Binding::FunctionPtr { ret_ty, .. }) =
-                    self.bindings.get(&fn_name)
+                    self.bindings.get(fn_name)
                 {
                     return Some(*ret_ty);
                 }
@@ -504,9 +504,9 @@ impl<'a> FunctionLower<'a> {
                 // same name, so it is consulted first -- same order as
                 // `resolve_call_target`, which decides the actual callee.
                 self.closure_bindings
-                    .get(&fn_name)
+                    .get(fn_name)
                     .map(|link| link.func_id)
-                    .or_else(|| self.lookup_fn_here(None, fn_name))
+                    .or_else(|| self.lookup_fn_here(None, *fn_name))
                     .map(|id| self.module.function(id).return_type)
                     // A generic template is *not* in the function index
                     // (its instances are registered under the mangled
@@ -517,8 +517,8 @@ impl<'a> FunctionLower<'a> {
                     // so the inference is guaranteed to succeed when
                     // the program type-checked.
                     .or_else(|| {
-                        let template = self.generic_funcs.get(&fn_name)?;
-                        let arg_exprs = match self.program.expression.get(&args_ref) {
+                        let template = self.generic_funcs.get(fn_name)?;
+                        let arg_exprs = match self.expr_at(args_ref) {
                             Some(Expr::ExprList(items)) => items,
                             _ => return None,
                         };
@@ -599,17 +599,17 @@ impl<'a> FunctionLower<'a> {
                 // a type parameter, and for a primitive `T` the impl
                 // lives under the canonical name symbol.
                 let struct_name = self
-                    .concrete_type_param_name(struct_name)
-                    .unwrap_or(struct_name);
+                    .concrete_type_param_name(*struct_name)
+                    .unwrap_or(*struct_name);
                 let written = self.written_qualifier_at(Some(expr_ref), struct_name);
                 self.module
-                    .lookup_function(Some(&written), fn_name)
-                    .or_else(|| self.lookup_fn_here(None, fn_name))
+                    .lookup_function(Some(&written), *fn_name)
+                    .or_else(|| self.lookup_fn_here(None, *fn_name))
                     .or_else(|| {
                         crate::method_registry::lookup_method_func(
                             self.method_func_ids,
                             struct_name,
-                            fn_name,
+                            *fn_name,
                             &[],
                         )
                     })
@@ -621,7 +621,7 @@ impl<'a> FunctionLower<'a> {
                 // `type_checker::simd::stamp_simd_result_types`;
                 // everything else reads it off an argument.
                 frontend::ast::BuiltinFunction::Simd(op) => {
-                    self.simd_result_type(&op, &args)
+                    self.simd_result_type(op, args)
                 }
                 frontend::ast::BuiltinFunction::Abs => {
                     // Polymorphic: forwards the operand's type.
@@ -648,7 +648,7 @@ impl<'a> FunctionLower<'a> {
                 // here; that read goes through the per-leaf path in
                 // `let_lowering.rs` and never asks this.
                 frontend::ast::BuiltinFunction::PtrReadTyped(ty) => {
-                    self.lower_scalar_with_subst(&ty)
+                    self.lower_scalar_with_subst(ty)
                 }
                 // #121 Phase B-min: allocator handles are u64
                 // sentinel values.
@@ -700,7 +700,7 @@ impl<'a> FunctionLower<'a> {
                 if !matches!(info.slice_type, frontend::ast::SliceType::SingleElement) {
                     return None;
                 }
-                let obj_expr = self.program.expression.get(&obj)?;
+                let obj_expr = self.expr_at(obj)?;
                 let arr_sym = match obj_expr {
                     Expr::Identifier(s) => s,
                     _ => return None,
@@ -710,13 +710,13 @@ impl<'a> FunctionLower<'a> {
                 // `println(K[2u64])` failed on "accepts only scalar
                 // values", which is about the *print*, not about the
                 // index that could not be typed.
-                if !self.bindings.contains_key(&arr_sym)
-                    && let Some(array) = self.const_arrays.get(&arr_sym)
+                if !self.bindings.contains_key(arr_sym)
+                    && let Some(array) = self.const_arrays.get(arr_sym)
                     && array.table.is_none()
                 {
                     return Some(array.elem_ty);
                 }
-                match self.bindings.get(&arr_sym)? {
+                match self.bindings.get(arr_sym)? {
                     Binding::Array { element_ty, .. }
                     | Binding::ArrayRef { element_ty, .. } => Some(*element_ty),
                     // POINTER P2: `p[i]` on a struct / enum binding
@@ -754,8 +754,8 @@ impl<'a> FunctionLower<'a> {
                 // call sites like `x.abs() as u64` without needing an
                 // intermediate `val: i64` annotation.
                 if args.is_empty()
-                    && let Some(name) = self.interner.resolve(method)
-                        && let Some(recv_ty) = self.value_scalar(&obj) {
+                    && let Some(name) = self.interner.resolve(*method)
+                        && let Some(recv_ty) = self.value_scalar(obj) {
                             match (name, recv_ty) {
                                 ("abs", Type::I64) => return Some(Type::I64),
                                 ("abs", Type::F64) => return Some(Type::F64),
@@ -772,13 +772,13 @@ impl<'a> FunctionLower<'a> {
                 // typically `Expr::String` (the leading literal),
                 // not an `Identifier`, which the binding-based
                 // path below doesn't handle.
-                if let Some(name) = self.interner.resolve(method)
+                if let Some(name) = self.interner.resolve(*method)
                     && name == "concat" && args.len() == 1
-                        && let Some(recv_ty) = self.value_scalar(&obj)
+                        && let Some(recv_ty) = self.value_scalar(obj)
                             && matches!(recv_ty, Type::Str) {
                                 return Some(Type::Str);
                             }
-                let obj_expr = self.program.expression.get(&obj)?;
+                let obj_expr = self.expr_at(obj)?;
                 // A compound-typed field / element receiver
                 // (`x.name.to_str()`) resolves through the same leaf
                 // tree a field read walks. Without this, `println(v)`
@@ -788,7 +788,7 @@ impl<'a> FunctionLower<'a> {
                 // scalar values" — about a call the user never wrote.
                 if matches!(obj_expr, Expr::FieldAccess(_, _) | Expr::TupleAccess(_, _)) {
                     let FieldChainResult::Struct { struct_id, .. } =
-                        self.resolve_field_chain(&obj).ok()?
+                        self.resolve_field_chain(obj).ok()?
                     else {
                         return None;
                     };
@@ -796,8 +796,8 @@ impl<'a> FunctionLower<'a> {
                     return self.method_call_return_type(
                         def.base_name,
                         Some((Type::Struct(struct_id), def.type_args.clone())),
-                        method,
-                        &args,
+                        *method,
+                        args,
                     );
                 }
                 // A primitive receiver that is not a name — a literal
@@ -809,17 +809,17 @@ impl<'a> FunctionLower<'a> {
                 // type for `as` cast", about a receiver the user can
                 // see the type of.
                 let Expr::Identifier(recv_sym) = obj_expr else {
-                    let ty = self.value_scalar(&obj)?;
+                    let ty = self.value_scalar(obj)?;
                     let target_sym =
                         super::method_call::primitive_target_sym_for_ir_type(ty, self.interner)?;
-                    return self.method_call_return_type(target_sym, None, method, &args);
+                    return self.method_call_return_type(target_sym, None, *method, args);
                 };
                 // Track receiver self-type and per-receiver type
                 // args separately so the generic-method peek path
                 // below can handle struct AND enum receivers
                 // uniformly.
                 let (target_sym, recv_self): (DefaultSymbol, Option<(Type, Vec<Type>)>) =
-                    match self.bindings.get(&recv_sym)? {
+                    match self.bindings.get(recv_sym)? {
                         Binding::Struct { struct_id, .. } => {
                             let def = self.module.struct_def(*struct_id);
                             (
@@ -855,7 +855,7 @@ impl<'a> FunctionLower<'a> {
                         }
                         _ => return None,
                     };
-                self.method_call_return_type(target_sym, recv_self, method, &args)
+                self.method_call_return_type(target_sym, recv_self, *method, args)
             }
             _ => None,
         }

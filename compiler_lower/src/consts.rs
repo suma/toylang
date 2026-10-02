@@ -94,7 +94,7 @@ fn eval_const_array(
     interner: &DefaultStringInterner,
     struct_defs: &crate::templates::StructDefs,
 ) -> Result<Option<ConstArray>, String> {
-    let Some(Expr::ArrayLiteral(items)) = program.expression.get(&decl.value) else {
+    let Some(Expr::ArrayLiteral(items)) = program.expression.get_ref(&decl.value) else {
         return Ok(None);
     };
     let name = interner.resolve(decl.name).unwrap_or("?");
@@ -104,7 +104,7 @@ fn eval_const_array(
         && crate::types::lower_scalar(elem_decl).is_none()
     {
         let mut elements = Vec::with_capacity(items.len());
-        for item in &items {
+        for item in items {
             let mut leaves = Vec::new();
             if !flatten_const(item, elem_decl, program, values, interner, struct_defs, &mut leaves) {
                 return Err(format!(
@@ -143,7 +143,7 @@ fn eval_const_array(
         format!("compiler MVP: `const {name}` has elements with no fixed width")
     })?;
     let mut bytes = Vec::with_capacity(items.len() * stride as usize);
-    for item in &items {
+    for item in items {
         let value = eval_const_expr(item, program, values, interner).ok_or_else(|| {
             format!(
                 "compiler MVP cannot evaluate an element of `const {name}`: only literal                  values and references to earlier consts are supported"
@@ -184,7 +184,7 @@ fn flatten_const(
             None => false,
         };
     }
-    match (decl, program.expression.get(expr)) {
+    match (decl, program.expression.get_ref(expr)) {
         (TypeDecl::Tuple(types), Some(Expr::TupleLiteral(elems))) if types.len() == elems.len() => {
             types.iter().zip(elems.iter()).all(|(t, e)| {
                 flatten_const(e, t, program, values, interner, struct_defs, out)

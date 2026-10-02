@@ -32,7 +32,7 @@ use crate::ast::module_interface::ModuleInterface;
 ///
 /// Mismatched versions are treated as a cache miss by
 /// [`load_full_module`].
-pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 67;
+pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 68;
 // v2: `File` gained `id` (JIT cache key) and `tests` (LLM-LOOP P4).
 // v3: `BuiltinFunctionSymbols` interns the MEMORY_PROFILING M4 counter
 // names, shifting every later symbol id.
@@ -114,6 +114,8 @@ pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 67;
 // unchanged module would be read back against the old intern order
 // (the same reason convert.t bumped v9). See
 // `design-docs/MODULE_SYSTEM.md`.
+// v68: AST-BORROW -- `ExprPool` / `StmtPool` store `Vec<Expr>` / `Vec<Stmt>`
+//      instead of one column per field.
 // v67: a cast interns `__enum_cast` for the enum-cast rewrite.
 // v66: MATCH-TEMP-EXIT-LEAK -- a `match` / `if val` / `while val` /
 //      `for x in` over a call binds the call to `__match_N` first.

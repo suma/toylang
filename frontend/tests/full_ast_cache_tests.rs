@@ -348,7 +348,20 @@ fn test_full_ast_roundtrip_preserves_interner_resolution() {
 
     // For every symbol in the original AST that points at a string,
     // both interners must resolve to the same string.
-    for sym in snap.file.expression.symbol_val.iter().flatten() {
+    let expr_syms: Vec<_> = (0..snap.file.expression.len())
+        .filter_map(|i| match snap.file.expression.get_ref(&frontend::ast::ExprRef(i as u32)) {
+            Some(
+                frontend::ast::Expr::Identifier(s)
+                | frontend::ast::Expr::String(s)
+                | frontend::ast::Expr::Number(s)
+                | frontend::ast::Expr::Call(s, _)
+                | frontend::ast::Expr::FieldAccess(_, s)
+                | frontend::ast::Expr::MethodCall(_, s, _),
+            ) => Some(*s),
+            _ => None,
+        })
+        .collect();
+    for sym in &expr_syms {
         let original = snap.interner.resolve(*sym).unwrap();
         let after = decoded.interner.resolve(*sym).unwrap();
         assert_eq!(

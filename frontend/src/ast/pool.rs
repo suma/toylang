@@ -1,13 +1,7 @@
-use std::rc::Rc;
-use string_interner::DefaultSymbol;
 use crate::type_checker::{AcceptableExpr, TypeCheckError, SourceLocation};
 use crate::type_decl::TypeDecl;
 use crate::visitor::ExprVisitor;
-use super::{
-    Expr, Stmt, Operator, UnaryOp, SliceInfo, MatchArm, EnumVariantDef,
-    BuiltinMethod, BuiltinFunction,
-    StructField, Visibility, MethodFunction, TraitMethodSignature, ParameterList,
-};
+use super::{Expr, Stmt};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -120,708 +114,59 @@ pub enum StmtType {
     TypeAlias = 12,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+/// Every expression of a program, addressed by [`ExprRef`].
+///
+/// Stored as the `Expr` values themselves. Until AST-BORROW this was one
+/// column per field (`lhs`, `rhs`, `expr_list`, ...), and `get` assembled
+/// an owned `Expr` on every call -- cloning its child lists -- because
+/// there was no `Expr` in memory to lend. [`Self::get_ref`] lends one; a
+/// pass that only reads should use it.
+#[derive(Debug, PartialEq, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ExprPool {
-    // Multiarray list - each field has its own Vec
-    // Expression type discriminant
-    pub expr_types: Vec<ExprType>,
-
-    // Common fields used across multiple expression types
-    pub lhs: Vec<Option<ExprRef>>,           // Left-hand side for binary, assign, etc.
-    pub rhs: Vec<Option<ExprRef>>,           // Right-hand side for binary, assign, etc.
-    pub operand: Vec<Option<ExprRef>>,       // Operand for unary operations
-    pub operator: Vec<Option<Operator>>,     // Binary operators
-    pub unary_op: Vec<Option<UnaryOp>>,      // Unary operators
-
-    // Value fields
-    pub int64_val: Vec<Option<i64>>,
-    pub uint64_val: Vec<Option<u64>>,
-    pub float64_val: Vec<Option<f64>>,
-    pub float32_val: Vec<Option<f32>>,
-    pub symbol_val: Vec<Option<DefaultSymbol>>,    // For identifiers, strings, numbers, function names, etc.
-    pub boolean_val: Vec<Option<bool>>,            // For true/false
-
-    // Collection fields
-    pub expr_list: Vec<Option<Vec<ExprRef>>>,      // For expression lists, array literals, etc.
-    pub stmt_list: Vec<Option<Vec<StmtRef>>>,      // For blocks
-    pub symbol_list: Vec<Option<Vec<DefaultSymbol>>>,  // For qualified identifiers
-    pub field_list: Vec<Option<Vec<(DefaultSymbol, ExprRef)>>>,  // For struct literals
-    pub entry_list: Vec<Option<Vec<(ExprRef, ExprRef)>>>,  // For dict literals, elif pairs
-
-    // Special fields
-    pub builtin_method: Vec<Option<BuiltinMethod>>,
-    pub builtin_function: Vec<Option<BuiltinFunction>>,
-    pub index_val: Vec<Option<usize>>,             // For tuple access
-    pub third_operand: Vec<Option<ExprRef>>,       // For index assign (value), if-elif-else (else block)
-    pub slice_info: Vec<Option<SliceInfo>>,        // For slice access
-    pub target_type: Vec<Option<TypeDecl>>,        // For cast expressions
-    pub match_arms: Vec<Option<Vec<MatchArm>>>,  // For match expressions
-    /// Closure parameter list (one entry per closure expression).
-    /// Reuses `target_type` for the closure's optional declared return
-    /// type and `lhs` for the body `ExprRef`. Kept as a separate
-    /// parallel array because no other variant needs `ParameterList`.
-    pub closure_params: Vec<Option<ParameterList>>,
-}
-
-impl Default for ExprPool {
-    fn default() -> Self {
-        Self::new()
-    }
+    exprs: Vec<Expr>,
 }
 
 impl ExprPool {
     pub fn new() -> ExprPool {
-        ExprPool {
-            expr_types: Vec::new(),
-            lhs: Vec::new(),
-            rhs: Vec::new(),
-            operand: Vec::new(),
-            operator: Vec::new(),
-            unary_op: Vec::new(),
-            int64_val: Vec::new(),
-            uint64_val: Vec::new(),
-            float64_val: Vec::new(),
-            float32_val: Vec::new(),
-            symbol_val: Vec::new(),
-            boolean_val: Vec::new(),
-            expr_list: Vec::new(),
-            stmt_list: Vec::new(),
-            symbol_list: Vec::new(),
-            field_list: Vec::new(),
-            entry_list: Vec::new(),
-            builtin_method: Vec::new(),
-            builtin_function: Vec::new(),
-            index_val: Vec::new(),
-            third_operand: Vec::new(),
-            slice_info: Vec::new(),
-            target_type: Vec::new(),
-            match_arms: Vec::new(),
-            closure_params: Vec::new(),
-        }
+        ExprPool { exprs: Vec::new() }
     }
 
     pub fn with_capacity(cap: usize) -> ExprPool {
-        ExprPool {
-            expr_types: Vec::with_capacity(cap),
-            lhs: Vec::with_capacity(cap),
-            rhs: Vec::with_capacity(cap),
-            operand: Vec::with_capacity(cap),
-            operator: Vec::with_capacity(cap),
-            unary_op: Vec::with_capacity(cap),
-            int64_val: Vec::with_capacity(cap),
-            uint64_val: Vec::with_capacity(cap),
-            float64_val: Vec::with_capacity(cap),
-            float32_val: Vec::with_capacity(cap),
-            symbol_val: Vec::with_capacity(cap),
-            boolean_val: Vec::with_capacity(cap),
-            expr_list: Vec::with_capacity(cap),
-            stmt_list: Vec::with_capacity(cap),
-            symbol_list: Vec::with_capacity(cap),
-            field_list: Vec::with_capacity(cap),
-            entry_list: Vec::with_capacity(cap),
-            builtin_method: Vec::with_capacity(cap),
-            builtin_function: Vec::with_capacity(cap),
-            index_val: Vec::with_capacity(cap),
-            third_operand: Vec::with_capacity(cap),
-            slice_info: Vec::with_capacity(cap),
-            target_type: Vec::with_capacity(cap),
-            match_arms: Vec::with_capacity(cap),
-            closure_params: Vec::with_capacity(cap),
-        }
-    }
-
-    fn extend_to_index(&mut self, index: usize) {
-        let current_len = self.expr_types.len();
-        if index >= current_len {
-            let extend_count = index + 1 - current_len;
-            self.expr_types.resize(index + 1, ExprType::Null);
-            self.lhs.resize(current_len + extend_count, None);
-            self.rhs.resize(current_len + extend_count, None);
-            self.operand.resize(current_len + extend_count, None);
-            self.operator.resize(current_len + extend_count, None);
-            self.unary_op.resize(current_len + extend_count, None);
-            self.int64_val.resize(current_len + extend_count, None);
-            self.uint64_val.resize(current_len + extend_count, None);
-            self.float64_val.resize(current_len + extend_count, None);
-            self.float32_val.resize(current_len + extend_count, None);
-            self.symbol_val.resize(current_len + extend_count, None);
-            self.boolean_val.resize(current_len + extend_count, None);
-            self.expr_list.resize(current_len + extend_count, None);
-            self.stmt_list.resize(current_len + extend_count, None);
-            self.symbol_list.resize(current_len + extend_count, None);
-            self.field_list.resize(current_len + extend_count, None);
-            self.entry_list.resize(current_len + extend_count, None);
-            self.builtin_method.resize(current_len + extend_count, None);
-            self.builtin_function.resize(current_len + extend_count, None);
-            self.index_val.resize(current_len + extend_count, None);
-            self.third_operand.resize(current_len + extend_count, None);
-            self.slice_info.resize(current_len + extend_count, None);
-            self.target_type.resize(current_len + extend_count, None);
-            self.match_arms.resize(current_len + extend_count, None);
-            self.closure_params.resize(current_len + extend_count, None);
-        }
+        ExprPool { exprs: Vec::with_capacity(cap) }
     }
 
     pub fn add(&mut self, expr: Expr) -> ExprRef {
-        let index = self.expr_types.len();
-        self.extend_to_index(index);
-        self.populate_expr_slot(index, expr);
+        let index = self.exprs.len();
+        self.exprs.push(expr);
         ExprRef(index as u32)
     }
 
-    /// POOL-DEDUP: per-variant dispatch shared by `add` (extends the
-    /// pool then writes) and `update` (clears then writes). Sets
-    /// `expr_types[index]` plus the variant's data columns; assumes
-    /// the slot is freshly allocated or freshly cleared (no
-    /// pre-existing values to reset). Adding a new `Expr` variant
-    /// requires one new arm here instead of two.
-    fn populate_expr_slot(&mut self, index: usize, expr: Expr) {
-        match expr {
-            Expr::Assign(lhs, rhs) => {
-                self.expr_types[index] = ExprType::Assign;
-                self.lhs[index] = Some(lhs);
-                self.rhs[index] = Some(rhs);
-            }
-            Expr::IfElifElse(cond, if_block, elif_pairs, else_block) => {
-                self.expr_types[index] = ExprType::IfElifElse;
-                self.lhs[index] = Some(cond);
-                self.rhs[index] = Some(if_block);
-                self.entry_list[index] = Some(elif_pairs);
-                self.third_operand[index] = Some(else_block);
-            }
-            Expr::Binary(op, lhs, rhs) => {
-                self.expr_types[index] = ExprType::Binary;
-                self.operator[index] = Some(op);
-                self.lhs[index] = Some(lhs);
-                self.rhs[index] = Some(rhs);
-            }
-            Expr::Unary(op, operand) => {
-                self.expr_types[index] = ExprType::Unary;
-                self.unary_op[index] = Some(op);
-                self.operand[index] = Some(operand);
-            }
-            Expr::Block(statements) => {
-                self.expr_types[index] = ExprType::Block;
-                self.stmt_list[index] = Some(statements);
-            }
-            Expr::True => {
-                self.expr_types[index] = ExprType::True;
-                self.boolean_val[index] = Some(true);
-            }
-            Expr::False => {
-                self.expr_types[index] = ExprType::False;
-                self.boolean_val[index] = Some(false);
-            }
-            Expr::Float64(value) => {
-                self.expr_types[index] = ExprType::Float64;
-                self.float64_val[index] = Some(value);
-            }
-            Expr::Float32(value) => {
-                self.expr_types[index] = ExprType::Float32;
-                self.float32_val[index] = Some(value);
-            }
-            Expr::Int64(value) => {
-                self.expr_types[index] = ExprType::Int64;
-                self.int64_val[index] = Some(value);
-            }
-            Expr::UInt64(value) => {
-                self.expr_types[index] = ExprType::UInt64;
-                self.uint64_val[index] = Some(value);
-            }
-            // NUM-W narrow ints share the int64_val / uint64_val
-            // storage; the discriminant captures the actual width
-            // so `get` can reconstruct the right Expr variant.
-            Expr::Int8(value) => {
-                self.expr_types[index] = ExprType::Int8;
-                self.int64_val[index] = Some(value as i64);
-            }
-            Expr::Int16(value) => {
-                self.expr_types[index] = ExprType::Int16;
-                self.int64_val[index] = Some(value as i64);
-            }
-            Expr::Int32(value) => {
-                self.expr_types[index] = ExprType::Int32;
-                self.int64_val[index] = Some(value as i64);
-            }
-            Expr::UInt8(value) => {
-                self.expr_types[index] = ExprType::UInt8;
-                self.uint64_val[index] = Some(value as u64);
-            }
-            Expr::UInt16(value) => {
-                self.expr_types[index] = ExprType::UInt16;
-                self.uint64_val[index] = Some(value as u64);
-            }
-            Expr::UInt32(value) => {
-                self.expr_types[index] = ExprType::UInt32;
-                self.uint64_val[index] = Some(value as u64);
-            }
-            Expr::CharLiteral(value) => {
-                self.expr_types[index] = ExprType::CharLiteral;
-                self.uint64_val[index] = Some(value as u64);
-            }
-            Expr::Number(symbol) => {
-                self.expr_types[index] = ExprType::Number;
-                self.symbol_val[index] = Some(symbol);
-            }
-            Expr::Identifier(symbol) => {
-                self.expr_types[index] = ExprType::Identifier;
-                self.symbol_val[index] = Some(symbol);
-            }
-            Expr::Null => {
-                self.expr_types[index] = ExprType::Null;
-            }
-            Expr::ExprList(exprs) => {
-                self.expr_types[index] = ExprType::ExprList;
-                self.expr_list[index] = Some(exprs);
-            }
-            Expr::Call(fn_name, args) => {
-                // Note: Call stores its args ExprRef in `operand`, not
-                // `rhs`. Earlier the `update` path mistakenly wrote to
-                // `rhs`, leaving the slot half-populated; the dedup
-                // resolves that drift by going through this single
-                // dispatch.
-                self.expr_types[index] = ExprType::Call;
-                self.symbol_val[index] = Some(fn_name);
-                self.operand[index] = Some(args);
-            }
-            Expr::String(symbol) => {
-                self.expr_types[index] = ExprType::String;
-                self.symbol_val[index] = Some(symbol);
-            }
-            Expr::ArrayLiteral(elements) => {
-                self.expr_types[index] = ExprType::ArrayLiteral;
-                self.expr_list[index] = Some(elements);
-            }
-            Expr::FieldAccess(object, field) => {
-                self.expr_types[index] = ExprType::FieldAccess;
-                self.lhs[index] = Some(object);
-                self.symbol_val[index] = Some(field);
-            }
-            Expr::MethodCall(object, method, args) => {
-                self.expr_types[index] = ExprType::MethodCall;
-                self.lhs[index] = Some(object);
-                self.symbol_val[index] = Some(method);
-                self.expr_list[index] = Some(args);
-            }
-            Expr::StructLiteral(type_name, fields) => {
-                self.expr_types[index] = ExprType::StructLiteral;
-                self.symbol_val[index] = Some(type_name);
-                self.field_list[index] = Some(fields);
-            }
-            Expr::QualifiedIdentifier(path) => {
-                self.expr_types[index] = ExprType::QualifiedIdentifier;
-                self.symbol_list[index] = Some(path);
-            }
-            Expr::BuiltinMethodCall(receiver, method, args) => {
-                self.expr_types[index] = ExprType::BuiltinMethodCall;
-                self.lhs[index] = Some(receiver);
-                self.builtin_method[index] = Some(method);
-                self.expr_list[index] = Some(args);
-            }
-            Expr::BuiltinCall(func, args) => {
-                self.expr_types[index] = ExprType::BuiltinCall;
-                self.builtin_function[index] = Some(func);
-                self.expr_list[index] = Some(args);
-            }
-            Expr::SliceAssign(object, start_expr, end_expr, value) => {
-                self.expr_types[index] = ExprType::SliceAssign;
-                self.lhs[index] = Some(object);
-                self.rhs[index] = start_expr;
-                self.operand[index] = end_expr;
-                self.third_operand[index] = Some(value);
-            }
-            Expr::AssociatedFunctionCall(struct_name, function_name, args) => {
-                self.expr_types[index] = ExprType::AssociatedFunctionCall;
-                self.symbol_list[index] = Some(vec![struct_name, function_name]);
-                self.expr_list[index] = Some(args);
-            }
-            Expr::SliceAccess(object, slice_info) => {
-                self.expr_types[index] = ExprType::SliceAccess;
-                self.lhs[index] = Some(object);
-                self.slice_info[index] = Some(slice_info);
-            }
-            Expr::DictLiteral(entries) => {
-                self.expr_types[index] = ExprType::DictLiteral;
-                self.entry_list[index] = Some(entries);
-            }
-            Expr::TupleLiteral(elements) => {
-                self.expr_types[index] = ExprType::TupleLiteral;
-                self.expr_list[index] = Some(elements);
-            }
-            Expr::TupleAccess(tuple, index_val) => {
-                self.expr_types[index] = ExprType::TupleAccess;
-                self.lhs[index] = Some(tuple);
-                self.index_val[index] = Some(index_val);
-            }
-            Expr::Cast(expr, type_decl) => {
-                self.expr_types[index] = ExprType::Cast;
-                self.lhs[index] = Some(expr);
-                self.target_type[index] = Some(type_decl);
-            }
-            Expr::With(allocator, body) => {
-                self.expr_types[index] = ExprType::With;
-                self.lhs[index] = Some(allocator);
-                self.rhs[index] = Some(body);
-            }
-            Expr::Match(scrutinee, arms) => {
-                self.expr_types[index] = ExprType::Match;
-                self.lhs[index] = Some(scrutinee);
-                self.match_arms[index] = Some(arms);
-            }
-            Expr::Range(start, end) => {
-                self.expr_types[index] = ExprType::Range;
-                self.lhs[index] = Some(start);
-                self.rhs[index] = Some(end);
-            }
-            Expr::Closure { params, return_type, body, captures_by_ref } => {
-                // body ExprRef stored in lhs; declared return type
-                // (optional) in target_type; params in the dedicated
-                // closure_params slot; the E3 capture mode in the
-                // shared `boolean_val` column (no other variant that
-                // reaches this arm uses it).
-                self.expr_types[index] = ExprType::Closure;
-                self.lhs[index] = Some(body);
-                self.target_type[index] = return_type;
-                self.closure_params[index] = Some(params);
-                self.boolean_val[index] = Some(captures_by_ref);
-            }
-            Expr::StructUpdate { type_name, fields, base, base_binding } => {
-                // Same columns as `StructLiteral` (name + written
-                // fields), plus `lhs` for the base expression and a
-                // one-element `symbol_list` for the synthetic binding.
-                self.expr_types[index] = ExprType::StructUpdate;
-                self.symbol_val[index] = Some(type_name);
-                self.field_list[index] = Some(fields);
-                self.lhs[index] = Some(base);
-                self.symbol_list[index] = Some(vec![base_binding]);
-            }
-            Expr::Try { inner, scrutinee_binding, success_binding, error_binding, panic_msg, converted_binding, result_binding } => {
-                // `lhs` holds the inner expression; the six synthetic
-                // symbols are packed into `symbol_list` in a fixed
-                // order (scrutinee, success, error, panic_msg,
-                // converted, result) so `get` can reconstruct the
-                // struct variant without needing a dedicated column.
-                self.expr_types[index] = ExprType::Try;
-                self.lhs[index] = Some(inner);
-                self.symbol_list[index] = Some(vec![
-                    scrutinee_binding,
-                    success_binding,
-                    error_binding,
-                    panic_msg,
-                    converted_binding,
-                    result_binding,
-                ]);
-            }
-            Expr::NullCoalesce { lhs, rhs, scrutinee_binding, success_binding, error_binding } => {
-                // Same packing scheme as `Try`: both operands live in
-                // the lhs / rhs columns and the three synthetic
-                // binding symbols in `symbol_list` (scrutinee,
-                // success, error) so `get` can reconstruct without a
-                // dedicated column.
-                self.expr_types[index] = ExprType::NullCoalesce;
-                self.lhs[index] = Some(lhs);
-                self.rhs[index] = Some(rhs);
-                self.symbol_list[index] = Some(vec![
-                    scrutinee_binding,
-                    success_binding,
-                    error_binding,
-                ]);
-            }
-        }
-    }
-
-    /// POOL-DEDUP: reset every per-variant data column at `index` to
-    /// `None` so `populate_expr_slot` can write the new variant
-    /// without leaving stale fields from the old one. Consumed only
-    /// by `update`; `add` operates on freshly extended slots whose
-    /// columns are already None from `extend_to_index`.
-    fn clear_expr_slot(&mut self, index: usize) {
-        self.lhs[index] = None;
-        self.rhs[index] = None;
-        self.operand[index] = None;
-        self.operator[index] = None;
-        self.unary_op[index] = None;
-        self.int64_val[index] = None;
-        self.uint64_val[index] = None;
-        self.float64_val[index] = None;
-        self.float32_val[index] = None;
-        self.symbol_val[index] = None;
-        self.boolean_val[index] = None;
-        self.expr_list[index] = None;
-        self.stmt_list[index] = None;
-        self.symbol_list[index] = None;
-        self.field_list[index] = None;
-        self.entry_list[index] = None;
-        self.builtin_method[index] = None;
-        self.builtin_function[index] = None;
-        self.index_val[index] = None;
-        self.third_operand[index] = None;
-        self.match_arms[index] = None;
-        self.closure_params[index] = None;
-        self.target_type[index] = None;
-    }
-
+    /// The expression at `expr_ref`, owned. Clones its child lists; a
+    /// caller that only reads should take [`Self::get_ref`].
     pub fn get(&self, expr_ref: &ExprRef) -> Option<Expr> {
-        let index = expr_ref.to_index();
-        if index >= self.expr_types.len() {
-            return None;
-        }
+        self.get_ref(expr_ref).cloned()
+    }
 
-        match self.expr_types[index] {
-            ExprType::Assign => {
-                Some(Expr::Assign(
-                    self.lhs[index]?,
-                    self.rhs[index]?,
-                ))
-            }
-            ExprType::IfElifElse => {
-                Some(Expr::IfElifElse(
-                    self.lhs[index]?,
-                    self.rhs[index]?,
-                    self.entry_list[index].clone()?,
-                    self.third_operand[index]?,
-                ))
-            }
-            ExprType::Binary => {
-                Some(Expr::Binary(
-                    self.operator[index].clone()?,
-                    self.lhs[index]?,
-                    self.rhs[index]?,
-                ))
-            }
-            ExprType::Unary => {
-                Some(Expr::Unary(
-                    self.unary_op[index].clone()?,
-                    self.operand[index]?,
-                ))
-            }
-            ExprType::Block => {
-                Some(Expr::Block(self.stmt_list[index].clone()?))
-            }
-            ExprType::True => Some(Expr::True),
-            ExprType::False => Some(Expr::False),
-            ExprType::Int64 => {
-                Some(Expr::Int64(self.int64_val[index]?))
-            }
-            ExprType::Float64 => {
-                Some(Expr::Float64(self.float64_val[index]?))
-            }
-            ExprType::Float32 => {
-                Some(Expr::Float32(self.float32_val[index]?))
-            }
-            ExprType::UInt64 => {
-                Some(Expr::UInt64(self.uint64_val[index]?))
-            }
-            // NUM-W narrow int reconstruction. Storage is the
-            // shared int64_val / uint64_val slot; we truncate
-            // back to the discriminant's width.
-            ExprType::Int8 => Some(Expr::Int8(self.int64_val[index]? as i8)),
-            ExprType::Int16 => Some(Expr::Int16(self.int64_val[index]? as i16)),
-            ExprType::Int32 => Some(Expr::Int32(self.int64_val[index]? as i32)),
-            ExprType::UInt8 => Some(Expr::UInt8(self.uint64_val[index]? as u8)),
-            ExprType::UInt16 => Some(Expr::UInt16(self.uint64_val[index]? as u16)),
-            ExprType::UInt32 => Some(Expr::UInt32(self.uint64_val[index]? as u32)),
-            ExprType::CharLiteral => Some(Expr::CharLiteral(self.uint64_val[index]? as u32)),
-            ExprType::Number => {
-                Some(Expr::Number(self.symbol_val[index]?))
-            }
-            ExprType::Identifier => {
-                Some(Expr::Identifier(self.symbol_val[index]?))
-            }
-            ExprType::Null => Some(Expr::Null),
-            ExprType::ExprList => {
-                Some(Expr::ExprList(self.expr_list[index].clone()?))
-            }
-            ExprType::Call => {
-                Some(Expr::Call(
-                    self.symbol_val[index]?,
-                    self.operand[index]?,
-                ))
-            }
-            ExprType::String => {
-                Some(Expr::String(self.symbol_val[index]?))
-            }
-            ExprType::ArrayLiteral => {
-                Some(Expr::ArrayLiteral(self.expr_list[index].clone()?))
-            }
-            ExprType::FieldAccess => {
-                Some(Expr::FieldAccess(
-                    self.lhs[index]?,
-                    self.symbol_val[index]?,
-                ))
-            }
-            ExprType::MethodCall => {
-                Some(Expr::MethodCall(
-                    self.lhs[index]?,
-                    self.symbol_val[index]?,
-                    self.expr_list[index].clone()?,
-                ))
-            }
-            ExprType::StructLiteral => {
-                Some(Expr::StructLiteral(
-                    self.symbol_val[index]?,
-                    self.field_list[index].clone()?,
-                ))
-            }
-            ExprType::QualifiedIdentifier => {
-                Some(Expr::QualifiedIdentifier(self.symbol_list[index].clone()?))
-            }
-            ExprType::BuiltinMethodCall => {
-                Some(Expr::BuiltinMethodCall(
-                    self.lhs[index]?,
-                    self.builtin_method[index].clone()?,
-                    self.expr_list[index].clone()?,
-                ))
-            }
-            ExprType::BuiltinCall => {
-                Some(Expr::BuiltinCall(
-                    self.builtin_function[index].clone()?,
-                    self.expr_list[index].clone()?,
-                ))
-            }
-            ExprType::SliceAssign => {
-                Some(Expr::SliceAssign(
-                    self.lhs[index]?,
-                    self.rhs[index],
-                    self.operand[index],
-                    self.third_operand[index]?,
-                ))
-            }
-            ExprType::AssociatedFunctionCall => {
-                let symbols = self.symbol_list[index].clone()?;
-                if symbols.len() >= 2 {
-                    Some(Expr::AssociatedFunctionCall(
-                        symbols[0],
-                        symbols[1],
-                        self.expr_list[index].clone()?,
-                    ))
-                } else {
-                    None
-                }
-            }
-            ExprType::SliceAccess => {
-                Some(Expr::SliceAccess(
-                    self.lhs[index]?,
-                    self.slice_info[index].clone()?,
-                ))
-            }
-            ExprType::DictLiteral => {
-                Some(Expr::DictLiteral(self.entry_list[index].clone()?))
-            }
-            ExprType::TupleLiteral => {
-                Some(Expr::TupleLiteral(self.expr_list[index].clone()?))
-            }
-            ExprType::TupleAccess => {
-                Some(Expr::TupleAccess(
-                    self.lhs[index]?,
-                    self.index_val[index]?,
-                ))
-            }
-            ExprType::Cast => {
-                Some(Expr::Cast(
-                    self.lhs[index]?,
-                    self.target_type[index].clone()?,
-                ))
-            }
-            ExprType::With => {
-                Some(Expr::With(
-                    self.lhs[index]?,
-                    self.rhs[index]?,
-                ))
-            }
-            ExprType::Match => {
-                Some(Expr::Match(
-                    self.lhs[index]?,
-                    self.match_arms[index].clone()?,
-                ))
-            }
-            ExprType::Range => {
-                Some(Expr::Range(
-                    self.lhs[index]?,
-                    self.rhs[index]?,
-                ))
-            }
-            ExprType::Closure => {
-                Some(Expr::Closure {
-                    params: self.closure_params[index].clone()?,
-                    return_type: self.target_type[index].clone(),
-                    body: self.lhs[index]?,
-                    // Absent in a cache written before E3: a closure
-                    // that took copies, which is the safe default.
-                    captures_by_ref: self.boolean_val[index].unwrap_or(false),
-                })
-            }
-            ExprType::StructUpdate => {
-                let symbols = self.symbol_list[index].clone()?;
-                Some(Expr::StructUpdate {
-                    type_name: self.symbol_val[index]?,
-                    fields: self.field_list[index].clone()?,
-                    base: self.lhs[index]?,
-                    base_binding: *symbols.first()?,
-                })
-            }
-            ExprType::Try => {
-                let symbols = self.symbol_list[index].clone()?;
-                if symbols.len() == 6 {
-                    Some(Expr::Try {
-                        inner: self.lhs[index]?,
-                        scrutinee_binding: symbols[0],
-                        success_binding: symbols[1],
-                        error_binding: symbols[2],
-                        panic_msg: symbols[3],
-                        converted_binding: symbols[4],
-                        result_binding: symbols[5],
-                    })
-                } else if symbols.len() == 4 {
-                    // Legacy 4-symbol form (pre-From/Into): supply
-                    // placeholder bindings for the conversion
-                    // temporaries so old pool entries stay readable.
-                    Some(Expr::Try {
-                        inner: self.lhs[index]?,
-                        scrutinee_binding: symbols[0],
-                        success_binding: symbols[1],
-                        error_binding: symbols[2],
-                        panic_msg: symbols[3],
-                        converted_binding: symbols[0],
-                        result_binding: symbols[0],
-                    })
-                } else {
-                    None
-                }
-            }
-            ExprType::NullCoalesce => {
-                let symbols = self.symbol_list[index].clone()?;
-                if symbols.len() == 3 {
-                    Some(Expr::NullCoalesce {
-                        lhs: self.lhs[index]?,
-                        rhs: self.rhs[index]?,
-                        scrutinee_binding: symbols[0],
-                        success_binding: symbols[1],
-                        error_binding: symbols[2],
-                    })
-                } else {
-                    None
-                }
-            }
-        }
+    /// The expression at `expr_ref`, borrowed from the pool.
+    pub fn get_ref(&self, expr_ref: &ExprRef) -> Option<&Expr> {
+        self.exprs.get(expr_ref.to_index())
     }
 
     pub fn len(&self) -> usize {
-        self.expr_types.len()
+        self.exprs.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.expr_types.is_empty()
+        self.exprs.is_empty()
     }
 
+    /// Replace the expression at `expr_ref`. Out-of-range refs are
+    /// ignored.
     pub fn update(&mut self, expr_ref: &ExprRef, expr: Expr) {
-        let index = expr_ref.to_index();
-        if index >= self.expr_types.len() {
-            return;
+        if let Some(slot) = self.exprs.get_mut(expr_ref.to_index()) {
+            *slot = expr;
         }
-        self.clear_expr_slot(index);
-        self.populate_expr_slot(index, expr);
     }
 
     pub fn accept_expr(&self, expr_ref: &ExprRef, visitor: &mut dyn ExprVisitor)
@@ -833,399 +178,91 @@ impl ExprPool {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+/// Every statement of a program, addressed by [`StmtRef`]. Stored as the
+/// `Stmt` values themselves, like [`ExprPool`].
+#[derive(Debug, PartialEq, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StmtPool {
-    // Multiarray list - each field has its own Vec
-    // Statement type discriminant
-    pub stmt_types: Vec<StmtType>,
-
-    // Common fields
-    pub expr_val: Vec<Option<ExprRef>>,          // For expression statements, return values, etc.
-    pub symbol_val: Vec<Option<DefaultSymbol>>,  // For variable names, for loop variables
-    pub type_decl: Vec<Option<TypeDecl>>,        // For val/var type declarations
-
-    // Control flow fields
-    pub condition: Vec<Option<ExprRef>>,         // For while loops, if conditions
-    pub start_expr: Vec<Option<ExprRef>>,        // For for loop start
-    pub end_expr: Vec<Option<ExprRef>>,          // For for loop end
-    pub block_expr: Vec<Option<ExprRef>>,        // For loop/while bodies
-
-    // Declaration fields
-    pub struct_name: Vec<Option<DefaultSymbol>>,             // For struct declarations
-    pub struct_generic_params: Vec<Option<Vec<DefaultSymbol>>>, // For struct generic parameters
-    pub struct_generic_bounds: Vec<Option<std::collections::HashMap<DefaultSymbol, TypeDecl>>>, // For struct generic parameter bounds
-    pub struct_fields: Vec<Option<Vec<StructField>>>,        // For struct field lists
-    pub visibility: Vec<Option<Visibility>>,                 // For struct/impl visibility
-    pub impl_methods: Vec<Option<Vec<Rc<MethodFunction>>>>,  // For impl block methods
-    pub impl_trait_name: Vec<Option<DefaultSymbol>>,          // `Some(name)` for `impl Trait for Type`
-    /// Concrete type args on the impl target (e.g. `<u8>` in `impl FromStr for Vec<u8>`).
-    /// Empty for inherent / generic-parameterised impls. CONCRETE-IMPL.
-    pub impl_target_type_args: Vec<Option<Vec<TypeDecl>>>,
-    pub enum_variants: Vec<Option<Vec<EnumVariantDef>>>,      // For enum declarations
-    pub enum_generic_params: Vec<Option<Vec<DefaultSymbol>>>, // For enum generic parameters
-    /// LABEL: optional name for `@label: while/for` (None for unlabelled
-    /// loops). For `Break` / `Continue`, holds the optional target label.
-    pub loop_label: Vec<Option<DefaultSymbol>>,
-    pub trait_methods: Vec<Option<Vec<TraitMethodSignature>>>, // For trait declarations
-    /// ITER-PROTOCOL-TRAIT: generic params declared on a trait
-    /// (`trait Foo<T, U, ...>`). `Some(Vec::new())` for non-generic
-    /// traits and `None` for non-TraitDecl statements.
-    pub trait_generic_params: Vec<Option<Vec<DefaultSymbol>>>,
-    /// ITER-PROTOCOL-TRAIT: concrete type args supplied to the trait
-    /// at an impl site (`impl Foo<i64> for Counter` → `[i64]`).
-    /// `Some(Vec::new())` for non-generic-trait impls and inherent
-    /// impls; `None` for non-ImplBlock statements.
-    pub impl_trait_type_args: Vec<Option<Vec<TypeDecl>>>,
-}
-
-impl Default for StmtPool {
-    fn default() -> Self {
-        Self::new()
-    }
+    stmts: Vec<Stmt>,
 }
 
 impl StmtPool {
     pub fn new() -> StmtPool {
-        StmtPool {
-            stmt_types: Vec::new(),
-            expr_val: Vec::new(),
-            symbol_val: Vec::new(),
-            type_decl: Vec::new(),
-            condition: Vec::new(),
-            start_expr: Vec::new(),
-            end_expr: Vec::new(),
-            block_expr: Vec::new(),
-            struct_name: Vec::new(),
-            struct_generic_params: Vec::new(),
-            struct_generic_bounds: Vec::new(),
-            struct_fields: Vec::new(),
-            visibility: Vec::new(),
-            impl_methods: Vec::new(),
-            impl_trait_name: Vec::new(),
-            impl_target_type_args: Vec::new(),
-            enum_variants: Vec::new(),
-            enum_generic_params: Vec::new(),
-            loop_label: Vec::new(),
-            trait_methods: Vec::new(),
-            trait_generic_params: Vec::new(),
-            impl_trait_type_args: Vec::new(),
-        }
+        StmtPool { stmts: Vec::new() }
     }
 
     pub fn with_capacity(cap: usize) -> StmtPool {
-        StmtPool {
-            stmt_types: Vec::with_capacity(cap),
-            expr_val: Vec::with_capacity(cap),
-            symbol_val: Vec::with_capacity(cap),
-            type_decl: Vec::with_capacity(cap),
-            condition: Vec::with_capacity(cap),
-            start_expr: Vec::with_capacity(cap),
-            end_expr: Vec::with_capacity(cap),
-            block_expr: Vec::with_capacity(cap),
-            struct_name: Vec::with_capacity(cap),
-            struct_generic_params: Vec::with_capacity(cap),
-            struct_generic_bounds: Vec::with_capacity(cap),
-            struct_fields: Vec::with_capacity(cap),
-            visibility: Vec::with_capacity(cap),
-            impl_methods: Vec::with_capacity(cap),
-            impl_trait_name: Vec::with_capacity(cap),
-            impl_target_type_args: Vec::with_capacity(cap),
-            enum_variants: Vec::with_capacity(cap),
-            enum_generic_params: Vec::with_capacity(cap),
-            loop_label: Vec::with_capacity(cap),
-            trait_methods: Vec::with_capacity(cap),
-            trait_generic_params: Vec::with_capacity(cap),
-            impl_trait_type_args: Vec::with_capacity(cap),
-        }
-    }
-
-    fn extend_to_index(&mut self, index: usize) {
-        let current_len = self.stmt_types.len();
-        if index >= current_len {
-            let extend_count = index + 1 - current_len;
-            self.stmt_types.resize(index + 1, StmtType::Break);
-            self.expr_val.resize(current_len + extend_count, None);
-            self.symbol_val.resize(current_len + extend_count, None);
-            self.type_decl.resize(current_len + extend_count, None);
-            self.condition.resize(current_len + extend_count, None);
-            self.start_expr.resize(current_len + extend_count, None);
-            self.end_expr.resize(current_len + extend_count, None);
-            self.block_expr.resize(current_len + extend_count, None);
-            self.struct_name.resize(current_len + extend_count, None);
-            self.struct_generic_params.resize(current_len + extend_count, None);
-            self.struct_generic_bounds.resize(current_len + extend_count, None);
-            self.struct_fields.resize(current_len + extend_count, None);
-            self.visibility.resize(current_len + extend_count, None);
-            self.impl_methods.resize(current_len + extend_count, None);
-            self.impl_trait_name.resize(current_len + extend_count, None);
-            self.impl_target_type_args.resize(current_len + extend_count, None);
-            self.enum_variants.resize(current_len + extend_count, None);
-            self.enum_generic_params.resize(current_len + extend_count, None);
-            self.loop_label.resize(current_len + extend_count, None);
-            self.trait_methods.resize(current_len + extend_count, None);
-            self.trait_generic_params.resize(current_len + extend_count, None);
-            self.impl_trait_type_args.resize(current_len + extend_count, None);
-        }
+        StmtPool { stmts: Vec::with_capacity(cap) }
     }
 
     pub fn add(&mut self, stmt: Stmt) -> StmtRef {
-        let index = self.stmt_types.len();
-        self.extend_to_index(index);
-        self.populate_stmt_slot(index, stmt);
+        let index = self.stmts.len();
+        self.stmts.push(stmt);
         StmtRef(index as u32)
     }
 
-    /// Replace the statement at `stmt_ref` with `stmt`. Mirrors
-    /// `ExprPool::update` and exists primarily so the module
-    /// integration pass can install placeholder slots up front and
-    /// fill them with the real remapped statements once every
-    /// `StmtRef` / `ExprRef` has been redirected. Out-of-range refs
-    /// are silently ignored, matching `ExprPool::update`.
+    /// Replace the statement at `stmt_ref`. Exists primarily so the
+    /// module integration pass can install placeholder slots up front
+    /// and fill them with the real remapped statements once every
+    /// `StmtRef` / `ExprRef` has been redirected. Out-of-range refs are
+    /// ignored, matching `ExprPool::update`.
     pub fn update(&mut self, stmt_ref: &StmtRef, stmt: Stmt) {
-        let index = stmt_ref.to_index();
-        if index >= self.stmt_types.len() {
-            return;
-        }
-        self.clear_stmt_slot(index);
-        self.populate_stmt_slot(index, stmt);
-    }
-
-    /// POOL-DEDUP: per-variant dispatch shared by `add` and `update`.
-    /// Sets `stmt_types[index]` plus the variant's data columns;
-    /// assumes the slot is freshly allocated (from `extend_to_index`)
-    /// or freshly cleared (from `clear_stmt_slot`). Adding a new
-    /// `Stmt` variant requires one new arm here instead of two.
-    fn populate_stmt_slot(&mut self, index: usize, stmt: Stmt) {
-        match stmt {
-            Stmt::Expression(expr) => {
-                self.stmt_types[index] = StmtType::Expression;
-                self.expr_val[index] = Some(expr);
-            }
-            Stmt::Val(name, type_decl, value) => {
-                self.stmt_types[index] = StmtType::Val;
-                self.symbol_val[index] = Some(name);
-                self.type_decl[index] = type_decl;
-                self.expr_val[index] = Some(value);
-            }
-            Stmt::Var(name, type_decl, value) => {
-                self.stmt_types[index] = StmtType::Var;
-                self.symbol_val[index] = Some(name);
-                self.type_decl[index] = type_decl;
-                self.expr_val[index] = value;
-            }
-            Stmt::Return(value) => {
-                self.stmt_types[index] = StmtType::Return;
-                self.expr_val[index] = value;
-            }
-            Stmt::Break(label) => {
-                self.stmt_types[index] = StmtType::Break;
-                self.loop_label[index] = label;
-            }
-            Stmt::Continue(label) => {
-                self.stmt_types[index] = StmtType::Continue;
-                self.loop_label[index] = label;
-            }
-            Stmt::For(label, var, start, end, block) => {
-                self.stmt_types[index] = StmtType::For;
-                self.loop_label[index] = label;
-                self.symbol_val[index] = Some(var);
-                self.start_expr[index] = Some(start);
-                self.end_expr[index] = Some(end);
-                self.block_expr[index] = Some(block);
-            }
-            Stmt::While(label, cond, block) => {
-                self.stmt_types[index] = StmtType::While;
-                self.loop_label[index] = label;
-                self.condition[index] = Some(cond);
-                self.block_expr[index] = Some(block);
-            }
-            Stmt::StructDecl { name, generic_params, generic_bounds, fields, visibility } => {
-                self.stmt_types[index] = StmtType::StructDecl;
-                self.struct_name[index] = Some(name);
-                self.struct_generic_params[index] = Some(generic_params);
-                self.struct_generic_bounds[index] = Some(generic_bounds);
-                self.struct_fields[index] = Some(fields);
-                self.visibility[index] = Some(visibility);
-            }
-            Stmt::ImplBlock { target_type, target_type_args, methods, trait_name, trait_type_args } => {
-                self.stmt_types[index] = StmtType::ImplBlock;
-                self.struct_name[index] = Some(target_type);
-                self.impl_methods[index] = Some(methods);
-                self.impl_trait_name[index] = trait_name;
-                self.impl_target_type_args[index] = Some(target_type_args);
-                self.impl_trait_type_args[index] = Some(trait_type_args);
-            }
-            Stmt::EnumDecl { name, generic_params, variants, visibility } => {
-                self.stmt_types[index] = StmtType::EnumDecl;
-                self.struct_name[index] = Some(name);
-                self.enum_generic_params[index] = Some(generic_params);
-                self.enum_variants[index] = Some(variants);
-                self.visibility[index] = Some(visibility);
-            }
-            Stmt::TraitDecl { name, generic_params, methods, visibility } => {
-                self.stmt_types[index] = StmtType::TraitDecl;
-                self.struct_name[index] = Some(name);
-                self.trait_methods[index] = Some(methods);
-                self.trait_generic_params[index] = Some(generic_params);
-                self.visibility[index] = Some(visibility);
-            }
-            Stmt::TypeAlias { name, generic_params, target, visibility } => {
-                self.stmt_types[index] = StmtType::TypeAlias;
-                self.symbol_val[index] = Some(name);
-                self.type_decl[index] = Some(target);
-                self.visibility[index] = Some(visibility);
-                // Reuse the existing struct_generic_params slot —
-                // it already stores `Vec<DefaultSymbol>` for the
-                // generic-struct case and we only need one entry
-                // per stmt index.
-                self.struct_generic_params[index] = Some(generic_params);
-            }
+        if let Some(slot) = self.stmts.get_mut(stmt_ref.to_index()) {
+            *slot = stmt;
         }
     }
 
-    /// POOL-DEDUP: reset every per-variant data column at `index` to
-    /// `None` so `populate_stmt_slot` can write the new variant
-    /// without leaking stale fields. Mirrors the column list in
-    /// `extend_to_index`. (Pre-dedup, the inline clear in `update`
-    /// missed `trait_generic_params` and `impl_trait_type_args`,
-    /// which would silently leak generic-trait state when an
-    /// ImplBlock slot was overwritten.)
-    fn clear_stmt_slot(&mut self, index: usize) {
-        self.expr_val[index] = None;
-        self.symbol_val[index] = None;
-        self.type_decl[index] = None;
-        self.condition[index] = None;
-        self.start_expr[index] = None;
-        self.end_expr[index] = None;
-        self.block_expr[index] = None;
-        self.struct_name[index] = None;
-        self.struct_generic_params[index] = None;
-        self.struct_generic_bounds[index] = None;
-        self.struct_fields[index] = None;
-        self.visibility[index] = None;
-        self.impl_methods[index] = None;
-        self.impl_trait_name[index] = None;
-        self.impl_target_type_args[index] = None;
-        self.impl_trait_type_args[index] = None;
-        self.enum_variants[index] = None;
-        self.enum_generic_params[index] = None;
-        self.loop_label[index] = None;
-        self.trait_methods[index] = None;
-        self.trait_generic_params[index] = None;
-    }
-
-    /// The statements of one kind, in pool order, without building any
-    /// of them. [`Self::get`] assembles an owned `Stmt` (an impl block
-    /// clones its method list), so a pass that wants only the trait or
-    /// impl declarations should pick them out here first instead of
-    /// building every statement in the program to look at its tag.
+    /// The statements of one kind, in pool order. A pass that wants
+    /// only the trait or impl declarations picks them out here instead
+    /// of building every statement in the program to look at its tag.
     pub fn refs_of(&self, kind: StmtType) -> impl Iterator<Item = StmtRef> + '_ {
-        self.stmt_types
+        self.stmts
             .iter()
             .enumerate()
-            .filter(move |(_, t)| **t == kind)
+            .filter(move |(_, s)| stmt_kind(s) == kind)
             .map(|(i, _)| StmtRef(i as u32))
     }
 
+    /// The statement at `stmt_ref`, owned. Clones its contents (an impl
+    /// block's method list, a struct's fields); a caller that only
+    /// reads should take [`Self::get_ref`].
     pub fn get(&self, stmt_ref: &StmtRef) -> Option<Stmt> {
-        let index = stmt_ref.to_index();
-        if index >= self.stmt_types.len() {
-            return None;
-        }
+        self.get_ref(stmt_ref).cloned()
+    }
 
-        match self.stmt_types[index] {
-            StmtType::Expression => {
-                Some(Stmt::Expression(self.expr_val[index]?))
-            }
-            StmtType::Val => {
-                Some(Stmt::Val(
-                    self.symbol_val[index]?,
-                    self.type_decl[index].clone(),
-                    self.expr_val[index]?,
-                ))
-            }
-            StmtType::Var => {
-                Some(Stmt::Var(
-                    self.symbol_val[index]?,
-                    self.type_decl[index].clone(),
-                    self.expr_val[index],
-                ))
-            }
-            StmtType::Return => {
-                Some(Stmt::Return(self.expr_val[index]))
-            }
-            StmtType::Break => Some(Stmt::Break(self.loop_label[index])),
-            StmtType::Continue => Some(Stmt::Continue(self.loop_label[index])),
-            StmtType::For => {
-                Some(Stmt::For(
-                    self.loop_label[index],
-                    self.symbol_val[index]?,
-                    self.start_expr[index]?,
-                    self.end_expr[index]?,
-                    self.block_expr[index]?,
-                ))
-            }
-            StmtType::While => {
-                Some(Stmt::While(
-                    self.loop_label[index],
-                    self.condition[index]?,
-                    self.block_expr[index]?,
-                ))
-            }
-            StmtType::StructDecl => {
-                Some(Stmt::StructDecl {
-                    name: self.struct_name[index]?,
-                    generic_params: self.struct_generic_params[index].clone()?,
-                    generic_bounds: self.struct_generic_bounds[index].clone()?,
-                    fields: self.struct_fields[index].clone()?,
-                    visibility: self.visibility[index]?,
-                })
-            }
-            StmtType::ImplBlock => {
-                Some(Stmt::ImplBlock {
-                    target_type: self.struct_name[index]?,
-                    target_type_args: self.impl_target_type_args[index].clone().unwrap_or_default(),
-                    methods: self.impl_methods[index].clone()?,
-                    trait_name: self.impl_trait_name[index],
-                    trait_type_args: self.impl_trait_type_args[index].clone().unwrap_or_default(),
-                })
-            }
-            StmtType::EnumDecl => {
-                Some(Stmt::EnumDecl {
-                    name: self.struct_name[index]?,
-                    generic_params: self.enum_generic_params[index].clone()?,
-                    variants: self.enum_variants[index].clone()?,
-                    visibility: self.visibility[index]?,
-                })
-            }
-            StmtType::TraitDecl => {
-                Some(Stmt::TraitDecl {
-                    name: self.struct_name[index]?,
-                    generic_params: self.trait_generic_params[index].clone().unwrap_or_default(),
-                    methods: self.trait_methods[index].clone()?,
-                    visibility: self.visibility[index]?,
-                })
-            }
-            StmtType::TypeAlias => {
-                Some(Stmt::TypeAlias {
-                    name: self.symbol_val[index]?,
-                    generic_params: self.struct_generic_params[index].clone().unwrap_or_default(),
-                    target: self.type_decl[index].clone()?,
-                    visibility: self.visibility[index]?,
-                })
-            }
-        }
+    /// The statement at `stmt_ref`, borrowed from the pool.
+    pub fn get_ref(&self, stmt_ref: &StmtRef) -> Option<&Stmt> {
+        self.stmts.get(stmt_ref.to_index())
     }
 
     pub fn len(&self) -> usize {
-        self.stmt_types.len()
+        self.stmts.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.stmt_types.is_empty()
+        self.stmts.is_empty()
     }
 }
+
+/// The [`StmtType`] tag of a statement.
+pub fn stmt_kind(stmt: &Stmt) -> StmtType {
+    match stmt {
+        Stmt::Expression(_) => StmtType::Expression,
+        Stmt::Val(..) => StmtType::Val,
+        Stmt::Var(..) => StmtType::Var,
+        Stmt::Return(_) => StmtType::Return,
+        Stmt::Break(_) => StmtType::Break,
+        Stmt::Continue(_) => StmtType::Continue,
+        Stmt::For(..) => StmtType::For,
+        Stmt::While(..) => StmtType::While,
+        Stmt::StructDecl { .. } => StmtType::StructDecl,
+        Stmt::ImplBlock { .. } => StmtType::ImplBlock,
+        Stmt::EnumDecl { .. } => StmtType::EnumDecl,
+        Stmt::TraitDecl { .. } => StmtType::TraitDecl,
+        Stmt::TypeAlias { .. } => StmtType::TypeAlias,
+    }
+}
+
 
 /// Location information storage for AST nodes
 #[derive(Debug, PartialEq, Clone)]

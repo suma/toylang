@@ -21,6 +21,10 @@
 
 ### 2026-10-01
 
+- **LINK-CACHE-FLAP — 同じソースからオブジェクトが毎回違っていた** — codegen がアドレスを取られた
+  ローカルのスタックスロットと `dyn` の vtable を、ハッシュ集合を反復する順で作っていた (logsearch で
+  10 回中 9 通り)。lowering の FxHash 化で症状は隠れていたので、`BTreeSet` にして順序を型で保証し、
+  `reproducible_build.rs` に両経路を通すテストを追加。乱数シードのハッシュで example 158 本 × 2 モードが一致。
 - **TYPECHECK-HASH-TYPEDECL — frontend 全体を FxHash に、`TypeDecl` の子を `Rc` で共有** — 型検査の
   ~3 割が SipHash だった。`Vec<TypeDecl>` → `TypeList` (`Rc<Vec<_>>`)、`Box<TypeDecl>` → `Rc` で clone が
   参照カウントの増減になる (書き換えは `Rc::make_mut`)。logsearch の型検査 30.1 → 24.3 ms (−19%)、
@@ -2980,9 +2984,6 @@
 - **LINK-COST: 実リンク ~35 ms (編集後ビルドの 1/3)** ★★ — `cc` ドライバを
   経由せず `ld` を直接呼ぶ / lld、ランタイムの `.rt.a` を毎リンク一時ファイルに
   書き出すのをやめる、`compiler` CLI でもリンクキャッシュを既定 on に。
-- **LINK-CACHE-FLAP: logsearch のリンクキャッシュがヒットとミスを行き来する** ★★ —
-  同じソースの連続ビルドで `link.cache_miss` が出る。オブジェクトの再現性が
-  崩れている疑い (`reproducible_build.rs` は小さいプログラムしか見ていない)。
 - **STDLIB-CHECK-FIXED: stdlib の型検査 ~11 ms を毎回払う** ★★ — post_checks が
   stdlib 本体について出す事実 (lend 表・エフェクト等) を stdlib のハッシュで
   再利用する軽い版と、PARALLEL_FRONTEND.md §5c のスナップショットに型検査の

@@ -1231,8 +1231,11 @@ impl<M: Module> CodegenSession<M> {
         // `ir_module.vtables` entry, but a missing one falls
         // through to a clean codegen error at the dispatch site
         // rather than a malformed object).
-        let mut referenced: rustc_hash::FxHashSet<(DefaultSymbol, DefaultSymbol)> =
-            rustc_hash::FxHashSet::default();
+        // Ordered: the vtables are declared and defined in this order,
+        // and a hash set made the object's data layout differ from one
+        // run to the next (DETERMINISTIC-OBJECT).
+        let mut referenced: std::collections::BTreeSet<(DefaultSymbol, DefaultSymbol)> =
+            std::collections::BTreeSet::new();
         for func in &ir_module.functions {
             for blk in &func.blocks {
                 for inst in &blk.instructions {

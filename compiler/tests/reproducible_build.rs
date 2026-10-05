@@ -151,6 +151,80 @@ fn the_same_source_compiles_to_the_same_object_bytes() {
     );
 }
 
+/// Two more unordered walks, found when `poc/logsearch`'s link cache
+/// kept missing (LINK-CACHE-FLAP): codegen gave each address-taken
+/// scalar local its stack slot while walking a hash set, so `ss0` and
+/// `ss1` traded places between runs, and it declared the `dyn` vtables
+/// in the order of another hash set, which moved the object's data.
+/// Neither shows in BROAD_PROGRAM, which has no `&mut` scalar and only
+/// one vtable.
+///
+/// The maps behind them are FxHash now, whose order does not change
+/// between runs, so this test would pass even without the fix; what it
+/// guards against is a randomly seeded `HashMap` / `HashSet` coming
+/// back on one of these paths.
+const SLOTS_AND_VTABLES_PROGRAM: &str = r#"
+trait Shape {
+    fn area(self: Self) -> u64
+}
+
+struct Square { side: u64 }
+struct Rect { w: u64, h: u64 }
+struct Dot {}
+
+impl Shape for Square {
+    fn area(self: Self) -> u64 { self.side * self.side }
+}
+
+impl Shape for Rect {
+    fn area(self: Self) -> u64 { self.w * self.h }
+}
+
+impl Shape for Dot {
+    fn area(self: Self) -> u64 { 0u64 }
+}
+
+fn measure(s: &dyn Shape) -> u64 {
+    s.area()
+}
+
+fn inc(x: &mut u64) {
+    x = x + 1u64
+}
+
+fn main() -> u64 {
+    var a: u64 = 1u64
+    var b: u64 = 2u64
+    var c: u64 = 3u64
+    var d: u64 = 4u64
+    inc(&mut a)
+    inc(&mut b)
+    inc(&mut c)
+    inc(&mut d)
+    val sq = Square { side: 3u64 }
+    val r = Rect { w: 2u64, h: 5u64 }
+    val dot = Dot {}
+    a + b + c + d + measure(sq) + measure(r) + measure(dot)
+}
+"#;
+
+#[test]
+fn stack_slots_and_vtables_are_laid_out_the_same_every_run() {
+    if skip_e2e() {
+        return;
+    }
+    let dir = unique_dir("slots");
+    let objects: Vec<Vec<u8>> = (0..4)
+        .map(|i| emit_object(&dir, SLOTS_AND_VTABLES_PROGRAM, &format!("o{i}"), None))
+        .collect();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        objects.windows(2).all(|w| w[0] == w[1]),
+        "stack slots or vtables were laid out differently across processes; \
+         codegen is iterating a HashMap/HashSet to number them"
+    );
+}
+
 /// The object bytes were already reproducible when this was written; the
 /// *text* was not. `declare_imports` walked a `HashMap<FuncId, _>` and
 /// cranelift numbers imports in declaration order, so the same call came

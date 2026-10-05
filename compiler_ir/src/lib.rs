@@ -492,7 +492,7 @@ impl Module {
             resident_compounds: Vec::new(),
             locals: Vec::new(),
             array_slots: Vec::new(),
-            address_taken_locals: rustc_hash::FxHashSet::default(),
+            address_taken_locals: std::collections::BTreeSet::new(),
             blocks: Vec::new(),
             entry: BlockId(0),
         });
@@ -552,7 +552,7 @@ impl Module {
             resident_compounds: Vec::new(),
             locals: Vec::new(),
             array_slots: Vec::new(),
-            address_taken_locals: rustc_hash::FxHashSet::default(),
+            address_taken_locals: std::collections::BTreeSet::new(),
             blocks: Vec::new(),
             entry: BlockId(0),
         });
@@ -980,7 +980,13 @@ pub struct Function {
     /// `AddressOf` instruction's `stack_addr` value points at the
     /// canonical storage. Locals not in this set keep the original
     /// SSA `Variable` path.
-    pub address_taken_locals: rustc_hash::FxHashSet<LocalId>,
+    ///
+    /// Ordered, because codegen creates one stack slot per entry while
+    /// iterating it and the slots are numbered in creation order: a hash
+    /// set made the same program come out with `ss0` / `ss1` swapped
+    /// from one run to the next, so the object (and the link cache key)
+    /// was not reproducible (DETERMINISTIC-OBJECT).
+    pub address_taken_locals: std::collections::BTreeSet<LocalId>,
     pub blocks: Vec<Block>,
     pub entry: BlockId,
 }
@@ -2871,7 +2877,7 @@ pub enum Terminator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ValueId(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LocalId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

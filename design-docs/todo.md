@@ -21,6 +21,9 @@
 
 ### 2026-10-01
 
+- **LOWER-BINDING-CLONE — lowering の束縛表を undo ログで巻き戻す** — ブロックの出入りと `match` の腕ごとに
+  束縛表を丸ごと clone して書き戻していた (logsearch で 5,080 回、~4 ms)。`BindingMap` が `insert` で旧値を
+  記録し、ブロックは上書き分だけ戻す / 腕は完全に戻す。logsearch の lower 23.9 → 19.2 ms (−20%)。
 - **CODEGEN-THREADS — codegen のスレッド数を仕事量で決める** — IR 6,000 命令以上なら全コアのプール、
   未満は従来の 4 本 (example とテストは全部こちら)。重い関数から先に投げる (`define` は宣言順のまま)。
   logsearch のリンク前 88.9 → 70.8 ms (`compile_functions` 30 → 11 ms、CPU は 188 → 367 ms)。
@@ -2995,9 +2998,6 @@
 - **RUNTIME-REFS-LAZY: ランタイム関数 ~90 個の import を全関数に入れている** ★ —
   `declare_runtime_refs`。関数の import を呼ぶ分だけにしたのと同じ形 (各 signature
   に ABI 計算が走る)。使う命令から引くか遅延宣言に。未測定。
-- **LOWER-BINDING-CLONE: lowering が分岐ごとに束縛表を clone している疑い** ★ —
-  プロファイルで `Binding` の map / `FieldBinding` の clone が目立つが、インライン
-  展開で帰属があいまい。計測点を置いて確かめてから。
 - **LEND-WORKLIST: 読むだけ判定の固定点を worklist に** ★ — 今は変化が無くなる
   まで全本体を歩き直す (logsearch で 4 周)。変化した関数の呼び出し元だけ再訪する。
   1〜2 ms の見込み。

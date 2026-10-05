@@ -419,3 +419,152 @@ pub(super) fn flatten_tuple_element_locals(
     }
     out
 }
+
+/// The names in scope while one function body is lowered, with an undo
+/// log so a scope can be left without having copied the table on the
+/// way in.
+///
+/// Every block used to clone the whole table on entry and write every
+/// entry back on exit, and every `match` arm cloned it too: ~5,000
+/// copies of a ~10-entry table on `poc/logsearch`, ~4 ms of a 22 ms
+/// lowering, and a struct binding's leaves cloned with each copy
+/// (LOWER-BINDING-CLONE). Now `insert` records what it displaced, a
+/// scope remembers where the log stood ([`Self::mark`]), and leaving
+/// it walks back only what was written since.
+///
+/// Reads go through `Deref` to the map. There is no `DerefMut`: a
+/// write that skipped the log would survive the rollback.
+#[derive(Debug, Default)]
+pub(super) struct BindingMap {
+    map: rustc_hash::FxHashMap<DefaultSymbol, Binding>,
+    /// `(name, what it held before)` for each `insert`, oldest first.
+    log: Vec<(DefaultSymbol, Option<Binding>)>,
+}
+
+/// A point in a [`BindingMap`]'s history to return to.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct BindingMark(usize);
+
+impl std::ops::Deref for BindingMap {
+    type Target = rustc_hash::FxHashMap<DefaultSymbol, Binding>;
+    fn deref(&self) -> &Self::Target {
+        &self.map
+    }
+}
+
+impl BindingMap {
+    pub(super) fn insert(&mut self, name: DefaultSymbol, binding: Binding) {
+        let old = self.map.insert(name, binding);
+        self.log.push((name, old));
+    }
+
+    pub(super) fn mark(&self) -> BindingMark {
+        BindingMark(self.log.len())
+    }
+
+    /// Back to exactly what the table held at `mark`: names introduced
+    /// since are gone, names rebound since hold their old binding. A
+    /// `match` arm's pattern names must not leak into the next arm.
+    pub(super) fn rollback(&mut self, mark: BindingMark) {
+        while self.log.len() > mark.0 {
+            let (name, old) = self.log.pop().expect("log is longer than the mark");
+            match old {
+                Some(binding) => {
+                    self.map.insert(name, binding);
+                }
+                None => {
+                    self.map.remove(&name);
+                }
+            }
+        }
+    }
+
+    /// Leave a block: names it *rebound* get their outer binding back,
+    /// names it *introduced* stay. Removing those too is what scoping
+    /// would mean, but `let_lowering`'s type inference still looks them
+    /// up after the block (`val t: u64 = with allocator = a { .. x }`),
+    /// so this is the behaviour the table-copying version had.
+    ///
+    /// The log keeps one `(name, None)` per name the block introduced,
+    /// so an enclosing [`Self::rollback`] still removes them.
+    pub(super) fn restore_shadowed(&mut self, mark: BindingMark) {
+        let written = self.log.split_off(mark.0);
+        let mut first: rustc_hash::FxHashMap<DefaultSymbol, Option<Binding>> =
+            rustc_hash::FxHashMap::default();
+        let mut order: Vec<DefaultSymbol> = Vec::new();
+        for (name, old) in written {
+            if let std::collections::hash_map::Entry::Vacant(slot) = first.entry(name) {
+                slot.insert(old);
+                order.push(name);
+            }
+        }
+        for name in order {
+            match first.remove(&name).expect("recorded above") {
+                Some(outer) => {
+                    self.map.insert(name, outer);
+                }
+                None => self.log.push((name, None)),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Binding, BindingMap};
+    use crate::ir::{LocalId, Type};
+    use string_interner::{DefaultStringInterner, DefaultSymbol};
+
+    fn scalar(n: u32) -> Binding {
+        Binding::Scalar { local: LocalId(n), ty: Type::U64 }
+    }
+
+    fn local_of(map: &BindingMap, name: DefaultSymbol) -> Option<u32> {
+        match map.get(&name) {
+            Some(Binding::Scalar { local, .. }) => Some(local.0),
+            Some(_) => panic!("only scalars here"),
+            None => None,
+        }
+    }
+
+    /// What the table-copying code did on leaving a block: every name
+    /// bound before the block gets its old binding back, names the
+    /// block introduced keep whatever they ended up as.
+    #[test]
+    fn leaving_a_block_restores_rebound_names_and_keeps_new_ones() {
+        let mut interner = DefaultStringInterner::default();
+        let (x, y, z) = (interner.get_or_intern("x"), interner.get_or_intern("y"), interner.get_or_intern("z"));
+        let mut map = BindingMap::default();
+        map.insert(x, scalar(1));
+        let block = map.mark();
+        map.insert(x, scalar(2)); // rebinds an outer name
+        map.insert(y, scalar(3)); // introduces a name ...
+        map.insert(y, scalar(4)); // ... and rebinds it within the block
+        map.insert(x, scalar(5));
+        map.restore_shadowed(block);
+        assert_eq!(local_of(&map, x), Some(1));
+        assert_eq!(local_of(&map, y), Some(4));
+        assert_eq!(local_of(&map, z), None);
+    }
+
+    /// A `match` arm returns to exactly the table it started from --
+    /// including names a block inside the arm introduced.
+    #[test]
+    fn an_arm_rollback_also_removes_what_an_inner_block_introduced() {
+        let mut interner = DefaultStringInterner::default();
+        let (x, y) = (interner.get_or_intern("x"), interner.get_or_intern("y"));
+        let mut map = BindingMap::default();
+        map.insert(x, scalar(1));
+        let arm = map.mark();
+        map.insert(x, scalar(2));
+        let block = map.mark();
+        map.insert(y, scalar(3));
+        map.insert(x, scalar(4));
+        map.restore_shadowed(block);
+        assert_eq!(local_of(&map, x), Some(2));
+        assert_eq!(local_of(&map, y), Some(3));
+        map.rollback(arm);
+        assert_eq!(local_of(&map, x), Some(1));
+        assert_eq!(local_of(&map, y), None);
+    }
+}

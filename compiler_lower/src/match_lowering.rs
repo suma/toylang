@@ -83,7 +83,7 @@ impl<'a> FunctionLower<'a> {
             // concern: cranelift `def_var`s only happen in the body
             // block, which is reached only when the pattern actually
             // matched.
-            let saved_bindings = self.bindings.clone();
+            let arm_scope = self.bindings.mark();
             // DROP-GLUE: each arm's pattern bindings collect here and
             // are emitted at arm exit. They must NOT go through
             // `drop_scopes` — a scope's drops are emitted on the
@@ -131,7 +131,7 @@ impl<'a> FunctionLower<'a> {
                 self.arm_drop_targets.clear();
             }
             // 4. Roll back bindings and continue with the next arm.
-            self.bindings = saved_bindings;
+            self.bindings.rollback(arm_scope);
             self.switch_to(next_blk);
         }
         // After the last arm we are sitting in the trailing fallthrough
@@ -315,10 +315,10 @@ impl<'a> FunctionLower<'a> {
         scrut: &MatchScrutinee,
         arm: &MatchArm,
     ) -> Option<Type> {
-        let saved = self.bindings.clone();
+        let scope = self.bindings.mark();
         self.apply_arm_pattern_bindings_for_inference(scrut, &arm.pattern);
         let ty = self.value_scalar(&arm.body);
-        self.bindings = saved;
+        self.bindings.rollback(scope);
         ty
     }
 

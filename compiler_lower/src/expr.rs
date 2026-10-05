@@ -2243,7 +2243,7 @@ impl<'a> FunctionLower<'a> {
         // that way), so removing them breaks programs that work today.
         // Narrowing to the shadowing case fixes the wrong answer
         // without disturbing that.
-        let shadowed_bindings = self.bindings.clone();
+        let scope = self.bindings.mark();
         let mut last: Option<ValueId> = None;
         for s in stmts {
             last = self.lower_stmt(s)?;
@@ -2268,9 +2268,7 @@ impl<'a> FunctionLower<'a> {
             }
         }
         self.pop_and_emit_drops()?;
-        for (sym, binding) in shadowed_bindings {
-            self.bindings.insert(sym, binding);
-        }
+        self.bindings.restore_shadowed(scope);
         Ok(last)
     }
 

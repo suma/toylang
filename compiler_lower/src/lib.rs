@@ -150,7 +150,7 @@ mod templates;
 use templates::{EnumDefs, StructDefs};
 
 mod bindings;
-use bindings::{Binding, EnumStorage, FieldBinding, TupleElementBinding};
+use bindings::{EnumStorage, FieldBinding, TupleElementBinding};
 
 mod method_registry;
 use method_registry::{GenericMethods, MethodFuncIds, MethodInstances, MethodRegistry, PendingMethodInstance};
@@ -334,7 +334,7 @@ struct FunctionLower<'a> {
     /// exist in the interner if no source program ever used it.
     result_sym: Option<DefaultSymbol>,
     /// Toylang binding name → storage shape.
-    bindings: HashMap<DefaultSymbol, Binding>,
+    bindings: bindings::BindingMap,
     /// COMPOUND-BLOCK-RHS: the enums a block's own leading statements
     /// bind, while detection is looking at that block's tail.
     ///

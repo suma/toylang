@@ -1731,7 +1731,7 @@ impl<'a> FunctionLower<'a> {
         let scrut = self.classify_match_scrutinee(scrutinee)?;
         let merge = self.fresh_block();
         for arm in arms.iter() {
-            let saved_bindings = self.bindings.clone();
+            let arm_scope = self.bindings.mark();
             let next_blk = self.fresh_block();
             // Pattern-match dispatch — the same one `lower_match`
             // uses. This used to be a hand-mirrored subset.
@@ -1752,7 +1752,7 @@ impl<'a> FunctionLower<'a> {
             if !self.is_unreachable() {
                 self.terminate(Terminator::Jump(merge));
             }
-            self.bindings = saved_bindings;
+            self.bindings.rollback(arm_scope);
             self.switch_to(next_blk);
         }
         // Trailing fallthrough is an exhaustiveness hole — same

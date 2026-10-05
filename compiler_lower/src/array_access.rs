@@ -116,7 +116,7 @@ impl<'a> FunctionLower<'a> {
         };
         let decl = match &table.elem_decl {
             frontend::type_decl::TypeDecl::Identifier(n) => {
-                frontend::type_decl::TypeDecl::Struct(*n, Vec::new())
+                frontend::type_decl::TypeDecl::Struct(*n, Vec::new().into())
             }
             other => other.clone(),
         };

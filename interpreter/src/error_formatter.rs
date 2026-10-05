@@ -374,7 +374,7 @@ mod tests {
 
         let error = TypeCheckError::type_mismatch(
             frontend::type_decl::TypeDecl::UInt64,
-            frontend::type_decl::TypeDecl::Struct(p, Vec::new()),
+            frontend::type_decl::TypeDecl::Struct(p, Vec::new().into()),
         );
 
         let formatted = formatter.format_diagnostic(&diagnostic_for(&error, &interner));

@@ -282,7 +282,7 @@ pub(crate) fn resolve_param_ty(
             // #160 tracks lifting this by extending `ParamTy::Tuple`
             // to a tree of element shapes — large enough to defer.
             let mut scalars: Vec<ScalarTy> = Vec::with_capacity(elements.len());
-            for e in elements {
+            for e in elements.iter() {
                 let s = substitute_to_scalar(e, substitutions)?;
                 if s == ScalarTy::Unit {
                     return None;
@@ -376,7 +376,7 @@ pub(super) fn self_type_decl(recv: &StructLocalInfo) -> TypeDecl {
     } else {
         TypeDecl::Struct(
             recv.base_name,
-            recv.type_args.iter().map(|t| t.to_type_decl()).collect(),
+            recv.type_args.iter().map(|t| t.to_type_decl()).collect::<Vec<_>>().into(),
         )
     }
 }

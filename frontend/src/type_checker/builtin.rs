@@ -182,7 +182,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             "__builtin_ptr_ref",
             "byte offset",
         )?;
-        Ok(TypeDecl::Ref { is_mut: false, inner: Box::new(ty.clone()) })
+        Ok(TypeDecl::Ref { is_mut: false, inner: std::rc::Rc::new(ty.clone()) })
     }
 
     /// One argument against one expected type, letting a suffix-less

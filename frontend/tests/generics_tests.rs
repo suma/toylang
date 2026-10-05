@@ -47,14 +47,14 @@ mod type_substitution {
         let mut interner: DefaultStringInterner = StringInterner::new();
         let t_param = interner.get_or_intern("T");
 
-        let generic_array = TypeDecl::Array(vec![TypeDecl::Generic(t_param)], ArraySize::Literal(3), false);
+        let generic_array = TypeDecl::Array(vec![TypeDecl::Generic(t_param)].into(), ArraySize::Literal(3), false);
         let mut substitutions = rustc_hash::FxHashMap::default();
         substitutions.insert(t_param, TypeDecl::Int64);
 
         let substituted_array = generic_array.substitute_generics(&substitutions);
         assert_eq!(
             substituted_array,
-            TypeDecl::Array(vec![TypeDecl::Int64], ArraySize::Literal(3), false)
+            TypeDecl::Array(vec![TypeDecl::Int64].into(), ArraySize::Literal(3), false)
         );
     }
 
@@ -65,10 +65,10 @@ mod type_substitution {
 
         let generic_nested = TypeDecl::Array(
             vec![TypeDecl::Array(
-                vec![TypeDecl::Generic(t_param)],
+                vec![TypeDecl::Generic(t_param)].into(),
                 ArraySize::Literal(2),
                 false,
-            )],
+            )].into(),
             ArraySize::Literal(3),
             false,
         );
@@ -80,10 +80,10 @@ mod type_substitution {
             substituted,
             TypeDecl::Array(
                 vec![TypeDecl::Array(
-                    vec![TypeDecl::UInt64],
+                    vec![TypeDecl::UInt64].into(),
                     ArraySize::Literal(2),
                     false,
-                )],
+                )].into(),
                 ArraySize::Literal(3),
                 false,
             )
@@ -270,17 +270,17 @@ mod generic_type_inference {
         let t_param = interner.get_or_intern("T");
 
         let generic_array =
-            TypeDecl::Array(vec![TypeDecl::Generic(t_param)], ArraySize::Literal(5), false);
-        let concrete_array = TypeDecl::Array(vec![TypeDecl::Int64], ArraySize::Literal(5), false);
+            TypeDecl::Array(vec![TypeDecl::Generic(t_param)].into(), ArraySize::Literal(5), false);
+        let concrete_array = TypeDecl::Array(vec![TypeDecl::Int64].into(), ArraySize::Literal(5), false);
 
         // Element type should match for unification
         assert_eq!(
             generic_array,
-            TypeDecl::Array(vec![TypeDecl::Generic(t_param)], ArraySize::Literal(5), false)
+            TypeDecl::Array(vec![TypeDecl::Generic(t_param)].into(), ArraySize::Literal(5), false)
         );
         assert_eq!(
             concrete_array,
-            TypeDecl::Array(vec![TypeDecl::Int64], ArraySize::Literal(5), false)
+            TypeDecl::Array(vec![TypeDecl::Int64].into(), ArraySize::Literal(5), false)
         );
     }
 }

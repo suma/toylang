@@ -110,7 +110,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 },
                 TypeDecl::Array(element_types, _, _) => {
                     // Validate array element types
-                    for element_type in element_types {
+                    for element_type in element_types.iter() {
                         match element_type {
                             TypeDecl::Identifier(type_name)
                             | TypeDecl::Struct(type_name, _)
@@ -231,7 +231,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 "a column window needs the stdlib `Column<T>`                  (`core/std/column.t`), which this program did not load",
             )
         })?;
-        Ok(TypeDecl::Struct(column, vec![field_type]))
+        Ok(TypeDecl::Struct(column, vec![field_type].into()))
     }
 
     /// `obj.name` names no field: say so, and offer the close one.
@@ -474,7 +474,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             field_types.insert(*field_name, field_type);
         }
 
-        Ok(TypeDecl::Struct(*struct_name, vec![]))
+        Ok(TypeDecl::Struct(*struct_name, vec![].into()))
     }
 
     /// Handle generic struct literal type inference
@@ -593,12 +593,12 @@ impl<'a> TypeCheckerVisitor<'a> {
             Some(TypeDecl::Struct(hint_name, args))
                 if *hint_name == *struct_name && args.len() == generic_params.len() =>
             {
-                Some(args.clone())
+                Some(args.to_vec())
             }
             Some(TypeDecl::Enum(hint_name, args))
                 if *hint_name == *struct_name && args.len() == generic_params.len() =>
             {
-                Some(args.clone())
+                Some(args.to_vec())
             }
             _ => None,
         };
@@ -639,7 +639,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         TypeDecl::Struct(sym, args) | TypeDecl::Enum(sym, args)
                             if self.context.is_trait(*sym) =>
                         {
-                            vec![(*sym, args.clone())]
+                            vec![(*sym, args.to_vec())]
                         }
                         TypeDecl::TraitIntersection(syms) => {
                             syms.iter().map(|s| (*s, Vec::new())).collect()
@@ -691,7 +691,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
 
-        Ok(TypeDecl::Struct(*struct_name, type_params))
+        Ok(TypeDecl::Struct(*struct_name, type_params.into()))
     }
 
     /// Helper method to check __getslice__ on a struct
@@ -982,7 +982,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             // an error leaving here with no location would surface on
             // the enclosing statement instead.
             let mut error = TypeCheckError::type_mismatch(
-                TypeDecl::Struct(struct_name, vec![]),
+                TypeDecl::Struct(struct_name, vec![].into()),
                 base_type,
             );
             error.location = self.get_expr_location(&update_ref);

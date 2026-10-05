@@ -567,26 +567,26 @@ impl TypeInferenceState {
                     .iter()
                     .map(|elem| self.apply_solution(elem, solution))
                     .collect();
-                TypeDecl::Array(substituted_elements, size.clone(), *soa)
+                TypeDecl::Array(substituted_elements.into(), size.clone(), *soa)
             }
             TypeDecl::Tuple(elements) => {
                 let substituted_elements: Vec<_> = elements
                     .iter()
                     .map(|elem| self.apply_solution(elem, solution))
                     .collect();
-                TypeDecl::Tuple(substituted_elements)
+                TypeDecl::Tuple(substituted_elements.into())
             }
             TypeDecl::Dict(key_type, value_type) => {
                 let substituted_key = self.apply_solution(key_type, solution);
                 let substituted_value = self.apply_solution(value_type, solution);
-                TypeDecl::Dict(Box::new(substituted_key), Box::new(substituted_value))
+                TypeDecl::Dict(std::rc::Rc::new(substituted_key), std::rc::Rc::new(substituted_value))
             }
             TypeDecl::Struct(name, type_params) => {
                 let substituted_params: Vec<_> = type_params
                     .iter()
                     .map(|param| self.apply_solution(param, solution))
                     .collect();
-                TypeDecl::Struct(*name, substituted_params)
+                TypeDecl::Struct(*name, substituted_params.into())
             }
             _ => type_decl.clone(),
         }
@@ -634,8 +634,8 @@ mod tests {
         
         // Add constraint: Array<T, 2> = Array<i64, 2>
         inference.add_constraint(
-            TypeDecl::Array(vec![TypeDecl::Generic(t_param)], ArraySize::Literal(2), false),
-            TypeDecl::Array(vec![TypeDecl::Int64], ArraySize::Literal(2), false),
+            TypeDecl::Array(vec![TypeDecl::Generic(t_param)].into(), ArraySize::Literal(2), false),
+            TypeDecl::Array(vec![TypeDecl::Int64].into(), ArraySize::Literal(2), false),
             ConstraintContext::Generic
         );
         
@@ -676,8 +676,8 @@ mod tests {
         
         // Add constraint: (T, U) = (u64, bool)
         inference.add_constraint(
-            TypeDecl::Tuple(vec![TypeDecl::Generic(t_param), TypeDecl::Generic(u_param)]),
-            TypeDecl::Tuple(vec![TypeDecl::UInt64, TypeDecl::Bool]),
+            TypeDecl::Tuple(vec![TypeDecl::Generic(t_param), TypeDecl::Generic(u_param)].into()),
+            TypeDecl::Tuple(vec![TypeDecl::UInt64, TypeDecl::Bool].into()),
             ConstraintContext::Generic
         );
         
@@ -701,14 +701,14 @@ mod tests {
         assert_eq!(result, TypeDecl::UInt64);
         
         // Test array substitution
-        let array_type = TypeDecl::Array(vec![TypeDecl::Generic(t_param)], ArraySize::Literal(3), false);
+        let array_type = TypeDecl::Array(vec![TypeDecl::Generic(t_param)].into(), ArraySize::Literal(3), false);
         let result = inference.apply_solution(&array_type, &solution);
-        assert_eq!(result, TypeDecl::Array(vec![TypeDecl::UInt64], ArraySize::Literal(3), false));
+        assert_eq!(result, TypeDecl::Array(vec![TypeDecl::UInt64].into(), ArraySize::Literal(3), false));
         
         // Test tuple substitution
-        let tuple_type = TypeDecl::Tuple(vec![TypeDecl::Generic(t_param), TypeDecl::Bool]);
+        let tuple_type = TypeDecl::Tuple(vec![TypeDecl::Generic(t_param), TypeDecl::Bool].into());
         let result = inference.apply_solution(&tuple_type, &solution);
-        assert_eq!(result, TypeDecl::Tuple(vec![TypeDecl::UInt64, TypeDecl::Bool]));
+        assert_eq!(result, TypeDecl::Tuple(vec![TypeDecl::UInt64, TypeDecl::Bool].into()));
     }
 
     #[test]

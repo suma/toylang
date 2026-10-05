@@ -873,7 +873,7 @@ fn declare_methods(
         let self_decl = if let Some(prim) = primitive_type_decl_for_target_sym(*target_sym, interner) {
             prim
         } else if !target_type_args_decl.is_empty() {
-            TypeDecl::Struct(*target_sym, target_type_args_decl.clone())
+            TypeDecl::Struct(*target_sym, target_type_args_decl.clone().into())
         } else {
             TypeDecl::Identifier(*target_sym)
         };
@@ -2356,7 +2356,7 @@ impl<'a> FunctionLower<'a> {
                 // `Result::map` out of the compiled backends.
                 let mut ir_param_tys: Vec<Type> = Vec::with_capacity(p_tys.len());
                 let mut ok = true;
-                for pt in p_tys {
+                for pt in p_tys.iter() {
                     match self.lower_scalar_substituted(pt) {
                         Some(t) => ir_param_tys.push(t),
                         None => {

@@ -84,16 +84,16 @@ pub(super) fn substitute_params(ty: &TypeDecl, params: &HashMap<DefaultSymbol, T
             params.get(s).cloned().unwrap_or_else(|| ty.clone())
         }
         TypeDecl::Struct(n, args) => {
-            TypeDecl::Struct(*n, args.iter().map(|a| substitute_params(a, params)).collect())
+            TypeDecl::Struct(*n, args.iter().map(|a| substitute_params(a, params)).collect::<Vec<_>>().into())
         }
         TypeDecl::Enum(n, args) => {
-            TypeDecl::Enum(*n, args.iter().map(|a| substitute_params(a, params)).collect())
+            TypeDecl::Enum(*n, args.iter().map(|a| substitute_params(a, params)).collect::<Vec<_>>().into())
         }
         TypeDecl::Tuple(args) => {
-            TypeDecl::Tuple(args.iter().map(|a| substitute_params(a, params)).collect())
+            TypeDecl::Tuple(args.iter().map(|a| substitute_params(a, params)).collect::<Vec<_>>().into())
         }
         TypeDecl::Ref { is_mut, inner } => {
-            TypeDecl::Ref { is_mut: *is_mut, inner: Box::new(substitute_params(inner, params)) }
+            TypeDecl::Ref { is_mut: *is_mut, inner: std::rc::Rc::new(substitute_params(inner, params)) }
         }
         other => other.clone(),
     }
@@ -207,10 +207,10 @@ fn collect_generic_bindings(
             // carries its own arguments; use them.
             let runtime_ty = match value {
                 Object::Struct { type_name, type_args, .. } => {
-                    TypeDecl::Struct(*type_name, type_args.clone())
+                    TypeDecl::Struct(*type_name, type_args.clone().into())
                 }
                 Object::EnumVariant { enum_name, type_args, .. } => {
-                    TypeDecl::Enum(*enum_name, type_args.clone())
+                    TypeDecl::Enum(*enum_name, type_args.clone().into())
                 }
                 _ => value.get_type(),
             };
@@ -2188,7 +2188,7 @@ impl EvaluationContext<'_> {
                 self.pending_annotation.as_ref()
             {
                 if name == struct_name && args.len() == entry.generic_params.len() {
-                    for (p, a) in entry.generic_params.iter().zip(args) {
+                    for (p, a) in entry.generic_params.iter().zip(args.iter()) {
                         annotated.insert(*p, a.clone());
                     }
                 }
@@ -2810,7 +2810,7 @@ impl EvaluationContext<'_> {
         // neither. The binding's annotation (`val b: C<i64> = C::make(..)`)
         // is the discriminator, as it is for the compiled lanes.
         let hint_args: Vec<TypeDecl> = match &self.pending_annotation {
-            Some(TypeDecl::Struct(n, a) | TypeDecl::Enum(n, a)) if *n == struct_name => a.clone(),
+            Some(TypeDecl::Struct(n, a) | TypeDecl::Enum(n, a)) if *n == struct_name => a.to_vec(),
             _ => Vec::new(),
         };
         let resolved = if names_a_type {

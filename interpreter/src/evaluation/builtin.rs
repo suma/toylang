@@ -172,7 +172,7 @@ impl EvaluationContext<'_> {
             TypeDecl::Unit => Some(0),
             TypeDecl::Tuple(elements) => {
                 let mut total: u64 = 0;
-                for e in elements {
+                for e in elements.iter() {
                     total = total.saturating_add(self.type_decl_byte_size(e, subst)?);
                 }
                 Some(total)

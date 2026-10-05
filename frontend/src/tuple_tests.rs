@@ -165,7 +165,7 @@ mod tuple_tests {
         let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // Set type hint for (i64, u64)
-        type_checker.type_inference.type_hint = Some(TypeDecl::Tuple(vec![TypeDecl::Int64, TypeDecl::UInt64]));
+        type_checker.type_inference.type_hint = Some(TypeDecl::Tuple(vec![TypeDecl::Int64, TypeDecl::UInt64].into()));
         
         // Test type inference with hint
         let result = type_checker.visit_tuple_literal(&elements);

@@ -1,3 +1,4 @@
+use std::rc::Rc;
 use string_interner::DefaultSymbol;
 
 use crate::ast::ExprRef;
@@ -151,6 +152,14 @@ impl VectorType {
     }
 }
 
+/// A type's component types (type arguments, tuple elements, a function's
+/// parameters). Shared rather than owned: the checker clones `TypeDecl`s
+/// constantly (every expression's type is cached and looked up by value),
+/// and a shared list makes that a reference-count bump instead of a
+/// fresh allocation per level. Read it like a `Vec`; change it through
+/// `Rc::make_mut`.
+pub type TypeList = Rc<Vec<TypeDecl>>;
+
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TypeDecl {
@@ -194,16 +203,16 @@ pub enum TypeDecl {
     /// spelling assign to each other and no API splits. The flag only
     /// survives for the lowering, which turns it into the binding's
     /// backing-storage shape; the tree-walker never reads it.
-    Array(Vec<TypeDecl>, ArraySize, bool),
-    Struct(DefaultSymbol, Vec<TypeDecl>),  // struct type with type parameters
-    Dict(Box<TypeDecl>, Box<TypeDecl>),  // Dict<K, V> - key type and value type
+    Array(TypeList, ArraySize, bool),
+    Struct(DefaultSymbol, TypeList),  // struct type with type parameters
+    Dict(Rc<TypeDecl>, Rc<TypeDecl>),  // Dict<K, V> - key type and value type
     Self_,  // Self type within impl blocks
     Ptr,  // Raw pointer type for heap memory
-    Tuple(Vec<TypeDecl>),  // Tuple type - ordered collection of heterogeneous types
+    Tuple(TypeList),  // Tuple type - ordered collection of heterogeneous types
     Generic(DefaultSymbol),  // Generic type parameter (e.g., T, U, V)
     Allocator,  // Opaque allocator handle for `with allocator = ...` scoping
-    Enum(DefaultSymbol, Vec<TypeDecl>),  // User-defined enum type with optional type parameters
-    Range(Box<TypeDecl>),  // Half-open integer range: start..end
+    Enum(DefaultSymbol, TypeList),  // User-defined enum type with optional type parameters
+    Range(Rc<TypeDecl>),  // Half-open integer range: start..end
     /// Reference type `&T` / `&mut T` (REF-Stage-2). Distinct
     /// from the inner `T` for type-checker purposes — assignments
     /// don't accept `T` for `&T` and vice-versa, but argument
@@ -212,13 +221,13 @@ pub enum TypeDecl {
     /// **erase** the wrapper to the inner type — no separate
     /// runtime representation. IR-level pointer passing and the
     /// borrow checker are deferred to later phases.
-    Ref { is_mut: bool, inner: Box<TypeDecl> },
+    Ref { is_mut: bool, inner: Rc<TypeDecl> },
     /// Function value type `(T1, T2, ...) -> R`. Represents both
     /// closure literals (`fn(x: i64) -> i64 { x + 1 }`) and bare
     /// function references passed by value. Phase 1 (frontend-only)
     /// landing — interpreter / JIT / AOT execution paths come in
     /// follow-up phases.
-    Function(Vec<TypeDecl>, Box<TypeDecl>),
+    Function(TypeList, Rc<TypeDecl>),
     /// A2 multi-bound: intersection of two or more trait bounds for
     /// a single generic parameter, e.g. `<T: Greet + Named>`. Each
     /// `DefaultSymbol` names a trait. Used only in
@@ -588,7 +597,7 @@ impl TypeDecl {
         match self {
             TypeDecl::Struct(n, args) | TypeDecl::Enum(n, args) => {
                 if *n == name && !args.is_empty() {
-                    return Some(args.clone());
+                    return Some(args.to_vec());
                 }
                 args.iter().find_map(|a| a.nested_type_args(name))
             }
@@ -622,35 +631,35 @@ impl TypeDecl {
         match self {
             TypeDecl::Self_ => replacement.clone(),
             TypeDecl::Array(elements, size, soa) => TypeDecl::Array(
-                elements.iter().map(|t| t.substitute_self(replacement)).collect(),
+                elements.iter().map(|t| t.substitute_self(replacement)).collect::<Vec<_>>().into(),
                 size.clone(),
                 *soa,
             ),
             TypeDecl::Dict(key, value) => TypeDecl::Dict(
-                Box::new(key.substitute_self(replacement)),
-                Box::new(value.substitute_self(replacement)),
+                Box::new(key.substitute_self(replacement)).into(),
+                Box::new(value.substitute_self(replacement)).into(),
             ),
             TypeDecl::Tuple(elements) => TypeDecl::Tuple(
-                elements.iter().map(|t| t.substitute_self(replacement)).collect(),
+                elements.iter().map(|t| t.substitute_self(replacement)).collect::<Vec<_>>().into(),
             ),
             TypeDecl::Struct(name, params) => TypeDecl::Struct(
                 *name,
-                params.iter().map(|t| t.substitute_self(replacement)).collect(),
+                params.iter().map(|t| t.substitute_self(replacement)).collect::<Vec<_>>().into(),
             ),
             TypeDecl::Enum(name, params) => TypeDecl::Enum(
                 *name,
-                params.iter().map(|t| t.substitute_self(replacement)).collect(),
+                params.iter().map(|t| t.substitute_self(replacement)).collect::<Vec<_>>().into(),
             ),
             TypeDecl::Ref { is_mut, inner } => TypeDecl::Ref {
                 is_mut: *is_mut,
-                inner: Box::new(inner.substitute_self(replacement)),
+                inner: std::rc::Rc::new(inner.substitute_self(replacement)),
             },
             TypeDecl::Range(inner) => {
-                TypeDecl::Range(Box::new(inner.substitute_self(replacement)))
+                TypeDecl::Range(std::rc::Rc::new(inner.substitute_self(replacement)))
             }
             TypeDecl::Function(params, ret) => TypeDecl::Function(
-                params.iter().map(|t| t.substitute_self(replacement)).collect(),
-                Box::new(ret.substitute_self(replacement)),
+                params.iter().map(|t| t.substitute_self(replacement)).collect::<Vec<_>>().into(),
+                Box::new(ret.substitute_self(replacement)).into(),
             ),
             _ => self.clone(),
         }
@@ -669,48 +678,48 @@ impl TypeDecl {
                 // array keeps its storage shape.
                 let new_elements = element_types.iter()
                     .map(|t| t.substitute_generics(substitutions))
-                    .collect();
+                    .collect::<Vec<_>>().into();
                 TypeDecl::Array(new_elements, size.clone(), *soa)
             },
             TypeDecl::Dict(key_type, value_type) => {
                 // Recursively substitute in dictionary key and value types
                 let new_key = Box::new(key_type.substitute_generics(substitutions));
                 let new_value = Box::new(value_type.substitute_generics(substitutions));
-                TypeDecl::Dict(new_key, new_value)
+                TypeDecl::Dict(new_key.into(), new_value.into())
             },
             TypeDecl::Tuple(element_types) => {
                 // Recursively substitute in tuple element types
                 let new_elements = element_types.iter()
                     .map(|t| t.substitute_generics(substitutions))
-                    .collect();
+                    .collect::<Vec<_>>().into();
                 TypeDecl::Tuple(new_elements)
             },
             TypeDecl::Struct(name, type_params) => {
                 // Recursively substitute in struct type parameters
                 let new_params = type_params.iter()
                     .map(|t| t.substitute_generics(substitutions))
-                    .collect();
+                    .collect::<Vec<_>>().into();
                 TypeDecl::Struct(*name, new_params)
             },
             TypeDecl::Enum(name, type_params) => {
                 // Recursively substitute in enum type parameters
                 let new_params = type_params.iter()
                     .map(|t| t.substitute_generics(substitutions))
-                    .collect();
+                    .collect::<Vec<_>>().into();
                 TypeDecl::Enum(*name, new_params)
             },
             TypeDecl::Ref { is_mut, inner } => {
                 TypeDecl::Ref {
                     is_mut: *is_mut,
-                    inner: Box::new(inner.substitute_generics(substitutions)),
+                    inner: std::rc::Rc::new(inner.substitute_generics(substitutions)),
                 }
             }
             TypeDecl::Function(params, ret) => {
                 let new_params = params.iter()
                     .map(|t| t.substitute_generics(substitutions))
-                    .collect();
+                    .collect::<Vec<_>>().into();
                 let new_ret = Box::new(ret.substitute_generics(substitutions));
-                TypeDecl::Function(new_params, new_ret)
+                TypeDecl::Function(new_params, new_ret.into())
             }
             // For all other types, no substitution needed
             _ => self.clone(),
@@ -978,7 +987,7 @@ impl TypeDecl {
             ),
             TypeDecl::Tuple(elements) => {
                 let mut parts = Vec::with_capacity(elements.len());
-                for e in elements {
+                for e in elements.iter() {
                     parts.push(e.source_name(interner)?);
                 }
                 format!("({})", parts.join(", "))
@@ -989,7 +998,7 @@ impl TypeDecl {
             }
             TypeDecl::Function(params, ret) => {
                 let mut parts = Vec::with_capacity(params.len());
-                for p in params {
+                for p in params.iter() {
                     parts.push(p.source_name(interner)?);
                 }
                 format!("fn ({}) -> {}", parts.join(", "), ret.source_name(interner)?)

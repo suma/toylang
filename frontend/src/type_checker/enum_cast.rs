@@ -189,7 +189,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             );
             match self.core.string_interner.get("__enum_cast") {
                 Some(name) if !place => {
-                    let ty = TypeDecl::Enum(*enum_name, Vec::new());
+                    let ty = TypeDecl::Enum(*enum_name, Vec::new().into());
                     let bind = self.core.stmt_pool.add(Stmt::Val(name, Some(ty), operand));
                     let ident = self.core.expr_pool.add(Expr::Identifier(name));
                     let matched = self.core.expr_pool.add(Expr::Match(ident, arms));

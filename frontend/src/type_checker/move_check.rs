@@ -217,7 +217,7 @@ pub fn check_moves(
         };
         let self_ty = match program.statement.get_ref(&stmt_ref) {
             Some(Stmt::ImplBlock { target_type, target_type_args, .. }) => {
-                Some(TypeDecl::Struct(*target_type, target_type_args.clone()))
+                Some(TypeDecl::Struct(*target_type, target_type_args.clone().into()))
             }
             _ => None,
         };
@@ -1026,7 +1026,7 @@ impl MoveCheck<'_> {
         };
         let (enum_name, args) = match self.expr_types.get(&scrutinee) {
             Some(TypeDecl::Enum(name, args)) | Some(TypeDecl::Struct(name, args)) => (*name, args.clone()),
-            Some(TypeDecl::Identifier(name)) => (*name, Vec::new()),
+            Some(TypeDecl::Identifier(name)) => (*name, Default::default()),
             _ => return false,
         };
         if self.drop_analysis.drop_implementing_types().contains(&enum_name) {
@@ -1106,7 +1106,7 @@ impl MoveCheck<'_> {
         // an identifier that names a borrow answers the value it
         // points at, and taking that value is the same second owner.
         let inner = match rhs_ty {
-            TypeDecl::Ref { inner, .. } => *inner,
+            TypeDecl::Ref { inner, .. } => std::rc::Rc::unwrap_or_clone(inner),
             other => {
                 let names_borrow = matches!(
                     self.program.expression.get_ref(&rhs),
@@ -2180,7 +2180,7 @@ fn compute_lend(
             // The receiver's type, for `owning` on `self.field`. A
             // generic impl leaves its parameters as names, which is
             // what `field_type` substitutes.
-            let self_ty = TypeDecl::Struct(*target_type, target_type_args.clone());
+            let self_ty = TypeDecl::Struct(*target_type, target_type_args.clone().into());
             for m in methods {
                 let params: Vec<(DefaultSymbol, TypeDecl)> = m
                     .parameter
@@ -2372,14 +2372,14 @@ impl LendAnalysis<'_> {
     fn field_type(&self, ty: &TypeDecl, field: DefaultSymbol) -> Option<TypeDecl> {
         let (name, args) = match ty {
             TypeDecl::Struct(name, args) => (*name, args.clone()),
-            TypeDecl::Identifier(name) => (*name, Vec::new()),
+            TypeDecl::Identifier(name) => (*name, Default::default()),
             _ => return None,
         };
         let (params, fields) = self.structs.get(&name)?;
         let field_name = self.interner.resolve(field)?;
         let (_, fty) = fields.iter().find(|(n, _)| n == field_name)?;
         let substitutions: HashMap<DefaultSymbol, TypeDecl> =
-            params.iter().copied().zip(args).collect();
+            params.iter().copied().zip(args.iter().cloned()).collect();
         Some(match fty {
             TypeDecl::Identifier(s) if substitutions.contains_key(s) => substitutions[s].clone(),
             other => other.substitute_generics(&substitutions),

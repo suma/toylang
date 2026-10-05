@@ -98,7 +98,7 @@ mod tests {
         let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // Set type hint for bool array
-        type_checker.type_inference.type_hint = Some(TypeDecl::Array(vec![TypeDecl::Bool], ArraySize::Literal(2), false));
+        type_checker.type_inference.type_hint = Some(TypeDecl::Array(vec![TypeDecl::Bool].into(), ArraySize::Literal(2), false));
         
         // Test type inference with hint
         let result = type_checker.visit_array_literal(&vec![ExprRef(0), ExprRef(1)]);
@@ -197,7 +197,7 @@ mod tests {
         let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // Set wrong type hint (expecting UInt64 array)
-        type_checker.type_inference.type_hint = Some(TypeDecl::Array(vec![TypeDecl::UInt64], ArraySize::Literal(2), false));
+        type_checker.type_inference.type_hint = Some(TypeDecl::Array(vec![TypeDecl::UInt64].into(), ArraySize::Literal(2), false));
         
         // Test type inference with wrong hint - should fail
         let result = type_checker.visit_array_literal(&vec![ExprRef(0), ExprRef(1)]);
@@ -304,7 +304,7 @@ mod tests {
                 assert_eq!(size, ArraySize::Literal(100));
                 assert_eq!(element_types.len(), 100);
                 // All elements should be Bool type
-                for element_type in &element_types {
+                for element_type in element_types.iter() {
                     assert_eq!(*element_type, TypeDecl::Bool);
                 }
             },
@@ -401,9 +401,9 @@ mod tests {
         type_checker.context.register_struct(point_symbol, struct_fields, crate::ast::Visibility::Private);
         
         // Test array with same struct types
-        let point_type = TypeDecl::Struct(point_symbol, vec![]);
+        let point_type = TypeDecl::Struct(point_symbol, vec![].into());
         let array_type =
-            TypeDecl::Array(vec![point_type.clone(), point_type.clone()], ArraySize::Literal(2), false);
+            TypeDecl::Array(vec![point_type.clone(), point_type.clone()].into(), ArraySize::Literal(2), false);
         
         // This should be valid
         assert!(matches!(
@@ -480,8 +480,8 @@ mod tests {
         type_checker.context.register_struct(circle_symbol, circle_fields, crate::ast::Visibility::Private);
         
         // Test array with mixed struct types - should be caught by array type checker
-        let point_type = TypeDecl::Struct(point_symbol, vec![]);
-        let circle_type = TypeDecl::Struct(circle_symbol, vec![]);
+        let point_type = TypeDecl::Struct(point_symbol, vec![].into());
+        let circle_type = TypeDecl::Struct(circle_symbol, vec![].into());
         
         // This demonstrates that different struct types cannot be mixed in arrays
         assert_ne!(point_type, circle_type);
@@ -508,8 +508,8 @@ mod tests {
         type_checker.context.register_struct(point_symbol, struct_fields, crate::ast::Visibility::Private);
         
         // Set type hint for struct array
-        let point_type = TypeDecl::Struct(point_symbol, vec![]);
-        let array_hint = TypeDecl::Array(vec![point_type.clone()], ArraySize::Literal(1), false);
+        let point_type = TypeDecl::Struct(point_symbol, vec![].into());
+        let array_hint = TypeDecl::Array(vec![point_type.clone()].into(), ArraySize::Literal(1), false);
         type_checker.type_inference.type_hint = Some(array_hint.clone());
         
         // Verify type hint was set correctly
@@ -517,7 +517,7 @@ mod tests {
         
         // Test that the setup_type_hint_for_val method works with struct arrays
         let _old_hint = type_checker
-            .setup_type_hint_for_val(&Some(TypeDecl::Array(vec![point_type], ArraySize::Literal(2), false)));
+            .setup_type_hint_for_val(&Some(TypeDecl::Array(vec![point_type].into(), ArraySize::Literal(2), false)));
         assert!(type_checker.type_inference.type_hint.is_some());
     }
 

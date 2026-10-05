@@ -16,7 +16,7 @@ use super::{convert_object, EvaluationContext, EvaluationResult};
 pub(super) fn apply_annotation_type_args(value: Value, annotation: Option<&TypeDecl>) -> Value {
     let Some(anno) = annotation else { return value; };
     let args: Vec<TypeDecl> = match anno {
-        TypeDecl::Struct(_, args) | TypeDecl::Enum(_, args) => args.clone(),
+        TypeDecl::Struct(_, args) | TypeDecl::Enum(_, args) => args.to_vec(),
         _ => return value,
     };
     if args.is_empty() {
@@ -109,7 +109,7 @@ fn stamp_payload_type_args(value: &Value, args: &[TypeDecl]) {
             continue;
         };
         let inner_args = match matching {
-            TypeDecl::Struct(_, inner) | TypeDecl::Enum(_, inner) => inner.clone(),
+            TypeDecl::Struct(_, inner) | TypeDecl::Enum(_, inner) => inner.to_vec(),
             _ => continue,
         };
         match &mut *payload.borrow_mut() {

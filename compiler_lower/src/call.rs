@@ -525,7 +525,7 @@ impl<'a> FunctionLower<'a> {
             }
             TypeDecl::Struct(name, args) if self.struct_defs.contains_key(name) => {
                 let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
-                for a in args {
+                for a in args.iter() {
                     concrete.push(self.lower_type_with_subst_self(a, subst, self_type)?);
                 }
                 instantiate_struct(
@@ -543,7 +543,7 @@ impl<'a> FunctionLower<'a> {
                 if self.enum_defs.contains_key(name) =>
             {
                 let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
-                for a in args {
+                for a in args.iter() {
                     concrete.push(self.lower_type_with_subst_self(a, subst, self_type)?);
                 }
                 instantiate_enum(
@@ -561,7 +561,7 @@ impl<'a> FunctionLower<'a> {
             // needs its elements substituted before interning.
             TypeDecl::Tuple(elems) => {
                 let mut concrete: Vec<Type> = Vec::with_capacity(elems.len());
-                for e in elems {
+                for e in elems.iter() {
                     concrete.push(self.lower_type_with_subst_self(e, subst, self_type)?);
                 }
                 Some(Type::Tuple(super::types::intern_tuple(self.module, concrete)))

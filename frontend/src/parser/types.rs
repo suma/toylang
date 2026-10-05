@@ -85,7 +85,7 @@ impl<'a> Parser<'a> {
                 self.expect_err(&Kind::ParenClose)?;
                 self.expect_err(&Kind::Arrow)?;
                 let ret = self.parse_type_declaration_with_generic_context(generic_params)?;
-                Ok(TypeDecl::Function(params, Box::new(ret)))
+                Ok(TypeDecl::Function(params.into(), std::rc::Rc::new(ret)))
             }
             // REF-Stage-2: `&T` and `&mut T` reference types at any
             // type-annotation position (parameter type, val annotation,
@@ -102,7 +102,7 @@ impl<'a> Parser<'a> {
                     false
                 };
                 let inner = self.parse_type_declaration_with_generic_context(generic_params)?;
-                Ok(TypeDecl::Ref { is_mut, inner: Box::new(inner) })
+                Ok(TypeDecl::Ref { is_mut, inner: std::rc::Rc::new(inner) })
             }
             // A5 dynamic trait object: `dyn TraitName`. Only the
             // referenced form (`&dyn Trait` / `&mut dyn Trait`) is
@@ -199,11 +199,11 @@ impl<'a> Parser<'a> {
                         ArraySize::Literal(n) => *n,
                         ArraySize::Deferred(_) => 1,
                     };
-                    Ok(TypeDecl::Array(vec![element_type; n], size, false))
+                    Ok(TypeDecl::Array(vec![element_type; n].into(), size, false))
                 } else {
                     // Dynamic array type [T] with no size specified
                     self.expect_err(&Kind::BracketClose)?;
-                    Ok(TypeDecl::Array(vec![element_type], ArraySize::Literal(0), false))
+                    Ok(TypeDecl::Array(vec![element_type].into(), ArraySize::Literal(0), false))
                 }
             }
             Some(Kind::Bool) => {
@@ -391,9 +391,9 @@ impl<'a> Parser<'a> {
                         && self.string_interner.resolve(ident) == Some("Range")
                     {
                         let element = type_args.into_iter().next().expect("one type argument");
-                        return Ok(TypeDecl::Range(Box::new(element)));
+                        return Ok(TypeDecl::Range(std::rc::Rc::new(element)));
                     }
-                    Ok(TypeDecl::Struct(ident, type_args))
+                    Ok(TypeDecl::Struct(ident, type_args.into()))
                 } else {
                     // No type arguments, just an identifier — first
                     // check if a top-level `type Name = ...` alias
@@ -436,7 +436,7 @@ impl<'a> Parser<'a> {
                 let value_type = self.parse_type_declaration_with_generic_context(generic_params)?;
 
                 self.expect_err(&Kind::BracketClose)?;
-                Ok(TypeDecl::Dict(Box::new(key_type), Box::new(value_type)))
+                Ok(TypeDecl::Dict(std::rc::Rc::new(key_type), std::rc::Rc::new(value_type)))
             }
             Some(Kind::ParenOpen) => {
                 // Parse tuple type `(T1, T2, ...)` — or, when the
@@ -457,7 +457,7 @@ impl<'a> Parser<'a> {
                     if self.peek() == Some(&Kind::Arrow) {
                         self.next(); // consume `->`
                         let ret = self.parse_type_declaration_with_generic_context(generic_params)?;
-                        return Ok(TypeDecl::Function(vec![], Box::new(ret)));
+                        return Ok(TypeDecl::Function(vec![].into(), std::rc::Rc::new(ret)));
                     }
                     // `()` as a *type* is the unit type, not a
                     // zero-element tuple: a body that produces no
@@ -496,9 +496,9 @@ impl<'a> Parser<'a> {
                 if self.peek() == Some(&Kind::Arrow) {
                     self.next(); // consume `->`
                     let ret = self.parse_type_declaration_with_generic_context(generic_params)?;
-                    return Ok(TypeDecl::Function(element_types, Box::new(ret)));
+                    return Ok(TypeDecl::Function(element_types.into(), std::rc::Rc::new(ret)));
                 }
-                Ok(TypeDecl::Tuple(element_types))
+                Ok(TypeDecl::Tuple(element_types.into()))
             }
             Some(_) | None => {
                 let location = self.current_source_location();

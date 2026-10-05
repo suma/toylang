@@ -745,7 +745,7 @@ impl<'a> FunctionLower<'a> {
         // Lower IR types from the AST signature so we can build
         // the CallIndirect signature.
         let mut ir_param_tys: Vec<Type> = Vec::with_capacity(param_tys_decl.len());
-        for pt in &param_tys_decl {
+        for pt in param_tys_decl.iter() {
             let lowered = self.lower_scalar_with_subst(pt).ok_or_else(|| {
                 format!(
                     "compiler MVP: field-call closure parameter type `{}` is not a primitive scalar",

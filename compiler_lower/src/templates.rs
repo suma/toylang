@@ -407,7 +407,7 @@ pub(super) fn substitute_payload_type(
             if !args.is_empty() && enum_templates.contains_key(name) =>
         {
             let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
-            for a in args {
+            for a in args.iter() {
                 let t = substitute_type_arg(
                     a,
                     subst,
@@ -433,7 +433,7 @@ pub(super) fn substitute_payload_type(
             if !args.is_empty() && struct_templates.contains_key(name) =>
         {
             let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
-            for a in args {
+            for a in args.iter() {
                 let t = substitute_type_arg(
                     a,
                     subst,
@@ -471,7 +471,7 @@ pub(super) fn substitute_payload_type(
         }
         TypeDecl::Tuple(elements) => {
             let mut lowered: Vec<Type> = Vec::with_capacity(elements.len());
-            for e in elements {
+            for e in elements.iter() {
                 let t = substitute_payload_type(
                     e,
                     subst,
@@ -717,7 +717,7 @@ pub(super) fn substitute_field_type(
         }
         TypeDecl::Tuple(elements) => {
             let mut lowered: Vec<Type> = Vec::with_capacity(elements.len());
-            for e in elements {
+            for e in elements.iter() {
                 let s = lower_scalar(e)?;
                 if matches!(s, Type::Unit) {
                     return None;
@@ -784,7 +784,7 @@ pub(super) fn substitute_type_arg(
         }
         TypeDecl::Struct(name, args) if struct_templates.contains_key(name) => {
             let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
-            for a in args {
+            for a in args.iter() {
                 concrete.push(substitute_type_arg(
                     a,
                     subst,
@@ -818,7 +818,7 @@ pub(super) fn substitute_type_arg(
             if enum_templates.contains_key(name) =>
         {
             let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
-            for a in args {
+            for a in args.iter() {
                 concrete.push(substitute_type_arg(
                     a,
                     subst,
@@ -908,18 +908,18 @@ pub(super) fn substitute_self(
         TypeDecl::Identifier(sym) if interner.resolve(*sym) == Some("Self") => self_decl.clone(),
         TypeDecl::Ref { is_mut, inner } => TypeDecl::Ref {
             is_mut: *is_mut,
-            inner: Box::new(sub(inner)),
+            inner: std::rc::Rc::new(sub(inner)),
         },
         TypeDecl::Array(elems, size, soa) => {
-            TypeDecl::Array(elems.iter().map(&sub).collect(), size.clone(), *soa)
+            TypeDecl::Array(elems.iter().map(&sub).collect::<Vec<_>>().into(), size.clone(), *soa)
         }
-        TypeDecl::Tuple(elems) => TypeDecl::Tuple(elems.iter().map(&sub).collect()),
-        TypeDecl::Struct(name, args) => TypeDecl::Struct(*name, args.iter().map(&sub).collect()),
-        TypeDecl::Enum(name, args) => TypeDecl::Enum(*name, args.iter().map(&sub).collect()),
-        TypeDecl::Dict(k, v) => TypeDecl::Dict(Box::new(sub(k)), Box::new(sub(v))),
-        TypeDecl::Range(inner) => TypeDecl::Range(Box::new(sub(inner))),
+        TypeDecl::Tuple(elems) => TypeDecl::Tuple(elems.iter().map(&sub).collect::<Vec<_>>().into()),
+        TypeDecl::Struct(name, args) => TypeDecl::Struct(*name, args.iter().map(&sub).collect::<Vec<_>>().into()),
+        TypeDecl::Enum(name, args) => TypeDecl::Enum(*name, args.iter().map(&sub).collect::<Vec<_>>().into()),
+        TypeDecl::Dict(k, v) => TypeDecl::Dict(std::rc::Rc::new(sub(k)), std::rc::Rc::new(sub(v))),
+        TypeDecl::Range(inner) => TypeDecl::Range(std::rc::Rc::new(sub(inner))),
         TypeDecl::Function(params, ret) => {
-            TypeDecl::Function(params.iter().map(&sub).collect(), Box::new(sub(ret)))
+            TypeDecl::Function(params.iter().map(&sub).collect::<Vec<_>>().into(), std::rc::Rc::new(sub(ret)))
         }
         other => other.clone(),
     }
@@ -1013,7 +1013,7 @@ pub(super) fn lower_param_or_return_type(
             if !args.is_empty() && struct_defs.contains_key(name) =>
         {
             let mut lowered_args: Vec<Type> = Vec::with_capacity(args.len());
-            for a in args {
+            for a in args.iter() {
                 // AOT-COMPOUND-PTR-RW: recurse so type args
                 // themselves can be compound (`Vec<Vec<u8>>` is the
                 // landing case). Pre-fix `lower_scalar(a)?` rejected
@@ -1039,7 +1039,7 @@ pub(super) fn lower_param_or_return_type(
         }
         TypeDecl::Enum(name, args) if enum_defs.contains_key(name) => {
             let mut lowered_args: Vec<Type> = Vec::with_capacity(args.len());
-            for a in args {
+            for a in args.iter() {
                 // STDLIB-ITER: recurse (like the struct arm above) so
                 // a tuple type argument — `Option<(K, V)>` from
                 // `DictIter::next` — lowers instead of being rejected
@@ -1058,7 +1058,7 @@ pub(super) fn lower_param_or_return_type(
             if !args.is_empty() && enum_defs.contains_key(name) =>
         {
             let mut lowered_args: Vec<Type> = Vec::with_capacity(args.len());
-            for a in args {
+            for a in args.iter() {
                 // STDLIB-ITER: recurse (see the `TypeDecl::Enum` arm
                 // above) so tuple type arguments lower.
                 // UNIT-TYPE-ARG: a `()` argument is allowed here —
@@ -1073,7 +1073,7 @@ pub(super) fn lower_param_or_return_type(
         }
         TypeDecl::Tuple(elements) => {
             let mut lowered: Vec<Type> = Vec::with_capacity(elements.len());
-            for e in elements {
+            for e in elements.iter() {
                 let s = lower_scalar(e)?;
                 if matches!(s, Type::Unit) {
                     return None;
@@ -1193,7 +1193,7 @@ mod tests {
                     ("v".to_string(), TypeDecl::Int64),
                     (
                         "kids".to_string(),
-                        TypeDecl::Struct(vec, vec![TypeDecl::Identifier(tree)]),
+                        TypeDecl::Struct(vec, vec![TypeDecl::Identifier(tree)].into()),
                     ),
                 ],
             },

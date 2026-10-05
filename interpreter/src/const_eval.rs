@@ -1209,7 +1209,7 @@ fn resolve_size_in_type(
 ) {
     match ty {
         TypeDecl::Array(elems, size, _) => {
-            for elem in elems.iter_mut() {
+            for elem in std::rc::Rc::make_mut(elems).iter_mut() {
                 resolve_size_in_type(elem, expression, location_pool, const_values, interner, const_fn_names, errors);
             }
             if let ArraySize::Deferred(expr_ref) = size {
@@ -1241,32 +1241,32 @@ fn resolve_size_in_type(
                 };
                 if let Some(n) = resolved {
                     *size = ArraySize::Literal(n);
-                    *elems = vec![elems.first().cloned().unwrap_or(TypeDecl::Unknown); n];
+                    *elems = vec![elems.first().cloned().unwrap_or(TypeDecl::Unknown); n].into();
                 }
             }
         }
         TypeDecl::Struct(_, args) | TypeDecl::Enum(_, args) => {
-            for arg in args.iter_mut() {
+            for arg in std::rc::Rc::make_mut(args).iter_mut() {
                 resolve_size_in_type(arg, expression, location_pool, const_values, interner, const_fn_names, errors);
             }
         }
         TypeDecl::Tuple(elems) => {
-            for elem in elems.iter_mut() {
+            for elem in std::rc::Rc::make_mut(elems).iter_mut() {
                 resolve_size_in_type(elem, expression, location_pool, const_values, interner, const_fn_names, errors);
             }
         }
         TypeDecl::Dict(k, v) => {
-            resolve_size_in_type(k, expression, location_pool, const_values, interner, const_fn_names, errors);
-            resolve_size_in_type(v, expression, location_pool, const_values, interner, const_fn_names, errors);
+            resolve_size_in_type(std::rc::Rc::make_mut(k), expression, location_pool, const_values, interner, const_fn_names, errors);
+            resolve_size_in_type(std::rc::Rc::make_mut(v), expression, location_pool, const_values, interner, const_fn_names, errors);
         }
         TypeDecl::Range(inner) | TypeDecl::Ref { inner, .. } => {
-            resolve_size_in_type(inner, expression, location_pool, const_values, interner, const_fn_names, errors);
+            resolve_size_in_type(std::rc::Rc::make_mut(inner), expression, location_pool, const_values, interner, const_fn_names, errors);
         }
         TypeDecl::Function(params, ret) => {
-            for p in params.iter_mut() {
+            for p in std::rc::Rc::make_mut(params).iter_mut() {
                 resolve_size_in_type(p, expression, location_pool, const_values, interner, const_fn_names, errors);
             }
-            resolve_size_in_type(ret, expression, location_pool, const_values, interner, const_fn_names, errors);
+            resolve_size_in_type(std::rc::Rc::make_mut(ret), expression, location_pool, const_values, interner, const_fn_names, errors);
         }
         _ => {}
     }

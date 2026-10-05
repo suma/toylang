@@ -306,7 +306,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     TypeDecl::Struct(name, args)
                         if self.context.enum_definitions.contains_key(name) => (*name, args.clone()),
                     TypeDecl::Identifier(name)
-                        if self.context.enum_definitions.contains_key(name) => (*name, Vec::new()),
+                        if self.context.enum_definitions.contains_key(name) => (*name, Default::default()),
                     _ => {
                         return Err(TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, format!(
                             "enum-variant sub-pattern expects an enum payload, got {}",
@@ -463,7 +463,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let variants = self.context.enum_definitions.get(name)
                     .cloned()
                     .ok_or_else(|| TypeCheckError::coded(crate::diagnostic::codes::PATTERN_SHAPE, "match on unknown enum".to_string()))?;
-                ScrutineeKind::Enum { name: *name, type_args: args.clone(), variants }
+                ScrutineeKind::Enum { name: *name, type_args: args.to_vec(), variants }
             }
             TypeDecl::Identifier(name) if self.context.enum_definitions.contains_key(name) => {
                 let variants = self.context.enum_definitions.get(name).cloned().unwrap();
@@ -471,13 +471,13 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
             TypeDecl::Struct(name, args) if self.context.enum_definitions.contains_key(name) => {
                 let variants = self.context.enum_definitions.get(name).cloned().unwrap();
-                ScrutineeKind::Enum { name: *name, type_args: args.clone(), variants }
+                ScrutineeKind::Enum { name: *name, type_args: args.to_vec(), variants }
             }
             TypeDecl::Bool | TypeDecl::String => ScrutineeKind::Primitive(scrutinee_ty.clone()),
             // CHAR-LITERAL-MATCH: every integer width, so a byte read
             // out of a string is matched as the `u8` it is.
             t if is_matchable_integer(t) => ScrutineeKind::Primitive(scrutinee_ty.clone()),
-            TypeDecl::Tuple(element_types) => ScrutineeKind::Tuple(element_types.clone()),
+            TypeDecl::Tuple(element_types) => ScrutineeKind::Tuple(element_types.to_vec()),
             TypeDecl::Struct(name, _) | TypeDecl::Identifier(name)
                 if self.context.struct_definitions.contains_key(name) =>
             {
@@ -1047,7 +1047,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // shape.
         let resolved = match position_type {
             TypeDecl::Identifier(sym) if self.context.enum_definitions.contains_key(sym) => {
-                TypeDecl::Enum(*sym, Vec::new())
+                TypeDecl::Enum(*sym, Vec::new().into())
             }
             TypeDecl::Struct(sym, args) if self.context.enum_definitions.contains_key(sym) => {
                 TypeDecl::Enum(*sym, args.clone())

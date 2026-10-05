@@ -189,7 +189,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 TypeDecl::Struct(sym, args) | TypeDecl::Enum(sym, args)
                     if self.context.is_trait(*sym) =>
                 {
-                    vec![(*sym, args.clone())]
+                    vec![(*sym, args.to_vec())]
                 }
                 TypeDecl::TraitIntersection(syms) => {
                     syms.iter().map(|s| (*s, Vec::new())).collect()
@@ -775,7 +775,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
                 _ => {
                     return Err(TypeCheckError::type_mismatch(
-                        TypeDecl::Array(element_types.clone(), ArraySize::Literal(0), false),
+                        TypeDecl::Array(element_types.clone().into(), ArraySize::Literal(0), false),
                         value_type.clone()
                     ));
                 }

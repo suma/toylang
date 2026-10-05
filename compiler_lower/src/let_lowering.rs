@@ -925,7 +925,7 @@ impl<'a> FunctionLower<'a> {
                 {
                     let mut ir_param_tys: Vec<Type> = Vec::with_capacity(p_tys.len());
                     let mut ok = true;
-                    for pt in p_tys {
+                    for pt in p_tys.iter() {
                         match super::types::lower_scalar(pt) {
                             Some(t) => ir_param_tys.push(t),
                             None => {

@@ -1206,8 +1206,8 @@ mod soa_layout_modifier {
     /// equivalent everywhere types are compared.
     #[test]
     fn soa_flag_is_not_type_identity() {
-        let soa = TypeDecl::Array(vec![TypeDecl::Int64], ArraySize::Literal(2), true);
-        let aos = TypeDecl::Array(vec![TypeDecl::Int64], ArraySize::Literal(2), false);
+        let soa = TypeDecl::Array(vec![TypeDecl::Int64].into(), ArraySize::Literal(2), true);
+        let aos = TypeDecl::Array(vec![TypeDecl::Int64].into(), ArraySize::Literal(2), false);
         assert!(soa.is_equivalent(&aos));
         assert!(aos.is_equivalent(&soa));
         // ... while `is_soa` still tells the two spellings apart for
@@ -1229,7 +1229,7 @@ mod soa_layout_modifier {
             panic!("expected a `val` with a struct annotation");
         };
         assert_eq!(parser.get_string_interner().resolve(name), Some("SoaVec"));
-        assert_eq!(args, vec![TypeDecl::UInt64]);
+        assert_eq!(args, vec![TypeDecl::UInt64].into());
     }
 
     /// The rewrite is spelled for `Vec` alone: `soa` on anything else
@@ -1253,7 +1253,7 @@ mod soa_layout_modifier {
     #[test]
     fn soa_flag_survives_substitution() {
         use rustc_hash::FxHashMap as HashMap;
-        let soa = TypeDecl::Array(vec![TypeDecl::Int64], ArraySize::Literal(2), true);
+        let soa = TypeDecl::Array(vec![TypeDecl::Int64].into(), ArraySize::Literal(2), true);
         let subst = HashMap::default();
         assert!(soa.substitute_generics(&subst).is_soa());
     }

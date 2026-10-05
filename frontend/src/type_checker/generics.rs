@@ -250,11 +250,11 @@ impl TypeCheckerVisitor<'_> {
                 TypeDecl::Struct(name, a) | TypeDecl::Enum(name, a) if *name == struct_name => {
                     a.clone()
                 }
-                other => other.nested_type_args(struct_name).unwrap_or_default(),
+                other => other.nested_type_args(struct_name).unwrap_or_default().into(),
             };
-            for (param, ty) in generic_params.iter().zip(hint_args) {
+            for (param, ty) in generic_params.iter().zip(hint_args.iter()) {
                 if !matches!(ty, TypeDecl::Unknown) {
-                    substitutions.entry(*param).or_insert(ty);
+                    substitutions.entry(*param).or_insert(ty.clone());
                 }
             }
         }
@@ -295,14 +295,14 @@ impl TypeCheckerVisitor<'_> {
                         type_params.push(TypeDecl::Generic(*generic_param));
                     }
                 }
-                TypeDecl::Struct(struct_name, type_params)
+                TypeDecl::Struct(struct_name, type_params.into())
             }
             TypeDecl::Struct(name, type_params) => {
                 // Recursively substitute generic parameters in Struct type arguments
                 let substituted_params: Vec<TypeDecl> = type_params.iter()
                     .map(|param| self.substitute_type_params(param, &substitutions))
                     .collect();
-                TypeDecl::Struct(*name, substituted_params)
+                TypeDecl::Struct(*name, substituted_params.into())
             }
             _ => substituted_return_type
         };
@@ -320,7 +320,7 @@ impl TypeCheckerVisitor<'_> {
                     type_params.push(TypeDecl::Generic(*generic_param));
                 }
             }
-            TypeDecl::Struct(struct_name, type_params)
+            TypeDecl::Struct(struct_name, type_params.into())
         };
         let resolved_return_type = resolved_return_type.substitute_self(&self_ty);
 

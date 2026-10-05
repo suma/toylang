@@ -64,7 +64,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     } else {
                         vec![]
                     };
-                    TypeDecl::Struct(target_symbol, type_params)
+                    TypeDecl::Struct(target_symbol, type_params.into())
                 } else {
                     // Self used outside impl context - should be an error
                     type_decl.clone()
@@ -77,7 +77,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         // Try to resolve from current generic scope, otherwise use Generic type
                         self.type_inference.lookup_generic_type(*param)
                             .unwrap_or(TypeDecl::Generic(*param))
-                    }).collect();
+                    }).collect::<Vec<_>>().into();
                     TypeDecl::Struct(*name, type_params)
                 } else {
                     // Not a generic struct, keep as Identifier
@@ -89,7 +89,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let resolved_params: Vec<TypeDecl> = type_params.iter()
                     .map(|param| self.resolve_self_type(param))
                     .collect();
-                TypeDecl::Struct(*name, resolved_params)
+                TypeDecl::Struct(*name, resolved_params.into())
             }
             // `&Self` names the same type as `Self`, borrowed. Without
             // this arm a method declared `fn lt(&self, other: &Self)`
@@ -98,7 +98,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             // as "expected u64, but got Self".
             TypeDecl::Ref { is_mut, inner } => TypeDecl::Ref {
                 is_mut: *is_mut,
-                inner: Box::new(self.resolve_self_type(inner)),
+                inner: std::rc::Rc::new(self.resolve_self_type(inner)),
             },
             _ => type_decl.clone(),
         }
@@ -133,7 +133,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             | BuiltinMethod::StrToLower => Ok(TypeDecl::String),
             BuiltinMethod::StrContains => Ok(TypeDecl::Bool),
             BuiltinMethod::StrSplit => Ok(TypeDecl::Array(
-                vec![TypeDecl::String],
+                vec![TypeDecl::String].into(),
                 ArraySize::Literal(0),
                 false,
             )),

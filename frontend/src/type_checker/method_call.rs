@@ -138,7 +138,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             TypeDecl::Identifier(name)
                 if self.context.enum_definitions.contains_key(name) =>
             {
-                TypeDecl::Enum(*name, vec![])
+                TypeDecl::Enum(*name, vec![].into())
             }
             // Symmetric refinement for structs: a `val s: String`
             // annotation parses as `Identifier(String)` because the
@@ -149,7 +149,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             TypeDecl::Identifier(name)
                 if self.context.struct_definitions.contains_key(name) =>
             {
-                TypeDecl::Struct(*name, vec![])
+                TypeDecl::Struct(*name, vec![].into())
             }
             _ => obj_type_deref.clone(),
         };
@@ -631,7 +631,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 match self.context.current_fn_generic_bounds.get(&t_sym).cloned() {
                     Some(TypeDecl::Identifier(trait_sym)) => vec![(trait_sym, Vec::new())],
                     Some(TypeDecl::Struct(trait_sym, args))
-                    | Some(TypeDecl::Enum(trait_sym, args)) => vec![(trait_sym, args)],
+                    | Some(TypeDecl::Enum(trait_sym, args)) => vec![(trait_sym, std::rc::Rc::unwrap_or_clone(args))],
                     Some(TypeDecl::TraitIntersection(syms)) => {
                         syms.into_iter().map(|s| (s, Vec::new())).collect()
                     }
@@ -915,15 +915,15 @@ impl<'a> TypeCheckerVisitor<'a> {
                         }
                     }
                     let resolved = match method_return_type {
-                        TypeDecl::Self_ => TypeDecl::Struct(*struct_name, vec![]),
+                        TypeDecl::Self_ => TypeDecl::Struct(*struct_name, vec![].into()),
                         TypeDecl::Identifier(name)
                             if self.context.struct_definitions.contains_key(&name) =>
                         {
-                            TypeDecl::Struct(name, vec![])
+                            TypeDecl::Struct(name, vec![].into())
                         }
                         // SELF-IN-TYPE-ARG (see the enum path above).
                         ref other if !matches!(other, TypeDecl::Generic(_)) => other
-                            .substitute_self(&TypeDecl::Struct(*struct_name, vec![]))
+                            .substitute_self(&TypeDecl::Struct(*struct_name, vec![].into()))
                             .substitute_generics(&substitutions),
                         TypeDecl::Generic(p) => {
                             substitutions.get(&p).cloned().unwrap_or(TypeDecl::Generic(p))
@@ -1148,7 +1148,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         };
         let trait_bounds: Vec<(DefaultSymbol, Vec<TypeDecl>)> = match bound {
             TypeDecl::Identifier(t) => vec![(t, Vec::new())],
-            TypeDecl::Struct(t, a) | TypeDecl::Enum(t, a) => vec![(t, a)],
+            TypeDecl::Struct(t, a) | TypeDecl::Enum(t, a) => vec![(t, std::rc::Rc::unwrap_or_clone(a))],
             TypeDecl::TraitIntersection(ts) => ts.into_iter().map(|t| (t, Vec::new())).collect(),
             _ => return Ok(None),
         };
@@ -1253,8 +1253,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                 // down to the payload expression.
                 let outer_hint = self.type_inference.type_hint.clone();
                 let hint_args: Vec<TypeDecl> = match &outer_hint {
-                    Some(TypeDecl::Enum(hint_name, a)) if *hint_name == struct_name => a.clone(),
-                    Some(TypeDecl::Struct(hint_name, a)) if *hint_name == struct_name => a.clone(),
+                    Some(TypeDecl::Enum(hint_name, a)) if *hint_name == struct_name => a.to_vec(),
+                    Some(TypeDecl::Struct(hint_name, a)) if *hint_name == struct_name => a.to_vec(),
                     _ => Vec::new(),
                 };
                 if hint_args.len() == generic_params.len() {
@@ -1323,7 +1323,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let type_args: Vec<TypeDecl> = generic_params.iter()
                     .map(|p| substitutions.get(p).cloned().unwrap_or(TypeDecl::Generic(*p)))
                     .collect();
-                return Ok(TypeDecl::Enum(struct_name, type_args));
+                return Ok(TypeDecl::Enum(struct_name, type_args.into()));
             }
 
         // Module-qualified call: `module::func(args)` where `module`
@@ -1423,8 +1423,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         // concrete specs with no hint is ambiguous and reports the
         // plain "not found" diagnostic below.
         let hint_args: Vec<TypeDecl> = match &self.type_inference.type_hint {
-            Some(TypeDecl::Struct(name, a)) if *name == struct_name => a.clone(),
-            Some(TypeDecl::Enum(name, a)) if *name == struct_name => a.clone(),
+            Some(TypeDecl::Struct(name, a)) if *name == struct_name => a.to_vec(),
+            Some(TypeDecl::Enum(name, a)) if *name == struct_name => a.to_vec(),
             // Deliberately top-level only. This hint *selects a
             // concrete spec* (`impl Vec<u8>` over `impl<T> Vec<T>`),
             // so reading `u64` out of a nested `Option<Ptr<u64>>` here
@@ -1494,15 +1494,15 @@ impl<'a> TypeCheckerVisitor<'a> {
         // left it unresolved and the caller compared
         // `Option<Win<u64>>` against a literal `Option<Self>`.
         let self_ty = if is_enum_target {
-            TypeDecl::Enum(struct_name, vec![])
+            TypeDecl::Enum(struct_name, vec![].into())
         } else {
-            TypeDecl::Struct(struct_name, vec![])
+            TypeDecl::Struct(struct_name, vec![].into())
         };
         let return_ty = match return_ty {
             TypeDecl::Identifier(name)
                 if self.context.struct_definitions.contains_key(&name) =>
             {
-                TypeDecl::Struct(name, vec![])
+                TypeDecl::Struct(name, vec![].into())
             }
             other => other.substitute_self(&self_ty),
         };

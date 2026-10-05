@@ -320,10 +320,10 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Collapse `&(&x)` to a single Ref so the type doesn't grow on
         // re-borrow.
         let inner_ty = match operand_ty {
-            TypeDecl::Ref { inner, .. } => *inner,
+            TypeDecl::Ref { inner, .. } => std::rc::Rc::unwrap_or_clone(inner),
             other => other,
         };
-        Ok(TypeDecl::Ref { is_mut, inner: Box::new(inner_ty) })
+        Ok(TypeDecl::Ref { is_mut, inner: std::rc::Rc::new(inner_ty) })
     }
 
     /// Per-op result-type rule for primitive unary operators after the
@@ -1038,7 +1038,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let Some(Expr::AssociatedFunctionCall(option, _, _)) = self.core.expr_pool.get(rhs) else {
             return Ok(());
         };
-        self.type_inference.type_hint = Some(TypeDecl::Enum(option, vec![value_ty]));
+        self.type_inference.type_hint = Some(TypeDecl::Enum(option, vec![value_ty].into()));
         let option_ty = self.visit_expr(rhs);
         self.type_inference.type_hint = saved.clone();
         let option_ty = option_ty?;
@@ -1556,7 +1556,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             } else {
                 vec![]
             };
-            Ok(TypeDecl::Struct(name, type_params))
+            Ok(TypeDecl::Struct(name, type_params.into()))
         } else {
             let name_str = self.resolve_symbol_name(name);
             // Note: Location information will be added by visit_expr
@@ -1615,7 +1615,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // shape.
         let extract = |t: &TypeDecl| -> Option<(DefaultSymbol, Vec<TypeDecl>)> {
             match t {
-                TypeDecl::Struct(name, args) => Some((*name, args.clone())),
+                TypeDecl::Struct(name, args) => Some((*name, args.to_vec())),
                 TypeDecl::Identifier(name) => Some((*name, Vec::new())),
                 _ => None,
             }
@@ -1954,7 +1954,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let param_types: Vec<_> = fun.parameter.iter().map(|(_, ty)| {
             if let TypeDecl::Identifier(name) = ty
                 && self.context.struct_definitions.contains_key(name) {
-                    return TypeDecl::Struct(*name, vec![]);
+                    return TypeDecl::Struct(*name, vec![].into());
                 }
             ty.clone()
         }).collect();
@@ -2045,7 +2045,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     fn normalize_call_return_type(&self, ret: TypeDecl) -> TypeDecl {
         if let TypeDecl::Identifier(name) = &ret
             && self.context.struct_definitions.contains_key(name) {
-                return TypeDecl::Struct(*name, vec![]);
+                return TypeDecl::Struct(*name, vec![].into());
             }
         ret
     }
@@ -2187,7 +2187,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.record_closure_captures(params, body)?;
 
         let param_tys: Vec<_> = params.iter().map(|(_, t)| t.clone()).collect();
-        Ok(TypeDecl::Function(param_tys, Box::new(ret_ty)))
+        Ok(TypeDecl::Function(param_tys.into(), std::rc::Rc::new(ret_ty)))
     }
 
     /// Closures Phase 2: reject any `TypeDecl::Generic(_)` that
@@ -2712,7 +2712,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let extract = |t: &TypeDecl| -> Option<(DefaultSymbol, Vec<TypeDecl>)> {
             match t {
                 TypeDecl::Enum(name, args) | TypeDecl::Struct(name, args) => {
-                    Some((*name, args.clone()))
+                    Some((*name, args.to_vec()))
                 }
                 TypeDecl::Identifier(name) => Some((*name, Vec::new())),
                 _ => None,
@@ -3366,12 +3366,12 @@ impl<'a> TypeCheckerVisitor<'a> {
             match &lhs_ty {
                 TypeDecl::Enum(name, args) if !args.is_empty() => {
                     let mut new_args = args.clone();
-                    new_args[0] = success_type.clone();
+                    std::rc::Rc::make_mut(&mut new_args)[0] = success_type.clone();
                     TypeDecl::Enum(*name, new_args)
                 }
                 TypeDecl::Struct(name, args) if !args.is_empty() => {
                     let mut new_args = args.clone();
-                    new_args[0] = success_type.clone();
+                    std::rc::Rc::make_mut(&mut new_args)[0] = success_type.clone();
                     TypeDecl::Struct(*name, new_args)
                 }
                 _ => lhs_ty.clone(),
@@ -3948,13 +3948,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                          argument must be a declared type or a generic parameter in scope"
                     )));
                 }
-                for a in args {
+                for a in args.iter() {
                     self.validate_type_argument(a, builtin)?;
                 }
                 Ok(())
             }
             TypeDecl::Tuple(elems) => {
-                for e in elems {
+                for e in elems.iter() {
                     self.validate_type_argument(e, builtin)?;
                 }
                 Ok(())

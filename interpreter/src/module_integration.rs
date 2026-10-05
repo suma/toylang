@@ -553,15 +553,15 @@ impl<'a> AstIntegrationContext<'a> {
             TypeDecl::Generic(s) => TypeDecl::Generic(self.remap_symbol(*s)?),
             TypeDecl::Struct(s, args) => {
                 let new_args = self.remap_type_decls(args)?;
-                TypeDecl::Struct(self.remap_type_symbol(*s)?, new_args)
+                TypeDecl::Struct(self.remap_type_symbol(*s)?, new_args.into())
             }
             TypeDecl::Enum(s, args) => {
                 let new_args = self.remap_type_decls(args)?;
-                TypeDecl::Enum(self.remap_type_symbol(*s)?, new_args)
+                TypeDecl::Enum(self.remap_type_symbol(*s)?, new_args.into())
             }
             TypeDecl::Tuple(elems) => {
                 let new_elems = self.remap_type_decls(elems)?;
-                TypeDecl::Tuple(new_elems)
+                TypeDecl::Tuple(new_elems.into())
             }
             TypeDecl::Array(elems, size, soa) => {
                 let new_elems = self.remap_type_decls(elems)?;
@@ -576,23 +576,23 @@ impl<'a> AstIntegrationContext<'a> {
                     }
                     other => other.clone(),
                 };
-                TypeDecl::Array(new_elems, new_size, *soa)
+                TypeDecl::Array(new_elems.into(), new_size, *soa)
             }
             TypeDecl::Dict(k, v) => TypeDecl::Dict(
-                Box::new(self.remap_type_decl(k)?),
-                Box::new(self.remap_type_decl(v)?),
+                Box::new(self.remap_type_decl(k)?).into(),
+                Box::new(self.remap_type_decl(v)?).into(),
             ),
-            TypeDecl::Range(t) => TypeDecl::Range(Box::new(self.remap_type_decl(t)?)),
+            TypeDecl::Range(t) => TypeDecl::Range(std::rc::Rc::new(self.remap_type_decl(t)?)),
             // REF-Stage-2: peel and recurse so the inner symbol gets
             // properly remapped (e.g. `&String` from a stdlib module
             // resolves to the main interner's `String` symbol).
             TypeDecl::Ref { is_mut, inner } => TypeDecl::Ref {
                 is_mut: *is_mut,
-                inner: Box::new(self.remap_type_decl(inner)?),
+                inner: std::rc::Rc::new(self.remap_type_decl(inner)?),
             },
             TypeDecl::Function(params, ret) => {
                 let new_params = self.remap_type_decls(params)?;
-                TypeDecl::Function(new_params, Box::new(self.remap_type_decl(ret)?))
+                TypeDecl::Function(new_params.into(), std::rc::Rc::new(self.remap_type_decl(ret)?))
             }
             // A2 multi-bound: each symbol is a trait name living in the
             // module's interner; route through `remap_type_symbol` so

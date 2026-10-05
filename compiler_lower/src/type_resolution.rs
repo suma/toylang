@@ -114,14 +114,14 @@ impl<'a> FunctionLower<'a> {
         let anno = annotation?;
         let args = match anno {
             TypeDecl::Struct(name, args) if *name == base_name => args.clone(),
-            TypeDecl::Identifier(name) if *name == base_name => Vec::new(),
+            TypeDecl::Identifier(name) if *name == base_name => Vec::new().into(),
             // The annotation does not name the struct at its top
             // level, but may still carry it further in
             // (GENERIC-IN-ENUM-PAYLOAD).
-            _ => anno.nested_type_args(base_name)?,
+            _ => anno.nested_type_args(base_name)?.into(),
         };
         let mut out: Vec<Type> = Vec::with_capacity(args.len());
-        for a in &args {
+        for a in args.iter() {
             out.push(self.lower_type_arg(a)?);
         }
         Some(out)
@@ -277,10 +277,10 @@ impl<'a> FunctionLower<'a> {
         let args = match anno {
             TypeDecl::Enum(name, args) if *name == base_name => args.clone(),
             TypeDecl::Struct(name, args) if *name == base_name => args.clone(),
-            _ => anno.nested_type_args(base_name)?,
+            _ => anno.nested_type_args(base_name)?.into(),
         };
         let mut out: Vec<Type> = Vec::with_capacity(args.len());
-        for a in &args {
+        for a in args.iter() {
             out.push(self.lower_type_arg(a)?);
         }
         Some(out)
@@ -308,7 +308,7 @@ impl<'a> FunctionLower<'a> {
                 if self.enum_defs.contains_key(name) =>
             {
                 let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
-                for a in args {
+                for a in args.iter() {
                     concrete.push(self.lower_type_arg(a)?);
                 }
                 instantiate_enum_type_arg(
@@ -324,7 +324,7 @@ impl<'a> FunctionLower<'a> {
             }
             TypeDecl::Struct(name, args) if self.struct_defs.contains_key(name) => {
                 let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
-                for a in args {
+                for a in args.iter() {
                     concrete.push(self.lower_type_arg(a)?);
                 }
                 instantiate_struct_type_arg(
@@ -369,7 +369,7 @@ impl<'a> FunctionLower<'a> {
                 // shape so type-arg substitution can refer back to
                 // the same `Type::Tuple(id)`.
                 let mut lowered: Vec<Type> = Vec::with_capacity(elements.len());
-                for e in elements {
+                for e in elements.iter() {
                     let t = self.lower_type_arg(e)?;
                     // NUM-W-ENUMERATION: any scalar element (see
                     // `templates.rs`'s twin of this check).

@@ -337,7 +337,7 @@ fn type_decl_to_ir_type(
         TypeDecl::Array(elems, _size, _) => {
             // IR doesn't have a dedicated Array type; lowering flattens it.
             // For reconstruction we keep walking the TypeDecl shape.
-            for elem in elems {
+            for elem in elems.iter() {
                 type_decl_to_ir_type(elem, module)?;
             }
             // We can't represent Array in IR Type, but we don't need it for
@@ -378,7 +378,7 @@ fn ir_type_to_type_decl(
                 .iter()
                 .map(|a| ir_type_to_type_decl(a, module))
                 .collect::<Option<Vec<_>>>()?;
-            TypeDecl::Struct(def.base_name, args)
+            TypeDecl::Struct(def.base_name, args.into())
         }
         compiler_ir::Type::Tuple(id) => {
             let elems = module
@@ -387,7 +387,7 @@ fn ir_type_to_type_decl(
                 .iter()
                 .map(|t| ir_type_to_type_decl(t, module))
                 .collect::<Option<Vec<_>>>()?;
-            TypeDecl::Tuple(elems)
+            TypeDecl::Tuple(elems.into())
         }
         compiler_ir::Type::Enum(id) => {
             let def = &module.enum_defs[id.0 as usize];
@@ -396,7 +396,7 @@ fn ir_type_to_type_decl(
                 .iter()
                 .map(|a| ir_type_to_type_decl(a, module))
                 .collect::<Option<Vec<_>>>()?;
-            TypeDecl::Enum(def.base_name, args)
+            TypeDecl::Enum(def.base_name, args.into())
         }
     })
 }
@@ -455,7 +455,7 @@ fn reconstruct_object(
                 Object::Struct {
                     type_name: def.base_name,
                     fields: Box::new(fields),
-                    type_args: _type_args.clone(),
+                    type_args: _type_args.to_vec(),
                 },
                 offset,
             ))
@@ -463,7 +463,7 @@ fn reconstruct_object(
         TypeDecl::Tuple(elems) => {
             let mut values = Vec::new();
             let mut offset = 0;
-            for elem_ty in elems {
+            for elem_ty in elems.iter() {
                 let (obj, consumed) =
                     reconstruct_object(&slots[offset..], elem_ty, module, interner)?;
                 values.push(Rc::new(RefCell::new(obj)));
@@ -494,7 +494,7 @@ fn reconstruct_object(
                     enum_name: def.base_name,
                     variant_name: variant.name,
                     values: payload,
-                    type_args: _type_args.clone(),
+                    type_args: _type_args.to_vec(),
                 },
                 offset,
             ))

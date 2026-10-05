@@ -82,7 +82,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         // For dynamic arrays (size 0), return a dynamic array type
                         if matches!(_size, ArraySize::Literal(0)) {
                             // Dynamic array: return [T] (dynamic array of same element type)
-                            return Ok(TypeDecl::Array(vec![single_element_type], ArraySize::Literal(0), false));
+                            return Ok(TypeDecl::Array(vec![single_element_type].into(), ArraySize::Literal(0), false));
                         }
 
                         // Try to calculate slice size using array size for open-ended slices
@@ -91,12 +91,12 @@ impl<'a> TypeCheckerVisitor<'a> {
 
                         // If slice_size is 0, return dynamic array type
                         if slice_size == 0 {
-                            return Ok(TypeDecl::Array(vec![single_element_type], ArraySize::Literal(0), false));
+                            return Ok(TypeDecl::Array(vec![single_element_type].into(), ArraySize::Literal(0), false));
                         }
 
                         // Create element_types with the correct number of elements
                         let result_element_types = vec![single_element_type; slice_size];
-                        Ok(TypeDecl::Array(result_element_types, ArraySize::Literal(slice_size), false))
+                        Ok(TypeDecl::Array(result_element_types.into(), ArraySize::Literal(slice_size), false))
                     }
                 }
             }
@@ -110,11 +110,11 @@ impl<'a> TypeCheckerVisitor<'a> {
                         // Verify the index type matches the key type
                         if index_type != **key_type {
                             return Err(TypeCheckError::type_mismatch(
-                                *key_type.clone(), index_type
+                                key_type.as_ref().clone(), index_type
                             ));
                         }
 
-                        Ok(*value_type.clone())
+                        Ok(value_type.as_ref().clone())
                     } else {
                         Err(TypeCheckError::coded(crate::diagnostic::codes::ARRAY, "Dictionary access requires key index"))
                     }
@@ -206,7 +206,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         // Verify the key type matches the dictionary key type
                         if key_type_result != **key_type {
                             return Err(TypeCheckError::type_mismatch(
-                                *key_type.clone(), key_type_result
+                                key_type.as_ref().clone(), key_type_result
                             ));
                         }
 
@@ -295,7 +295,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             if let Some(TypeDecl::Dict(key_type, value_type)) = &self.type_inference.type_hint {
                 return Ok(TypeDecl::Dict(key_type.clone(), value_type.clone()));
             }
-            return Ok(TypeDecl::Dict(Box::new(TypeDecl::Unknown), Box::new(TypeDecl::Unknown)));
+            return Ok(TypeDecl::Dict(std::rc::Rc::new(TypeDecl::Unknown), std::rc::Rc::new(TypeDecl::Unknown)));
         }
 
         // Save the original type hint to restore later
@@ -406,13 +406,13 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
 
-        Ok(TypeDecl::Dict(Box::new(final_key_type), Box::new(final_value_type)))
+        Ok(TypeDecl::Dict(std::rc::Rc::new(final_key_type), std::rc::Rc::new(final_value_type)))
     }
 
     /// Type check tuple literals - implementation
     pub fn visit_tuple_literal_impl(&mut self, elements: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         if elements.is_empty() {
-            return Ok(TypeDecl::Tuple(vec![]));
+            return Ok(TypeDecl::Tuple(vec![].into()));
         }
 
         let original_hint = self.type_inference.type_hint.clone();
@@ -450,7 +450,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
 
         self.type_inference.type_hint = original_hint;
-        Ok(TypeDecl::Tuple(element_types))
+        Ok(TypeDecl::Tuple(element_types.into()))
     }
 
     /// Type check tuple access - implementation
@@ -795,7 +795,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
 
-        Ok(TypeDecl::Array(element_types, ArraySize::Literal(elements.len()), false))
+        Ok(TypeDecl::Array(element_types.into(), ArraySize::Literal(elements.len()), false))
     }
 
     /// Calculate slice size from constant literals if possible

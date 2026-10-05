@@ -869,27 +869,27 @@ impl Object {
             Object::ConstString(_) | Object::String(_) => TypeDecl::String,
             Object::Array(elements) => {
                 if elements.is_empty() {
-                    TypeDecl::Array(vec![], ArraySize::Literal(0), false)
+                    TypeDecl::Array(vec![].into(), ArraySize::Literal(0), false)
                 } else {
                     let element_type = elements[0].borrow().get_type();
                     let element_types = vec![element_type; elements.len()];
-                    TypeDecl::Array(element_types, ArraySize::Literal(elements.len()), false)
+                    TypeDecl::Array(element_types.into(), ArraySize::Literal(elements.len()), false)
                 }
             }
             Object::Struct { type_name, .. } => {
-                TypeDecl::Struct(*type_name, vec![])
+                TypeDecl::Struct(*type_name, vec![].into())
             }
             Object::Dict(map) => {
                 // Determine key and value types from the first entry in the dict
                 if map.is_empty() {
-                    TypeDecl::Dict(Box::new(TypeDecl::Unknown), Box::new(TypeDecl::Unknown))
+                    TypeDecl::Dict(std::rc::Rc::new(TypeDecl::Unknown), std::rc::Rc::new(TypeDecl::Unknown))
                 } else {
                     // Get the types of the first key-value pair
                     let (key, value) = map.iter().next().unwrap();
                     let key_type = key.as_object().get_type();
                     let value_type = value.borrow().get_type();
                     
-                    TypeDecl::Dict(Box::new(key_type), Box::new(value_type))
+                    TypeDecl::Dict(std::rc::Rc::new(key_type), std::rc::Rc::new(value_type))
                 }
             }
             Object::Tuple(elements) => {
@@ -897,15 +897,15 @@ impl Object {
                     .iter()
                     .map(|elem| elem.borrow().get_type())
                     .collect();
-                TypeDecl::Tuple(element_types)
+                TypeDecl::Tuple(element_types.into())
             }
             Object::Pointer(_) => TypeDecl::Ptr,
             Object::Allocator(_) => TypeDecl::Allocator,
-            Object::EnumVariant { enum_name, .. } => TypeDecl::Enum(*enum_name, Vec::new()),
-            Object::Range { start, .. } => TypeDecl::Range(Box::new(start.borrow().get_type())),
+            Object::EnumVariant { enum_name, .. } => TypeDecl::Enum(*enum_name, Vec::new().into()),
+            Object::Range { start, .. } => TypeDecl::Range(std::rc::Rc::new(start.borrow().get_type())),
             Object::Closure { params, return_ty, .. } => TypeDecl::Function(
-                params.iter().map(|(_, t)| t.clone()).collect(),
-                Box::new(return_ty.clone()),
+                params.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>().into(),
+                Box::new(return_ty.clone()).into(),
             ),
         }
     }
@@ -1230,8 +1230,8 @@ impl Object {
                     Ok(())
                 } else {
                     Err(ObjectError::TypeMismatch { 
-                        expected: TypeDecl::Struct(*self_type, vec![]), 
-                        found: TypeDecl::Struct(*other_type, vec![])
+                        expected: TypeDecl::Struct(*self_type, vec![].into()), 
+                        found: TypeDecl::Struct(*other_type, vec![].into())
                     })
                 }
             }

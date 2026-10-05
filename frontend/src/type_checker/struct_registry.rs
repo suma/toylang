@@ -59,26 +59,26 @@ impl<'a> TypeCheckerVisitor<'a> {
                     .iter()
                     .map(|param| self.substitute_type_params(param, mapping))
                     .collect();
-                TypeDecl::Struct(*name, substituted_params)
+                TypeDecl::Struct(*name, substituted_params.into())
             }
             TypeDecl::Array(element_types, size, soa) => {
                 let substituted_elements: Vec<TypeDecl> = element_types
                     .iter()
                     .map(|elem| self.substitute_type_params(elem, mapping))
                     .collect();
-                TypeDecl::Array(substituted_elements, size.clone(), *soa)
+                TypeDecl::Array(substituted_elements.into(), size.clone(), *soa)
             }
             TypeDecl::Dict(key_type, value_type) => {
                 let substituted_key = self.substitute_type_params(key_type, mapping);
                 let substituted_value = self.substitute_type_params(value_type, mapping);
-                TypeDecl::Dict(Box::new(substituted_key), Box::new(substituted_value))
+                TypeDecl::Dict(std::rc::Rc::new(substituted_key), std::rc::Rc::new(substituted_value))
             }
             TypeDecl::Tuple(element_types) => {
                 let substituted_elements: Vec<TypeDecl> = element_types
                     .iter()
                     .map(|elem| self.substitute_type_params(elem, mapping))
                     .collect();
-                TypeDecl::Tuple(substituted_elements)
+                TypeDecl::Tuple(substituted_elements.into())
             }
             _ => type_decl.clone(),
         }

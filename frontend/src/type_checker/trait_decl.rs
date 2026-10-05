@@ -648,8 +648,8 @@ fn synthesize_default_method(sig: &TraitMethodSignature, body: StmtRef) -> Rc<Me
 
 fn resolve_self(t: &TypeDecl, struct_symbol: DefaultSymbol) -> TypeDecl {
     match t {
-        TypeDecl::Self_ => TypeDecl::Struct(struct_symbol, vec![]),
-        TypeDecl::Identifier(name) if *name == struct_symbol => TypeDecl::Struct(struct_symbol, vec![]),
+        TypeDecl::Self_ => TypeDecl::Struct(struct_symbol, vec![].into()),
+        TypeDecl::Identifier(name) if *name == struct_symbol => TypeDecl::Struct(struct_symbol, vec![].into()),
         // `&Self` is the borrowing form of the same obligation, so it
         // has to resolve the same way. Without this arm a trait
         // declaring `fn lt(&self, other: &Self)` could not be
@@ -658,7 +658,7 @@ fn resolve_self(t: &TypeDecl, struct_symbol: DefaultSymbol) -> TypeDecl {
         // the concrete type was reported as a mismatch too.
         TypeDecl::Ref { is_mut, inner } => TypeDecl::Ref {
             is_mut: *is_mut,
-            inner: Box::new(resolve_self(inner, struct_symbol)),
+            inner: std::rc::Rc::new(resolve_self(inner, struct_symbol)),
         },
         other => other.clone(),
     }

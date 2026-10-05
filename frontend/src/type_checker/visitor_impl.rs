@@ -363,7 +363,7 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
                 )).about_types(&[&start_ty, &end_ty]));
             }
         };
-        Ok(TypeDecl::Range(Box::new(element_ty)))
+        Ok(TypeDecl::Range(std::rc::Rc::new(element_ty)))
     }
 
     fn visit_with(&mut self, allocator: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
@@ -387,7 +387,7 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
             TypeDecl::Identifier(name)
                 if self.context.struct_definitions.contains_key(name) =>
             {
-                TypeDecl::Struct(*name, vec![])
+                TypeDecl::Struct(*name, vec![].into())
             }
             other => other.clone(),
         };
@@ -511,7 +511,7 @@ impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
                             hint_args.clone()
                         }
                         _ => generic_params
-                            .map(|ps| ps.iter().map(|p| TypeDecl::Generic(*p)).collect())
+                            .map(|ps| ps.iter().map(|p| TypeDecl::Generic(*p)).collect::<Vec<_>>().into())
                             .unwrap_or_default(),
                     };
                     return Ok(TypeDecl::Enum(enum_name, type_args));

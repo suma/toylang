@@ -21,6 +21,10 @@
 
 ### 2026-10-01
 
+- **TYPECHECK-HASH-TYPEDECL — frontend 全体を FxHash に、`TypeDecl` の子を `Rc` で共有** — 型検査の
+  ~3 割が SipHash だった。`Vec<TypeDecl>` → `TypeList` (`Rc<Vec<_>>`)、`Box<TypeDecl>` → `Rc` で clone が
+  参照カウントの増減になる (書き換えは `Rc::make_mut`)。logsearch の型検査 30.1 → 24.3 ms (−19%)、
+  fib.t リンク前 −14%。intern (`TypeId`) と `ExprRef` キーの密な表は未着手 (残るハッシュは ~1 割)。
 - **AST-BORROW — AST を clone せずに借用で読む** — `ExprPool` / `StmtPool` を列ごとの配列から
   `Vec<Expr>` / `Vec<Stmt>` にし、`get_ref` を足した。所有の検査と lowering を移行。logsearch の
   リンク前 106 → 98 ms (−8%、モジュール統合 −43%)、fib.t 21 → 17 ms (−17%)。型検査器本体は未移行
@@ -2997,9 +3001,6 @@
   1〜2 ms の見込み。
 - **CTFE-DECLARE-SHARE: CTFE 用 lowering の `declare` ~1.2 ms** ★ — 本番の
   lowering の宣言段と共有すれば消える。
-- **TYPECHECK-HASH-TYPEDECL: 型検査器の SipHash と `TypeDecl` の clone** ★ —
-  それぞれ数 %。型検査器の map は AST・`TypeDecl` の置換関数と std の型で
-  つながっているので frontend 全体の改修になる。
 - **PERF-DOC-DRIFT: 文書の数字が実測と合わない** ★ — CLAUDE.md の
   「`TOYLANG_CRANELIFT_OPT_LEVEL` は codegen を ~20x 変える」は logsearch では
   ~10%。下の TEST-PERF の「1999 テスト ~6.5s」は現在 3278 テスト ~23s。

@@ -281,14 +281,14 @@ fn mark_by_value(
                 }
                 // Unknown type: assume every argument is held.
                 None => {
-                    for arg in args {
+                    for arg in args.iter() {
                         mark_by_value(arg, owner, decls, index, flags, changed);
                     }
                 }
             }
         }
         TypeDecl::Array(elements, _, _) | TypeDecl::Tuple(elements) => {
-            for e in elements {
+            for e in elements.iter() {
                 mark_by_value(e, owner, decls, index, flags, changed);
             }
         }
@@ -342,7 +342,7 @@ fn collect_value_refs(
             }
         }
         TypeDecl::Array(elements, _, _) | TypeDecl::Tuple(elements) => {
-            for e in elements {
+            for e in elements.iter() {
                 collect_value_refs(e, index, by_value, out);
             }
         }

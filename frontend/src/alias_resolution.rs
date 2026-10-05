@@ -248,28 +248,28 @@ pub fn resolve_in_type(aliases: &AliasMap, ty: &TypeDecl) -> TypeDecl {
                 }
                 // Non-generic alias mentioned with type args is an
                 // arity mismatch — leave intact for the type checker.
-            TypeDecl::Struct(*name, new_args)
+            TypeDecl::Struct(*name, new_args.into())
         }
         TypeDecl::Enum(name, args) => {
             let new_args: Vec<TypeDecl> = args.iter().map(|a| resolve_in_type(aliases, a)).collect();
-            TypeDecl::Enum(*name, new_args)
+            TypeDecl::Enum(*name, new_args.into())
         }
         TypeDecl::Array(elems, n, soa) => {
             let new_elems: Vec<TypeDecl> = elems.iter().map(|e| resolve_in_type(aliases, e)).collect();
-            TypeDecl::Array(new_elems, n.clone(), *soa)
+            TypeDecl::Array(new_elems.into(), n.clone(), *soa)
         }
         TypeDecl::Tuple(elems) => {
             let new_elems: Vec<TypeDecl> = elems.iter().map(|e| resolve_in_type(aliases, e)).collect();
-            TypeDecl::Tuple(new_elems)
+            TypeDecl::Tuple(new_elems.into())
         }
         TypeDecl::Dict(k, v) => TypeDecl::Dict(
-            Box::new(resolve_in_type(aliases, k)),
-            Box::new(resolve_in_type(aliases, v)),
+            Box::new(resolve_in_type(aliases, k)).into(),
+            Box::new(resolve_in_type(aliases, v)).into(),
         ),
-        TypeDecl::Range(inner) => TypeDecl::Range(Box::new(resolve_in_type(aliases, inner))),
+        TypeDecl::Range(inner) => TypeDecl::Range(std::rc::Rc::new(resolve_in_type(aliases, inner))),
         TypeDecl::Ref { is_mut, inner } => TypeDecl::Ref {
             is_mut: *is_mut,
-            inner: Box::new(resolve_in_type(aliases, inner)),
+            inner: std::rc::Rc::new(resolve_in_type(aliases, inner)),
         },
         _ => ty.clone(),
     }

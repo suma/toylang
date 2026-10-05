@@ -255,7 +255,10 @@ echo 'fn main() -> u64 { 7u64 }' | cargo run -q -p compiler -- - --all-backends
 比べること。cranelift の IR verifier は**コンパイラ自身が debug ビルドの
 ときだけ on** (テストは全部 debug なので検査は続く)、release では off で、
 `TOYLANG_CRANELIFT_VERIFY=1|0` で上書きできる。on のとき見出しに
-`+ verifier` が出る (codegen CPU が ~14% 変わる)。親フェーズの `self ms` が大きいのは計測点の無い時間がある印。
+`+ verifier` が出る (codegen CPU が ~14% 変わる)。codegen のスレッド数は
+IR が 6,000 命令以上なら全コア、未満なら 4 (counter `codegen.threads`)、
+`TOYLANG_CODEGEN_THREADS=N` で固定できる。**別のビルドと交互に走らせると、
+多スレッドの版が相手のクロックを下げて比較が歪む**ので、版ごとにまとめて測る。親フェーズの `self ms` が大きいのは計測点の無い時間がある印。
 
 **型ホール**: `val x: _ = expr` と書くと推論結果を報告して停止する
 (`[E0011] type hole: \`x\` has type \`i64\``)。1 回の実行でファイル中の

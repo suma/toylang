@@ -202,58 +202,70 @@ fn build_object_module(
 
     let isa = session.module.isa();
     prof::count("codegen.functions", funcs_to_compile.len() as u64);
-    prof::count("codegen.threads", crate::small_pool::pool().current_num_threads() as u64);
+    // CODEGEN-THREADS: the pool's width follows the work, so a large
+    // program gets a thread per core and a small one keeps the small pool.
+    let work: u64 = funcs_to_compile.iter().map(|&id| ir_insts(ir_module.function(id))).sum();
+    let pool = crate::small_pool::pool_for(work);
+    prof::count("codegen.threads", pool.current_num_threads() as u64);
     let compile_phase = prof::phase("compile_functions");
 
     // Phase 2 parallel codegen: lower + compile each function on a
     // separate rayon worker.  Only `define_function_bytes` touches
     // the `ObjectModule`, so that stays sequential.
+    let compile_one = |func_id: FuncId| -> Result<(FuncId, Vec<u8>, u64, Vec<ModuleReloc>), String> {
+        let started = prof::timer();
+        let mut ctx = session.prepare_function_context(ir_module, func_id)?;
+        let mut ctrl_plane = cranelift_control::ControlPlane::default();
+        ctx.compile(isa, &mut ctrl_plane).map_err(|e| {
+            format!(
+                "compile error for {}: {e:?}",
+                ir_module.function(func_id).export_name
+            )
+        })?;
+        let compiled = ctx.compiled_code().unwrap();
+        let bytes = compiled.buffer.data().to_vec();
+        let alignment = compiled.buffer.alignment as u64;
+        let cl_func_id = session
+            .fn_id(func_id)
+            .ok_or_else(|| format!("function {} not declared", ir_module.function(func_id).export_name))?;
+        let relocs: Vec<ModuleReloc> = compiled
+            .buffer
+            .relocs()
+            .iter()
+            .map(|reloc| ModuleReloc::from_mach_reloc(reloc, &ctx.func, cl_func_id))
+            .collect();
+        if let Some(started) = started {
+            let wall = started.elapsed();
+            let func = ir_module.function(func_id);
+            prof::count("codegen.cpu_us", wall.as_micros() as u64);
+            prof::count("codegen.code_bytes", bytes.len() as u64);
+            prof::count("codegen.relocations", relocs.len() as u64);
+            prof::hot_record(prof::HotTable::Codegen, prof::Hot {
+                name: func.display_name.clone().unwrap_or_else(|| func.export_name.clone()),
+                wall,
+                ir_insts: Some(ir_insts(func)),
+                code_bytes: Some(bytes.len() as u64),
+            });
+        }
+        Ok((func_id, bytes, alignment, relocs))
+    };
     let compiled: Vec<Result<(FuncId, Vec<u8>, u64, Vec<ModuleReloc>), String>> = {
         use rayon::prelude::*;
-        crate::small_pool::pool().install(|| {
-        funcs_to_compile
-            .par_iter()
-            .map(|&func_id| {
-                let started = prof::timer();
-                let mut ctx = session.prepare_function_context(ir_module, func_id)?;
-                let mut ctrl_plane = cranelift_control::ControlPlane::default();
-                ctx.compile(isa, &mut ctrl_plane).map_err(|e| {
-                    format!(
-                        "compile error for {}: {e:?}",
-                        ir_module.function(func_id).export_name
-                    )
-                })?;
-                let compiled = ctx.compiled_code().unwrap();
-                let bytes = compiled.buffer.data().to_vec();
-                let alignment = compiled.buffer.alignment as u64;
-                let cl_func_id = session
-                    .fn_id(func_id)
-                    .ok_or_else(|| format!("function {} not declared", ir_module.function(func_id).export_name))?;
-                let relocs: Vec<ModuleReloc> = compiled
-                    .buffer
-                    .relocs()
-                    .iter()
-                    .map(|reloc| {
-                        ModuleReloc::from_mach_reloc(reloc, &ctx.func, cl_func_id)
-                    })
-                    .collect();
-                if let Some(started) = started {
-                    let wall = started.elapsed();
-                    let func = ir_module.function(func_id);
-                    prof::count("codegen.cpu_us", wall.as_micros() as u64);
-                    prof::count("codegen.code_bytes", bytes.len() as u64);
-                    prof::count("codegen.relocations", relocs.len() as u64);
-                    prof::hot_record(prof::HotTable::Codegen, prof::Hot {
-                        name: func.display_name.clone().unwrap_or_else(|| func.export_name.clone()),
-                        wall,
-                        ir_insts: Some(ir_insts(func)),
-                        code_bytes: Some(bytes.len() as u64),
-                    });
-                }
-                Ok((func_id, bytes, alignment, relocs))
-            })
-            .collect()
-        })
+        // Largest first, one function per task: rayon starts the work in
+        // the order it is given, and a big function picked up last is the
+        // whole tail of the phase. `define` below runs in declaration
+        // order again, so the object does not depend on this one.
+        let mut by_size: Vec<(usize, FuncId)> = funcs_to_compile.iter().copied().enumerate().collect();
+        by_size.sort_by_key(|&(i, id)| (std::cmp::Reverse(ir_insts(ir_module.function(id))), i));
+        let mut out: Vec<(usize, Result<_, String>)> = pool.install(|| {
+            by_size
+                .par_iter()
+                .with_max_len(1)
+                .map(|&(position, func_id)| (position, compile_one(func_id)))
+                .collect()
+        });
+        out.sort_by_key(|&(position, _)| position);
+        out.into_iter().map(|(_, result)| result).collect()
     };
 
     drop(compile_phase);

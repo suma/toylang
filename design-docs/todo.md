@@ -21,6 +21,10 @@
 
 ### 2026-10-01
 
+- **CODEGEN-THREADS — codegen のスレッド数を仕事量で決める** — IR 6,000 命令以上なら全コアのプール、
+  未満は従来の 4 本 (example とテストは全部こちら)。重い関数から先に投げる (`define` は宣言順のまま)。
+  logsearch のリンク前 88.9 → 70.8 ms (`compile_functions` 30 → 11 ms、CPU は 188 → 367 ms)。
+  `TOYLANG_CODEGEN_THREADS` で固定できる。
 - **LINK-CACHE-FLAP — 同じソースからオブジェクトが毎回違っていた** — codegen がアドレスを取られた
   ローカルのスタックスロットと `dyn` の vtable を、ハッシュ集合を反復する順で作っていた (logsearch で
   10 回中 9 通り)。lowering の FxHash 化で症状は隠れていたので、`BTreeSet` にして順序を型で保証し、
@@ -2988,9 +2992,6 @@
   stdlib 本体について出す事実 (lend 表・エフェクト等) を stdlib のハッシュで
   再利用する軽い版と、PARALLEL_FRONTEND.md §5c のスナップショットに型検査の
   状態まで含める本命。後者は型検査器が AST を書き換えるので大仕事。
-- **CODEGEN-THREADS: codegen の上限 4 スレッドを規模で外す** ★ — `small_pool.rs`
-  の上限は小さいプログラムとテストの CPU のための測定値。logsearch は CPU 117 ms
-  を 4 本で割っている (10 コアなら ~15 ms の見込み、未測定)。関数数か IR 命令数で切る。
 - **RUNTIME-REFS-LAZY: ランタイム関数 ~90 個の import を全関数に入れている** ★ —
   `declare_runtime_refs`。関数の import を呼ぶ分だけにしたのと同じ形 (各 signature
   に ABI 計算が走る)。使う命令から引くか遅延宣言に。未測定。

@@ -1,5 +1,5 @@
 use crate::token::DescribeToken;
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 use string_interner::DefaultSymbol;
 use crate::token::Kind;
 use crate::type_decl::*;
@@ -8,7 +8,7 @@ use super::core::Parser;
 
 impl<'a> Parser<'a> {
     pub fn parse_type_declaration(&mut self) -> ParserResult<TypeDecl> {
-        self.parse_type_declaration_with_generic_context(&HashSet::new())
+        self.parse_type_declaration_with_generic_context(&HashSet::default())
     }
 
     pub fn parse_type_declaration_with_generic_context(&mut self, generic_params: &HashSet<DefaultSymbol>) -> ParserResult<TypeDecl> {
@@ -372,7 +372,7 @@ impl<'a> Parser<'a> {
                                 ),
                             ));
                         }
-                        let mut subst = std::collections::HashMap::new();
+                        let mut subst = rustc_hash::FxHashMap::default();
                         for (p, a) in params.iter().zip(type_args.iter()) {
                             subst.insert(*p, a.clone());
                         }

@@ -1,6 +1,6 @@
 use crate::token::DescribeToken;
 use std::rc::Rc;
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 use string_interner::DefaultSymbol;
 use crate::ast::*;
 use crate::source_map::SourceMap;
@@ -248,7 +248,7 @@ impl<'a> Parser<'a> {
                     node: Node::new(test_start_pos, test_end_pos),
                     name: fn_name,
                     generic_params: vec![],
-                    generic_bounds: std::collections::HashMap::new(),
+                    generic_bounds: rustc_hash::FxHashMap::default(),
                     parameter: vec![],
                     return_type: None,
                     requires: vec![],
@@ -367,7 +367,7 @@ impl<'a> Parser<'a> {
             function_module_ranks,
             consts: out.consts,
             tests: out.tests,
-            transferred_bindings: std::collections::HashSet::new(),
+            transferred_bindings: rustc_hash::FxHashSet::default(),
             drop_flags: Default::default(),
             parallel_loops: std::mem::take(&mut self.parallel_loops),
             call_paths: std::mem::take(&mut self.call_paths),
@@ -433,7 +433,7 @@ impl<'a> Parser<'a> {
         let (generic_params, generic_bounds) = if matches!(self.peek(), Some(Kind::LT)) {
             self.parse_generic_params()?
         } else {
-            (vec![], std::collections::HashMap::new())
+            (vec![], rustc_hash::FxHashMap::default())
         };
         self.expect_err(&Kind::ParenOpen)?;
         let params = self.parse_param_def_list_with_generic_context(vec![], &generic_params)?;
@@ -572,7 +572,7 @@ impl<'a> Parser<'a> {
                 let (generic_params, generic_bounds) = if matches!(self.peek(), Some(Kind::LT)) {
                     self.parse_generic_params()?
                 } else {
-                    (vec![], std::collections::HashMap::new())
+                    (vec![], rustc_hash::FxHashMap::default())
                 };
 
                 self.expect_err(&Kind::ParenOpen)?;
@@ -792,7 +792,7 @@ impl<'a> Parser<'a> {
                 let (generic_params, generic_bounds) = if matches!(self.peek(), Some(Kind::LT)) {
                     self.parse_generic_params()?
                 } else {
-                    (vec![], std::collections::HashMap::new())
+                    (vec![], rustc_hash::FxHashMap::default())
                 };
 
                 if !generic_params.is_empty() {
@@ -1042,7 +1042,7 @@ impl<'a> Parser<'a> {
         let (generic_params, generic_bounds) = if self.peek() == Some(&Kind::LT) {
             self.parse_generic_params()?
         } else {
-            (vec![], std::collections::HashMap::new())
+            (vec![], rustc_hash::FxHashMap::default())
         };
 
         match self.peek() {
@@ -1062,7 +1062,7 @@ impl<'a> Parser<'a> {
                 // overwrite this from the parsed `Type<...>`
                 // following `for` (the first identifier was
                 // the trait name, not the target).
-                let generic_params_set: std::collections::HashSet<DefaultSymbol> = generic_params.iter().copied().collect();
+                let generic_params_set: rustc_hash::FxHashSet<DefaultSymbol> = generic_params.iter().copied().collect();
                 let mut first_target_args = if self.peek() == Some(&Kind::LT) {
                     self.next(); // consume '<'
                     self.parse_type_args_after_lt(&generic_params_set)?
@@ -1222,7 +1222,7 @@ impl<'a> Parser<'a> {
                     if matches!(self.peek(), Some(Kind::LT)) {
                         self.parse_generic_params()?
                     } else {
-                        (Vec::new(), std::collections::HashMap::new())
+                        (Vec::new(), rustc_hash::FxHashMap::default())
                     };
                 // STDLIB-TRAIT-BASE B0: `trait B: A { ... }` is not
                 // supported, and saying so beats `expect_err`'s bare

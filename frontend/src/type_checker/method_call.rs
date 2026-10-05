@@ -7,7 +7,7 @@
 //! calls into them via thin wrappers.
 
 use string_interner::{DefaultSymbol, Symbol};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use crate::ast::*;
 use crate::type_decl::*;
 use crate::type_checker::{TypeCheckerVisitor, TypeCheckError};
@@ -29,7 +29,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         &self,
         declared: &TypeDecl,
         arg_ty: &TypeDecl,
-        param_values: &std::collections::HashSet<u32>,
+        param_values: &rustc_hash::FxHashSet<u32>,
         out: &mut HashMap<DefaultSymbol, TypeDecl>,
     ) {
         match declared {
@@ -499,8 +499,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         // A parameter that is still generic after this is one the
         // *method* introduced (`fn map<U>`), and that one really does
         // name nothing; it keeps being filtered out below.
-        let mut subst: std::collections::HashMap<DefaultSymbol, TypeDecl> =
-            std::collections::HashMap::new();
+        let mut subst: rustc_hash::FxHashMap<DefaultSymbol, TypeDecl> =
+            rustc_hash::FxHashMap::default();
         if !type_args.is_empty() {
             let decl_params = self
                 .context
@@ -648,7 +648,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         .get(trait_sym)
                         .cloned()
                         .unwrap_or_default();
-                    let mut subst: HashMap<DefaultSymbol, TypeDecl> = HashMap::new();
+                    let mut subst: HashMap<DefaultSymbol, TypeDecl> = HashMap::default();
                     for (p, a) in trait_generic_params.iter().zip(trait_args.iter()) {
                         subst.insert(*p, a.clone());
                     }
@@ -682,7 +682,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     .cloned()
                     .unwrap_or_default();
                 let mut substitutions: HashMap<DefaultSymbol, TypeDecl> =
-                    HashMap::new();
+                    HashMap::default();
                 for (i, generic_param) in generic_params.iter().enumerate() {
                     if let Some(concrete_type) = type_params.get(i) {
                         substitutions.insert(*generic_param, concrete_type.clone());
@@ -692,7 +692,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 // (skip self at index 0).
 
                 if !method_func.generic_params.is_empty() {
-                    let param_values: std::collections::HashSet<u32> =
+                    let param_values: rustc_hash::FxHashSet<u32> =
                         method_func.generic_params.iter()
                             .map(|p| p.to_usize() as u32)
                             .collect();
@@ -776,7 +776,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     
                     
                     let generic_params = generic_params.unwrap_or_default();
-                    let mut substitutions = HashMap::new();
+                    let mut substitutions = HashMap::default();
                     for (i, generic_param) in generic_params.iter().enumerate() {
                         if let Some(concrete_type) = type_params.get(i) {
                             substitutions.insert(*generic_param, concrete_type.clone());
@@ -794,7 +794,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     // maps straight onto the parameter index (unlike the
                     // enum path where `self: Self` occupies slot 0).
                     if !method_func.generic_params.is_empty() {
-                        let param_values: std::collections::HashSet<u32> =
+                        let param_values: rustc_hash::FxHashSet<u32> =
                             method_func.generic_params.iter()
                                 .map(|p| p.to_usize() as u32)
                                 .collect();
@@ -883,9 +883,9 @@ impl<'a> TypeCheckerVisitor<'a> {
                         .clone()
                         .unwrap_or(TypeDecl::Unit);
                     let mut substitutions: HashMap<DefaultSymbol, TypeDecl> =
-                        HashMap::new();
+                        HashMap::default();
                     if !method_func.generic_params.is_empty() {
-                        let param_values: std::collections::HashSet<u32> =
+                        let param_values: rustc_hash::FxHashSet<u32> =
                             method_func.generic_params.iter()
                                 .map(|p| p.to_usize() as u32)
                                 .collect();
@@ -970,7 +970,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     // field's function signature — and its return type —
                     // resolve to the impl-level params instead of the
                     // declaration-level symbols.
-                    let mut subst: HashMap<DefaultSymbol, TypeDecl> = HashMap::new();
+                    let mut subst: HashMap<DefaultSymbol, TypeDecl> = HashMap::default();
                     if let Some(decl_params) = self.context.get_struct_generic_params(*struct_name) {
                         for (decl, concrete) in decl_params.iter().zip(type_params.iter()) {
                             subst.insert(*decl, concrete.clone());
@@ -1164,7 +1164,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 .get(trait_sym)
                 .cloned()
                 .unwrap_or_default();
-            let mut subst: HashMap<DefaultSymbol, TypeDecl> = HashMap::new();
+            let mut subst: HashMap<DefaultSymbol, TypeDecl> = HashMap::default();
             for (p, a) in trait_generic_params.iter().zip(trait_args.iter()) {
                 subst.insert(*p, a.clone());
             }
@@ -1246,7 +1246,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     )));
                 }
                 let generic_params = self.context.enum_generic_params.get(&struct_name).cloned().unwrap_or_default();
-                let mut substitutions: std::collections::HashMap<DefaultSymbol, TypeDecl> = std::collections::HashMap::new();
+                let mut substitutions: rustc_hash::FxHashMap<DefaultSymbol, TypeDecl> = rustc_hash::FxHashMap::default();
                 // Seed substitutions from the outer type hint so nested
                 // variant construction (`Option::Some(Option::None)` with
                 // hint `Option<Option<i64>>`) can flow the inner type args

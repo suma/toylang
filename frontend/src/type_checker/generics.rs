@@ -2,7 +2,7 @@ use crate::ast::{ExprRef, Function, MethodFunction};
 use crate::type_checker::{TypeCheckError, TypeDecl, TypeCheckerVisitor};
 use string_interner::DefaultSymbol;
 use std::rc::Rc;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 impl TypeCheckerVisitor<'_> {
     pub(crate) fn visit_generic_call(&mut self, fn_name: DefaultSymbol, args_ref: &ExprRef, fun: &Function) -> Result<TypeDecl, TypeCheckError> {
@@ -196,7 +196,7 @@ impl TypeCheckerVisitor<'_> {
         self.type_inference.clear_constraints();
         
         // Push generic parameters onto the scope for proper resolution
-        let mut generic_scope = HashMap::new();
+        let mut generic_scope = HashMap::default();
         for param in &generic_params {
             generic_scope.insert(*param, TypeDecl::Generic(*param));
         }

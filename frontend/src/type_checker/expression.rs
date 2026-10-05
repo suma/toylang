@@ -2229,11 +2229,11 @@ impl<'a> TypeCheckerVisitor<'a> {
         params: &ParameterList,
         body: &ExprRef,
     ) -> Result<(), TypeCheckError> {
-        let bound: std::collections::HashSet<DefaultSymbol> =
+        let bound: rustc_hash::FxHashSet<DefaultSymbol> =
             params.iter().map(|(n, _)| *n).collect();
         let mut captures: Vec<(DefaultSymbol, TypeDecl)> = Vec::new();
-        let mut seen: std::collections::HashSet<DefaultSymbol> =
-            std::collections::HashSet::new();
+        let mut seen: rustc_hash::FxHashSet<DefaultSymbol> =
+            rustc_hash::FxHashSet::default();
         self.collect_closure_free_vars(*body, &bound, &mut captures, &mut seen);
 
         for (_, ty) in &captures {
@@ -2290,9 +2290,9 @@ impl<'a> TypeCheckerVisitor<'a> {
     fn collect_closure_free_vars(
         &self,
         expr_ref: ExprRef,
-        bound: &std::collections::HashSet<DefaultSymbol>,
+        bound: &rustc_hash::FxHashSet<DefaultSymbol>,
         out: &mut Vec<(DefaultSymbol, TypeDecl)>,
-        seen: &mut std::collections::HashSet<DefaultSymbol>,
+        seen: &mut rustc_hash::FxHashSet<DefaultSymbol>,
     ) {
         let expr = match self.core.expr_pool.get(&expr_ref) {
             Some(e) => e,
@@ -2300,7 +2300,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         };
         let record = |s: DefaultSymbol,
                           out: &mut Vec<(DefaultSymbol, TypeDecl)>,
-                          seen: &mut std::collections::HashSet<DefaultSymbol>| {
+                          seen: &mut rustc_hash::FxHashSet<DefaultSymbol>| {
             if bound.contains(&s) || seen.contains(&s) {
                 return;
             }
@@ -2464,9 +2464,9 @@ impl<'a> TypeCheckerVisitor<'a> {
     fn collect_stmt_free_vars(
         &self,
         stmt: &Stmt,
-        bound: &mut std::collections::HashSet<DefaultSymbol>,
+        bound: &mut rustc_hash::FxHashSet<DefaultSymbol>,
         out: &mut Vec<(DefaultSymbol, TypeDecl)>,
-        seen: &mut std::collections::HashSet<DefaultSymbol>,
+        seen: &mut rustc_hash::FxHashSet<DefaultSymbol>,
     ) {
         match stmt {
             Stmt::Expression(e) => self.collect_closure_free_vars(*e, bound, out, seen),
@@ -2509,7 +2509,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// in-scope set when walking a `match` arm body for free vars.
     fn pattern_bound_names(
         pat: &Pattern,
-        bound: &mut std::collections::HashSet<DefaultSymbol>,
+        bound: &mut rustc_hash::FxHashSet<DefaultSymbol>,
     ) {
         match pat {
             Pattern::Name(s) => {
@@ -2848,7 +2848,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// TRY-OPERAND-GAP: the `?` node whose operand is `inner`.
     pub fn try_node_of(&mut self, inner: ExprRef) -> Option<ExprRef> {
         if self.try_nodes.is_none() {
-            let mut map = std::collections::HashMap::new();
+            let mut map = rustc_hash::FxHashMap::default();
             for index in 0..self.core.expr_pool.len() {
                 let expr_ref = ExprRef(index as u32);
                 if let Some(Expr::Try { inner, .. }) = self.core.expr_pool.get(&expr_ref) {
@@ -3982,9 +3982,9 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// to `fn to_str(&self, radix: u64) -> str` would turn a `println`
     /// into an arity error about a call the user never wrote, and one
     /// returning `u64` is not a rendering at all.
-    fn display_types(&mut self) -> &std::collections::HashSet<DefaultSymbol> {
+    fn display_types(&mut self) -> &rustc_hash::FxHashSet<DefaultSymbol> {
         if self.display_types.is_none() {
-            let mut found = std::collections::HashSet::new();
+            let mut found = rustc_hash::FxHashSet::default();
             if let Some(method) = self.core.string_interner.get(DISPLAY_METHOD) {
                 for i in 0..self.core.stmt_pool.len() {
                     let Some(Stmt::ImplBlock { target_type, methods, .. }) =

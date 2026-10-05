@@ -49,7 +49,7 @@
 //! relative to the node), so a diamond in the call graph costs one
 //! walk rather than one per path into it.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::rc::Rc;
 
 use string_interner::{DefaultStringInterner, DefaultSymbol};
@@ -512,12 +512,12 @@ impl<'a> EffectTable<'a> {
         interner: &'a DefaultStringInterner,
         expr_types: &'a HashMap<ExprRef, TypeDecl>,
     ) -> Self {
-        let mut by_name: HashMap<DefaultSymbol, usize> = HashMap::new();
+        let mut by_name: HashMap<DefaultSymbol, usize> = HashMap::default();
         for (i, f) in program.function.iter().enumerate() {
             by_name.entry(f.name).or_insert(i);
         }
-        let mut methods: HashMap<(DefaultSymbol, DefaultSymbol), Vec<StmtRef>> = HashMap::new();
-        let mut by_method_name: HashMap<DefaultSymbol, Vec<StmtRef>> = HashMap::new();
+        let mut methods: HashMap<(DefaultSymbol, DefaultSymbol), Vec<StmtRef>> = HashMap::default();
+        let mut by_method_name: HashMap<DefaultSymbol, Vec<StmtRef>> = HashMap::default();
         for index in 0..program.statement.len() {
             let stmt_ref = StmtRef(index as u32);
             if let Some(Stmt::ImplBlock { target_type, methods: impl_methods, .. }) =
@@ -533,7 +533,7 @@ impl<'a> EffectTable<'a> {
         // name exists — so `enter` used to call it opaque and hand it
         // every effect. Building a value does nothing: what the
         // arguments do is the whole of it.
-        let mut variants: HashSet<(DefaultSymbol, DefaultSymbol)> = HashSet::new();
+        let mut variants: HashSet<(DefaultSymbol, DefaultSymbol)> = HashSet::default();
         for index in 0..program.statement.len() {
             let stmt_ref = StmtRef(index as u32);
             if let Some(Stmt::EnumDecl { name, variants: defs, .. }) =
@@ -552,12 +552,12 @@ impl<'a> EffectTable<'a> {
             methods,
             by_method_name,
             variants,
-            memo: HashMap::new(),
-            in_progress: HashSet::new(),
+            memo: HashMap::default(),
+            in_progress: HashSet::default(),
             cycles: 0,
             order: 0,
             direct_only: false,
-            names: HashMap::new(),
+            names: HashMap::default(),
         }
     }
 

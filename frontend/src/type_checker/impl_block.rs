@@ -100,7 +100,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         if has_generics {
             self.context.current_impl_generic_params = generic_params.clone();
             // Push generic parameters into scope for method type checking
-            let generic_substitutions: std::collections::HashMap<DefaultSymbol, TypeDecl> =
+            let generic_substitutions: rustc_hash::FxHashMap<DefaultSymbol, TypeDecl> =
                 generic_params.as_ref().unwrap().iter().map(|param| (*param, TypeDecl::Generic(*param))).collect();
             self.type_inference.push_generic_scope(generic_substitutions);
         }

@@ -1,5 +1,5 @@
 use string_interner::DefaultSymbol;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use crate::ast::*;
 use crate::type_decl::*;
 use crate::type_checker::{
@@ -126,7 +126,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             && !type_params.is_empty() {
                 // Get the generic parameter names for this struct
                 if let Some(generic_param_names) = self.context.get_struct_generic_params(*struct_name) {
-                    let mut type_mappings = HashMap::new();
+                    let mut type_mappings = HashMap::default();
 
                     // Create mappings from parameter names to concrete types
                     for (param_name, concrete_type) in generic_param_names.iter().zip(type_params.iter()) {

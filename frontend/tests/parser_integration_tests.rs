@@ -1252,9 +1252,9 @@ mod soa_layout_modifier {
     /// of a soa array keeps its storage shape.
     #[test]
     fn soa_flag_survives_substitution() {
-        use std::collections::HashMap;
+        use rustc_hash::FxHashMap as HashMap;
         let soa = TypeDecl::Array(vec![TypeDecl::Int64], ArraySize::Literal(2), true);
-        let subst = HashMap::new();
+        let subst = HashMap::default();
         assert!(soa.substitute_generics(&subst).is_soa());
     }
 }

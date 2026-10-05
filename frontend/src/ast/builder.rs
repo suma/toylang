@@ -194,7 +194,7 @@ impl AstBuilder {
         &mut self,
         name: DefaultSymbol,
         generic_params: Vec<DefaultSymbol>,
-        generic_bounds: std::collections::HashMap<DefaultSymbol, crate::type_decl::TypeDecl>,
+        generic_bounds: rustc_hash::FxHashMap<DefaultSymbol, crate::type_decl::TypeDecl>,
         fields: Vec<StructField>,
         visibility: Visibility,
         location: Option<SourceLocation>,

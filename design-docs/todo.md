@@ -2964,6 +2964,46 @@
   相当か、配列の `IntoIterator` のどちらかが入れば「小さな表を 1 行で
   書く」が成立する。
 
+### コンパイル速度 (COMPILE-SPEED)
+
+> 2026-10-02 時点、release の `toy build poc/logsearch` のリンク前は ~98 ms
+> (型検査 29 / lowering 23 / codegen 34 (CPU 117、4 スレッド) / モジュール 6)、
+> 実リンク 35 ms。fib.t はリンク前 ~17 ms のうち型検査 11 ms が stdlib の固定費。
+> 測り方は `--profile=compile` (COMPILE_PROFILE.md) と、バイナリを交互に走らせる
+> 中央値比較。**測って取り分が無かった案** (型キャッシュの sparse clear、lexer
+> での intern、単相化検索の clone、型検査器本体の AST 借用化) は再提案しない。
+
+- **LINK-COST: 実リンク ~35 ms (編集後ビルドの 1/3)** ★★ — `cc` ドライバを
+  経由せず `ld` を直接呼ぶ / lld、ランタイムの `.rt.a` を毎リンク一時ファイルに
+  書き出すのをやめる、`compiler` CLI でもリンクキャッシュを既定 on に。
+- **LINK-CACHE-FLAP: logsearch のリンクキャッシュがヒットとミスを行き来する** ★★ —
+  同じソースの連続ビルドで `link.cache_miss` が出る。オブジェクトの再現性が
+  崩れている疑い (`reproducible_build.rs` は小さいプログラムしか見ていない)。
+- **STDLIB-CHECK-FIXED: stdlib の型検査 ~11 ms を毎回払う** ★★ — post_checks が
+  stdlib 本体について出す事実 (lend 表・エフェクト等) を stdlib のハッシュで
+  再利用する軽い版と、PARALLEL_FRONTEND.md §5c のスナップショットに型検査の
+  状態まで含める本命。後者は型検査器が AST を書き換えるので大仕事。
+- **CODEGEN-THREADS: codegen の上限 4 スレッドを規模で外す** ★ — `small_pool.rs`
+  の上限は小さいプログラムとテストの CPU のための測定値。logsearch は CPU 117 ms
+  を 4 本で割っている (10 コアなら ~15 ms の見込み、未測定)。関数数か IR 命令数で切る。
+- **RUNTIME-REFS-LAZY: ランタイム関数 ~90 個の import を全関数に入れている** ★ —
+  `declare_runtime_refs`。関数の import を呼ぶ分だけにしたのと同じ形 (各 signature
+  に ABI 計算が走る)。使う命令から引くか遅延宣言に。未測定。
+- **LOWER-BINDING-CLONE: lowering が分岐ごとに束縛表を clone している疑い** ★ —
+  プロファイルで `Binding` の map / `FieldBinding` の clone が目立つが、インライン
+  展開で帰属があいまい。計測点を置いて確かめてから。
+- **LEND-WORKLIST: 読むだけ判定の固定点を worklist に** ★ — 今は変化が無くなる
+  まで全本体を歩き直す (logsearch で 4 周)。変化した関数の呼び出し元だけ再訪する。
+  1〜2 ms の見込み。
+- **CTFE-DECLARE-SHARE: CTFE 用 lowering の `declare` ~1.2 ms** ★ — 本番の
+  lowering の宣言段と共有すれば消える。
+- **TYPECHECK-HASH-TYPEDECL: 型検査器の SipHash と `TypeDecl` の clone** ★ —
+  それぞれ数 %。型検査器の map は AST・`TypeDecl` の置換関数と std の型で
+  つながっているので frontend 全体の改修になる。
+- **PERF-DOC-DRIFT: 文書の数字が実測と合わない** ★ — CLAUDE.md の
+  「`TOYLANG_CRANELIFT_OPT_LEVEL` は codegen を ~20x 変える」は logsearch では
+  ~10%。下の TEST-PERF の「1999 テスト ~6.5s」は現在 3278 テスト ~23s。
+
 ### インクリメンタルコンパイル
 
 - **AOT の中間オブジェクト (分離コンパイル) は見送り** — 検討の記録は

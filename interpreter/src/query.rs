@@ -19,7 +19,7 @@
 //! methods, associated and module-qualified calls, struct literals,
 //! fields — is resolved from the checker's types.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use frontend::ast::{Expr, ExprRef, File, Stmt, StmtRef};
 use frontend::source_map::FileId;

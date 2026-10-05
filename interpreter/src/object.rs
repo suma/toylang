@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::hash::{Hash, Hasher};
 use frontend::type_decl::{ArraySize, TypeDecl, VectorType};
 use frontend::ast::ExprRef;
@@ -1458,7 +1458,7 @@ mod display_tests {
         let type_name = interner.get_or_intern("Point");
         let x_sym = interner.get_or_intern("x");
         let y_sym = interner.get_or_intern("y");
-        let mut fields = HashMap::new();
+        let mut fields = HashMap::default();
         fields.insert(x_sym, make_rc(Object::UInt64(3)));
         fields.insert(y_sym, make_rc(Object::UInt64(4)));
         let pt = Object::Struct {

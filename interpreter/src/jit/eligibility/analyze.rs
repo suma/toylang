@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::rc::Rc;
 
 use frontend::ast::{Expr, ExprRef, Function, File};
@@ -146,7 +146,7 @@ pub fn analyze(
             }
         }
     }
-    let mut function_map: HashMap<DefaultSymbol, Rc<Function>> = HashMap::new();
+    let mut function_map: HashMap<DefaultSymbol, Rc<Function>> = HashMap::default();
     for f in &program.function {
         function_map.insert(f.name, f.clone());
     }
@@ -163,10 +163,10 @@ pub fn analyze(
     let enum_layouts = collect_enum_layouts(program);
     install_enum_layouts(&enum_layouts);
 
-    let mut visited: HashSet<MonoKey> = HashSet::new();
-    let mut signatures: HashMap<MonoKey, FuncSignature> = HashMap::new();
-    let mut monomorphs: HashMap<MonoKey, MonomorphSource> = HashMap::new();
-    let mut call_targets: HashMap<ExprRef, MonoKey> = HashMap::new();
+    let mut visited: HashSet<MonoKey> = HashSet::default();
+    let mut signatures: HashMap<MonoKey, FuncSignature> = HashMap::default();
+    let mut monomorphs: HashMap<MonoKey, MonomorphSource> = HashMap::default();
+    let mut call_targets: HashMap<ExprRef, MonoKey> = HashMap::default();
     // Work item: (source, target, substitution-vec ordered by source.generic_params).
     let mut stack: Vec<(MonomorphSource, MonoTarget, Vec<ScalarTy>)> =
         vec![(MonomorphSource::Function(main.clone()), MonoTarget::Function(main.name), Vec::new())];

@@ -20,7 +20,7 @@
 //!   worthless if it cannot be replayed.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::rc::Rc;
 
 use frontend::ast::{File, Function, MethodFunction, Stmt, StmtRef};
@@ -193,7 +193,7 @@ fn sample_struct_value(
     depth: usize,
 ) -> Option<Value> {
     let entry = shared.struct_definitions.get(&name)?;
-    let mut fields: HashMap<DefaultSymbol, RcObject> = HashMap::new();
+    let mut fields: HashMap<DefaultSymbol, RcObject> = HashMap::default();
     for (field_sym, field_ty) in &entry.fields {
         let value = sample_typed(rng, shared, field_ty, subst, depth + 1)?;
         fields.insert(*field_sym, value.into_rc());
@@ -486,7 +486,7 @@ pub fn check_program(
     // stdlib impls included); uncontracted methods are skipped cheaply
     // by `check_method`, and the same `(target, method)` pair
     // appearing in both an inherent and a trait impl is checked once.
-    let mut seen: HashSet<(DefaultSymbol, DefaultSymbol)> = HashSet::new();
+    let mut seen: HashSet<(DefaultSymbol, DefaultSymbol)> = HashSet::default();
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
         let Some(stmt) = program.statement.get(&stmt_ref) else {
@@ -693,7 +693,7 @@ fn check_method(
             }
         }
     } else {
-        (Vec::new(), HashMap::new())
+        (Vec::new(), HashMap::default())
     };
 
     let mut discarded = 0usize;
@@ -802,7 +802,7 @@ fn instantiate_receiver(
                 .all(|(_, ty)| sample_typed(rng, shared, ty, subst, 0).is_some())
     };
     if entry.generic_params.is_empty() {
-        let subst = HashMap::new();
+        let subst = HashMap::default();
         if probes_ok(&[], &subst) {
             return Some((Vec::new(), subst));
         }

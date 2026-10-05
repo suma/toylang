@@ -33,7 +33,7 @@
 //! as `TypeDecl::Identifier`; the type checker reports the missing
 //! arity.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::rc::Rc;
 
 use string_interner::DefaultSymbol;
@@ -56,7 +56,7 @@ pub fn resolve_type_aliases(program: &mut File) -> usize {
 }
 
 fn collect_aliases(program: &File) -> AliasMap {
-    let mut out: AliasMap = HashMap::new();
+    let mut out: AliasMap = HashMap::default();
     let n = program.statement.len();
     for i in 0..n {
         let stmt_ref = StmtRef(i as u32);
@@ -239,7 +239,7 @@ pub fn resolve_in_type(aliases: &AliasMap, ty: &TypeDecl) -> TypeDecl {
             let new_args: Vec<TypeDecl> = args.iter().map(|a| resolve_in_type(aliases, a)).collect();
             if let Some((params, target)) = aliases.get(name)
                 && !params.is_empty() && params.len() == new_args.len() {
-                    let mut subst: HashMap<DefaultSymbol, TypeDecl> = HashMap::new();
+                    let mut subst: HashMap<DefaultSymbol, TypeDecl> = HashMap::default();
                     for (p, a) in params.iter().zip(new_args.iter()) {
                         subst.insert(*p, a.clone());
                     }

@@ -39,7 +39,7 @@
 //! type at lowering, so `next: &Node` recurses exactly like
 //! `next: Node`.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
@@ -65,7 +65,7 @@ pub fn check_recursive_types(
 
     // First declaration of a name wins, mirroring the type checker's
     // own registries.
-    let mut index: HashMap<DefaultSymbol, usize> = HashMap::with_capacity(decls.len());
+    let mut index: HashMap<DefaultSymbol, usize> = HashMap::with_capacity_and_hasher(decls.len(), Default::default());
     for (i, d) in decls.iter().enumerate() {
         index.entry(d.name).or_insert(i);
     }

@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
@@ -69,7 +69,7 @@ thread_local! {
     /// `check_expr` recursion site; the call frequency is low enough
     /// that a thread-local is acceptable.
     static EXTERN_DISPATCH_MAP: RefCell<HashMap<DefaultSymbol, ExternDispatchEntry>>
-        = RefCell::new(HashMap::new());
+        = RefCell::new(HashMap::default());
 
     /// Per-thread map from primitive `ScalarTy` → canonical-name
     /// `DefaultSymbol`, populated for those primitives whose
@@ -79,7 +79,7 @@ thread_local! {
     /// using a thread-local — `check_expr` doesn't carry the
     /// interner reference.
     static PRIMITIVE_TARGET_SYMBOLS: RefCell<HashMap<ScalarTy, DefaultSymbol>>
-        = RefCell::new(HashMap::new());
+        = RefCell::new(HashMap::default());
 
     /// Layout map for non-generic, unit-variant-only enums (Phase
     /// JE-1). Same justification as PRIMITIVE_TARGET_SYMBOLS for the
@@ -89,7 +89,7 @@ thread_local! {
     /// `analyze` after `collect_enum_layouts`. Looked up by
     /// `enum_layout_for(name)` from the enum-related arms.
     static ENUM_LAYOUTS: RefCell<HashMap<DefaultSymbol, EnumLayout>>
-        = RefCell::new(HashMap::new());
+        = RefCell::new(HashMap::default());
 
     /// STR-INTERP-INTERP-JIT: cached symbol for the `concat` method
     /// name, populated at `analyze` time. Used by the str.concat

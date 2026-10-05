@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::path::{Path, PathBuf};
 use std::fs;
 use string_interner::{DefaultSymbol, DefaultStringInterner};
@@ -36,9 +36,9 @@ impl ModuleResolver {
         let search_paths = vec![PathBuf::from(".")];
         
         Self {
-            loaded_modules: HashMap::new(),
+            loaded_modules: HashMap::default(),
             search_paths,
-            dependency_graph: HashMap::new(),
+            dependency_graph: HashMap::default(),
             resolving_stack: Vec::new(),
         }
     }
@@ -46,9 +46,9 @@ impl ModuleResolver {
     /// Create a module resolver with custom search paths
     pub fn with_search_paths(paths: Vec<PathBuf>) -> Self {
         Self {
-            loaded_modules: HashMap::new(),
+            loaded_modules: HashMap::default(),
             search_paths: paths,
-            dependency_graph: HashMap::new(),
+            dependency_graph: HashMap::default(),
             resolving_stack: Vec::new(),
         }
     }

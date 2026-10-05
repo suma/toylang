@@ -27,7 +27,7 @@ pub mod slot;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use compiler_ir::{FuncId, LocalId, Module, Terminator, ValueId};
 use string_interner::{DefaultStringInterner, DefaultSymbol, Symbol};
@@ -159,8 +159,8 @@ impl<'a> Vm<'a> {
             memory_fault_site: None,
             interner: None,
             host,
-            vtable_addrs: HashMap::new(),
-            const_blobs: HashMap::new(),
+            vtable_addrs: HashMap::default(),
+            const_blobs: HashMap::default(),
             main_return_slots: Vec::new(),
             step_budget: None,
             steps: 0,
@@ -182,8 +182,8 @@ impl<'a> Vm<'a> {
             memory_fault_site: None,
             interner: Some(interner),
             host,
-            vtable_addrs: HashMap::new(),
-            const_blobs: HashMap::new(),
+            vtable_addrs: HashMap::default(),
+            const_blobs: HashMap::default(),
             main_return_slots: Vec::new(),
             step_budget: None,
             steps: 0,

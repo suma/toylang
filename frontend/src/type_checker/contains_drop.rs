@@ -18,7 +18,7 @@
 //! is finite in practice and the depth cap is defence in depth.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
@@ -49,9 +49,9 @@ pub struct DropAnalysis {
 
 impl DropAnalysis {
     pub fn new(program: &File, interner: &DefaultStringInterner) -> Self {
-        let mut drop_types = HashSet::new();
-        let mut struct_decls = HashMap::new();
-        let mut enum_decls = HashMap::new();
+        let mut drop_types = HashSet::default();
+        let mut struct_decls = HashMap::default();
+        let mut enum_decls = HashMap::default();
         for i in 0..program.statement.len() {
             let stmt_ref = StmtRef(i as u32);
             let Some(stmt) = program.statement.get(&stmt_ref) else {
@@ -91,7 +91,7 @@ impl DropAnalysis {
             drop_types,
             struct_decls,
             enum_decls,
-            memo: RefCell::new(HashMap::new()),
+            memo: RefCell::new(HashMap::default()),
         }
     }
 
@@ -117,7 +117,7 @@ impl DropAnalysis {
     /// when the binding dies — the type itself has a `Drop` impl,
     /// or it holds one by value.
     pub fn contains_drop(&self, ty: &TypeDecl) -> bool {
-        self.contains_drop_inner(ty, &HashMap::new(), 0)
+        self.contains_drop_inner(ty, &HashMap::default(), 0)
     }
 
     fn contains_drop_inner(

@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::rc::Rc;
 use frontend::ast::*;
 use frontend::type_checker::SourceLocation;
@@ -9,7 +9,6 @@ use crate::object::{Object, RcObject};
 use crate::error::InterpreterError;
 use crate::try_value;
 use super::{EnumRegistryEntry, EnumRegistryVariant, EvaluationContext, EvaluationResult, StructRegistryEntry};
-use std::collections::HashMap as HashMapStd;
 
 /// Map a runtime value to the canonical-name `DefaultSymbol` the
 /// extension-trait machinery uses as an impl target. Returns `None`
@@ -79,7 +78,7 @@ fn primitive_target_symbol(
 /// non-generic struct, or generic param appearing only in nested
 /// positions we don't drill into).
 /// `ty` with each of `params` (as a parameter or a bare name) replaced.
-pub(super) fn substitute_params(ty: &TypeDecl, params: &HashMapStd<DefaultSymbol, TypeDecl>) -> TypeDecl {
+pub(super) fn substitute_params(ty: &TypeDecl, params: &HashMap<DefaultSymbol, TypeDecl>) -> TypeDecl {
     match ty {
         TypeDecl::Generic(s) | TypeDecl::Identifier(s) => {
             params.get(s).cloned().unwrap_or_else(|| ty.clone())
@@ -115,13 +114,13 @@ fn mentions_any(ty: &TypeDecl, params: &[DefaultSymbol]) -> bool {
 
 fn derive_struct_type_args(
     entry: &StructRegistryEntry,
-    field_values: &std::collections::HashMap<DefaultSymbol, RcObject>,
-    active_scope: &HashMapStd<DefaultSymbol, TypeDecl>,
+    field_values: &rustc_hash::FxHashMap<DefaultSymbol, RcObject>,
+    active_scope: &HashMap<DefaultSymbol, TypeDecl>,
 ) -> Vec<TypeDecl> {
     if entry.generic_params.is_empty() {
         return Vec::new();
     }
-    let mut bindings: HashMapStd<DefaultSymbol, TypeDecl> = HashMapStd::new();
+    let mut bindings: HashMap<DefaultSymbol, TypeDecl> = HashMap::default();
     for (field_name, field_ty) in &entry.fields {
         if let Some(value) = field_values.get(field_name) {
             collect_generic_bindings(field_ty, &value.borrow(), &mut bindings);
@@ -178,7 +177,7 @@ fn derive_enum_type_args(
     if entry.generic_params.is_empty() {
         return Vec::new();
     }
-    let mut bindings: HashMapStd<DefaultSymbol, TypeDecl> = HashMapStd::new();
+    let mut bindings: HashMap<DefaultSymbol, TypeDecl> = HashMap::default();
     for (declared, value) in variant.payload_types.iter().zip(arg_values.iter()) {
         collect_generic_bindings(declared, &value.borrow(), &mut bindings);
     }
@@ -197,7 +196,7 @@ fn derive_enum_type_args(
 fn collect_generic_bindings(
     declared: &TypeDecl,
     value: &Object,
-    bindings: &mut HashMapStd<DefaultSymbol, TypeDecl>,
+    bindings: &mut HashMap<DefaultSymbol, TypeDecl>,
 ) {
     match declared {
         TypeDecl::Generic(sym) => {
@@ -261,7 +260,7 @@ fn collect_generic_bindings(
 fn bind_declared_type(
     declared: &TypeDecl,
     actual: &TypeDecl,
-    bindings: &mut HashMapStd<DefaultSymbol, TypeDecl>,
+    bindings: &mut HashMap<DefaultSymbol, TypeDecl>,
 ) {
     match (declared, actual) {
         (TypeDecl::Generic(sym), _) if !matches!(actual, TypeDecl::Unknown) => {
@@ -294,7 +293,7 @@ fn args_generic_scope(
     params: &[(DefaultSymbol, TypeDecl)],
     args: &[RcObject],
 ) -> HashMap<DefaultSymbol, TypeDecl> {
-    let mut bindings: HashMapStd<DefaultSymbol, TypeDecl> = HashMapStd::new();
+    let mut bindings: HashMap<DefaultSymbol, TypeDecl> = HashMap::default();
     for ((_, declared), value) in params.iter().zip(args.iter()) {
         collect_generic_bindings(declared, &value.borrow(), &mut bindings);
     }
@@ -1238,7 +1237,7 @@ impl EvaluationContext<'_> {
         // `__builtin_sizeof::<T>()` inside it resolves. Non-generic
         // callees push an empty scope so every exit path can pop
         // unconditionally.
-        let mut generic_scope = HashMap::new();
+        let mut generic_scope = HashMap::default();
         if !method.generic_params.is_empty() {
             for (param, ty) in args_generic_scope(
                 if skip_self { &method.parameter[1..] } else { &method.parameter },
@@ -2150,7 +2149,7 @@ impl EvaluationContext<'_> {
         // Create a struct instance. Field keys flow through unchanged as
         // interned `DefaultSymbol`s — there is no need to resolve to a
         // textual name during construction.
-        let mut field_values: HashMap<DefaultSymbol, RcObject> = HashMap::new();
+        let mut field_values: HashMap<DefaultSymbol, RcObject> = HashMap::default();
 
         for (field_name, field_expr) in fields {
             // Handle null expressions specially in struct literals
@@ -2183,7 +2182,7 @@ impl EvaluationContext<'_> {
         // the generic scope it is evaluated in (`impl<T> Bag<T>`). A
         // declared type still naming an unknown parameter is not
         // stamped -- it says nothing about the value yet.
-        let mut annotated: HashMapStd<DefaultSymbol, TypeDecl> = HashMapStd::new();
+        let mut annotated: HashMap<DefaultSymbol, TypeDecl> = HashMap::default();
         if let Some(entry) = self.struct_definitions.get(struct_name).cloned() {
             if let Some(TypeDecl::Struct(name, args) | TypeDecl::Enum(name, args)) =
                 self.pending_annotation.as_ref()
@@ -2643,7 +2642,7 @@ impl EvaluationContext<'_> {
         // two sources. Non-generic functions skip the walk entirely
         // (the empty scope costs nothing) so ordinary calls — the
         // `--check` trial hot path — pay for none of this.
-        let mut generic_scope = HashMap::new();
+        let mut generic_scope = HashMap::default();
         if !function.generic_params.is_empty() {
             let rc_args: Vec<RcObject> = args.iter().map(crate::value::Value::clone_to_rc).collect();
             for (param, ty) in args_generic_scope(&function.parameter, &rc_args) {

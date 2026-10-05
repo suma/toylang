@@ -12,7 +12,7 @@
 //! module is the inverted root set (every non-`unsafe` callable),
 //! the mask, and the diagnostic.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use string_interner::DefaultStringInterner;
 

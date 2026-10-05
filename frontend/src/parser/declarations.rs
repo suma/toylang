@@ -1,5 +1,5 @@
 use crate::token::DescribeToken;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use string_interner::DefaultSymbol;
 use crate::ast::{EnsuresKind, ExprRef, Parameter, PackageDecl, ImportDecl};
 
@@ -259,8 +259,8 @@ impl<'a> Parser<'a> {
     /// A parameter without a bound simply has no entry in the map.
     pub fn parse_generic_params(&mut self) -> ParserResult<(Vec<DefaultSymbol>, HashMap<DefaultSymbol, TypeDecl>)> {
         let mut params = Vec::new();
-        let mut bounds: HashMap<DefaultSymbol, TypeDecl> = HashMap::new();
-        let mut seen = HashSet::new();
+        let mut bounds: HashMap<DefaultSymbol, TypeDecl> = HashMap::default();
+        let mut seen = HashSet::default();
 
         // Expect '<'
         self.expect_err(&Kind::LT)?;

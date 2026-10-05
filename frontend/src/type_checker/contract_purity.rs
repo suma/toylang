@@ -38,7 +38,7 @@
 //! is the guarantee itself: nothing reachable from a clause may
 //! allocate, free, write through a pointer, or print.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use string_interner::DefaultStringInterner;
 

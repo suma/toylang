@@ -16,7 +16,7 @@
 
 use crate::common;
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use frontend::ast::*;
 use string_interner::DefaultStringInterner;
 use interpreter::evaluation::{EvaluationContext, EvaluationResult};
@@ -56,7 +56,7 @@ mod basic_execution {
         let expr_ref = expr_pool.add(Expr::Int64(42));
         let mut interner = DefaultStringInterner::new();
 
-        let mut ctx = EvaluationContext::new(&stmt_pool, &expr_pool, &mut interner, HashMap::new());
+        let mut ctx = EvaluationContext::new(&stmt_pool, &expr_pool, &mut interner, HashMap::default());
         let result = match ctx.evaluate(&expr_ref) {
             Ok(EvaluationResult::Value(v)) => v,
             Ok(other) => panic!("Expected Value but got {other:?}"),

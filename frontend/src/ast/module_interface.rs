@@ -6,7 +6,7 @@
 //! `StmtRef` indirections) so the interface can be inspected without
 //! owning the original pools.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use string_interner::DefaultSymbol;
 use crate::type_decl::TypeDecl;

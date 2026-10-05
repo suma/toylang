@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use frontend::ast::{
     BuiltinFunction, Expr, ExprRef, MethodFunction, Operator, Pattern, File, Stmt, StmtRef,
@@ -44,7 +44,7 @@ pub(super) fn check_callable_body(
     reject_reason: &mut Option<String>,
 ) -> bool {
     let code = source.code();
-    let mut locals: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
+    let mut locals: HashMap<DefaultSymbol, ScalarTy> = HashMap::default();
     let mut compound_locals = CompoundLocals::new();
     for (n, t) in &sig.params {
         match t {
@@ -947,7 +947,7 @@ impl<'a> Checker<'a> {
                 // produces the right answer.
                 let payload_ty = if !layout.variant_payloads.iter().any(|v| v.is_some()) {
                     None
-                } else if let Some(t) = layout.resolve_uniform_payload(&HashMap::new()) {
+                } else if let Some(t) = layout.resolve_uniform_payload(&HashMap::default()) {
                     Some(t)
                 } else {
                     match annotation_hint.and_then(|td| payload_ty_from_annotation(td, &layout)) {
@@ -1339,7 +1339,7 @@ impl<'a> Checker<'a> {
         receiver: &StructLocalInfo,
         method: &MethodFunction,
     ) -> Option<HashMap<DefaultSymbol, ScalarTy>> {
-        let mut subst: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
+        let mut subst: HashMap<DefaultSymbol, ScalarTy> = HashMap::default();
         if let Some(layout) = self.struct_layouts.get(&receiver.base_name) {
             if layout.generic_params.len() == receiver.type_args.len() {
                 for (p, t) in layout.generic_params.iter().zip(receiver.type_args.iter()) {
@@ -2831,7 +2831,7 @@ impl<'a> Checker<'a> {
                     // For unit-only enums there's no payload_ty so
                     // no substitution is bound (acceptable when the
                     // method doesn't reference any generic param).
-                    let mut method_subst: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
+                    let mut method_subst: HashMap<DefaultSymbol, ScalarTy> = HashMap::default();
                     if !method.generic_params.is_empty() {
                         if layout.generic_params.is_empty() {
                             self.reject(|| {
@@ -3286,7 +3286,7 @@ impl<'a> Checker<'a> {
         // #159: generics the callee picks up through a struct-typed
         // parameter. Seeded into `infer_substitutions`, which only looks at
         // scalar argument positions.
-        let mut struct_arg_bindings: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
+        let mut struct_arg_bindings: HashMap<DefaultSymbol, ScalarTy> = HashMap::default();
         for (a, (_, param_td)) in arg_list.iter().zip(callee.parameter.iter()) {
             let arg_expr = self.program.expression.get(a)?;
             // Phase JE-2d: enum-typed argument matching. Either the
@@ -3529,7 +3529,7 @@ fn infer_struct_type_args(
     if !layout.is_generic() {
         return Some(Vec::new());
     }
-    let mut bound: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
+    let mut bound: HashMap<DefaultSymbol, ScalarTy> = HashMap::default();
     for (field_sym, repr) in &layout.fields {
         let FieldRepr::Generic(param) = repr else {
             continue;

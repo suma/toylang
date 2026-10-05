@@ -90,7 +90,7 @@
 //! owner: the caller cannot tell which body it reaches and keeps the
 //! argument, which then leaks.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
@@ -127,7 +127,7 @@ pub fn check_moves(
     if drop_analysis.drop_implementing_types().is_empty() {
         return MoveAnalysis {
             errors: Vec::new(),
-            transferred: HashSet::new(),
+            transferred: HashSet::default(),
             drop_flags: DropFlags::default(),
         };
     }
@@ -141,10 +141,10 @@ pub fn check_moves(
         drop_analysis: &drop_analysis,
         signatures: &signatures,
         scopes: Vec::new(),
-        moved: HashMap::new(),
+        moved: HashMap::default(),
         errors: Vec::new(),
-        transferred: HashSet::new(),
-        borrows: HashSet::new(),
+        transferred: HashSet::default(),
+        borrows: HashSet::default(),
         element_copies: Vec::new(),
         enums: collect_enums(program),
         cond_level: 0,
@@ -156,12 +156,12 @@ pub fn check_moves(
         exits: Vec::new(),
         closure_level: 0,
         tail: false,
-        transfer_anchors: HashMap::new(),
+        transfer_anchors: HashMap::default(),
         stand_ins: 0,
         tail_root: None,
         implicit_self: None,
         consuming_methods: collect_consuming_methods(program, interner),
-        binding_types: HashMap::new(),
+        binding_types: HashMap::default(),
         probe: None,
         safe_receiver: None,
         scalar_readers: collect_scalar_readers(program, interner),
@@ -169,7 +169,7 @@ pub fn check_moves(
     // LEND-FREEING-CALLEE: a name every call resolves to one body.
     // A caller that cannot tell which body a call reaches keeps the
     // argument (`walk_arg_list`), so such a body must not drop it too.
-    let mut fn_names: HashMap<DefaultSymbol, usize> = HashMap::new();
+    let mut fn_names: HashMap<DefaultSymbol, usize> = HashMap::default();
     for f in &program.function {
         *fn_names.entry(f.name).or_default() += 1;
     }
@@ -331,18 +331,18 @@ struct Target {
 impl Signatures {
     fn collect(program: &File, interner: &DefaultStringInterner) -> Self {
         let mut local_functions: HashMap<(DefaultSymbol, usize), Option<Vec<TypeDecl>>> =
-            HashMap::new();
+            HashMap::default();
         let mut module_functions: HashMap<
             (DefaultSymbol, DefaultSymbol, usize),
             Option<Vec<TypeDecl>>,
-        > = HashMap::new();
+        > = HashMap::default();
         let mut bare_module_functions: HashMap<(DefaultSymbol, usize), Option<Vec<TypeDecl>>> =
-            HashMap::new();
-        let mut local_function_bodies: HashMap<(DefaultSymbol, usize), Vec<StmtRef>> = HashMap::new();
+            HashMap::default();
+        let mut local_function_bodies: HashMap<(DefaultSymbol, usize), Vec<StmtRef>> = HashMap::default();
         let mut module_function_bodies: HashMap<(DefaultSymbol, DefaultSymbol, usize), Vec<StmtRef>> =
-            HashMap::new();
+            HashMap::default();
         let mut bare_module_function_bodies: HashMap<(DefaultSymbol, usize), Vec<StmtRef>> =
-            HashMap::new();
+            HashMap::default();
         for (i, f) in program.function.iter().enumerate() {
             let params: Vec<TypeDecl> = f.parameter.iter().map(|(_, t)| t.clone()).collect();
             let arity = params.len();
@@ -364,12 +364,12 @@ impl Signatures {
                 }
             }
         }
-        let mut methods: HashMap<(DefaultSymbol, usize), Option<Vec<TypeDecl>>> = HashMap::new();
-        let mut associated: HashMap<(DefaultSymbol, DefaultSymbol), Vec<TypeDecl>> = HashMap::new();
-        let mut method_bodies: HashMap<(DefaultSymbol, usize), Vec<StmtRef>> = HashMap::new();
-        let mut associated_bodies: HashMap<(DefaultSymbol, DefaultSymbol), StmtRef> = HashMap::new();
-        let mut method_reads_self: HashMap<DefaultSymbol, bool> = HashMap::new();
-        let mut enum_variants = HashSet::new();
+        let mut methods: HashMap<(DefaultSymbol, usize), Option<Vec<TypeDecl>>> = HashMap::default();
+        let mut associated: HashMap<(DefaultSymbol, DefaultSymbol), Vec<TypeDecl>> = HashMap::default();
+        let mut method_bodies: HashMap<(DefaultSymbol, usize), Vec<StmtRef>> = HashMap::default();
+        let mut associated_bodies: HashMap<(DefaultSymbol, DefaultSymbol), StmtRef> = HashMap::default();
+        let mut method_reads_self: HashMap<DefaultSymbol, bool> = HashMap::default();
+        let mut enum_variants = HashSet::default();
         for i in 0..program.statement.len() {
             let stmt_ref = StmtRef(i as u32);
             if let Some(Stmt::EnumDecl { name, variants, .. }) = program.statement.get_ref(&stmt_ref) {
@@ -526,7 +526,7 @@ fn pattern_names(pattern: &Pattern, out: &mut Vec<DefaultSymbol>) {
 
 /// Every struct declaration's generic parameters and field types.
 fn collect_structs(program: &File) -> HashMap<DefaultSymbol, (Vec<DefaultSymbol>, Vec<(String, TypeDecl)>)> {
-    let mut out = HashMap::new();
+    let mut out = HashMap::default();
     for i in 0..program.statement.len() {
         if let Some(Stmt::StructDecl { name, generic_params, fields, .. }) =
             program.statement.get_ref(&StmtRef(i as u32))
@@ -542,7 +542,7 @@ fn collect_structs(program: &File) -> HashMap<DefaultSymbol, (Vec<DefaultSymbol>
 
 /// Every enum declaration's generic parameters and variants.
 fn collect_enums(program: &File) -> HashMap<DefaultSymbol, (Vec<DefaultSymbol>, Vec<EnumVariantDef>)> {
-    let mut out = HashMap::new();
+    let mut out = HashMap::default();
     for i in 0..program.statement.len() {
         if let Some(Stmt::EnumDecl { name, generic_params, variants, .. }) =
             program.statement.get_ref(&StmtRef(i as u32))
@@ -701,7 +701,7 @@ impl MoveCheck<'_> {
         let owned_generic = if generic_owns {
             self.probe_generic_params(params, body)
         } else {
-            HashSet::new()
+            HashSet::default()
         };
         self.walk_function(params, body, owns, &owned_generic);
     }
@@ -725,7 +725,7 @@ impl MoveCheck<'_> {
         body: StmtRef,
     ) -> HashSet<DefaultSymbol> {
         let lend = self.lend.get(&body).cloned().unwrap_or_default();
-        let mut candidates: HashMap<DefaultSymbol, (DefaultSymbol, bool)> = HashMap::new();
+        let mut candidates: HashMap<DefaultSymbol, (DefaultSymbol, bool)> = HashMap::default();
         let mut index = 0usize;
         for (name, ty) in params {
             if self.interner.resolve(*name) == Some("self") {
@@ -743,7 +743,7 @@ impl MoveCheck<'_> {
             candidates.insert(*name, (base, true));
         }
         if candidates.is_empty() {
-            return HashSet::new();
+            return HashSet::default();
         }
         // The walk's outputs, restored afterwards: the probe decides,
         // the real walk records.
@@ -754,7 +754,7 @@ impl MoveCheck<'_> {
         let transfer_anchors = self.transfer_anchors.clone();
         let stand_ins = self.stand_ins;
         self.probe = Some(candidates);
-        self.walk_function(params, body, false, &HashSet::new());
+        self.walk_function(params, body, false, &HashSet::default());
         let probe = self.probe.take().unwrap_or_default();
         self.errors.truncate(errors);
         self.element_copies.truncate(element_copies);
@@ -2166,7 +2166,7 @@ fn compute_lend(
     // Methods by name, for `receiver_lend`: (body, takes `&mut self`,
     // has a receiver at all).
     let mut methods_by_name: HashMap<DefaultSymbol, Vec<(StmtRef, bool, bool, TypeDecl)>> =
-        HashMap::new();
+        HashMap::default();
     for f in &program.function {
         if f.is_extern {
             continue;
@@ -2566,7 +2566,7 @@ fn collect_scalar_readers(
     program: &File,
     interner: &DefaultStringInterner,
 ) -> HashSet<(DefaultSymbol, DefaultSymbol)> {
-    let mut verdict: HashMap<(DefaultSymbol, DefaultSymbol), bool> = HashMap::new();
+    let mut verdict: HashMap<(DefaultSymbol, DefaultSymbol), bool> = HashMap::default();
     for i in 0..program.statement.len() {
         let Some(Stmt::ImplBlock { target_type, methods, .. }) =
             program.statement.get_ref(&StmtRef(i as u32))
@@ -2613,8 +2613,8 @@ struct ConsumingMethods {
 }
 
 fn collect_consuming_methods(program: &File, interner: &DefaultStringInterner) -> ConsumingMethods {
-    let mut by_type: HashMap<(DefaultSymbol, DefaultSymbol), bool> = HashMap::new();
-    let mut by_name: HashMap<DefaultSymbol, bool> = HashMap::new();
+    let mut by_type: HashMap<(DefaultSymbol, DefaultSymbol), bool> = HashMap::default();
+    let mut by_name: HashMap<DefaultSymbol, bool> = HashMap::default();
     for i in 0..program.statement.len() {
         let Some(Stmt::ImplBlock { target_type, methods, .. }) = program.statement.get_ref(&StmtRef(i as u32)) else {
             continue;

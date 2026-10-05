@@ -2,7 +2,7 @@
 #[allow(clippy::module_inception)]
 mod tests {
     use super::super::*;
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap as HashMap;
     use crate::type_decl::{ArraySize, TypeDecl};
     use string_interner::DefaultStringInterner;
 
@@ -18,7 +18,7 @@ mod tests {
     ) -> TypeCheckerVisitor<'a> {
         TypeCheckerVisitor {
             core: CoreReferences::new(stmt_pool, expr_pool, string_interner, location_pool),
-            call_paths: std::collections::HashMap::new(),
+            call_paths: rustc_hash::FxHashMap::default(),
             current_call_path: None,
             context: TypeCheckContext::new(),
             type_inference: TypeInferenceState::new(),
@@ -30,8 +30,8 @@ mod tests {
             display_types: None,
             source_code: None,
             current_package: None,
-            imported_modules: HashMap::new(),
-            transformed_exprs: HashMap::new(),
+            imported_modules: HashMap::default(),
+            transformed_exprs: HashMap::default(),
             pending_number_holes: Vec::new(),
             builtin_methods: TypeCheckerVisitor::create_builtin_method_registry(),
             current_fn_return_type: None,
@@ -41,7 +41,7 @@ mod tests {
             enum_casts: Default::default(),
             enum_comparisons: Default::default(),
             enum_struct_literals: Default::default(),
-            null_coalesce_lhs_types: HashMap::new(),
+            null_coalesce_lhs_types: HashMap::default(),
             try_nodes: None,
         }
     }

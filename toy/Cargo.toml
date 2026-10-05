@@ -12,6 +12,7 @@ name = "toy"
 path = "src/main.rs"
 
 [dependencies]
+rustc-hash.workspace = true
 compiler = { path = "../compiler" }
 compiler_core = { path = "../compiler_core" }
 compiler_lower = { path = "../compiler_lower" }

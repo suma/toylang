@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;

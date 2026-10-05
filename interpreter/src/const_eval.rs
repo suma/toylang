@@ -71,7 +71,7 @@
 //! not lower at all gets no fold and no fold-specific diagnostics —
 //! the ordinary backends say why, and the run-time path still works.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::rc::Rc;
 
 use compiler_ir::{Module, Type};
@@ -417,7 +417,7 @@ fn lower_for_fold(
             node: Node::new(0, 0),
             name: sym,
             generic_params: Vec::new(),
-            generic_bounds: HashMap::new(),
+            generic_bounds: HashMap::default(),
             parameter: Vec::new(),
             return_type: Some(program.consts[idx].type_decl.clone()),
             requires: Vec::new(),
@@ -854,11 +854,11 @@ struct StubWalker<'a> {
 
 impl<'a> StubWalker<'a> {
     fn new(program: &'a File, stub_syms: &'a HashSet<DefaultSymbol>) -> Self {
-        let mut by_name: HashMap<DefaultSymbol, usize> = HashMap::new();
+        let mut by_name: HashMap<DefaultSymbol, usize> = HashMap::default();
         for (i, f) in program.function.iter().enumerate() {
             by_name.entry(f.name).or_insert(i);
         }
-        let mut by_method_name: HashMap<DefaultSymbol, Vec<StmtRef>> = HashMap::new();
+        let mut by_method_name: HashMap<DefaultSymbol, Vec<StmtRef>> = HashMap::default();
         for index in 0..program.statement.len() {
             if let Some(Stmt::ImplBlock { methods, .. }) =
                 program.statement.get(&StmtRef(index as u32))
@@ -873,8 +873,8 @@ impl<'a> StubWalker<'a> {
             stub_syms,
             by_name,
             by_method_name,
-            seen: HashSet::new(),
-            seen_methods: HashSet::new(),
+            seen: HashSet::default(),
+            seen_methods: HashSet::default(),
         }
     }
 

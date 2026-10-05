@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use string_interner::DefaultSymbol;
 use crate::ast::StmtRef;
 use crate::type_decl::TypeDecl;
@@ -34,8 +34,8 @@ impl FunctionCheckingState {
     pub fn new() -> Self {
         Self {
             call_depth: 0,
-            is_checked_fn: HashMap::new(),
-            checked_bodies: HashMap::new(),
+            is_checked_fn: HashMap::default(),
+            checked_bodies: HashMap::default(),
         }
     }
 

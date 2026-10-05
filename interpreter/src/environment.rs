@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 use crate::value::Value;
 use crate::error::InterpreterError;
@@ -20,8 +20,8 @@ impl ModuleEnvironment {
     pub fn new(name: Vec<DefaultSymbol>) -> Self {
         Self {
             name,
-            variables: HashMap::new(),
-            functions: HashMap::new(),
+            variables: HashMap::default(),
+            functions: HashMap::default(),
         }
     }
 }
@@ -48,14 +48,14 @@ impl Default for Environment {
 impl Environment {
     pub fn new() -> Self {
         Self {
-            var: vec![HashMap::new()],
-            modules: HashMap::new(),
+            var: vec![HashMap::default()],
+            modules: HashMap::default(),
             current_module: None,
         }
     }
 
     pub fn enter_block(&mut self) {
-        self.var.push(HashMap::new());
+        self.var.push(HashMap::default());
     }
 
     pub fn exit_block(&mut self) {

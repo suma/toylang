@@ -18,7 +18,7 @@
 //! The walk and the effect table live in [`super::effects`]; this
 //! module is one mask, the roots, and the diagnostic.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use string_interner::DefaultStringInterner;
 

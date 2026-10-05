@@ -14,7 +14,7 @@
 //! reach the stdlib bodies that read `self.addr`.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::rc::Rc;
 
 use string_interner::{DefaultStringInterner, DefaultSymbol};
@@ -50,7 +50,7 @@ impl EvaluationContext<'_> {
             .to_string();
         let source_key = self.string_interner.get_or_intern(COLUMN_SOURCE_FIELD);
         let field_key = self.string_interner.get_or_intern(COLUMN_FIELD_FIELD);
-        let mut fields = HashMap::new();
+        let mut fields = HashMap::default();
         fields.insert(source_key, source);
         fields.insert(field_key, Rc::new(RefCell::new(Object::String(field_name))));
         Object::Struct {

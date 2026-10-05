@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::fmt;
 use std::rc::Rc;
 
@@ -958,12 +958,12 @@ impl HeapManager {
         });
         Self {
             memory: Vec::new(),
-            allocations: HashMap::new(),
+            allocations: HashMap::default(),
             next_addr: 1, // 0 is reserved for null pointer
-            typed_slots: HashMap::new(),
+            typed_slots: HashMap::default(),
             quarantine: std::collections::VecDeque::new(),
             quarantined: 0,
-            free_lists: HashMap::new(),
+            free_lists: HashMap::default(),
             stats: MemoryStats::default(),
         }
     }

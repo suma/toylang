@@ -31,7 +31,7 @@ pub const fn jit_available() -> bool {
 }
 
 use std::rc::Rc;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use frontend::ast::*;
 use frontend::type_checker::*;
 use frontend::diagnostic::Diagnostic;
@@ -56,7 +56,7 @@ pub use crate::module_integration::integrate_module_into_program;
 fn setup_type_checker<'a>(
     program: &'a mut File,
     string_interner: &'a mut DefaultStringInterner,
-    skipped_decls: &std::collections::HashSet<StmtRef>,
+    skipped_decls: &rustc_hash::FxHashSet<StmtRef>,
 ) -> TypeCheckerVisitor<'a> {
     // First, collect and register struct definitions (including generic params)
     let mut struct_definitions = Vec::new();
@@ -181,7 +181,7 @@ fn integrate_modules(
         // call their own extern fns by bare name
         false,
         None,
-        std::collections::HashSet::new(),
+        rustc_hash::FxHashSet::default(),
         // DEBUG-OBS D2: the prelude is compiled into the binary, so
         // this names the source file it was built from rather than a
         // path that exists at run time.
@@ -199,8 +199,8 @@ fn integrate_modules(
     // machinery is *not* idempotent — duplicate adds would create
     // duplicate functions / structs / extern decls). Paths are
     // joined with `.` to match `std.math` style.
-    let mut loaded_modules: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    let mut loaded_modules: rustc_hash::FxHashSet<String> =
+        rustc_hash::FxHashSet::default();
 
     // Compute the user-shadow set for stdlib type names before any
     // core module is integrated. The set is the intersection of
@@ -216,8 +216,8 @@ fn integrate_modules(
     // (DICT-CROSS-MODULE-OPTION).
     let user_type_names =
         module_integration::collect_top_level_type_names(program, string_interner);
-    let mut shadowed_stdlib_types: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    let mut shadowed_stdlib_types: rustc_hash::FxHashSet<String> =
+        rustc_hash::FxHashSet::default();
 
     let discover_phase = prof::phase("discover");
     let discovered_modules = if core_modules_dirs.is_empty() {
@@ -1279,7 +1279,7 @@ fn find_main_function(program: &File, string_interner: &DefaultStringInterner) -
 }
 
 fn build_function_map(program: &File, _string_interner: &DefaultStringInterner) -> HashMap<DefaultSymbol, Rc<Function>> {
-    let mut func_map = HashMap::new();
+    let mut func_map = HashMap::default();
     for f in &program.function {
         func_map.insert(f.name, f.clone());
     }
@@ -1358,8 +1358,8 @@ impl<'a> SharedRunData<'a> {
         // Enum / struct registries: field names are interned against the
         // program interner — a trial's eval owns a clone of it, so the
         // symbols agree with what `evaluate_struct_literal` builds.
-        let mut enum_definitions = HashMap::new();
-        let mut struct_definitions = HashMap::new();
+        let mut enum_definitions = HashMap::default();
+        let mut struct_definitions = HashMap::default();
         for i in 0..program.statement.len() {
             let stmt_ref = StmtRef(i as u32);
             match program.statement.get(&stmt_ref) {
@@ -1423,7 +1423,7 @@ impl<'a> SharedRunData<'a> {
 fn build_function_qualified_map(
     program: &File,
 ) -> HashMap<DefaultSymbol, Vec<QualifiedFunction>> {
-    let mut map: HashMap<DefaultSymbol, Vec<QualifiedFunction>> = HashMap::new();
+    let mut map: HashMap<DefaultSymbol, Vec<QualifiedFunction>> = HashMap::default();
     for (i, f) in program.function.iter().enumerate() {
         let module_path = program
             .function_module_paths
@@ -1478,12 +1478,12 @@ struct CollectedMethod {
 fn collect_drop_trait_structs(
     program: &File,
     string_interner: &DefaultStringInterner,
-) -> std::collections::HashSet<DefaultSymbol> {
+) -> rustc_hash::FxHashSet<DefaultSymbol> {
     let drop_sym = match string_interner.get("Drop") {
         Some(s) => s,
-        None => return std::collections::HashSet::new(),
+        None => return rustc_hash::FxHashSet::default(),
     };
-    let mut out = std::collections::HashSet::new();
+    let mut out = rustc_hash::FxHashSet::default();
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
         if let Some(stmt) = program.statement.get(&stmt_ref) {
@@ -1502,7 +1502,7 @@ fn build_method_registry(
     string_interner: &DefaultStringInterner,
 ) -> Result<HashMap<DefaultSymbol, HashMap<DefaultSymbol, Vec<CollectedMethod>>>, String> {
     let mut method_registry: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Vec<CollectedMethod>>> =
-        HashMap::new();
+        HashMap::default();
 
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);

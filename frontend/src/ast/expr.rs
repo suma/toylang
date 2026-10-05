@@ -67,7 +67,7 @@ pub enum Stmt {
         generic_params: Vec<DefaultSymbol>,  // Generic type parameters like <T>
         // Optional bounds on each generic parameter (e.g. `<A: Allocator>`).
         // Missing entries mean unbounded.
-        generic_bounds: std::collections::HashMap<DefaultSymbol, TypeDecl>,
+        generic_bounds: rustc_hash::FxHashMap<DefaultSymbol, TypeDecl>,
         fields: Vec<StructField>,
         visibility: Visibility,
     },

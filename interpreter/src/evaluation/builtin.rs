@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::rc::Rc;
 use frontend::ast::*;
 use frontend::format_spec::FormatSpec;

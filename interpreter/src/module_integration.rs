@@ -100,7 +100,7 @@ pub(crate) struct AstIntegrationContext<'a> {
     /// (`existing_enum_names` / `existing_struct_names`) that silently
     /// broke any cross-module stdlib reference into a shadowed type
     /// (DICT-CROSS-MODULE-OPTION).
-    shadowed_stdlib_types: std::collections::HashSet<String>,
+    shadowed_stdlib_types: rustc_hash::FxHashSet<String>,
     /// Which file the copied positions belong to (DEBUG-OBS D2).
     ///
     /// The module was parsed on its own, so every location in it says
@@ -116,7 +116,7 @@ impl<'a> AstIntegrationContext<'a> {
         module_program: &'a File,
         main_string_interner: &'a mut DefaultStringInterner,
         module_string_interner: &'a DefaultStringInterner,
-        shadowed_stdlib_types: std::collections::HashSet<String>,
+        shadowed_stdlib_types: rustc_hash::FxHashSet<String>,
         module_file: FileId,
     ) -> Self {
         Self {
@@ -982,9 +982,9 @@ impl<'a> AstIntegrationContext<'a> {
     /// they name both cross the interner.
     fn remap_generic_bounds(
         &mut self,
-        bounds: &std::collections::HashMap<DefaultSymbol, TypeDecl>,
-    ) -> Result<std::collections::HashMap<DefaultSymbol, TypeDecl>, String> {
-        let mut out = std::collections::HashMap::with_capacity(bounds.len());
+        bounds: &rustc_hash::FxHashMap<DefaultSymbol, TypeDecl>,
+    ) -> Result<rustc_hash::FxHashMap<DefaultSymbol, TypeDecl>, String> {
+        let mut out = rustc_hash::FxHashMap::with_capacity_and_hasher(bounds.len(), Default::default());
         for (sym, bound) in bounds {
             out.insert(self.remap_symbol(*sym)?, self.remap_type_decl(bound)?);
         }
@@ -1425,7 +1425,7 @@ pub(crate) fn load_and_integrate_module(
     import: &ImportDecl,
     string_interner: &mut DefaultStringInterner,
     core_modules_dirs: &[std::path::PathBuf],
-    shadowed_stdlib_types: std::collections::HashSet<String>,
+    shadowed_stdlib_types: rustc_hash::FxHashSet<String>,
 ) -> Result<(), String> {
     if import.module_path.is_empty() {
         return Err("Invalid module path: empty".to_string());
@@ -1527,8 +1527,8 @@ pub fn discover_core_modules_multi(
     // Keyed by module path so a later root replaces an earlier one
     // rather than both being integrated (two definitions of the same
     // name is not a shadow, it is a redeclaration).
-    let mut by_segments: std::collections::HashMap<Vec<String>, DiscoveredCoreModule> =
-        std::collections::HashMap::new();
+    let mut by_segments: rustc_hash::FxHashMap<Vec<String>, DiscoveredCoreModule> =
+        rustc_hash::FxHashMap::default();
     for (rank, dir) in dirs.iter().enumerate() {
         for mut m in discover_core_modules(dir)? {
             m.root_rank = rank as u32;
@@ -1562,7 +1562,7 @@ pub fn discover_core_modules_multi(
 /// - `dir/<a>/<b>/.../<last>/mod.t` — Rust-style `mod.rs` form.
 ///   Same `segments` shape.
 type DiscoveredCache =
-    std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, Vec<DiscoveredCoreModule>>>;
+    std::sync::Mutex<rustc_hash::FxHashMap<std::path::PathBuf, Vec<DiscoveredCoreModule>>>;
 
 fn discovered_cache() -> &'static DiscoveredCache {
     static CACHE: std::sync::OnceLock<DiscoveredCache> = std::sync::OnceLock::new();
@@ -1746,8 +1746,8 @@ pub fn integrate_module_into_program(
 pub fn collect_top_level_type_names(
     program: &File,
     interner: &DefaultStringInterner,
-) -> std::collections::HashSet<String> {
-    let mut names = std::collections::HashSet::new();
+) -> rustc_hash::FxHashSet<String> {
+    let mut names = rustc_hash::FxHashSet::default();
     for i in 0..program.statement.len() {
         if let Some(stmt) = program.statement.get(&StmtRef(i as u32)) {
             match &stmt {
@@ -1808,7 +1808,7 @@ pub fn integrate_module_into_program_with_options(
         main_string_interner,
         enforce_namespace,
         None,
-        std::collections::HashSet::new(),
+        rustc_hash::FxHashSet::default(),
         // Back-compat entry point: the caller kept no path, so the
         // module can only be named for what it is.
         "<module>",
@@ -1851,7 +1851,7 @@ pub fn integrate_module_into_program_with_options_full(
     main_string_interner: &mut DefaultStringInterner,
     _enforce_namespace: bool,
     module_path: Option<Vec<DefaultSymbol>>,
-    shadowed_stdlib_types: std::collections::HashSet<String>,
+    shadowed_stdlib_types: rustc_hash::FxHashSet<String>,
     display_path: &str,
     root_rank: u32,
 ) -> Result<(), String> {
@@ -1962,7 +1962,7 @@ pub(crate) fn integrate_cached_module(
     main_program: &mut File,
     main_string_interner: &mut DefaultStringInterner,
     module_path: Option<&[DefaultSymbol]>,
-    shadowed_stdlib_types: &std::collections::HashSet<String>,
+    shadowed_stdlib_types: &rustc_hash::FxHashSet<String>,
     display_path: &str,
     source: &str,
     root_rank: u32,
@@ -2044,7 +2044,7 @@ pub(crate) struct PreparseError {
 pub(crate) struct PreparsedCoreModule {
     pub source: String,
     pub payload: PreparsedPayload,
-    pub type_names: std::collections::HashSet<String>,
+    pub type_names: rustc_hash::FxHashSet<String>,
 }
 
 /// Parse (or load from cache) every discovered core module in
@@ -2180,7 +2180,7 @@ pub(crate) fn integrate_preparsed_core_module(
     main_program: &mut File,
     main_string_interner: &mut DefaultStringInterner,
     module_path: Option<&[DefaultSymbol]>,
-    shadowed_stdlib_types: &std::collections::HashSet<String>,
+    shadowed_stdlib_types: &rustc_hash::FxHashSet<String>,
     display_path: &str,
     root_rank: u32,
 ) -> Result<(), String> {

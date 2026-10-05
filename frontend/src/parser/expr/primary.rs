@@ -502,7 +502,7 @@ fn parse_primary_after_identifier(
         if let Some(takes_args) = typed_builtin {
             parser.next(); // consume `::`
             parser.next(); // consume `<`
-            let empty_generic_context = std::collections::HashSet::new();
+            let empty_generic_context = rustc_hash::FxHashSet::default();
             let ty = parser.parse_type_declaration_with_generic_context(&empty_generic_context)?;
             parser.expect_err(&Kind::GT)?;
             parser.expect_err(&Kind::ParenOpen)?;

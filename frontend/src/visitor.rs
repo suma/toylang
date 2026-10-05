@@ -120,7 +120,7 @@ pub trait StmtVisitor {
 
 /// Trait for visiting declaration AST nodes (struct, impl, enum, trait).
 pub trait DeclVisitor {
-    fn visit_struct_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, generic_bounds: &std::collections::HashMap<DefaultSymbol, TypeDecl>, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError>;
+    fn visit_struct_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, generic_bounds: &rustc_hash::FxHashMap<DefaultSymbol, TypeDecl>, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError>;
     fn visit_impl_block(&mut self, target_type: DefaultSymbol, target_type_args: &Vec<TypeDecl>, methods: &Vec<Rc<MethodFunction>>, trait_name: Option<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError>;
     /// ITER-PROTOCOL-TRAIT: extended visit method that also receives
     /// concrete trait type args (`<i64>` in `impl Iterator<i64> for ...`).

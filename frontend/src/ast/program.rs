@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::rc::Rc;
 use string_interner::DefaultSymbol;
 use crate::type_decl::TypeDecl;
@@ -23,7 +23,7 @@ use super::{StmtRef, ExprRef, StmtPool, ExprPool, LocationPool, Expr};
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DropFlags {
     /// The `val` / `var` statements whose drop is behind a flag.
-    pub bindings: std::collections::HashSet<StmtRef>,
+    pub bindings: rustc_hash::FxHashSet<StmtRef>,
     /// Before this statement runs, clear these bindings' flags.
     pub clear_before_stmt: HashMap<StmtRef, Vec<StmtRef>>,
     /// Before this expression is evaluated, clear these bindings'
@@ -121,7 +121,7 @@ pub struct File {
     ///
     /// Empty until the checker runs, which is the right default — an
     /// empty set is exactly the pre-ownership behaviour.
-    pub transferred_bindings: std::collections::HashSet<StmtRef>,
+    pub transferred_bindings: rustc_hash::FxHashSet<StmtRef>,
     /// MOVE-CONDITIONAL: bindings handed over on some paths only, and
     /// where each path does it. Filled by `check_moves` like
     /// `transferred_bindings`.
@@ -137,10 +137,10 @@ pub struct File {
     /// The location is the `parallel` keyword's own: a `Stmt::For`
     /// records where the parser *finished* the loop, which is past
     /// the closing brace and no use to a reader.
-    pub parallel_loops: std::collections::HashMap<StmtRef, crate::type_checker::SourceLocation>,
+    pub parallel_loops: rustc_hash::FxHashMap<StmtRef, crate::type_checker::SourceLocation>,
     /// MODULE-SYSTEM P3: the full qualifier of every call written with
     /// more than one module segment. See `Parser::call_paths`.
-    pub call_paths: std::collections::HashMap<ExprRef, Vec<DefaultSymbol>>,
+    pub call_paths: rustc_hash::FxHashMap<ExprRef, Vec<DefaultSymbol>>,
     /// Every top-level declaration the parser met, with the byte range
     /// it spans and the name it declares — the ones that failed to parse
     /// included, which the tree cannot hold. A diagnosis after a parse

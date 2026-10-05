@@ -13,7 +13,7 @@
 //! `--no-default-features` is used the JIT-specific assertions are
 //! skipped via `#[cfg(feature = "jit")]`.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::sync::Mutex;
@@ -34,7 +34,7 @@ struct Run {
 }
 
 static RUN_CACHE: LazyLock<Mutex<HashMap<(String, bool, bool), Run>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+    LazyLock::new(|| Mutex::new(HashMap::default()));
 
 fn read_source(path: &str) -> String {
     let full = if std::path::Path::new(path).is_absolute() {

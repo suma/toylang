@@ -42,10 +42,10 @@ pub(crate) fn frame_name_for(
 /// Backed by a `Vec<u64>` so the record is 8-aligned; a `Box<[u8]>`
 /// would not be, and the runtime reads the line as a `u64`.
 pub(crate) fn frame_record(name: &str, line: u32) -> *const u8 {
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap as HashMap;
     use std::sync::{Mutex, OnceLock};
     static CACHE: OnceLock<Mutex<HashMap<(String, u32), usize>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::default()));
     let key = (name.to_string(), line);
     if let Some(addr) = cache.lock().unwrap().get(&key) {
         return *addr as *const u8;

@@ -35,7 +35,7 @@ mod type_substitution {
         let t_param = interner.get_or_intern("T");
 
         let generic_type = TypeDecl::Generic(t_param);
-        let mut substitutions = std::collections::HashMap::new();
+        let mut substitutions = rustc_hash::FxHashMap::default();
         substitutions.insert(t_param, TypeDecl::Int64);
 
         let substituted = generic_type.substitute_generics(&substitutions);
@@ -48,7 +48,7 @@ mod type_substitution {
         let t_param = interner.get_or_intern("T");
 
         let generic_array = TypeDecl::Array(vec![TypeDecl::Generic(t_param)], ArraySize::Literal(3), false);
-        let mut substitutions = std::collections::HashMap::new();
+        let mut substitutions = rustc_hash::FxHashMap::default();
         substitutions.insert(t_param, TypeDecl::Int64);
 
         let substituted_array = generic_array.substitute_generics(&substitutions);
@@ -72,7 +72,7 @@ mod type_substitution {
             ArraySize::Literal(3),
             false,
         );
-        let mut substitutions = std::collections::HashMap::new();
+        let mut substitutions = rustc_hash::FxHashMap::default();
         substitutions.insert(t_param, TypeDecl::UInt64);
 
         let substituted = generic_nested.substitute_generics(&substitutions);
@@ -96,7 +96,7 @@ mod type_substitution {
         let t_param = interner.get_or_intern("T");
         let u_param = interner.get_or_intern("U");
 
-        let mut substitutions = std::collections::HashMap::new();
+        let mut substitutions = rustc_hash::FxHashMap::default();
         substitutions.insert(t_param, TypeDecl::Int64);
         substitutions.insert(u_param, TypeDecl::Bool);
 
@@ -116,7 +116,7 @@ mod type_substitution {
         let v_param = interner.get_or_intern("V");
 
         // Create substitution only for T
-        let mut substitutions = std::collections::HashMap::new();
+        let mut substitutions = rustc_hash::FxHashMap::default();
         substitutions.insert(t_param, TypeDecl::Int64);
 
         // V should remain generic
@@ -141,7 +141,7 @@ mod generic_instantiation {
 
         let mut inference_state = TypeInferenceState::new();
 
-        let mut substitutions = std::collections::HashMap::new();
+        let mut substitutions = rustc_hash::FxHashMap::default();
         substitutions.insert(t_param, TypeDecl::Int64);
 
         let instantiation = GenericInstantiation {
@@ -167,7 +167,7 @@ mod generic_instantiation {
 
         let mut inference_state = TypeInferenceState::new();
 
-        let mut substitutions = std::collections::HashMap::new();
+        let mut substitutions = rustc_hash::FxHashMap::default();
         substitutions.insert(t_param, TypeDecl::Int64);
 
         let instantiation = GenericInstantiation {
@@ -193,7 +193,7 @@ mod generic_instantiation {
         let mut inference_state = TypeInferenceState::new();
 
         // First instantiation with u64
-        let mut sub1 = std::collections::HashMap::new();
+        let mut sub1 = rustc_hash::FxHashMap::default();
         sub1.insert(t_param, TypeDecl::UInt64);
         let inst1 = GenericInstantiation {
             original_name: func_name,
@@ -203,7 +203,7 @@ mod generic_instantiation {
         };
 
         // Second instantiation with i64
-        let mut sub2 = std::collections::HashMap::new();
+        let mut sub2 = rustc_hash::FxHashMap::default();
         sub2.insert(t_param, TypeDecl::Int64);
         let inst2 = GenericInstantiation {
             original_name: func_name,
@@ -228,7 +228,7 @@ mod generic_instantiation {
 
         let mut inference_state = TypeInferenceState::new();
 
-        let mut substitutions = std::collections::HashMap::new();
+        let mut substitutions = rustc_hash::FxHashMap::default();
         substitutions.insert(t_param, TypeDecl::UInt64);
 
         let instantiation = GenericInstantiation {

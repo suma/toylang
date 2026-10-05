@@ -25,7 +25,7 @@
 //! The status codes are the same numbers `toylang_rt` produces.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::InterpreterError;
@@ -176,7 +176,7 @@ fn ptr_arg(value: &Value, name: &str) -> Result<usize, InterpreterError> {
 /// interpreter startup. Keyed by the `extern fn` declaration's name
 /// as written in the source program (see `core/std/io.t`).
 pub fn build_io_registry() -> HashMap<&'static str, ExternFn> {
-    let mut m: HashMap<&'static str, ExternFn> = HashMap::new();
+    let mut m: HashMap<&'static str, ExternFn> = HashMap::default();
     // NETWORK_IO N0: the compile-time platform switch, made visible.
     // Served from `toylang_rt` rather than reimplemented, so this
     // engine cannot disagree with the compiled lanes about which
@@ -296,7 +296,7 @@ fn net_backend_name(args: &[Value]) -> Result<Value, InterpreterError> {
 /// cannot hold arbitrary bytes, which is why `read_file` reports a
 /// non-UTF-8 file as a read error on this engine alone.
 pub fn build_io_buf_registry() -> HashMap<&'static str, ExternBufFn> {
-    let mut m: HashMap<&'static str, ExternBufFn> = HashMap::new();
+    let mut m: HashMap<&'static str, ExternBufFn> = HashMap::default();
     m.insert("__extern_io_read_file_into", io_read_file_into);
     m.insert("__extern_io_write_file_bytes", io_write_file_bytes);
     // STDLIB-FS-HANDLE: the same four directions through a

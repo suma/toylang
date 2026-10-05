@@ -19,7 +19,7 @@
 //! directly** — the same zero-copy shape the compiled lanes get, not
 //! a staging buffer.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use crate::error::InterpreterError;
 use crate::evaluation::extern_io::{with_bytes, with_bytes_mut, ExternBufFn, ExternFn};
@@ -29,7 +29,7 @@ use crate::value::Value;
 
 /// The scalar-only net externs (`core/std/net.t`).
 pub fn build_net_registry() -> HashMap<&'static str, ExternFn> {
-    let mut m: HashMap<&'static str, ExternFn> = HashMap::new();
+    let mut m: HashMap<&'static str, ExternFn> = HashMap::default();
     m.insert("__extern_net_backend_name", net_backend_name);
     m.insert("__extern_net_socket", net_socket);
     m.insert("__extern_net_connect", net_connect);
@@ -65,7 +65,7 @@ pub fn build_net_registry() -> HashMap<&'static str, ExternFn> {
 
 /// The two that carry bytes across the boundary.
 pub fn build_net_buf_registry() -> HashMap<&'static str, ExternBufFn> {
-    let mut m: HashMap<&'static str, ExternBufFn> = HashMap::new();
+    let mut m: HashMap<&'static str, ExternBufFn> = HashMap::default();
     m.insert("__extern_net_send", net_send);
     m.insert("__extern_net_recv", net_recv);
     m.insert("__extern_net_send_to", net_send_to);

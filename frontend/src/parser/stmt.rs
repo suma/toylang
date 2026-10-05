@@ -1073,7 +1073,7 @@ pub fn parse_tuple_struct_fields(
     generic_params: &[string_interner::DefaultSymbol],
 ) -> ParserResult<Vec<StructField>> {
     parser.expect_err(&Kind::ParenOpen)?;
-    let generic_context: std::collections::HashSet<string_interner::DefaultSymbol> =
+    let generic_context: rustc_hash::FxHashSet<string_interner::DefaultSymbol> =
         generic_params.iter().cloned().collect();
     let mut fields: Vec<StructField> = Vec::new();
     loop {
@@ -1154,7 +1154,7 @@ pub fn parse_struct_fields_with_generic_context(parser: &mut Parser, mut fields:
         parser.expect_err(&Kind::Colon)?;
         
         // Use generic context-aware type parsing
-        let generic_context: std::collections::HashSet<string_interner::DefaultSymbol> = generic_params.iter().cloned().collect();
+        let generic_context: rustc_hash::FxHashSet<string_interner::DefaultSymbol> = generic_params.iter().cloned().collect();
         let field_type = match parser.parse_type_declaration_with_generic_context(&generic_context) {
             Ok(ty) => ty,
             Err(e) => {
@@ -1256,7 +1256,7 @@ pub fn parse_trait_method_signatures_with_generics(
                     // ITER-PROTOCOL-TRAIT: pass the trait's generic
                     // params so `Option<T>` resolves `T` as a generic
                     // marker, not as an undeclared type name.
-                    let gen_set: std::collections::HashSet<string_interner::DefaultSymbol> =
+                    let gen_set: rustc_hash::FxHashSet<string_interner::DefaultSymbol> =
                         trait_generic_params.iter().copied().collect();
                     ret_ty = Some(parser.parse_type_declaration_with_generic_context(&gen_set)?);
                 }
@@ -1286,7 +1286,7 @@ pub fn parse_trait_method_signatures_with_generics(
                     node: Node::new(fn_start_pos, fn_end_pos),
                     name: method_name,
                     generic_params: vec![],
-                    generic_bounds: std::collections::HashMap::new(),
+                    generic_bounds: rustc_hash::FxHashMap::default(),
                     parameter: params,
                     return_type: ret_ty,
                     requires: clauses.requires,
@@ -1310,7 +1310,7 @@ pub fn parse_impl_methods_with_generic_context(
     parser: &mut Parser,
     mut methods: Vec<Rc<MethodFunction>>,
     generic_params: &[string_interner::DefaultSymbol],
-    generic_bounds: &std::collections::HashMap<string_interner::DefaultSymbol, TypeDecl>,
+    generic_bounds: &rustc_hash::FxHashMap<string_interner::DefaultSymbol, TypeDecl>,
 ) -> ParserResult<Vec<Rc<MethodFunction>>> {
     // Limit maximum number of methods to prevent infinite loops
     const MAX_METHODS: usize = 500;
@@ -1357,7 +1357,7 @@ pub fn parse_impl_methods_with_generic_context(
                         {
                             parser.parse_generic_params()?
                         } else {
-                            (Vec::new(), std::collections::HashMap::new())
+                            (Vec::new(), rustc_hash::FxHashMap::default())
                         };
 
                         // Parameter / return-type parsing must see both the
@@ -1380,7 +1380,7 @@ pub fn parse_impl_methods_with_generic_context(
                         let mut ret_ty: Option<TypeDecl> = None;
                         if let Some(Kind::Arrow) = parser.peek() {
                             parser.expect_err(&Kind::Arrow)?;
-                            let generic_context: std::collections::HashSet<string_interner::DefaultSymbol> =
+                            let generic_context: rustc_hash::FxHashSet<string_interner::DefaultSymbol> =
                                 combined_generic_params.iter().cloned().collect();
                             ret_ty = Some(parser.parse_type_declaration_with_generic_context(&generic_context)?);
                         }

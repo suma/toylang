@@ -53,7 +53,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             )));
         }
         // Reject duplicate method names within a single trait.
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = rustc_hash::FxHashSet::default();
         for m in methods {
             if !seen.insert(m.name) {
                 let trait_str = self.core.string_interner.resolve(name).unwrap_or("?").to_string();
@@ -179,8 +179,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                 trait_type_args.len(),
             )));
         }
-        let mut subst: std::collections::HashMap<DefaultSymbol, TypeDecl> =
-            std::collections::HashMap::new();
+        let mut subst: rustc_hash::FxHashMap<DefaultSymbol, TypeDecl> =
+            rustc_hash::FxHashMap::default();
         for (p, a) in trait_generic_params.iter().zip(trait_type_args.iter()) {
             subst.insert(*p, a.clone());
         }
@@ -395,10 +395,10 @@ impl<'a> TypeCheckerVisitor<'a> {
 pub fn expand_trait_defaults_in_pool(stmt_pool: &mut StmtPool) {
     inherit_trait_contracts(stmt_pool);
     // Pass 1: index trait default bodies by trait name.
-    let mut defaults: std::collections::HashMap<
+    let mut defaults: rustc_hash::FxHashMap<
         DefaultSymbol,
         Vec<TraitMethodSignature>,
-    > = std::collections::HashMap::new();
+    > = rustc_hash::FxHashMap::default();
     for index in 0..stmt_pool.len() {
         let stmt_ref = StmtRef(index as u32);
         if let Some(Stmt::TraitDecl { name, methods, .. }) = stmt_pool.get(&stmt_ref) {
@@ -492,10 +492,10 @@ pub fn expand_trait_defaults_in_pool(stmt_pool: &mut StmtPool) {
 /// Idempotent: re-running finds the clauses already present and
 /// leaves them alone.
 fn inherit_trait_contracts(stmt_pool: &mut StmtPool) {
-    let mut contracts: std::collections::HashMap<
+    let mut contracts: rustc_hash::FxHashMap<
         DefaultSymbol,
         Vec<TraitMethodSignature>,
-    > = std::collections::HashMap::new();
+    > = rustc_hash::FxHashMap::default();
     for index in 0..stmt_pool.len() {
         let stmt_ref = StmtRef(index as u32);
         if let Some(Stmt::TraitDecl { name, methods, .. }) = stmt_pool.get(&stmt_ref) {
@@ -671,7 +671,7 @@ fn resolve_self(t: &TypeDecl, struct_symbol: DefaultSymbol) -> TypeDecl {
 /// conformance code reads cleanly.
 fn substitute_generics(
     t: &TypeDecl,
-    subst: &std::collections::HashMap<DefaultSymbol, TypeDecl>,
+    subst: &rustc_hash::FxHashMap<DefaultSymbol, TypeDecl>,
 ) -> TypeDecl {
     if subst.is_empty() {
         return t.clone();

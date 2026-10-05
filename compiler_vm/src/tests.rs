@@ -4,7 +4,7 @@
 //! interpreter's byte layout — the VM's contract with its host.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use compiler_ir::{Const, Instruction, Linkage, Module, Terminator, Type, ValueId};
 use string_interner::DefaultStringInterner;
@@ -25,8 +25,8 @@ impl TestHost {
         Self {
             heap: RefCell::new(Vec::new()),
             next: Cell::new(1), // 0 is reserved for the null pointer
-            blocks: RefCell::new(HashMap::new()),
-            typed: RefCell::new(HashMap::new()),
+            blocks: RefCell::new(HashMap::default()),
+            typed: RefCell::new(HashMap::default()),
         }
     }
 }

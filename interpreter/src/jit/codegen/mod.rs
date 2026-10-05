@@ -9,7 +9,7 @@
 mod signature;
 mod ty;
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use cranelift::codegen::ir::{condcodes::{FloatCC, IntCC}, types, FuncRef, InstBuilder, TrapCode};
 use cranelift::frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
@@ -57,12 +57,12 @@ pub fn translate_function<M: Module>(
     // Pre-import every monomorph's FuncId so we can emit `call`
     // instructions. The map is keyed by MonoKey so different
     // specializations of the same generic resolve to distinct FuncRefs.
-    let mut func_refs: HashMap<MonoKey, FuncRef> = HashMap::new();
+    let mut func_refs: HashMap<MonoKey, FuncRef> = HashMap::default();
     for (callee_key, callee_id) in func_ids {
         let r = module.declare_func_in_func(*callee_id, builder.func);
         func_refs.insert(callee_key.clone(), r);
     }
-    let mut helper_refs: HashMap<HelperKind, FuncRef> = HashMap::new();
+    let mut helper_refs: HashMap<HelperKind, FuncRef> = HashMap::default();
     for (kind, id) in helper_ids {
         let r = module.declare_func_in_func(*id, builder.func);
         helper_refs.insert(*kind, r);
@@ -72,15 +72,15 @@ pub fn translate_function<M: Module>(
     // direct block-param value cannot be reread from a different block).
     // Struct parameters are decomposed into one Variable per scalar field
     // and registered in `struct_locals`.
-    let mut local_types: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
-    let mut local_vars: HashMap<DefaultSymbol, Variable> = HashMap::new();
+    let mut local_types: HashMap<DefaultSymbol, ScalarTy> = HashMap::default();
+    let mut local_vars: HashMap<DefaultSymbol, Variable> = HashMap::default();
     let mut struct_locals: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Variable>> =
-        HashMap::new();
-    let mut struct_local_types: HashMap<DefaultSymbol, StructLocalInfo> = HashMap::new();
-    let mut tuple_locals: HashMap<DefaultSymbol, Vec<Variable>> = HashMap::new();
-    let mut tuple_local_types: HashMap<DefaultSymbol, Vec<ScalarTy>> = HashMap::new();
-    let mut enum_locals: HashMap<DefaultSymbol, EnumLocal> = HashMap::new();
-    let mut enum_local_types: HashMap<DefaultSymbol, DefaultSymbol> = HashMap::new();
+        HashMap::default();
+    let mut struct_local_types: HashMap<DefaultSymbol, StructLocalInfo> = HashMap::default();
+    let mut tuple_locals: HashMap<DefaultSymbol, Vec<Variable>> = HashMap::default();
+    let mut tuple_local_types: HashMap<DefaultSymbol, Vec<ScalarTy>> = HashMap::default();
+    let mut enum_locals: HashMap<DefaultSymbol, EnumLocal> = HashMap::default();
+    let mut enum_local_types: HashMap<DefaultSymbol, DefaultSymbol> = HashMap::default();
     let block_params: Vec<Value> = builder.block_params(entry).to_vec();
     let mut block_param_idx: usize = 0;
     for (name, ty) in &sig.params {
@@ -100,7 +100,7 @@ pub fn translate_function<M: Module>(
                     .get(base_name)
                     .and_then(|l| l.resolved_fields(type_args))
                     .ok_or_else(|| "struct param has no layout".to_string())?;
-                let mut field_vars: HashMap<DefaultSymbol, Variable> = HashMap::new();
+                let mut field_vars: HashMap<DefaultSymbol, Variable> = HashMap::default();
                 for (field_sym, field_ty) in &fields {
                     let var = builder.declare_var(
                         ir_type(*field_ty).expect("struct field cannot be Unit"),
@@ -2719,7 +2719,7 @@ impl<'a, 'b> State<'a, 'b> {
         if !layout.is_generic() {
             return Some(StructLocalInfo::plain(struct_name));
         }
-        let mut bound: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
+        let mut bound: HashMap<DefaultSymbol, ScalarTy> = HashMap::default();
         for (field_sym, repr) in &layout.fields {
             let FieldRepr::Generic(param) = repr else {
                 continue;
@@ -2764,7 +2764,7 @@ impl<'a, 'b> State<'a, 'b> {
                     Some(l) => l.clone(),
                     None => return Ok(false),
                 };
-                let mut field_vars: HashMap<DefaultSymbol, Variable> = HashMap::new();
+                let mut field_vars: HashMap<DefaultSymbol, Variable> = HashMap::default();
                 for (field_sym, field_expr) in &lit_fields {
                     let want = layout.field(*field_sym, &info.type_args).ok_or_else(|| {
                         "unknown field in struct literal at codegen".to_string()
@@ -2822,7 +2822,7 @@ impl<'a, 'b> State<'a, 'b> {
                         "struct-returning call produced wrong number of results".into(),
                     );
                 }
-                let mut field_vars: HashMap<DefaultSymbol, Variable> = HashMap::new();
+                let mut field_vars: HashMap<DefaultSymbol, Variable> = HashMap::default();
                 for ((field_sym, field_ty), v) in fields.iter().zip(results.iter()) {
                     let var = self
                         .builder
@@ -3427,7 +3427,7 @@ impl<'a, 'b> State<'a, 'b> {
         // The substitutions for the current monomorph were already applied
         // when local types were registered, so codegen-time type lookups
         // don't need a separate substitution map.
-        let empty_subs: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
+        let empty_subs: HashMap<DefaultSymbol, ScalarTy> = HashMap::default();
         // Pass the active struct-local map so FieldAccess type lookups
         // resolve through the layouts; cloning gives a writable scratch
         // copy without disturbing the codegen-side state.

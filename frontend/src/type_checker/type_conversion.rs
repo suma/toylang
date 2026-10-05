@@ -350,8 +350,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         // expr -> vars reverse map once — iteration order is preserved
         // so the "first concrete-typed variable wins" logic below is
         // unchanged.
-        let mut expr_to_vars: std::collections::HashMap<ExprRef, Vec<DefaultSymbol>> =
-            std::collections::HashMap::with_capacity(self.type_inference.variable_expr_mapping.len());
+        let mut expr_to_vars: rustc_hash::FxHashMap<ExprRef, Vec<DefaultSymbol>> =
+            rustc_hash::FxHashMap::with_capacity_and_hasher(self.type_inference.variable_expr_mapping.len(), Default::default());
         for (var_name, mapped_expr_ref) in &self.type_inference.variable_expr_mapping {
             expr_to_vars.entry(*mapped_expr_ref).or_default().push(*var_name);
         }
@@ -378,7 +378,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // would have named a better answer. `visited_numbers` is
         // saved/restored around each function check, so what is left
         // here is exactly this body's leftovers.
-        let processed: std::collections::HashSet<ExprRef> =
+        let processed: rustc_hash::FxHashSet<ExprRef> =
             context_info.iter().map(|(r, _)| *r).collect();
         let number_exprs = std::mem::take(&mut self.type_inference.visited_numbers);
         for &expr_ref in &number_exprs {

@@ -84,7 +84,7 @@ pub trait CallableInfo {
     fn parameter(&self) -> &[(DefaultSymbol, TypeDecl)];
     fn return_type(&self) -> Option<&TypeDecl>;
     fn generic_params(&self) -> &[DefaultSymbol];
-    fn generic_bounds(&self) -> &std::collections::HashMap<DefaultSymbol, TypeDecl>;
+    fn generic_bounds(&self) -> &rustc_hash::FxHashMap<DefaultSymbol, TypeDecl>;
     fn code(&self) -> StmtRef;
     fn has_contracts(&self) -> bool;
 }
@@ -93,7 +93,7 @@ impl CallableInfo for Function {
     fn parameter(&self) -> &[(DefaultSymbol, TypeDecl)] { &self.parameter }
     fn return_type(&self) -> Option<&TypeDecl> { self.return_type.as_ref() }
     fn generic_params(&self) -> &[DefaultSymbol] { &self.generic_params }
-    fn generic_bounds(&self) -> &std::collections::HashMap<DefaultSymbol, TypeDecl> {
+    fn generic_bounds(&self) -> &rustc_hash::FxHashMap<DefaultSymbol, TypeDecl> {
         &self.generic_bounds
     }
     fn code(&self) -> StmtRef { self.code }
@@ -106,7 +106,7 @@ impl CallableInfo for MethodFunction {
     fn parameter(&self) -> &[(DefaultSymbol, TypeDecl)] { &self.parameter }
     fn return_type(&self) -> Option<&TypeDecl> { self.return_type.as_ref() }
     fn generic_params(&self) -> &[DefaultSymbol] { &self.generic_params }
-    fn generic_bounds(&self) -> &std::collections::HashMap<DefaultSymbol, TypeDecl> {
+    fn generic_bounds(&self) -> &rustc_hash::FxHashMap<DefaultSymbol, TypeDecl> {
         &self.generic_bounds
     }
     fn code(&self) -> StmtRef { self.code }
@@ -137,7 +137,7 @@ impl MonomorphSource {
 
     pub fn generic_bounds(
         &self,
-    ) -> &std::collections::HashMap<DefaultSymbol, TypeDecl> {
+    ) -> &rustc_hash::FxHashMap<DefaultSymbol, TypeDecl> {
         self.callable().generic_bounds()
     }
 

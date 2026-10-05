@@ -669,7 +669,7 @@ mod destruction {
     use serial_test::serial;
     use std::rc::Rc;
     use std::cell::RefCell;
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap as HashMap;
     use interpreter::object::{Object, clear_destruction_log, get_destruction_log, is_destruction_logging_enabled};
     use string_interner::{DefaultSymbol, Symbol};
 
@@ -701,7 +701,7 @@ mod destruction {
         let x_sym = DefaultSymbol::try_from_usize(2).unwrap();
         let y_sym = DefaultSymbol::try_from_usize(3).unwrap();
         let struct_obj = {
-            let mut fields = HashMap::new();
+            let mut fields = HashMap::default();
             fields.insert(x_sym, Rc::new(RefCell::new(Object::Int64(42))));
             fields.insert(y_sym, Rc::new(RefCell::new(Object::Int64(24))));
             Rc::new(RefCell::new(Object::Struct {
@@ -773,7 +773,7 @@ mod destruction {
         clear_destruction_log();
 
         let dict_obj = {
-            let mut dict = HashMap::new();
+            let mut dict = HashMap::default();
             dict.insert(
                 interpreter::object::ObjectKey::new(Object::Int64(1)),
                 Rc::new(RefCell::new(Object::String("value1".to_string())))
@@ -865,7 +865,7 @@ mod destruction {
         // Create two structs sharing the same field value (wrapped in Rc<RefCell<>>)
         let shared_sym = DefaultSymbol::try_from_usize(2).unwrap();
         let struct1 = {
-            let mut fields1 = HashMap::new();
+            let mut fields1 = HashMap::default();
             fields1.insert(shared_sym, shared_value.clone());
             Rc::new(RefCell::new(Object::Struct {
                 type_name,
@@ -875,7 +875,7 @@ mod destruction {
         };
 
         let struct2 = {
-            let mut fields2 = HashMap::new();
+            let mut fields2 = HashMap::default();
             fields2.insert(shared_sym, shared_value.clone());
             Rc::new(RefCell::new(Object::Struct {
                 type_name,
@@ -924,7 +924,7 @@ mod destruction {
             ];
 
             let data_sym = DefaultSymbol::try_from_usize(2).unwrap();
-            let mut fields = HashMap::new();
+            let mut fields = HashMap::default();
             fields.insert(data_sym, Rc::new(RefCell::new(Object::Array(Box::new(inner_array)))));
 
             let _complex_struct = Rc::new(RefCell::new(Object::Struct {

@@ -36,7 +36,7 @@
 //! equality is pinned by a test, and it is the only thing standing
 //! between a parallel runner and a flaky one.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -413,8 +413,8 @@ fn list_one(
 /// before; doing it here means the extra runs do not happen either.
 fn plan_all(pkg: &Package, files: &[PathBuf], opts: &Options) -> Result<Vec<FilePlan>, String> {
     let listed = list_all(pkg, files, opts)?;
-    let mut seen: std::collections::HashSet<(String, u32, String)> =
-        std::collections::HashSet::new();
+    let mut seen: rustc_hash::FxHashSet<(String, u32, String)> =
+        rustc_hash::FxHashSet::default();
     let mut plans = Vec::with_capacity(files.len());
     for (file, cases) in files.iter().zip(listed) {
         let display = display_path(pkg, file);
@@ -681,7 +681,7 @@ thread_local! {
     /// an AST that is not `Send`, and it is worth paying to schedule
     /// a test at a time.
     static PREPARED: std::cell::RefCell<HashMap<PathBuf, std::rc::Rc<interpreter::PreparedTests>>> =
-        std::cell::RefCell::new(HashMap::new());
+        std::cell::RefCell::new(HashMap::default());
 }
 
 fn prepared_for(

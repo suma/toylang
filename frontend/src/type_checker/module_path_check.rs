@@ -20,7 +20,7 @@
 //! paths; checking is the half that can be had on its own, and it is
 //! the half that turns a wrong path from silence into an error.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
@@ -58,7 +58,7 @@ fn check_const_paths(
     if program.consts.is_empty() {
         return Vec::new();
     }
-    let mut by_name: HashMap<DefaultSymbol, Vec<Vec<DefaultSymbol>>> = HashMap::new();
+    let mut by_name: HashMap<DefaultSymbol, Vec<Vec<DefaultSymbol>>> = HashMap::default();
     for c in &program.consts {
         by_name
             .entry(c.name)
@@ -133,7 +133,7 @@ fn check_call_paths(
     // Every module path a function of each name lives under. Built
     // from the AST rather than the type checker's tables so this pass
     // needs nothing but the program.
-    let mut by_name: HashMap<DefaultSymbol, Vec<Vec<DefaultSymbol>>> = HashMap::new();
+    let mut by_name: HashMap<DefaultSymbol, Vec<Vec<DefaultSymbol>>> = HashMap::default();
     for (i, f) in program.function.iter().enumerate() {
         let Some(Some(path)) = program.function_module_paths.get(i) else {
             continue;

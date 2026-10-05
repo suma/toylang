@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use string_interner::{DefaultSymbol, DefaultStringInterner};
 use crate::type_decl::TypeDecl;
 use crate::type_checker::TypeCheckerVisitor;
@@ -12,7 +12,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         &self,
         interner: &DefaultStringInterner,
     ) -> HashMap<DefaultSymbol, String> {
-        let mut mappings = HashMap::new();
+        let mut mappings = HashMap::default();
         for (struct_symbol, struct_def) in &self.context.struct_definitions {
             if let Some(struct_name) = interner.resolve(*struct_symbol) {
                 for field in &struct_def.fields {
@@ -34,7 +34,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         struct_symbol: DefaultSymbol,
         type_params: &Vec<TypeDecl>,
     ) -> HashMap<DefaultSymbol, TypeDecl> {
-        let mut mapping = HashMap::new();
+        let mut mapping = HashMap::default();
         if let Some(generic_param_names) = self.context.get_struct_generic_params(struct_symbol) {
             for (param_name, concrete_type) in generic_param_names.iter().zip(type_params.iter()) {
                 mapping.insert(*param_name, concrete_type.clone());

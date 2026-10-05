@@ -4,7 +4,7 @@
 //! The frame owns the flat `locals` array (`LocalId`-indexed) and tracks
 //! the current `BlockId` + instruction offset (`pc`) within the function.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use compiler_ir::{BlockId, FuncId, LocalId, Type, ValueId};
 
@@ -72,10 +72,10 @@ impl CallFrame {
             return_dests: Vec::new(),
             array_bases: Vec::new(),
             array_strides: Vec::new(),
-            dyn_coerce_addrs: HashMap::new(),
-            addr_cells: HashMap::new(),
-            values: HashMap::new(),
-            value_types: HashMap::new(),
+            dyn_coerce_addrs: HashMap::default(),
+            addr_cells: HashMap::default(),
+            values: HashMap::default(),
+            value_types: HashMap::default(),
         }
     }
 

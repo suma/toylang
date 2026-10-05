@@ -1,5 +1,5 @@
 use crate::token::DescribeToken;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use string_interner::DefaultSymbol;
 
 use crate::ast::*;
@@ -227,12 +227,12 @@ pub struct Parser<'a> {
     /// the loop itself is an ordinary `Stmt::For`, so a pass that
     /// does not care never learns a second shape.
     pub parallel_loops:
-        std::collections::HashMap<StmtRef, crate::type_checker::SourceLocation>,
+        rustc_hash::FxHashMap<StmtRef, crate::type_checker::SourceLocation>,
     /// MODULE-SYSTEM P3: the full qualifier of a call written with
     /// more than one module segment (`a::b::f(..)` records `[a, b]`).
     /// Resolution uses the nearest segment, as it always has; this is
     /// what lets the rest be checked instead of dropped.
-    pub call_paths: std::collections::HashMap<ExprRef, Vec<DefaultSymbol>>,
+    pub call_paths: rustc_hash::FxHashMap<ExprRef, Vec<DefaultSymbol>>,
     /// ALLOC-CONTRACT: set while parsing an `ensures` predicate, so
     /// `old(...)` is recognised there and refused everywhere else.
     /// Cleared around the argument of an `old` so a nested
@@ -378,18 +378,18 @@ impl<'a> Parser<'a> {
             context_stack: vec![ParseContext::Expression],
             pending_prelude_stmts: Vec::new(),
             loop_stack: Vec::new(),
-            parallel_loops: std::collections::HashMap::new(),
+            parallel_loops: rustc_hash::FxHashMap::default(),
             declaration_spans: Vec::new(),
             pattern_sites: Vec::new(),
-            call_paths: std::collections::HashMap::new(),
+            call_paths: rustc_hash::FxHashMap::default(),
             synthetic_counter: 0,
             in_ensures_clause: false,
             old_exprs: Vec::new(),
             last_alloc_budget: None,
-            type_aliases: HashMap::new(),
-            import_aliases: HashMap::new(),
-            const_lengths: HashMap::new(),
-            declared_type_generics: HashMap::new(),
+            type_aliases: HashMap::default(),
+            import_aliases: HashMap::default(),
+            const_lengths: HashMap::default(),
+            declared_type_generics: HashMap::default(),
             source_file: None,
             current_function: None,
             current_impl_target: None,

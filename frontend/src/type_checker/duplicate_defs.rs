@@ -18,7 +18,7 @@
 //! caller can leave them out of registration, which keeps the rest
 //! of the file checking against one definition instead of cascading.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
@@ -60,8 +60,8 @@ pub fn check_duplicate_definitions(
     interner: &DefaultStringInterner,
 ) -> DuplicateDefinitions {
     // (namespace, file, name) -> the first declaration's location.
-    let mut first: HashMap<(Namespace, FileId, DefaultSymbol), SourceLocation> = HashMap::new();
-    let mut out = DuplicateDefinitions { errors: Vec::new(), skipped_decls: HashSet::new() };
+    let mut first: HashMap<(Namespace, FileId, DefaultSymbol), SourceLocation> = HashMap::default();
+    let mut out = DuplicateDefinitions { errors: Vec::new(), skipped_decls: HashSet::default() };
 
     let mut see = |ns: Namespace,
                    name: DefaultSymbol,

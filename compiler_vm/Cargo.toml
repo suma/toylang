@@ -7,6 +7,7 @@ authors.workspace = true
 description = "IR VM shared by the interpreter's run-time path and compile-time evaluation"
 
 [dependencies]
+rustc-hash.workspace = true
 frontend = { path = "../frontend", features = ["serde"] }
 compiler_ir = { path = "../compiler_ir" }
 string-interner.workspace = true

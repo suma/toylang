@@ -381,7 +381,7 @@ mod tests {
         let mut interner: DefaultStringInterner = DefaultStringInterner::new();
         let type_name = interner.get_or_intern("Point");
         let x = interner.get_or_intern("x");
-        let mut fields = std::collections::HashMap::new();
+        let mut fields = rustc_hash::FxHashMap::default();
         fields.insert(x, Rc::new(RefCell::new(Object::UInt64(3))));
         let obj = Rc::new(RefCell::new(Object::Struct {
             type_name,

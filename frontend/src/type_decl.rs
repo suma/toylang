@@ -656,7 +656,7 @@ impl TypeDecl {
         }
     }
 
-    pub fn substitute_generics(&self, substitutions: &std::collections::HashMap<DefaultSymbol, TypeDecl>) -> TypeDecl {
+    pub fn substitute_generics(&self, substitutions: &rustc_hash::FxHashMap<DefaultSymbol, TypeDecl>) -> TypeDecl {
         match self {
             TypeDecl::Generic(param) => {
                 // If we have a substitution for this generic parameter, use it

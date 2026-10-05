@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use crate::ast::*;
 use crate::type_decl::*;
 use crate::type_checker::TypeCheckerVisitor;
@@ -8,7 +8,7 @@ use crate::type_checker::error::TypeCheckError;
 impl<'a> TypeCheckerVisitor<'a> {
     /// Create builtin method registry
     pub fn create_builtin_method_registry() -> HashMap<(TypeDecl, String), BuiltinMethod> {
-        let mut registry = HashMap::new();
+        let mut registry = HashMap::default();
         
         // Universal methods (available for all types - we'll handle these specially)
         // is_null is handled separately in visit_method_call

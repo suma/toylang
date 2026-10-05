@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use string_interner::DefaultSymbol;
 
@@ -169,7 +169,7 @@ impl EnumLayout {
     /// must instead use `resolve_uniform_payload(subst)` with a
     /// per-monomorph substitution map.
     pub fn payload_ty(&self) -> Option<ScalarTy> {
-        self.resolve_uniform_payload(&HashMap::new())
+        self.resolve_uniform_payload(&HashMap::default())
     }
 
     /// Phase JE-4: resolve every tuple variant's payload via the

@@ -8,6 +8,7 @@ license = "MIT"
 description = ""
 
 [dependencies]
+rustc-hash.workspace = true
 frontend = { path = "../frontend", features = ["serde"] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::rc::Rc;
 use frontend::ast::*;
 use frontend::type_decl::TypeDecl;
@@ -271,11 +271,11 @@ impl EvaluationContext<'_> {
         body: &ExprRef,
         captures_by_ref: bool,
     ) -> Result<EvaluationResult, InterpreterError> {
-        let bound: std::collections::HashSet<DefaultSymbol> =
+        let bound: rustc_hash::FxHashSet<DefaultSymbol> =
             params.iter().map(|(n, _)| *n).collect();
         let mut captures: Vec<(DefaultSymbol, RcObject)> = Vec::new();
-        let mut seen: std::collections::HashSet<DefaultSymbol> =
-            std::collections::HashSet::new();
+        let mut seen: rustc_hash::FxHashSet<DefaultSymbol> =
+            rustc_hash::FxHashSet::default();
         // CLOSURE-CAPTURE E3: a closure that shares its captures takes
         // no snapshot at all. The call reopens the scopes that were
         // open here and puts its own frame on top, so an unshadowed
@@ -313,9 +313,9 @@ impl EvaluationContext<'_> {
     fn collect_closure_captures(
         &self,
         expr_ref: ExprRef,
-        bound: &std::collections::HashSet<DefaultSymbol>,
+        bound: &rustc_hash::FxHashSet<DefaultSymbol>,
         out: &mut Vec<(DefaultSymbol, RcObject)>,
-        seen: &mut std::collections::HashSet<DefaultSymbol>,
+        seen: &mut rustc_hash::FxHashSet<DefaultSymbol>,
     ) {
         let expr = match self.expr_pool.get(&expr_ref) {
             Some(e) => e,
@@ -323,7 +323,7 @@ impl EvaluationContext<'_> {
         };
         let record = |s: DefaultSymbol,
                           out: &mut Vec<(DefaultSymbol, RcObject)>,
-                          seen: &mut std::collections::HashSet<DefaultSymbol>| {
+                          seen: &mut rustc_hash::FxHashSet<DefaultSymbol>| {
             if bound.contains(&s) || seen.contains(&s) {
                 return;
             }
@@ -474,9 +474,9 @@ impl EvaluationContext<'_> {
     fn collect_stmt_captures(
         &self,
         stmt: &Stmt,
-        bound: &mut std::collections::HashSet<DefaultSymbol>,
+        bound: &mut rustc_hash::FxHashSet<DefaultSymbol>,
         out: &mut Vec<(DefaultSymbol, RcObject)>,
-        seen: &mut std::collections::HashSet<DefaultSymbol>,
+        seen: &mut rustc_hash::FxHashSet<DefaultSymbol>,
     ) {
         match stmt {
             Stmt::Expression(e) => self.collect_closure_captures(*e, bound, out, seen),
@@ -517,7 +517,7 @@ impl EvaluationContext<'_> {
 
     fn pattern_bound_names(
         pat: &Pattern,
-        bound: &mut std::collections::HashSet<DefaultSymbol>,
+        bound: &mut rustc_hash::FxHashSet<DefaultSymbol>,
     ) {
         match pat {
             Pattern::Name(s) => {
@@ -642,7 +642,7 @@ impl EvaluationContext<'_> {
 
     #[allow(clippy::mutable_key_type)]
     pub(super) fn evaluate_dict_literal(&mut self, entries: &[(ExprRef, ExprRef)]) -> Result<EvaluationResult, InterpreterError> {
-        let mut dict = HashMap::new();
+        let mut dict = HashMap::default();
 
         for (key_ref, value_ref) in entries {
             // Evaluate key - now supports any Object type that can be used as a key

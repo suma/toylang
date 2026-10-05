@@ -3,7 +3,7 @@
 //! result as an `Object`.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::rc::Rc;
 
 use cranelift_codegen::ir::{types, AbiParam, Signature};
@@ -1018,7 +1018,7 @@ fn build_cache_entry(
     // Declare host callbacks (print/println variants) up front so codegen
     // can pre-import them into each function the same way it does for
     // user-defined callees.
-    let mut helper_ids: HashMap<HelperKind, FuncId> = HashMap::new();
+    let mut helper_ids: HashMap<HelperKind, FuncId> = HashMap::default();
     let helper_call_conv = module.target_config().default_call_conv;
     for h in HelperKind::ALL {
         let (params, ret) = h.signature_shape();
@@ -1039,7 +1039,7 @@ fn build_cache_entry(
     // between them can resolve before any function is defined. Monomorphs
     // get a synthetic display name so the linker can distinguish e.g.
     // `id<i64>` from `id<u64>`.
-    let mut func_ids: HashMap<eligibility::MonoKey, FuncId> = HashMap::new();
+    let mut func_ids: HashMap<eligibility::MonoKey, FuncId> = HashMap::default();
     for (key, sig) in &eligible.signatures {
         let cl_sig = codegen::make_signature(&module, sig, &eligible.struct_layouts);
         let display_name = mono_display_name(interner, key);

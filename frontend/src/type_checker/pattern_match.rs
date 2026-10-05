@@ -339,7 +339,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     )));
                 }
                 let generic_params = self.context.enum_generic_params.get(&enum_name).cloned().unwrap_or_default();
-                let mut substitutions: std::collections::HashMap<DefaultSymbol, TypeDecl> = std::collections::HashMap::new();
+                let mut substitutions: rustc_hash::FxHashMap<DefaultSymbol, TypeDecl> = rustc_hash::FxHashMap::default();
                 for (param, arg) in generic_params.iter().zip(enum_type_args.iter()) {
                     substitutions.insert(*param, arg.clone());
                 }
@@ -515,8 +515,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         //  - `seen_variants` gates exhaustiveness; any arm for a variant
         //    counts, since exhaustiveness across arbitrary nested patterns is
         //    undecidable in our simple analysis.
-        let mut fully_covered_variants: std::collections::HashSet<DefaultSymbol> = std::collections::HashSet::new();
-        let mut seen_variants: std::collections::HashSet<DefaultSymbol> = std::collections::HashSet::new();
+        let mut fully_covered_variants: rustc_hash::FxHashSet<DefaultSymbol> = rustc_hash::FxHashSet::default();
+        let mut seen_variants: rustc_hash::FxHashSet<DefaultSymbol> = rustc_hash::FxHashSet::default();
         // Deep-exhaustiveness tracking (96残 前半): for each top-level
         // variant that some arm matched without a guard, record the
         // arm's payload binding list. After the simple
@@ -525,14 +525,14 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Without this, `match opt: Option<Option<i64>> {
         // Some(Some(v)) => ..., None => ... }` slipped through with
         // a runtime "no matching arm" panic on `Some(None)`.
-        let mut variant_payload_arms: std::collections::HashMap<DefaultSymbol, Vec<Vec<crate::ast::Pattern>>> =
-            std::collections::HashMap::new();
+        let mut variant_payload_arms: rustc_hash::FxHashMap<DefaultSymbol, Vec<Vec<crate::ast::Pattern>>> =
+            rustc_hash::FxHashMap::default();
         // PATTERN-EXTEND: literals and ranges land in one interval
         // set, so `0i64..5i64` and a later `3i64` arm are compared on
         // the same terms.
         let mut covered_ints = IntCoverage::default();
-        let mut covered_bool: std::collections::HashSet<bool> = std::collections::HashSet::new();
-        let mut covered_strings: std::collections::HashSet<DefaultSymbol> = std::collections::HashSet::new();
+        let mut covered_bool: rustc_hash::FxHashSet<bool> = rustc_hash::FxHashSet::default();
+        let mut covered_strings: rustc_hash::FxHashSet<DefaultSymbol> = rustc_hash::FxHashSet::default();
         let mut has_wildcard = false;
         for (arm_index, arm) in arms.iter().enumerate() {
             let body = &arm.body;
@@ -546,7 +546,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             // Every arm gets a scope of its own: its bindings must not
             // leak into the next arm, and a `n @ pat` binding appears
             // before the pattern's shape is even known.
-            self.context.vars.push(std::collections::HashMap::new());
+            self.context.vars.push(rustc_hash::FxHashMap::default());
             // PATTERN-EXTEND: `n @ pat` binds the whole scrutinee and
             // leaves the decision to `pat`, so peel the wrappers off
             // and let every rule below see the pattern that decides.
@@ -791,7 +791,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     }
                     if !bindings.is_empty() {
                         let generic_params = self.context.enum_generic_params.get(&enum_name).cloned().unwrap_or_default();
-                        let mut substitutions: std::collections::HashMap<DefaultSymbol, TypeDecl> = std::collections::HashMap::new();
+                        let mut substitutions: rustc_hash::FxHashMap<DefaultSymbol, TypeDecl> = rustc_hash::FxHashMap::default();
                         for (param, arg) in generic_params.iter().zip(enum_type_args.iter()) {
                             substitutions.insert(*param, arg.clone());
                         }
@@ -973,7 +973,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         None => continue,
                     };
                     let generic_params = self.context.enum_generic_params.get(enum_name).cloned().unwrap_or_default();
-                    let mut substitutions: std::collections::HashMap<DefaultSymbol, TypeDecl> = std::collections::HashMap::new();
+                    let mut substitutions: rustc_hash::FxHashMap<DefaultSymbol, TypeDecl> = rustc_hash::FxHashMap::default();
                     for (param, arg) in generic_params.iter().zip(type_args.iter()) {
                         substitutions.insert(*param, arg.clone());
                     }
@@ -1074,10 +1074,10 @@ impl<'a> TypeCheckerVisitor<'a> {
         };
         // Group sub-patterns by variant name; collect refutability
         // and per-arm payload bindings.
-        let mut covered_variants: std::collections::HashSet<DefaultSymbol> = std::collections::HashSet::new();
-        let mut fully_covered: std::collections::HashSet<DefaultSymbol> = std::collections::HashSet::new();
-        let mut variant_arms: std::collections::HashMap<DefaultSymbol, Vec<Vec<Pattern>>> =
-            std::collections::HashMap::new();
+        let mut covered_variants: rustc_hash::FxHashSet<DefaultSymbol> = rustc_hash::FxHashSet::default();
+        let mut fully_covered: rustc_hash::FxHashSet<DefaultSymbol> = rustc_hash::FxHashSet::default();
+        let mut variant_arms: rustc_hash::FxHashMap<DefaultSymbol, Vec<Vec<Pattern>>> =
+            rustc_hash::FxHashMap::default();
         for pat in patterns {
             if let Pattern::EnumVariant(p_enum, p_variant, bindings) = peel_bindings(pat) {
                 if *p_enum != enum_name {
@@ -1116,7 +1116,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // For each refutable-only variant, recurse into each payload
         // position to check the gathered sub-patterns.
         let generic_params = self.context.enum_generic_params.get(&enum_name).cloned().unwrap_or_default();
-        let mut substitutions: std::collections::HashMap<DefaultSymbol, TypeDecl> = std::collections::HashMap::new();
+        let mut substitutions: rustc_hash::FxHashMap<DefaultSymbol, TypeDecl> = rustc_hash::FxHashMap::default();
         for (param, arg) in generic_params.iter().zip(type_args.iter()) {
             substitutions.insert(*param, arg.clone());
         }

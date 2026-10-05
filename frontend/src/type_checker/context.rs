@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::rc::Rc;
 use string_interner::{DefaultSymbol, DefaultStringInterner};
 use crate::ast::{Function, StructField, MethodFunction, Visibility, EnumVariantDef, TraitMethodSignature};
@@ -194,7 +194,7 @@ pub struct TypeCheckContext {
     /// enums are too (STRUCT-FIELD-GENERIC-ENUM); this set is what
     /// lets `visit_enum_decl` still tell "the pre-pass put it there"
     /// apart from "a second enum claims this name".
-    pub enums_awaiting_decl: std::collections::HashSet<DefaultSymbol>,
+    pub enums_awaiting_decl: rustc_hash::FxHashSet<DefaultSymbol>,
     // Registered traits: name -> ordered method signatures.
     pub traits: HashMap<DefaultSymbol, Vec<TraitMethodSignature>>,
     /// ITER-PROTOCOL-TRAIT: generic parameters declared on each
@@ -255,7 +255,7 @@ pub struct TypeCheckContext {
     /// the same walk writes the answer onto the closure nodes for the
     /// backends. Keyed by body ref because that is what the visitor
     /// is handed.
-    pub closure_by_ref_bodies: std::collections::HashSet<crate::ast::ExprRef>,
+    pub closure_by_ref_bodies: rustc_hash::FxHashSet<crate::ast::ExprRef>,
     /// LABEL: stack of currently-active loop labels (innermost on top).
     /// `Some(sym)` for `@label: while`, `None` for an unlabelled loop.
     /// `visit_break_impl` / `visit_continue_impl` walk this stack
@@ -273,34 +273,34 @@ impl Default for TypeCheckContext {
 impl TypeCheckContext {
     pub fn new() -> Self {
         Self {
-            vars: vec![HashMap::with_capacity(16)],
-            functions: HashMap::with_capacity(32),
-            module_functions: HashMap::with_capacity(256),
+            vars: vec![HashMap::with_capacity_and_hasher(16, Default::default())],
+            functions: HashMap::with_capacity_and_hasher(32, Default::default()),
+            module_functions: HashMap::with_capacity_and_hasher(256, Default::default()),
             current_module_path: None,
-            struct_definitions: HashMap::with_capacity(16),
-            struct_methods: HashMap::with_capacity(16),
-            struct_generic_params: HashMap::with_capacity(16),
-            struct_generic_bounds: HashMap::with_capacity(16),
-            var_type_mappings: vec![HashMap::with_capacity(16)],
+            struct_definitions: HashMap::with_capacity_and_hasher(16, Default::default()),
+            struct_methods: HashMap::with_capacity_and_hasher(16, Default::default()),
+            struct_generic_params: HashMap::with_capacity_and_hasher(16, Default::default()),
+            struct_generic_bounds: HashMap::with_capacity_and_hasher(16, Default::default()),
+            var_type_mappings: vec![HashMap::with_capacity_and_hasher(16, Default::default())],
             current_impl_target: None,
             shared_self: Vec::new(),
             current_impl_generic_params: None,
-            current_fn_generic_bounds: HashMap::new(),
+            current_fn_generic_bounds: HashMap::default(),
             current_fn_generic_params: Vec::new(),
             current_eq_owner: None,
-            eq_required_params: HashMap::new(),
+            eq_required_params: HashMap::default(),
             eq_instantiations: Vec::new(),
-            enum_definitions: HashMap::new(),
-            enum_generic_params: HashMap::new(),
-            enums_awaiting_decl: std::collections::HashSet::new(),
-            traits: HashMap::new(),
-            trait_generic_params: HashMap::new(),
+            enum_definitions: HashMap::default(),
+            enum_generic_params: HashMap::default(),
+            enums_awaiting_decl: rustc_hash::FxHashSet::default(),
+            traits: HashMap::default(),
+            trait_generic_params: HashMap::default(),
             pending_trait_type_args: Vec::new(),
-            struct_trait_impls: HashMap::new(),
-            trait_impl_type_args: HashMap::new(),
-            closure_captures: HashMap::new(),
+            struct_trait_impls: HashMap::default(),
+            trait_impl_type_args: HashMap::default(),
+            closure_captures: HashMap::default(),
             closure_scope_floors: Vec::new(),
-            closure_by_ref_bodies: std::collections::HashSet::new(),
+            closure_by_ref_bodies: rustc_hash::FxHashSet::default(),
             loop_label_stack: Vec::new(),
         }
     }
@@ -531,8 +531,8 @@ impl TypeCheckContext {
     }
 
     pub fn push_scope(&mut self) {
-        self.vars.push(HashMap::with_capacity(8));
-        self.var_type_mappings.push(HashMap::with_capacity(8));
+        self.vars.push(HashMap::with_capacity_and_hasher(8, Default::default()));
+        self.var_type_mappings.push(HashMap::with_capacity_and_hasher(8, Default::default()));
     }
 
     pub fn pop_scope(&mut self) {

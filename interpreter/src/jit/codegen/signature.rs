@@ -3,7 +3,7 @@
 //! per-element params, enum -> tag + optional payload) is centralised
 //! here so the rest of codegen can assume a fully scalarised signature.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use cranelift::codegen::ir::{types, AbiParam, Signature};
 use cranelift_module::Module;

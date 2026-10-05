@@ -16,7 +16,7 @@
 //! at the start of a line. It is a warning, so a false positive costs
 //! a line of output; a parse would cost a second front end.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::path::{Path, PathBuf};
 
 /// One name defined in more than one place.
@@ -42,7 +42,7 @@ pub struct Collision {
 /// name order — a report that moves between runs is one nobody reads
 /// twice.
 pub fn scan(roots: &[PathBuf]) -> Vec<Collision> {
-    let mut seen: HashMap<String, Vec<String>> = HashMap::new();
+    let mut seen: HashMap<String, Vec<String>> = HashMap::default();
     for root in roots {
         let mut files = Vec::new();
         collect(root, &mut files);

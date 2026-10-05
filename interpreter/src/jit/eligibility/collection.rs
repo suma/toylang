@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::rc::Rc;
 
 use frontend::ast::{MethodFunction, File, Stmt, StmtRef};
@@ -33,7 +33,7 @@ pub(super) fn collect_method_map(
     program: &File,
 ) -> HashMap<(DefaultSymbol, DefaultSymbol), Rc<MethodFunction>> {
     let mut out: HashMap<(DefaultSymbol, DefaultSymbol), Rc<MethodFunction>> =
-        HashMap::new();
+        HashMap::default();
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
         if let Some(Stmt::ImplBlock { target_type, methods, .. }) = program.statement.get(&stmt_ref) {
@@ -57,7 +57,7 @@ pub(super) fn collect_struct_layouts(
     program: &File,
     interner: &DefaultStringInterner,
 ) -> HashMap<DefaultSymbol, StructLayout> {
-    let mut out: HashMap<DefaultSymbol, StructLayout> = HashMap::new();
+    let mut out: HashMap<DefaultSymbol, StructLayout> = HashMap::default();
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
         if let Some(Stmt::StructDecl {
@@ -152,7 +152,7 @@ pub(super) fn find_impl_target_args(
 /// omitted; eligibility checks downstream will reject references to
 /// it via the regular "JIT does not yet model enum values" path.
 pub(super) fn collect_enum_layouts(program: &File) -> HashMap<DefaultSymbol, EnumLayout> {
-    let mut out: HashMap<DefaultSymbol, EnumLayout> = HashMap::new();
+    let mut out: HashMap<DefaultSymbol, EnumLayout> = HashMap::default();
     for i in 0..program.statement.len() {
         if let Some(Stmt::EnumDecl {
             name,

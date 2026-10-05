@@ -46,7 +46,7 @@
 //! *compile error* (`COMPILE_TIME_EVAL.md` 論点 3): a call that would
 //! certainly abort at run time is better reported while compiling.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use string_interner::DefaultStringInterner;
 

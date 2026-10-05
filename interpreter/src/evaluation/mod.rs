@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::rc::Rc;
 use frontend::ast::*;
 use frontend::type_decl::TypeDecl;
@@ -284,12 +284,12 @@ pub struct EvaluationContext<'a> {
     /// var binding time — bindings whose runtime value is a
     /// struct in this set get pushed onto `drop_scopes` and
     /// `Drop::drop` is auto-called when the scope exits.
-    pub(crate) drop_trait_structs: std::rc::Rc<std::collections::HashSet<DefaultSymbol>>,
+    pub(crate) drop_trait_structs: std::rc::Rc<rustc_hash::FxHashSet<DefaultSymbol>>,
     /// BOX-T: `val` / `var` statements whose value was handed to
     /// something that outlives them. A binding listed here does not
     /// register a drop — the receiver owns the resource now. Copied
     /// from `File::transferred_bindings` at startup.
-    pub(crate) transferred_bindings: std::rc::Rc<std::collections::HashSet<frontend::ast::StmtRef>>,
+    pub(crate) transferred_bindings: std::rc::Rc<rustc_hash::FxHashSet<frontend::ast::StmtRef>>,
     /// MOVE-CONDITIONAL: where a binding handed over on some paths only
     /// leaves. The tree-walker needs no flag: taking the binding's entry
     /// out of `drop_scopes` on the path that hands it over is the flag.
@@ -415,7 +415,7 @@ impl<'a> EvaluationContext<'a> {
     }
 
     pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'a ExprPool, string_interner: &'a mut DefaultStringInterner, function: HashMap<DefaultSymbol, Rc<Function>>) -> Self {
-        Self::new_with_qualified(stmt_pool, expr_pool, string_interner, function, HashMap::new())
+        Self::new_with_qualified(stmt_pool, expr_pool, string_interner, function, HashMap::default())
     }
 
     /// Construct with both the legacy bare-name map (`function`) and
@@ -442,7 +442,7 @@ impl<'a> EvaluationContext<'a> {
             function_qualified: Rc::new(function_qualified),
             current_module_path: None,
             environment: Environment::new(),
-            method_registry: Rc::new(HashMap::new()),
+            method_registry: Rc::new(HashMap::default()),
             null_object: Rc::new(RefCell::new(Object::null_unknown())),
             location_pool: None,
             source_map: None,
@@ -466,8 +466,8 @@ impl<'a> EvaluationContext<'a> {
             heap_manager,
             global_allocator,
             allocator_stack,
-            enum_definitions: Rc::new(HashMap::new()),
-            struct_definitions: Rc::new(HashMap::new()),
+            enum_definitions: Rc::new(HashMap::default()),
+            struct_definitions: Rc::new(HashMap::default()),
             contract_mode: ContractMode::from_env(),
             result_symbol,
             extern_registry: {
@@ -481,8 +481,8 @@ impl<'a> EvaluationContext<'a> {
                 registry.extend(extern_net::build_net_buf_registry());
                 registry
             },
-            drop_trait_structs: Rc::new(std::collections::HashSet::new()),
-            transferred_bindings: Rc::new(std::collections::HashSet::new()),
+            drop_trait_structs: Rc::new(rustc_hash::FxHashSet::default()),
+            transferred_bindings: Rc::new(rustc_hash::FxHashSet::default()),
             drop_flags: Rc::new(frontend::ast::DropFlags::default()),
             pending_param_drops: Vec::new(),
             match_scrutinee_is_place: Vec::new(),
@@ -695,7 +695,7 @@ impl<'a> EvaluationContext<'a> {
     /// so a fresh merge per `sizeof::<T>()` is cheaper than keeping
     /// the merged form incrementally in sync.
     pub(super) fn merged_generic_scope(&self) -> HashMap<DefaultSymbol, TypeDecl> {
-        let mut merged = HashMap::new();
+        let mut merged = HashMap::default();
         for scope in &self.generic_type_scopes {
             for (param, ty) in scope {
                 merged.insert(*param, ty.clone());
@@ -738,10 +738,10 @@ impl<'a> EvaluationContext<'a> {
                 type_args,
                 self.enum_definitions.get(enum_name).map(|e| e.generic_params.clone()),
             ),
-            _ => return HashMap::new(),
+            _ => return HashMap::default(),
         };
         let Some(generic_params) = generic_params else {
-            return HashMap::new();
+            return HashMap::default();
         };
         generic_params
             .into_iter()
@@ -798,7 +798,7 @@ impl<'a> EvaluationContext<'a> {
         annotation: Option<&TypeDecl>,
     ) -> HashMap<DefaultSymbol, TypeDecl> {
         let Some(anno) = annotation else {
-            return HashMap::new();
+            return HashMap::default();
         };
         // The annotation names the owner at its top level in the
         // common case (`val p: Ptr<u64> = Ptr::alloc(2u64)`), but it
@@ -816,7 +816,7 @@ impl<'a> EvaluationContext<'a> {
                     nested = args;
                     &nested
                 }
-                None => return HashMap::new(),
+                None => return HashMap::default(),
             },
         };
         // The owner is normally a struct (`impl<T> Ptr<T>`); an
@@ -827,7 +827,7 @@ impl<'a> EvaluationContext<'a> {
         } else if let Some(entry) = self.enum_definitions.get(&owner) {
             &entry.generic_params
         } else {
-            return HashMap::new();
+            return HashMap::default();
         };
         // The annotation is written in the *caller's* vocabulary, so
         // its arguments can themselves be generic parameters:
@@ -1056,7 +1056,7 @@ impl<'a> EvaluationContext<'a> {
     /// on the strength of one element would leak the rest.
     fn value_holds(holder: &RcObject, kept: &RcObject) -> bool {
         let mut work: Vec<RcObject> = vec![holder.clone()];
-        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut seen: rustc_hash::FxHashSet<usize> = rustc_hash::FxHashSet::default();
         while let Some(v) = work.pop() {
             if Rc::ptr_eq(&v, kept) {
                 return true;
@@ -1194,7 +1194,7 @@ impl<'a> EvaluationContext<'a> {
     /// visited set, so deep and shared values are both safe.
     pub(super) fn value_contains_drop(&self, value: &RcObject) -> bool {
         let mut work: Vec<RcObject> = vec![value.clone()];
-        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut seen: rustc_hash::FxHashSet<usize> = rustc_hash::FxHashSet::default();
         while let Some(v) = work.pop() {
             let ptr = Rc::as_ptr(&v) as usize;
             if !seen.insert(ptr) {
@@ -1339,7 +1339,7 @@ impl<'a> EvaluationContext<'a> {
 
     /// Extract the `ptr`-typed field of a struct value, by name.
     fn struct_pointer_field(
-        fields: &std::collections::HashMap<DefaultSymbol, RcObject>,
+        fields: &rustc_hash::FxHashMap<DefaultSymbol, RcObject>,
         sym: DefaultSymbol,
     ) -> Option<usize> {
         fields
@@ -1373,7 +1373,7 @@ impl<'a> EvaluationContext<'a> {
 
     /// Extract the `u64`-typed field of a struct value, by name.
     fn struct_uint_field(
-        fields: &std::collections::HashMap<DefaultSymbol, RcObject>,
+        fields: &rustc_hash::FxHashMap<DefaultSymbol, RcObject>,
         sym: DefaultSymbol,
     ) -> Option<u64> {
         fields

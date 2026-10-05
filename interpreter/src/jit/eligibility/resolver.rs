@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use frontend::ast::Function;
 use frontend::type_decl::TypeDecl;
@@ -332,7 +332,7 @@ pub(super) fn payload_ty_from_annotation(
     }
     // Build a substitution map from the layout's generic params to
     // the annotation's type args.
-    let mut subst: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
+    let mut subst: HashMap<DefaultSymbol, ScalarTy> = HashMap::default();
     for (p, a) in layout.generic_params.iter().zip(args.iter()) {
         let sty = ScalarTy::from_type_decl(a)?;
         subst.insert(*p, sty);

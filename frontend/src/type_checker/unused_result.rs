@@ -40,7 +40,7 @@
 //! shutdown path, say — and there was no way to say so until now.
 //! A warning names the site without refusing the program.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use string_interner::DefaultStringInterner;
 

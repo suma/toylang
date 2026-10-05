@@ -799,7 +799,7 @@ impl<'a> StmtVisitor for TypeCheckerVisitor<'a> {
 
 }
 impl<'a> DeclVisitor for TypeCheckerVisitor<'a> {
-    fn visit_struct_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, generic_bounds: &std::collections::HashMap<DefaultSymbol, TypeDecl>, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
+    fn visit_struct_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, generic_bounds: &rustc_hash::FxHashMap<DefaultSymbol, TypeDecl>, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
         self.visit_struct_decl_impl(name, generic_params, generic_bounds, fields, visibility)
     }
 
@@ -852,7 +852,7 @@ impl<'a> DeclVisitor for TypeCheckerVisitor<'a> {
             let name_str = self.core.string_interner.resolve(name).unwrap_or("?").to_string();
             return Err(TypeCheckError::coded(crate::diagnostic::codes::DUPLICATE_DEFINITION, format!("enum '{}' is already defined", name_str)));
         }
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = rustc_hash::FxHashSet::default();
         for v in variants {
             if !seen.insert(v.name) {
                 let enum_str = self.core.string_interner.resolve(name).unwrap_or("?").to_string();

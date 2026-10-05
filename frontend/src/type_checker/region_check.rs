@@ -83,7 +83,7 @@
 //!   ambient allocator and returns the pointer is unchecked, because
 //!   the region is not part of its type.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
@@ -156,7 +156,7 @@ pub fn check_regions(
         effects: EffectTable::new(program, interner, expr_types),
         scopes: Vec::new(),
         params: Vec::new(),
-        tainted: HashMap::new(),
+        tainted: HashMap::default(),
         regions: Vec::new(),
         active: Vec::new(),
         errors: Vec::new(),

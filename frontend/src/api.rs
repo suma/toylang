@@ -437,7 +437,7 @@ impl Renderer<'_> {
     fn generics(
         &self,
         params: &[DefaultSymbol],
-        bounds: &std::collections::HashMap<DefaultSymbol, TypeDecl>,
+        bounds: &rustc_hash::FxHashMap<DefaultSymbol, TypeDecl>,
     ) -> String {
         if params.is_empty() {
             return String::new();

@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 use crate::ast::ExprRef;
 use crate::type_decl::{ArraySize, TypeDecl};
@@ -96,15 +97,15 @@ impl TypeInferenceState {
         Self {
             type_hint: None,
             number_usage_context: Vec::new(),
-            variable_expr_mapping: HashMap::new(),
+            variable_expr_mapping: HashMap::default(),
             recursion_depth: 0,
             max_recursion_depth: 50, // Further increased for complex nested structs
-            expr_types: HashMap::new(),
+            expr_types: HashMap::default(),
             generic_substitutions_stack: Vec::new(),
             pending_instantiations: Vec::new(),
-            instantiation_signatures: HashSet::new(),
+            instantiation_signatures: HashSet::default(),
             constraints: Vec::new(),
-            partial_solutions: HashMap::new(),
+            partial_solutions: HashMap::default(),
             visited_numbers: Vec::new(),
         }
     }
@@ -689,7 +690,7 @@ mod tests {
     fn test_apply_solution() {
         let inference = TypeInferenceState::new();
         let mut interner = DefaultStringInterner::new();
-        let mut solution = HashMap::new();
+        let mut solution = HashMap::default();
         
         let t_param = create_test_symbol(&mut interner, "T");
         solution.insert(t_param, TypeDecl::UInt64);

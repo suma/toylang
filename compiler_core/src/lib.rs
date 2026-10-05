@@ -4,7 +4,7 @@ use frontend::ast::File;
 use frontend::parser::error::ParserResult;
 use frontend::type_checker::{TypeCheckerVisitor, TypeCheckError};
 use std::path::Path;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 /// Compiler session that serves as the central context for compilation
 /// 

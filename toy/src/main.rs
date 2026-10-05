@@ -826,7 +826,7 @@ fn cmd_query(argv: &[String]) -> Result<(), String> {
     let mut program = session
         .parse_program_all_errors(&source, &name)
         .map_err(|errors| format!("{} parse error(s); `toy check` shows them", errors.len()))?;
-    let mut types = std::collections::HashMap::new();
+    let mut types = rustc_hash::FxHashMap::default();
     let checked = interpreter::check_typing_with_types(
         &mut program,
         session.string_interner_mut(),

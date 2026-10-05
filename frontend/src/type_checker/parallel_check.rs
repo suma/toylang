@@ -36,7 +36,7 @@
 //! and the lowering catches it where it does know
 //! (`compiler_lower::parallel`).
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
@@ -117,7 +117,7 @@ pub fn check_parallel_loops(
 /// allowed is the body opening one across iterations.
 fn find_with(program: &File, expr_ref: &ExprRef) -> Option<ExprRef> {
     let mut work: Vec<ExprRef> = vec![*expr_ref];
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = rustc_hash::FxHashSet::default();
     while let Some(current) = work.pop() {
         if !seen.insert(current.0) {
             continue;
@@ -256,7 +256,7 @@ fn order_dependencies(
     loop_var: DefaultSymbol,
     body: &ExprRef,
 ) -> Vec<Finding> {
-    let mut bound: std::collections::HashSet<DefaultSymbol> = std::collections::HashSet::new();
+    let mut bound: rustc_hash::FxHashSet<DefaultSymbol> = rustc_hash::FxHashSet::default();
     bound.insert(loop_var);
     let mut out = Vec::new();
     walk_order(program, interner, body, &mut bound, true, &mut out);
@@ -267,7 +267,7 @@ fn walk_order(
     program: &File,
     interner: &DefaultStringInterner,
     expr_ref: &ExprRef,
-    bound: &mut std::collections::HashSet<DefaultSymbol>,
+    bound: &mut rustc_hash::FxHashSet<DefaultSymbol>,
     own_level: bool,
     out: &mut Vec<Finding>,
 ) {
@@ -334,7 +334,7 @@ fn walk_order_stmt(
     program: &File,
     interner: &DefaultStringInterner,
     stmt_ref: StmtRef,
-    bound: &mut std::collections::HashSet<DefaultSymbol>,
+    bound: &mut rustc_hash::FxHashSet<DefaultSymbol>,
     own_level: bool,
     out: &mut Vec<Finding>,
 ) {
@@ -405,7 +405,7 @@ fn assigned_root(program: &File, expr_ref: &ExprRef) -> Option<DefaultSymbol> {
 /// Every name a pattern binds.
 fn pattern_names(
     pattern: &crate::ast::Pattern,
-    bound: &mut std::collections::HashSet<DefaultSymbol>,
+    bound: &mut rustc_hash::FxHashSet<DefaultSymbol>,
 ) {
     use crate::ast::Pattern;
     match pattern {

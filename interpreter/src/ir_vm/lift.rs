@@ -13,7 +13,7 @@
 //! caller transparently falls back to the tree-walker.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::rc::Rc;
 
 use frontend::ast::{File, Function};
@@ -441,7 +441,7 @@ fn reconstruct_object(
                 return None;
             };
             let def = &module.struct_defs[struct_id.0 as usize];
-            let mut fields = HashMap::new();
+            let mut fields = HashMap::default();
             let mut offset = 0;
             for (field_name, field_ir_ty) in &def.fields {
                 let field_decl = ir_type_to_type_decl(field_ir_ty, module)?;

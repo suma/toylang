@@ -24,17 +24,17 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
 
     /// Type check struct declarations
-    pub fn visit_struct_decl_impl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, generic_bounds: &std::collections::HashMap<DefaultSymbol, TypeDecl>, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
+    pub fn visit_struct_decl_impl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, generic_bounds: &rustc_hash::FxHashMap<DefaultSymbol, TypeDecl>, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
         
         // Push generic parameters into scope for field type checking
         if !generic_params.is_empty() {
-            let generic_substitutions: std::collections::HashMap<DefaultSymbol, TypeDecl> = 
+            let generic_substitutions: rustc_hash::FxHashMap<DefaultSymbol, TypeDecl> = 
                 generic_params.iter().map(|param| (*param, TypeDecl::Generic(*param))).collect();
             self.type_inference.push_generic_scope(generic_substitutions);
         }
         
         // 1. Check for duplicate field names
-        let mut field_names = std::collections::HashSet::new();
+        let mut field_names = rustc_hash::FxHashSet::default();
         for field in fields {
             if !field_names.insert(field.name.clone()) {
                 if !generic_params.is_empty() {
@@ -447,7 +447,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // 3. Handle non-generic struct (existing logic)
         self.context.validate_struct_fields(*struct_name, fields, &self.core)?;
 
-        let mut field_types = std::collections::HashMap::new();
+        let mut field_types = rustc_hash::FxHashMap::default();
         for (field_name, field_expr) in fields {
             let field_name_str = self.resolve_symbol_name(*field_name);
             let expected_field_type = struct_definition.fields.iter()
@@ -485,7 +485,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         self.context.validate_struct_fields(*struct_name, fields, &self.core)?;
 
-        let mut generic_scope = std::collections::HashMap::new();
+        let mut generic_scope = rustc_hash::FxHashMap::default();
         for param in generic_params {
             generic_scope.insert(*param, TypeDecl::Generic(*param));
         }
@@ -498,16 +498,16 @@ impl<'a> TypeCheckerVisitor<'a> {
         // without this the literal's own default became `T` and the
         // literal's `Number` leaked out as `B<Number>`.
         let outer_hint = self.type_inference.type_hint.clone();
-        let seeded: std::collections::HashMap<DefaultSymbol, TypeDecl> = match &outer_hint {
+        let seeded: rustc_hash::FxHashMap<DefaultSymbol, TypeDecl> = match &outer_hint {
             Some(TypeDecl::Struct(hint_name, args))
                 if hint_name == struct_name && args.len() == generic_params.len() =>
             {
                 generic_params.iter().copied().zip(args.iter().cloned()).collect()
             }
-            _ => std::collections::HashMap::new(),
+            _ => rustc_hash::FxHashMap::default(),
         };
 
-        let mut field_types = std::collections::HashMap::new();
+        let mut field_types = rustc_hash::FxHashMap::default();
 
         for (field_name, field_expr) in fields {
             let field_name_str = self.resolve_symbol_name(*field_name);
@@ -791,7 +791,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         if generic_params.len() != recv_args.len() {
             return Ok(declared_return);
         }
-        let subst: std::collections::HashMap<DefaultSymbol, TypeDecl> = generic_params
+        let subst: rustc_hash::FxHashMap<DefaultSymbol, TypeDecl> = generic_params
             .into_iter()
             .zip(recv_args.iter().cloned())
             .collect();

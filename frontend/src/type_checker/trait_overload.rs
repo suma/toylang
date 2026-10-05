@@ -23,7 +23,7 @@
 //! (`Iterator<T>::next`) has nothing to resolve on; renaming it would
 //! produce a name no call site could ever reach.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::rc::Rc;
 
 use string_interner::{DefaultStringInterner, DefaultSymbol};
@@ -71,7 +71,7 @@ pub fn mangle_overloaded_trait_impls(
 ) {
     // Pass 1: which trait methods can be overloaded at all — those
     // whose *parameters* mention one of the trait's type parameters.
-    let mut overloadable: HashMap<DefaultSymbol, Vec<DefaultSymbol>> = HashMap::new();
+    let mut overloadable: HashMap<DefaultSymbol, Vec<DefaultSymbol>> = HashMap::default();
     for index in 0..stmt_pool.len() {
         let stmt_ref = StmtRef(index as u32);
         let Some(Stmt::TraitDecl {
@@ -106,7 +106,7 @@ pub fn mangle_overloaded_trait_impls(
         method_index: usize,
         trait_type_args: Vec<TypeDecl>,
     }
-    let mut slots: HashMap<(DefaultSymbol, DefaultSymbol), Vec<Candidate>> = HashMap::new();
+    let mut slots: HashMap<(DefaultSymbol, DefaultSymbol), Vec<Candidate>> = HashMap::default();
     for index in 0..stmt_pool.len() {
         let stmt_ref = StmtRef(index as u32);
         let Some(Stmt::ImplBlock {
@@ -174,7 +174,7 @@ pub fn mangle_overloaded_trait_impls(
     }
 
     // Pass 4: write the renamed methods back into the pool.
-    let mut by_stmt: HashMap<StmtRef, Vec<(usize, DefaultSymbol)>> = HashMap::new();
+    let mut by_stmt: HashMap<StmtRef, Vec<(usize, DefaultSymbol)>> = HashMap::default();
     for (stmt, method_index, sym) in renames {
         by_stmt.entry(stmt).or_default().push((method_index, sym));
     }
@@ -286,7 +286,7 @@ pub fn find_duplicate_impl_method(
 ) -> Vec<DuplicateImplMethod> {
     let mut found = Vec::new();
     let mut seen: HashMap<(DefaultSymbol, DefaultSymbol, String), std::rc::Rc<crate::ast::MethodFunction>> =
-        HashMap::new();
+        HashMap::default();
     for index in 0..stmt_pool.len() {
         let stmt_ref = StmtRef(index as u32);
         let Some(Stmt::ImplBlock {

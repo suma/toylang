@@ -10,7 +10,7 @@
 // declare these as `extern fn` and remove the matching variants from
 // `BuiltinFunction`.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use crate::error::InterpreterError;
 use crate::value::Value;
@@ -26,7 +26,7 @@ pub type ExternFn = fn(&[Value]) -> Result<Value, InterpreterError>;
 /// interpreter startup. Keyed by the `extern fn` declaration's name
 /// as written in the source program.
 pub fn build_default_registry() -> HashMap<&'static str, ExternFn> {
-    let mut m: HashMap<&'static str, ExternFn> = HashMap::new();
+    let mut m: HashMap<&'static str, ExternFn> = HashMap::default();
 
     // Canonical names used by the eventual stdlib `math.t` rewrite.
     m.insert("__extern_sin_f64", extern_sin_f64);

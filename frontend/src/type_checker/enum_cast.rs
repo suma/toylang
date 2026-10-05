@@ -15,7 +15,7 @@
 //! through routes that do not all carry the node's own `ExprRef`. It is
 //! keyed by the operand, the one ref every route holds.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use string_interner::DefaultSymbol;
 use crate::ast::*;
 use crate::type_decl::*;
@@ -47,7 +47,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             return Ok(());
         }
         let values = discriminant_values(variants);
-        let mut seen: HashMap<i128, DefaultSymbol> = HashMap::new();
+        let mut seen: HashMap<i128, DefaultSymbol> = HashMap::default();
         for (v, value) in variants.iter().zip(values) {
             if let Some(first) = seen.insert(value, v.name) {
                 let resolve = |s: DefaultSymbol| self.core.string_interner.resolve(s).unwrap_or("?");

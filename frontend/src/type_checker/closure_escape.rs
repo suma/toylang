@@ -23,7 +23,7 @@
 //! own copy of the *capture scan* — the duplication that let them
 //! disagree about writes to begin with.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use string_interner::DefaultSymbol;
 
@@ -49,7 +49,7 @@ pub fn mark_by_ref_closures(
         scan.walk_stmt(*stmt);
     }
     let by_ref = scan.settle();
-    let mut bodies = HashSet::with_capacity(by_ref.len());
+    let mut bodies = HashSet::with_capacity_and_hasher(by_ref.len(), Default::default());
     for expr_ref in by_ref {
         let Some(Expr::Closure { params, return_type, body, .. }) = expr_pool.get(&expr_ref) else {
             continue;
@@ -80,8 +80,8 @@ impl<'a> Scan<'a> {
         Self {
             expr_pool,
             stmt_pool,
-            candidates: HashMap::new(),
-            rejected: HashSet::new(),
+            candidates: HashMap::default(),
+            rejected: HashSet::default(),
             depth: 0,
         }
     }

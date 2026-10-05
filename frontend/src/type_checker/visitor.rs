@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::rc::Rc;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 use crate::ast::*;
@@ -83,7 +83,7 @@ pub struct TypeCheckerVisitor<'a> {
     /// `"{self.name}"` inside one type's `to_str` miss `String`'s while
     /// the same expression in a plain function found it. The pool is
     /// complete before any body is checked, so reading it is stable.
-    pub display_types: Option<std::collections::HashSet<DefaultSymbol>>,
+    pub display_types: Option<rustc_hash::FxHashSet<DefaultSymbol>>,
     /// From/Into `?` cross-error conversion: the return type of the
     /// function currently being type-checked, or `None` outside a
     /// function body. `desugar_try_expr` consults this to decide
@@ -243,20 +243,20 @@ impl<'a> TypeCheckerVisitor<'a> {
             recovery_enabled: false,
             source_code: None,
             current_package: None,
-            imported_modules: HashMap::new(),
+            imported_modules: HashMap::default(),
             builtin_methods: Self::create_builtin_method_registry(),
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
             display_types: None,
             current_fn_return_type: None,
             tuple_struct_rewrites: TupleStructRewrites::default(),
             pattern_rewrites: PatternRewrites::default(),
-            loop_values: HashMap::new(),
-            enum_casts: HashMap::new(),
-            enum_comparisons: HashMap::new(),
-            enum_struct_literals: HashMap::new(),
-            null_coalesce_lhs_types: HashMap::new(),
+            loop_values: HashMap::default(),
+            enum_casts: HashMap::default(),
+            enum_comparisons: HashMap::default(),
+            enum_struct_literals: HashMap::default(),
+            null_coalesce_lhs_types: HashMap::default(),
             try_nodes: None,
-            transformed_exprs: HashMap::new(),
+            transformed_exprs: HashMap::default(),
             pending_number_holes: Vec::new(),
         };
 
@@ -324,7 +324,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn new(stmt_pool: &'a mut StmtPool, expr_pool: &'a mut ExprPool, string_interner: &'a DefaultStringInterner, location_pool: &'a LocationPool) -> Self {
         Self {
             core: CoreReferences::new(stmt_pool, expr_pool, string_interner, location_pool),
-            call_paths: HashMap::new(),
+            call_paths: HashMap::default(),
             current_call_path: None,
             context: TypeCheckContext::new(),
             type_inference: TypeInferenceState::new(),
@@ -334,8 +334,8 @@ impl<'a> TypeCheckerVisitor<'a> {
             recovery_enabled: false,
             source_code: None,
             current_package: None,
-            imported_modules: HashMap::new(),
-            transformed_exprs: HashMap::new(),
+            imported_modules: HashMap::default(),
+            transformed_exprs: HashMap::default(),
             pending_number_holes: Vec::new(),
             builtin_methods: Self::create_builtin_method_registry(),
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
@@ -343,11 +343,11 @@ impl<'a> TypeCheckerVisitor<'a> {
             current_fn_return_type: None,
             tuple_struct_rewrites: TupleStructRewrites::default(),
             pattern_rewrites: PatternRewrites::default(),
-            loop_values: HashMap::new(),
-            enum_casts: HashMap::new(),
-            enum_comparisons: HashMap::new(),
-            enum_struct_literals: HashMap::new(),
-            null_coalesce_lhs_types: HashMap::new(),
+            loop_values: HashMap::default(),
+            enum_casts: HashMap::default(),
+            enum_comparisons: HashMap::default(),
+            enum_struct_literals: HashMap::default(),
+            null_coalesce_lhs_types: HashMap::default(),
             try_nodes: None,
         }
     }
@@ -543,7 +543,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     ) -> Self {
         Self {
             core: CoreReferences::with_module_resolver(stmt_pool, expr_pool, string_interner, location_pool, module_resolver),
-            call_paths: HashMap::new(),
+            call_paths: HashMap::default(),
             current_call_path: None,
             context: TypeCheckContext::new(),
             type_inference: TypeInferenceState::new(),
@@ -553,20 +553,20 @@ impl<'a> TypeCheckerVisitor<'a> {
             recovery_enabled: false,
             source_code: None,
             current_package: None,
-            imported_modules: HashMap::new(),
+            imported_modules: HashMap::default(),
             builtin_methods: Self::create_builtin_method_registry(),
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
             display_types: None,
             current_fn_return_type: None,
             tuple_struct_rewrites: TupleStructRewrites::default(),
             pattern_rewrites: PatternRewrites::default(),
-            loop_values: HashMap::new(),
-            enum_casts: HashMap::new(),
-            enum_comparisons: HashMap::new(),
-            enum_struct_literals: HashMap::new(),
-            null_coalesce_lhs_types: HashMap::new(),
+            loop_values: HashMap::default(),
+            enum_casts: HashMap::default(),
+            enum_comparisons: HashMap::default(),
+            enum_struct_literals: HashMap::default(),
+            null_coalesce_lhs_types: HashMap::default(),
             try_nodes: None,
-            transformed_exprs: HashMap::new(),
+            transformed_exprs: HashMap::default(),
             pending_number_holes: Vec::new(),
         }
     }

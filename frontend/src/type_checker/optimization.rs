@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use crate::ast::ExprRef;
 use crate::type_decl::TypeDecl;
 
@@ -16,7 +16,7 @@ impl Default for PerformanceOptimization {
 impl PerformanceOptimization {
     pub fn new() -> Self {
         Self {
-            type_cache: HashMap::new(),
+            type_cache: HashMap::default(),
         }
     }
 

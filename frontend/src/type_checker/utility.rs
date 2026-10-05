@@ -1,5 +1,5 @@
 use string_interner::DefaultSymbol;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use crate::ast::*;
 use crate::type_decl::*;
 use crate::type_checker::{TypeCheckerVisitor, TypeCheckError};
@@ -129,7 +129,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         method_name: DefaultSymbol,
         receiver_type_args: &[TypeDecl],
     ) -> HashMap<DefaultSymbol, TypeDecl> {
-        let mut out = HashMap::new();
+        let mut out = HashMap::default();
         let Some(spec) =
             self.context
                 .get_struct_method_spec(struct_name, method_name, receiver_type_args)
@@ -483,7 +483,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         if !self.context.struct_implements_trait(target_sym, from_trait) {
             return false;
         }
-        let empty = HashMap::new();
+        let empty = HashMap::default();
         self.context
             .trait_impl_type_args
             .get(&(target_sym, from_trait))

@@ -3155,15 +3155,12 @@
   **統合済みスナップショット 1 ファイル (cold で 0.95ms ロード、319KB)**
   でも落ちるので**サーバは作らない**。スナップショットの方は 1 テスト 1
   プロセスのテスト群にも効くので、INCREMENTAL-COMPILATION 側の候補
-* 並行性 (CONCURRENCY) ★★★ — **設計は決まり、A1 は landing 済み**
-  ([`CONCURRENCY.md`](CONCURRENCY.md) §5、2026-09-20)。入れたのは
-  `parallel for` の**意味論**で、実行は 4 レーンとも逐次 — 答えを
-  先に固定したので、並列化は答えを変えられない最適化になる。
-  **残りは A2**: `toylang_rt` に pthread、shadow stack の per-thread
-  化 (今は `static mut`)、AOT / JIT が本文を関数に切り出して分割実行、
-  逐次との一致を consistency で縛る。`Send` 相当の判定は A の形では
-  要らない (捕捉はスカラーと窓だけ) ので、`spawn` / チャネルに進む
-  ときに初めて決める。
+* 並行性 (CONCURRENCY) ★★★ — **A (データ並列 `parallel for`) は完了**
+  (A1 2026-09-20、A2-a / A2-b-1 / A2-b-2 2026-09-21、完了済み節)。
+  AOT / JIT は `toy_par_for` でスレッドに割り、tree-walker / IR VM は
+  逐次。残りは PARALLEL-CAPTURE-WRITE-LANE (既知の不具合寄りの非対称) と、
+  その先の B (`spawn` + join ハンドル) / C (チャネル)。`Send` 相当の
+  判定は B に進むときに初めて決める ([`CONCURRENCY.md`](CONCURRENCY.md) §3 / §4)。
 * データ指向の配列 layout (DOD) ★★ — Phase 0 (`soa [T; N]` + `ps[i].f`
   単列 shortcut) と Phase 2 (`soa Vec<T>` → `SoaVec<T>`) は 2026-08-30、
   Phase 0.5 (列 tight pack) / Phase 1 (列の窓 `Column<T>`) /

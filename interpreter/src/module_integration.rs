@@ -1335,6 +1335,15 @@ impl<'a> AstIntegrationContext<'a> {
             let located = at.in_file(self.module_file);
             self.main_program.parallel_loops.insert(mapped, located);
         }
+        for (expr_ref, site) in &self.module_program.spawn_blocks {
+            let mapped = self.map_expr(expr_ref, "spawn body")?;
+            let site = frontend::ast::SpawnSite {
+                at: site.at.in_file(self.module_file),
+                binding: self.map_stmt(&site.binding, "spawn binding")?,
+                function: self.remap_symbol(site.function)?,
+            };
+            self.main_program.spawn_blocks.insert(mapped, site);
+        }
         for site in &self.module_program.pattern_sites {
             let name = self.remap_symbol(site.name)?;
             let owner = site.owner.map(|o| self.remap_symbol(o)).transpose()?;

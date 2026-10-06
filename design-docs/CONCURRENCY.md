@@ -456,11 +456,37 @@ detach したスレッドは残さない。`Task` が join されずにスコー
 
 | | 中身 |
 |---|---|
-| **B1** | 構文 + `Task<T>` (`core/std/task.t`) + 検査 (`spawn_check`: print / 外への脱出 / 外側への代入 / 窓の捕捉) + move (所有型の捕捉は本文へ移り、本文の終わりで drop) + **4 レーンとも同期実行**。compiled レーンは本文を「捕捉を値で受ける関数」に切り出して**その場で呼ぶ** |
+| **B1** | **2026-10-06 に landing**。構文 + `Task<T>` (`core/std/task.t`) + 検査 (`E0050`: print / 外への脱出 / 外側への代入 / 窓の捕捉) + move + **4 レーンとも同期実行**。本文は型検査の直後に「捕捉を値で受ける関数」`__spawn_body_N` に切り出され、全レーンがそれを普通に呼ぶ (下記) |
 | **B2** | `toylang_rt` の `toy_task_spawn` / `toy_task_wait` / `toy_task_done`。切り出した本文をスレッドで走らせ、`Task.handle` に入れる。heap は spawner から借りる (PAR-HEAP-SHARED と同じ `lend_heap`、返すのは join の後) |
 | **B3** | イベントループとの接続 — 完了を `Poller` に登録できる fd (`t.as_fd()`、完了時に書かれる pipe) |
 
-**B1 の compiled レーンが切り出しを要る理由** (2026-10-06 に確かめた):
+**切り出しは lowering ではなくフロントエンドで、全レーン共通にした**
+(2026-10-06、計画から変えた点)。最初は parser の desugar を全レーンで
+その場実行し、所有型の捕捉は move 検査の stand-in (関数引数の
+`param_drops` と同じ仕組み) で本文に持たせ、tree-walker と lowering の
+それぞれに「この束縛は本文が drop する」を教えた — 4 レーンで一致した
+が、compiled レーンは下記の制限で compound の結果を返せなかった。
+そこで `outline_spawn_bodies` (型検査と move 検査の間) が本文を
+**トップレベル関数**にし、`val __spawn_N = __spawn_body_N(捕捉...)`
+に書き換える。名前はパーサが先に intern しておく (型検査器は新しい名前を
+作れない)。こうすると:
+
+- 捕捉は**値渡しの引数**になり、move (`E0014`) も「受け手が drop する」
+  (LEND-FREEING-CALLEE) も既存の規則がそのまま効く。ただし spawn の
+  関数は**決して貸し出さない** (`compute_lend` の初期値を false に
+  する) — 読むだけの本文でも、親が drop を持ったままだと B2 で本文が
+  まだ走っているうちに解放してしまう
+- どのレーンも `spawn` を知らない (tree-walker も lowering も無変更)
+- B2 は「この関数をスレッドで呼ぶ」だけになる
+
+制限: 切り出した関数には module path が無いので、モジュールの中に
+書いた spawn の本文は、裸の呼び出しをトップレベルの規則で解決する。
+generic な関数の中の spawn と `self` の捕捉は E0050 で断る。窓の検出は
+型名 (`Span` / `Column` / `Ptr` / `SoaPtr`) と `&T` / `ptr` だけで、
+窓を**フィールドに持つ** struct はまだ見ない。スコープ付き allocator
+から来た値の捕捉 (§7-3 の表) も未検査。
+
+**最初に compiled レーンで詰まった理由** (2026-10-06 に確かめた):
 パーサは `spawn { body }` を `{ val __spawn_N = body  Task::__ready(__spawn_N) }`
 と書くが、compiled レーンは「末尾が束縛名の compound ブロック」を
 `val` の右辺に置けない (`val x: String = { val y = ..  y }` が

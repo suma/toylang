@@ -125,6 +125,9 @@ pub fn analyze(
                 // list -- without it here, every program that touches
                 // a string drops to the tree-walker.
                 "String",
+                // CONCURRENCY B: `Task`'s drop waits for its body;
+                // every program loads it.
+                "Task",
             ]
                 .iter()
                 .filter_map(|name| interner.get(name))

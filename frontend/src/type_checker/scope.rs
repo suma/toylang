@@ -52,4 +52,11 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn get_expr_types(&self) -> HashMap<crate::ast::ExprRef, crate::type_decl::TypeDecl> {
         self.type_inference.expr_types.clone()
     }
+
+    /// CONCURRENCY B: what each spawn body captures (`File::spawn_captures`).
+    pub fn take_spawn_captures(
+        &mut self,
+    ) -> HashMap<crate::ast::ExprRef, Vec<(string_interner::DefaultSymbol, crate::type_decl::TypeDecl)>> {
+        std::mem::take(&mut self.spawn_captures)
+    }
 }

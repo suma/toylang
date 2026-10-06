@@ -19,6 +19,8 @@ mod tests {
         TypeCheckerVisitor {
             core: CoreReferences::new(stmt_pool, expr_pool, string_interner, location_pool),
             call_paths: rustc_hash::FxHashMap::default(),
+            spawn_blocks: rustc_hash::FxHashSet::default(),
+            spawn_captures: rustc_hash::FxHashMap::default(),
             current_call_path: None,
             context: TypeCheckContext::new(),
             type_inference: TypeInferenceState::new(),

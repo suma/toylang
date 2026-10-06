@@ -160,7 +160,7 @@ fn find_with(program: &File, expr_ref: &ExprRef) -> Option<ExprRef> {
     None
 }
 
-fn push_stmt(program: &File, stmt_ref: StmtRef, work: &mut Vec<ExprRef>) {
+pub(crate) fn push_stmt(program: &File, stmt_ref: StmtRef, work: &mut Vec<ExprRef>) {
     let Some(stmt) = program.statement.get(&stmt_ref) else {
         return;
     };
@@ -182,7 +182,7 @@ fn push_stmt(program: &File, stmt_ref: StmtRef, work: &mut Vec<ExprRef>) {
 }
 
 /// Every sub-expression of a node, for the generic arms above.
-fn child_exprs(expr: &Expr) -> Vec<ExprRef> {
+pub(crate) fn child_exprs(expr: &Expr) -> Vec<ExprRef> {
     match expr {
         Expr::Binary(_, a, b) | Expr::Assign(a, b) | Expr::Range(a, b) => vec![*a, *b],
         Expr::Unary(_, a) | Expr::Cast(a, _) | Expr::Try { inner: a, .. } => vec![*a],

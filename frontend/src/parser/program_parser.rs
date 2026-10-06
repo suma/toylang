@@ -370,6 +370,8 @@ impl<'a> Parser<'a> {
             transferred_bindings: rustc_hash::FxHashSet::default(),
             drop_flags: Default::default(),
             parallel_loops: std::mem::take(&mut self.parallel_loops),
+            spawn_blocks: std::mem::take(&mut self.spawn_blocks),
+            spawn_captures: rustc_hash::FxHashMap::default(),
             call_paths: std::mem::take(&mut self.call_paths),
             declaration_spans: std::mem::take(&mut self.declaration_spans),
             pattern_sites: std::mem::take(&mut self.pattern_sites),

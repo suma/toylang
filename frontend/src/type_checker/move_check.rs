@@ -2167,9 +2167,15 @@ fn compute_lend(
     // has a receiver at all).
     let mut methods_by_name: HashMap<DefaultSymbol, Vec<(StmtRef, bool, bool, TypeDecl)>> =
         HashMap::default();
+    let spawn_functions: HashSet<DefaultSymbol> =
+        program.spawn_blocks.values().map(|site| site.function).collect();
+    let mut spawn_bodies: HashSet<StmtRef> = HashSet::default();
     for f in &program.function {
         if f.is_extern {
             continue;
+        }
+        if spawn_functions.contains(&f.name) {
+            spawn_bodies.insert(f.code);
         }
         bodies.push((f.code, f.parameter.clone()));
     }
@@ -2201,9 +2207,18 @@ fn compute_lend(
         expr_types,
         drop_analysis,
         signatures,
+        // CONCURRENCY B: a spawn body never lends. It may still be
+        // running on another thread when the caller's scope ends, so
+        // the caller cannot be the one that drops what it handed over
+        // -- whatever the body does with it. The fixpoint below only
+        // ever turns a lend off, so starting these at `false` keeps
+        // them there.
         lend: bodies
             .iter()
-            .map(|(body, params)| (*body, params.iter().map(|(_, t)| !is_borrow(t)).collect()))
+            .map(|(body, params)| {
+                let spawned = spawn_bodies.contains(body);
+                (*body, params.iter().map(|(_, t)| !spawned && !is_borrow(t)).collect())
+            })
             .collect(),
         in_closure: std::cell::Cell::new(false),
         param_ty: std::cell::RefCell::new(TypeDecl::Unknown),

@@ -138,6 +138,23 @@ pub struct File {
     /// records where the parser *finished* the loop, which is past
     /// the closing brace and no use to a reader.
     pub parallel_loops: rustc_hash::FxHashMap<StmtRef, crate::type_checker::SourceLocation>,
+    /// CONCURRENCY B: the body of every `spawn { ... }`, keyed by its
+    /// block, with the location of the `spawn` keyword.
+    ///
+    /// The parser writes `spawn { body }` as `Task::__ready(body)`, which
+    /// is exactly what a sequential lane runs: the body in place, its
+    /// value wrapped as a finished task. What makes the block a spawn
+    /// body is this entry — the move check moves the owned names it
+    /// captures into it, `spawn_check` refuses what a body on another
+    /// thread cannot do, and the compiled lanes outline it.
+    pub spawn_blocks: rustc_hash::FxHashMap<ExprRef, SpawnSite>,
+    /// CONCURRENCY B: what each spawn body captures — the names from
+    /// outside it that it reads, in first-mention order, with their
+    /// types. Filled by the type checker, which is the one pass that
+    /// still has the enclosing scope when the body has been checked;
+    /// every later consumer (the move check, `spawn_check`, the
+    /// lowering) reads this rather than re-deriving it.
+    pub spawn_captures: rustc_hash::FxHashMap<ExprRef, Vec<(DefaultSymbol, crate::type_decl::TypeDecl)>>,
     /// MODULE-SYSTEM P3: the full qualifier of every call written with
     /// more than one module segment. See `Parser::call_paths`.
     pub call_paths: rustc_hash::FxHashMap<ExprRef, Vec<DefaultSymbol>>,
@@ -378,6 +395,22 @@ pub struct Function {
     /// signatures happened to match — silently *called* the wrong
     /// function on every lane.
     pub module_path: Option<Vec<DefaultSymbol>>,
+}
+
+/// CONCURRENCY B: where a `spawn { body }` was written, and the names
+/// the parser set aside for it (the type checker cannot intern new
+/// ones). See `File::spawn_blocks`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SpawnSite {
+    /// The `spawn` keyword.
+    pub at: crate::type_checker::SourceLocation,
+    /// `val __spawn_N = <body>`, the statement that binds the body's
+    /// value before `Task::__ready` takes it.
+    pub binding: StmtRef,
+    /// `__spawn_body_N`, the function `outline_spawn_bodies` makes of
+    /// the body.
+    pub function: DefaultSymbol,
 }
 
 /// `from "lib" as "sym"` on an `extern fn` declaration (FFI_PLAN 論点 1).

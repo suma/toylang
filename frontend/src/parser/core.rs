@@ -228,6 +228,10 @@ pub struct Parser<'a> {
     /// does not care never learns a second shape.
     pub parallel_loops:
         rustc_hash::FxHashMap<StmtRef, crate::type_checker::SourceLocation>,
+    /// CONCURRENCY B: the bodies written `spawn { ... }`, keyed by the
+    /// body block. The expression itself is an ordinary call,
+    /// `Task::__ready(<body>)`; see `File::spawn_blocks`.
+    pub spawn_blocks: rustc_hash::FxHashMap<ExprRef, crate::ast::SpawnSite>,
     /// MODULE-SYSTEM P3: the full qualifier of a call written with
     /// more than one module segment (`a::b::f(..)` records `[a, b]`).
     /// Resolution uses the nearest segment, as it always has; this is
@@ -379,6 +383,7 @@ impl<'a> Parser<'a> {
             pending_prelude_stmts: Vec::new(),
             loop_stack: Vec::new(),
             parallel_loops: rustc_hash::FxHashMap::default(),
+            spawn_blocks: rustc_hash::FxHashMap::default(),
             declaration_spans: Vec::new(),
             pattern_sites: Vec::new(),
             call_paths: rustc_hash::FxHashMap::default(),

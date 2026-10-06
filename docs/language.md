@@ -2747,6 +2747,63 @@ configurable.
 - Nesting one inside another runs the **inner one in order**: the
   outer loop already has the threads.
 
+#### `spawn` and `Task<T>` (CONCURRENCY B)
+
+```rust
+val t: Task<Result<u64, IoError>> = spawn {
+    io::write_file(path.to_str(), bytes.to_str())   # path, bytes move in
+}
+# ... carry on ...
+if t.is_done() {
+    val r = t.join()               # join consumes the task
+}
+```
+
+`spawn { body }` hands the body to a **task** and evaluates to a
+`Task<T>`, where `T` is the body's type. The spawning code does not
+wait for it. `t.is_done()` asks whether `join` would return at once,
+`t.join()` waits for the body and takes its value, and a task that is
+dropped without being joined **waits for its body** and drops the
+value — no task outlives its `Task`.
+
+**Every lane currently runs the body where the `spawn` is written**
+(CONCURRENCY B1), so a task is always done by the time anyone looks.
+A child that finishes before its parent looks is one of the orders
+real threads can take, so the answer is fixed now and threads (B2)
+may not change it: a program whose result depends on when the body
+runs is wrong.
+
+- `spawn` is **contextual**: it is the construct only when a `{`
+  follows, so a function or binding named `spawn` is unaffected.
+- The body is **a function of its own**, called with what it
+  captures (the names from outside it that it reads):
+  - a **scalar** (or a compound holding no pointer) is **copied**;
+  - an **owned** value (`Vec`, `String`, `Box`, `File`, anything with
+    an `impl Drop`, transitively) **moves into the body**: reading it
+    after the spawn is `[E0014]`, and the body drops it at its end
+    unless it hands it on — returning it as the task's value, say.
+- The body may not (`[E0050]`):
+  - **print** (`print` / `println` / `eprint` / `eprintln`, directly or
+    through a call). Extern I/O — `io::write_file`, sockets — is
+    allowed; it is what a task is for;
+  - **assign to a captured name** — the body has its own copy, so the
+    parent would never see the write;
+  - capture or produce a **window** (`Span`, `Column`, `Ptr`, `&T`,
+    `ptr`) — the parent goes on and may free what it views;
+  - **leave**: `return` (and so `?`), or `break` / `continue` for a loop
+    outside it. A loop the body writes may `break` as usual;
+  - capture `self`, or anything whose type depends on a type parameter
+    (bind what it needs to a `val`, in a function that is not generic).
+- Opening a scoped allocator inside the body is fine: it is entered
+  and left within the body's own control flow.
+- A panic in the body ends the process, as everywhere else.
+- `Task<T>` is declared in `core/std/task.t`. Its result lives in a
+  one-element `Vec<T>`, so a spawn allocates that slot (`size_of T`
+  bytes) on every lane alike.
+- On the compiled lanes the body is subject to what any function body
+  is: a compound value produced by a call is best bound to a `val`
+  before it is the body's last expression.
+
 By default, `break` / `continue` apply to the innermost enclosing
 loop. **Labelled loops** (LABEL feature) let you target an outer
 loop directly:

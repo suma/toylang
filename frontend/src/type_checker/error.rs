@@ -172,6 +172,9 @@ pub enum TypeCheckErrorKind {
     /// result depends on the order the iterations run in. `what`
     /// names it ("prints"), `path` is how the body reaches it.
     ParallelBody { what: String, path: String, fix: String },
+    /// CONCURRENCY B: a `spawn` body does `what`, which a body that may
+    /// run on another thread, after its parent has moved on, cannot.
+    SpawnBody { what: String, fix: String },
     /// MODULE-SYSTEM P3: the qualifier a call was written with names
     /// no module. `written` is what was typed, `name` the function,
     /// `known` the paths that do define it.
@@ -538,6 +541,19 @@ impl TypeCheckError {
     pub fn parallel_body(what: String, path: String, fix: String) -> Self {
         Self {
             kind: Box::new(TypeCheckErrorKind::ParallelBody { what, path, fix }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+            anchors: None,
+            cascade: false,
+        }
+    }
+
+    /// CONCURRENCY B: see `TypeCheckErrorKind::SpawnBody`.
+    pub fn spawn_body(what: String, fix: String) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::SpawnBody { what, fix }),
             context: None,
             location: None,
             origin_module: None,
@@ -959,6 +975,12 @@ impl TypeCheckError {
                 format!(
                     "a `parallel for` body {what}, and the iterations may run in any order, \
                      so the result would depend on which one got there first ({path}). {fix}"
+                )
+            }
+            TypeCheckErrorKind::SpawnBody { what, fix } => {
+                format!(
+                    "a `spawn` body {what}, and the body may still be running on another \
+                     thread after this function has moved on. {fix}"
                 )
             }
             TypeCheckErrorKind::UnknownModulePath { written, name, known } => {

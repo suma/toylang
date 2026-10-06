@@ -84,6 +84,7 @@ mod by_value_params;
 mod ref_reborrow;
 mod try_compound;
 mod parallel_for;
+mod spawn;
 mod name_resolution;
 mod loop_values;
 mod struct_sugar;

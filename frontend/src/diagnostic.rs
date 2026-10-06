@@ -717,6 +717,10 @@ pub mod codes {
     /// of a path to pick one.
     pub const AMBIGUOUS_NAME: &str = "E0049";
 
+    /// CONCURRENCY B: a `spawn` body does something a body running on
+    /// another thread cannot.
+    pub const SPAWN_BODY: &str = "E0050";
+
     /// Every code, in order. `crate::explain` is checked against this
     /// list by a test, so a new code cannot ship without prose.
     pub const ALL: &[&str] = &[
@@ -769,6 +773,7 @@ pub mod codes {
         CONTRACT_CLAUSE,
         FFI_ABI,
         AMBIGUOUS_NAME,
+        SPAWN_BODY,
     ];
 }
 
@@ -805,6 +810,7 @@ fn code_for(kind: &TypeCheckErrorKind) -> &'static str {
         TypeCheckErrorKind::BorrowCopyOut { .. } => codes::BORROW_COPY_OUT,
         TypeCheckErrorKind::OwningElementCopy { .. } => codes::OWNING_ELEMENT_COPY,
         TypeCheckErrorKind::ParallelBody { .. } => codes::PARALLEL_BODY,
+        TypeCheckErrorKind::SpawnBody { .. } => codes::SPAWN_BODY,
         TypeCheckErrorKind::UnknownModulePath { .. } => codes::UNKNOWN_MODULE_PATH,
         TypeCheckErrorKind::DuplicateDefinition { .. } => codes::DUPLICATE_DEFINITION,
     }
@@ -954,7 +960,7 @@ mod tests {
         "E0019", "E0020", "E0021", "E0022", "E0023", "E0024", "E0025", "E0026", "E0027",
         "E0028", "E0029", "E0030", "E0031", "E0032", "E0033", "E0034", "E0035", "E0036",
         "E0037", "E0038", "E0039", "E0040", "E0041", "E0042", "E0043", "E0044", "E0045",
-        "E0046", "E0047", "E0048", "E0049",
+        "E0046", "E0047", "E0048", "E0049", "E0050",
     ];
 
     #[test]

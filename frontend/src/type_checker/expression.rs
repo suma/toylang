@@ -2287,7 +2287,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// recorded in `out` with its current type. Already-recorded
     /// symbols are skipped via `seen`. Nested closures extend the
     /// `bound` set with their own params.
-    fn collect_closure_free_vars(
+    pub(crate) fn collect_closure_free_vars(
         &self,
         expr_ref: ExprRef,
         bound: &rustc_hash::FxHashSet<DefaultSymbol>,

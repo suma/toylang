@@ -994,11 +994,20 @@ fn check_typing_collecting(
     drop(rewrites_phase);
     let post_checks_phase = prof::phase("post_checks");
     let expr_types_phase = prof::phase("expr_types");
-    let expr_types = tc.get_expr_types();
+    let mut expr_types = tc.get_expr_types();
     if let Some(sink) = collect_types {
         sink.clone_from(&expr_types);
     }
+    let spawn_captures = tc.take_spawn_captures();
     drop(tc);
+    program.spawn_captures = spawn_captures.into_iter().collect();
+    // CONCURRENCY B1: every `spawn` body becomes a function called with
+    // its captures, before the move check reads the calls.
+    fn_errors.extend(frontend::type_checker::outline_spawn_bodies(
+        program,
+        string_interner,
+        &mut expr_types,
+    ));
     drop(expr_types_phase);
     let moves_phase = prof::phase("moves");
     let mut analysis = frontend::type_checker::check_moves(program, string_interner, &expr_types);

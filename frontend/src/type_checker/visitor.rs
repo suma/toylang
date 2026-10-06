@@ -56,6 +56,13 @@ pub struct TypeCheckerVisitor<'a> {
     /// core holds `program` mutably, so a borrow of one of its
     /// fields cannot live alongside it.
     pub call_paths: HashMap<ExprRef, Vec<DefaultSymbol>>,
+    /// CONCURRENCY B: the spawn bodies (`File::spawn_blocks`), cloned
+    /// for the same reason as `call_paths`.
+    pub spawn_blocks: rustc_hash::FxHashSet<ExprRef>,
+    /// CONCURRENCY B: each spawn body's captures, recorded when its
+    /// `val __spawn_N = body` is checked. Handed to
+    /// `File::spawn_captures` by the driver.
+    pub spawn_captures: HashMap<ExprRef, Vec<(DefaultSymbol, TypeDecl)>>,
     /// The qualifier of the call being visited right now, when it
     /// has more than one segment. Set by `visit_expr`, which is the
     /// only frame that knows the node's `ExprRef`.
@@ -230,10 +237,13 @@ impl<'a> TypeCheckerVisitor<'a> {
         let function_module_paths = program.function_module_paths.clone();
         let function_module_ranks = program.function_module_ranks.clone();
         let call_paths = program.call_paths.clone();
+        let spawn_blocks = program.spawn_blocks.keys().copied().collect();
 
         let mut visitor = Self {
             core: CoreReferences::from_program(program, string_interner),
             call_paths,
+            spawn_blocks,
+            spawn_captures: HashMap::default(),
             current_call_path: None,
             context: TypeCheckContext::new(),
             type_inference: TypeInferenceState::new(),
@@ -325,6 +335,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         Self {
             core: CoreReferences::new(stmt_pool, expr_pool, string_interner, location_pool),
             call_paths: HashMap::default(),
+            spawn_blocks: rustc_hash::FxHashSet::default(),
+            spawn_captures: HashMap::default(),
             current_call_path: None,
             context: TypeCheckContext::new(),
             type_inference: TypeInferenceState::new(),
@@ -544,6 +556,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         Self {
             core: CoreReferences::with_module_resolver(stmt_pool, expr_pool, string_interner, location_pool, module_resolver),
             call_paths: HashMap::default(),
+            spawn_blocks: rustc_hash::FxHashSet::default(),
+            spawn_captures: HashMap::default(),
             current_call_path: None,
             context: TypeCheckContext::new(),
             type_inference: TypeInferenceState::new(),

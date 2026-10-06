@@ -1123,3 +1123,77 @@ fn an_unterminated_interpolation_is_named_once() {
     assert_eq!(diagnostics[0].code, "E0012");
     assert!(diagnostics[0].message.starts_with("unterminated interpolation"), "{diagnostics:#?}");
 }
+
+/// CONCURRENCY B1: what a `spawn` body may not do (`E0050`), each
+/// refused where every lane can see it. The body becomes a function
+/// of its own that may run after its parent has moved on.
+#[test]
+fn a_spawn_body_that_cannot_run_on_its_own_is_refused() {
+    let core = crate::common::core_modules_dir();
+    let cases = [
+        (
+            "output",
+            "fn main() -> u64 {\n    val n = 5u64\n    val t: Task<u64> = spawn {\n        println(n)\n        n\n    }\n    t.join()\n}",
+            3,
+        ),
+        (
+            "a write to a capture",
+            "fn main() -> u64 {\n    var count = 0u64\n    val t: Task<u64> = spawn {\n        count = count + 1u64\n        count\n    }\n    t.join()\n}",
+            4,
+        ),
+        (
+            "a window",
+            "fn main() -> u64 {\n    var v: Vec<u8> = Vec::new()\n    v.push(1u8)\n    val w = v.as_span() ?? panic(\"empty\")\n    val t: Task<u64> = spawn { w.get(0u64) as u64 }\n    t.join()\n}",
+            5,
+        ),
+        (
+            "return",
+            "fn main() -> u64 {\n    val n = 5u64\n    val t: Task<u64> = spawn {\n        if n > 3u64 { return 0u64 }\n        1u64\n    }\n    t.join()\n}",
+            4,
+        ),
+        (
+            "break",
+            "fn main() -> u64 {\n    for i in 0u64..3u64 {\n        val t: Task<u64> = spawn {\n            if i == 1u64 { break }\n            i\n        }\n    }\n    0u64\n}",
+            4,
+        ),
+    ];
+    for (what, src, line) in cases {
+        let mut options = interpreter::RunOptions::default();
+        options.diagnostics_json = true;
+        options.core_modules_dirs = std::slice::from_ref(&core);
+        let (result, stderr) = interpreter::output::with_stderr_capture(|| {
+            interpreter::run_source(src, "test.t", &options)
+        });
+        assert!(result.is_err(), "{what} inside a spawn body should be refused");
+        let value: serde_json::Value = serde_json::from_str(&stderr)
+            .unwrap_or_else(|e| panic!("not JSON ({e}):\n{stderr}"));
+        let d = &value[0];
+        assert_eq!(d["code"], "E0050", "{what}: {d}");
+        assert_eq!(d["span"]["line"], line, "{what}: {d}");
+    }
+}
+
+/// ... and the extern I/O a spawn exists for is not output: a body
+/// that writes a file is accepted, and the owned capture it reads is
+/// gone from the parent (`[E0014]` on a later read).
+#[test]
+fn a_spawn_body_may_write_a_file_and_owns_what_it_captured() {
+    let core = crate::common::core_modules_dir();
+    let mut options = interpreter::RunOptions::default();
+    options.diagnostics_json = true;
+    options.core_modules_dirs = std::slice::from_ref(&core);
+    let (result, stderr) = interpreter::output::with_stderr_capture(|| {
+        interpreter::run_source(
+            "fn main() -> u64 {\n    val path = String::from_str(\"/nonexistent-dir/x\")\n    val t: Task<Result<u64, IoError>> = spawn { io::write_file(path.to_str(), \"x\") }\n    println(path.len())\n    0u64\n}",
+            "test.t",
+            &options,
+        )
+    });
+    assert!(result.is_err(), "reading a moved capture should be refused");
+    let value: serde_json::Value = serde_json::from_str(&stderr)
+        .unwrap_or_else(|e| panic!("not JSON ({e}):\n{stderr}"));
+    assert_eq!(value.as_array().map(Vec::len), Some(1), "only the use after the move: {value}");
+    let d = &value[0];
+    assert_eq!(d["code"], "E0014", "{d}");
+    assert_eq!(d["span"]["line"], 4, "{d}");
+}

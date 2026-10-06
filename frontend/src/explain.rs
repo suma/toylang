@@ -95,6 +95,7 @@ const ENTRIES: &[Entry] = &[
     (codes::CONTRACT_CLAUSE, E0047),
     (codes::FFI_ABI, E0048),
     (codes::AMBIGUOUS_NAME, E0049),
+    (codes::SPAWN_BODY, E0050),
 ];
 
 const E0001: &str = "\
@@ -1246,6 +1247,53 @@ candidates.
 
 A bare name is not ambiguous in the same way: a function in the
 calling file wins, and a later module root wins over an earlier one.";
+
+const E0050: &str = "\
+E0050: a spawn body does something a task on another thread cannot
+
+`spawn { body }` hands the body to a task, and the function that
+spawned it carries on without waiting. The body is compiled as a
+function of its own, called with what it captured, so it may not:
+
+    val n = 5u64
+    val t: Task<u64> = spawn {
+        println(n)                    # E0050: output, interleaved with ours
+    }
+
+    var count = 0u64
+    val t: Task<u64> = spawn {
+        count = count + 1u64          # E0050: a write to a name from outside
+    }
+
+    val w: Span<u8> = v.as_span() ?? panic(\"empty\")
+    val t: Task<u64> = spawn {
+        w.get(0u64) as u64            # E0050: a window into memory we may free
+    }
+
+    val t: Task<u64> = spawn {
+        if bad { return 0u64 }        # E0050: return / break / continue / `?`
+        1u64
+    }
+
+Output because where it lands among the parent's lines would depend on
+the threads. Return what should be printed and print it after `join`.
+
+A write to a captured name because the body has a copy (a scalar) or
+the value itself (an owned one, moved in); either way the parent never
+sees it. Return the new value.
+
+A window (`Span`, `Column`, `Ptr`, `&T`, `ptr`) because the parent goes
+on and may free what it views. Move the owner in instead: an owned
+value (`Vec`, `String`, `Box`, `File`, ...) the body captures is the
+body's from the spawn on, and reading it afterwards is `[E0014]`.
+
+Leaving the body (`return`, `break`, `continue`, `?`) because it runs
+as a function of its own, with nowhere outside it to go. Produce the
+failure as a value — a `Result` — and look at it after `join`.
+
+The body may also not capture `self`, or anything whose type depends
+on a type parameter: bind what it needs to a `val` first, in a function
+that is not generic.";
 
 const E0029: &str = "\
 E0029: a parallel loop body depends on the order of its iterations

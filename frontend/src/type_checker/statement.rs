@@ -70,6 +70,16 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Set type hint and evaluate expression
         let old_hint = self.setup_type_hint_for_val(&type_decl);
         let expr_ty = self.visit_expr(&expr_ref)?;
+        // CONCURRENCY B: the body of a `spawn` has been checked and its
+        // own scope is gone, so every name it reads that the context
+        // still knows is one from outside — a capture.
+        if self.spawn_blocks.contains(&expr_ref) {
+            let bound = rustc_hash::FxHashSet::default();
+            let mut captures = Vec::new();
+            let mut seen = rustc_hash::FxHashSet::default();
+            self.collect_closure_free_vars(expr_ref, &bound, &mut captures, &mut seen);
+            self.spawn_captures.insert(expr_ref, captures);
+        }
 
         // NUMBER-HINT: an explicit annotation is the most direct
         // statement of what an unsuffixed literal should be, so it

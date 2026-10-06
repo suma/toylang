@@ -499,6 +499,13 @@ pub struct EffectTable<'a> {
     /// fn` must not make the caller unsafe, or every program that
     /// calls `Vec::push` would need the declaration.
     direct_only: bool,
+    /// CONCURRENCY B: when set, an `extern fn` is taken to do nothing
+    /// a check can see — not "everything". `spawn_check` asks whether
+    /// a body *prints*, and the I/O a spawn exists for (`write_file`)
+    /// is extern; assuming it prints would refuse the point of the
+    /// construct, and its witness, met first, would hide a real
+    /// `println` behind it.
+    trust_externs: bool,
     /// Callee names as path steps, made once per name rather than once
     /// per call site.
     names: HashMap<DefaultSymbol, Rc<str>>,
@@ -557,6 +564,7 @@ impl<'a> EffectTable<'a> {
             cycles: 0,
             order: 0,
             direct_only: false,
+            trust_externs: false,
             names: HashMap::default(),
         }
     }
@@ -570,6 +578,17 @@ impl<'a> EffectTable<'a> {
     ) -> Self {
         let mut table = Self::new(program, interner, expr_types);
         table.direct_only = true;
+        table
+    }
+
+    /// CONCURRENCY B: see `trust_externs`.
+    pub fn new_trusting_externs(
+        program: &'a File,
+        interner: &'a DefaultStringInterner,
+        expr_types: &'a HashMap<ExprRef, TypeDecl>,
+    ) -> Self {
+        let mut table = Self::new(program, interner, expr_types);
+        table.trust_externs = true;
         table
     }
 
@@ -634,6 +653,9 @@ impl<'a> EffectTable<'a> {
         match node {
             Node::Function(index) => {
                 let function = self.program.function[index].clone();
+                if function.is_extern && self.trust_externs {
+                    return Effects::default();
+                }
                 if function.is_extern {
                     // Outside the language, so nothing can be seen. The
                     // author may take one effect back by declaring it;

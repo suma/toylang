@@ -84,6 +84,8 @@ pub use duplicate_defs::{check_duplicate_definitions, DuplicateDefinitions};
 mod move_check;
 pub use move_check::check_moves;
 pub use parallel_check::check_parallel_loops;
+mod spawn_outline;
+pub use spawn_outline::outline_spawn_bodies;
 pub use module_path_check::check_module_paths;
 
 mod contains_drop;

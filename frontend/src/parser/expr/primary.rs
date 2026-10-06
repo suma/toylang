@@ -319,6 +319,11 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
     if matches!(parser.peek(), Some(Kind::InterpolatedString(_))) {
         return parse_interpolated_string(parser);
     }
+    if matches!(parser.peek(), Some(Kind::Identifier(s)) if s == "spawn")
+        && matches!(parser.peek_n(1), Some(Kind::BraceOpen))
+    {
+        return parse_spawn(parser);
+    }
     match parser.peek() {
         Some(Kind::ParenOpen) => parse_tuple_or_grouped_expr(parser),
         Some(ref kind) if kind.is_keyword() && !matches!(kind, Kind::True | Kind::False | Kind::Null | Kind::If | Kind::Dict | Kind::Self_ | Kind::With | Kind::Ambient | Kind::Match | Kind::Loop) => {
@@ -339,6 +344,45 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
         }
         _ => parse_primary_atom_or_form(parser),
     }
+}
+
+/// CONCURRENCY B: `spawn { body }`.
+///
+/// `spawn` is contextual — a keyword only when a `{` follows — so a
+/// program's own `spawn` function or binding is untouched. The result
+/// is the call a sequential lane runs, `Task::__ready(body)`: the body
+/// in place and its value wrapped as a finished task. The body is
+/// recorded in `spawn_blocks`, which is what the later passes key on.
+///
+/// The body starts with no enclosing loops, as a closure's does: it is
+/// a function of its own on a compiled lane, so a `break` in it has
+/// nothing to leave.
+fn parse_spawn(parser: &mut Parser) -> ParserResult<ExprRef> {
+    let at = parser.current_source_location();
+    parser.next();
+    let outer_loops = std::mem::take(&mut parser.loop_stack);
+    let body = super::parse_block(parser);
+    parser.loop_stack = outer_loops;
+    let body = body?;
+    // `{ val __spawn_N = body  Task::__ready(__spawn_N) }`: the body's
+    // value is bound before it is handed over, because the compiled
+    // lanes cannot pass a block of compound type as a call argument.
+    let n = parser.spawn_blocks.len();
+    let temp = parser.string_interner.get_or_intern(format!("__spawn_{n}"));
+    let function = parser.string_interner.get_or_intern(format!("__spawn_body_{n}"));
+    let bind = parser.ast_builder.val_stmt(temp, None, body, Some(at));
+    parser
+        .spawn_blocks
+        .insert(body, crate::ast::SpawnSite { at, binding: bind, function });
+    let task = parser.string_interner.get_or_intern("Task");
+    let ready = parser.string_interner.get_or_intern("__ready");
+    let value = parser.ast_builder.identifier_expr(temp, Some(at));
+    let call = parser.ast_builder.add_expr_with_location(
+        crate::ast::Expr::AssociatedFunctionCall(task, ready, vec![value]),
+        Some(at),
+    );
+    let tail = parser.ast_builder.expression_stmt(call, Some(at));
+    Ok(parser.ast_builder.block_expr(vec![bind, tail], Some(at)))
 }
 
 /// ALLOC-CONTRACT: `old(expr)` in an `ensures` clause — the value

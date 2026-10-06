@@ -2761,17 +2761,20 @@ if t.is_done() {
 
 `spawn { body }` hands the body to a **task** and evaluates to a
 `Task<T>`, where `T` is the body's type. The spawning code does not
-wait for it. `t.is_done()` asks whether `join` would return at once,
-`t.join()` waits for the body and takes its value, and a task that is
-dropped without being joined **waits for its body** and drops the
-value — no task outlives its `Task`.
+wait for it. `t.is_done()` asks whether `join` would return at once;
+`t.join()` waits for the body and takes its value (once — a second
+`join` panics). The task itself lives until its scope ends, and its
+drop **waits for the body** if nobody has — no body outlives its
+`Task` — and drops a value nobody took.
 
-**Every lane currently runs the body where the `spawn` is written**
-(CONCURRENCY B1), so a task is always done by the time anyone looks.
-A child that finishes before its parent looks is one of the orders
-real threads can take, so the answer is fixed now and threads (B2)
-may not change it: a program whose result depends on when the body
-runs is wrong.
+The **compiled lanes run the body on a thread of its own**. The
+tree-walker and the IR VM run it where the `spawn` is written, so a
+task they hand out is always done: a child that finishes before its
+parent looks is one of the orders real threads can take. Every lane
+gives the same answer **as long as the answer does not depend on when
+the body runs** — `is_done()` before a `join`, or the allocation
+counters read before one, are asking exactly that, and a program
+whose result depends on them is wrong, not configurable.
 
 - `spawn` is **contextual**: it is the construct only when a `{`
   follows, so a function or binding named `spawn` is unaffected.
@@ -2799,7 +2802,8 @@ runs is wrong.
 - A panic in the body ends the process, as everywhere else.
 - `Task<T>` is declared in `core/std/task.t`. Its result lives in a
   one-element `Vec<T>`, so a spawn allocates that slot (`size_of T`
-  bytes) on every lane alike.
+  bytes) on every lane alike. The allocation counters are the sum over
+  every thread, as for `parallel for`.
 - On the compiled lanes the body is subject to what any function body
   is: a compound value produced by a call is best bound to a `val`
   before it is the body's last expression.

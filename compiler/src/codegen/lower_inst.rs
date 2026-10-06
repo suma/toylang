@@ -109,7 +109,8 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             | InstKind::MakeClosure { .. }
             // CONCURRENCY A2-b-2: the outlined body is named the same
             // way a function pointer is, so it resolves here too.
-            | InstKind::ParFor { .. } => self.lower_callee_resolution(inst),
+            | InstKind::ParFor { .. }
+            | InstKind::TaskSpawn { .. } => self.lower_callee_resolution(inst),
             InstKind::CallIndirect { .. }
             | InstKind::CallStruct { .. }
             | InstKind::CallTuple { .. }
@@ -536,6 +537,22 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 self.builder
                     .ins()
                     .call(self.runtime.par_for, &[f, u, e, body_addr]);
+            }
+            InstKind::TaskSpawn { body, env, size } => {
+                // CONCURRENCY B2: the runtime copies the environment
+                // and starts the trampoline on a thread.
+                let func_ref = *self
+                    .imports
+                    .get(body)
+                    .ok_or_else(|| format!("missing import for {body:?}"))?;
+                let body_addr = self.builder.ins().func_addr(types::I64, func_ref);
+                let e = self.value(*env);
+                let n = self.value(*size);
+                let call = self.builder.ins().call(self.runtime.task_spawn, &[body_addr, e, n]);
+                if let Some((vid, _)) = inst.result {
+                    let h = self.builder.inst_results(call)[0];
+                    self.values.insert(vid.0, h);
+                }
             }
             InstKind::FuncAddr { target } => {
                 // Closures Phase 5b: yield the runtime address of a

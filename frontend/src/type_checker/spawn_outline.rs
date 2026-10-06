@@ -8,28 +8,47 @@
 //!
 //! and the type checker records what the body captures
 //! (`File::spawn_captures`). This pass, which runs between the type
-//! checker and the move check, turns the body into
+//! checker and the move check, makes two functions of it:
 //!
 //! ```text
 //! fn __spawn_body_N(c1: T1, c2: T2, ..) -> T { body }
+//! fn __spawn_run_N(c1: T1, c2: T2, .., __spawn_slot: ptr) -> u64 {
+//!     val __spawn_value: T = __spawn_body_N(c1, c2, ..)
+//!     val __spawn_cell: Ptr<T> = Ptr { addr: __spawn_slot }
+//!     __spawn_cell.set(0u64, __spawn_value)
+//!     0u64
+//! }
 //! ```
 //!
-//! and the binding into `val __spawn_N = __spawn_body_N(c1, c2, ..)`.
+//! and rewrites the spawn itself to
 //!
-//! After it, a spawn is something every lane already runs: a call
-//! with by-value arguments. That settles the two questions a body
-//! raises without any lane having to know about it:
+//! ```text
+//! var __spawn_result: Vec<T> = Vec::with_capacity(1u64)
+//! __spawn_result.set_size(1u64)
+//! val __spawn_handle: u64 = __spawn_run_N(c1, c2, .., __spawn_result.as_ptr())
+//! Task { result: __spawn_result, handle: __spawn_handle }
+//! ```
+//!
+//! After it, a spawn is something every lane already runs: calls with
+//! by-value arguments. That settles the two questions a body raises
+//! without any lane having to know about it:
 //!
 //! * **What the body may use.** Exactly its parameters — the captures.
 //!   A scalar is a copy, as an argument always is.
 //! * **Who drops an owned capture.** The body: handing a value to a
-//!   by-value parameter is a move (`[E0014]` on a later read), and a
-//!   spawn body never *lends* (`compute_lend`), so it drops what it
-//!   was handed at its end, as a function owns its parameters
+//!   by-value parameter is a move (`[E0014]` on a later read), and the
+//!   spawn functions never *lend* (`compute_lend`), so the body drops
+//!   what it was handed at its end, as a function owns its parameters
 //!   (LEND-FREEING-CALLEE).
 //!
-//! It is also the shape B2 needs: running the body on a thread is
-//! calling this function there.
+//! The body is a function of its own rather than the run function's
+//! block because the compiled lanes cannot bind a block whose compound
+//! value comes from a call; a function's value is its return.
+//!
+//! The one thing a lane does differently is the call to
+//! `__spawn_run_N`: the compiled lanes start it on a thread
+//! (`compiler_lower::task`, `InstKind::TaskSpawn`) and the handle is
+//! the thread's; the sequential lanes call it, and it answers 0.
 //!
 //! The function gets no module path. A spawn written inside a module
 //! resolves the bare calls in its body as top-level code does, so a
@@ -107,48 +126,189 @@ pub fn outline_spawn_bodies(
             continue;
         }
 
-        let at = Some(site.at);
-        let code = program.statement.add(Stmt::Expression(body));
-        program.location_pool.add_stmt_location(at);
+        let Some(names) = Names::get(interner) else {
+            continue;
+        };
+        let _ = (name, annotation);
+        let mut b = Builder { program: &mut *program, expr_types: &mut *expr_types, at: Some(site.at) };
 
-        let mut args = Vec::with_capacity(captures.len());
-        for (capture, ty) in &captures {
-            let arg = program.expression.add(Expr::Identifier(*capture));
-            program.location_pool.add_expr_location(at);
-            expr_types.insert(arg, ty.clone());
-            args.push(arg);
-        }
-        let arg_list = program.expression.add(Expr::ExprList(args));
-        program.location_pool.add_expr_location(at);
-        let call = program.expression.add(Expr::Call(site.function, arg_list));
-        program.location_pool.add_expr_location(at);
-        expr_types.insert(call, ret.clone());
-        program.statement.update(&site.binding, Stmt::Val(name, annotation, call));
+        // fn __spawn_body_N(captures..) -> T { body }
+        let body_code = b.stmt(Stmt::Expression(body));
 
-        program.function.push(Rc::new(Function {
-            node: Node::new(0, 0),
-            name: site.function,
-            generic_params: Vec::new(),
-            generic_bounds: Default::default(),
-            parameter: captures,
-            return_type: Some(ret),
-            requires: Vec::new(),
-            ensures: Vec::new(),
-            ensures_kinds: Vec::new(),
-            never_allocates: false,
-            const_fn: false,
-            is_unsafe: false,
-            old_exprs: Vec::new(),
-            code,
-            is_extern: false,
-            extern_link: None,
-            visibility: Visibility::Private,
-            module_path: None,
-        }));
-        program.function_module_paths.push(None);
-        program.function_module_ranks.push(0);
+        // fn __spawn_run_N(captures.., __spawn_slot: ptr) -> u64 {
+        //     val __spawn_value: T = __spawn_body_N(captures..)
+        //     val __spawn_cell: Ptr<T> = Ptr { addr: __spawn_slot }
+        //     __spawn_cell.set(0u64, __spawn_value)
+        //     0u64
+        // }
+        let body_args = b.capture_args(&captures);
+        let body_call = b.expr(Expr::Call(site.function, body_args), Some(ret.clone()));
+        let value = b.stmt(Stmt::Val(names.value, Some(ret.clone()), body_call));
+        let cell_ty = TypeDecl::Struct(names.ptr, Rc::new(vec![ret.clone()]));
+        let slot = b.expr(Expr::Identifier(names.slot), Some(TypeDecl::Ptr));
+        let cell_lit = b.expr(Expr::StructLiteral(names.ptr, vec![(names.addr, slot)]), Some(cell_ty.clone()));
+        let cell = b.stmt(Stmt::Val(names.cell, Some(cell_ty), cell_lit));
+        let cell_ref = b.expr(Expr::Identifier(names.cell), None);
+        let zero = b.expr(Expr::UInt64(0), Some(TypeDecl::UInt64));
+        let value_ref = b.expr(Expr::Identifier(names.value), Some(ret.clone()));
+        let store = b.expr(Expr::MethodCall(cell_ref, names.set, vec![zero, value_ref]), Some(TypeDecl::Unit));
+        let store = b.stmt(Stmt::Expression(store));
+        let done = b.expr(Expr::UInt64(0), Some(TypeDecl::UInt64));
+        let done = b.stmt(Stmt::Expression(done));
+        let run_block = b.expr(Expr::Block(vec![value, cell, store, done]), Some(TypeDecl::UInt64));
+        let run_code = b.stmt(Stmt::Expression(run_block));
+
+        // The spawn itself:
+        //     var __spawn_result: Vec<T> = Vec::with_capacity(1u64)
+        //     __spawn_result.set_size(1u64)
+        //     val __spawn_handle: u64 = __spawn_run_N(captures.., __spawn_result.as_ptr())
+        //     Task { result: __spawn_result, handle: __spawn_handle }
+        // The slot exists before the body runs and is filled by it; the
+        // task's drop (and `join`) waits for the body before anything
+        // reads it. A compiled lane starts a thread on `__spawn_run_N`
+        // here; a sequential one calls it.
+        let vec_ty = TypeDecl::Struct(names.vec, Rc::new(vec![ret.clone()]));
+        let one = b.expr(Expr::UInt64(1), Some(TypeDecl::UInt64));
+        let reserve = b.expr(Expr::AssociatedFunctionCall(names.vec, names.with_capacity, vec![one]), Some(vec_ty.clone()));
+        let result = b.stmt(Stmt::Var(names.result, Some(vec_ty.clone()), Some(reserve)));
+        let result_ref = b.expr(Expr::Identifier(names.result), Some(vec_ty.clone()));
+        let one = b.expr(Expr::UInt64(1), Some(TypeDecl::UInt64));
+        let sized = b.expr(Expr::MethodCall(result_ref, names.set_size, vec![one]), Some(TypeDecl::Unit));
+        let sized = b.stmt(Stmt::Expression(sized));
+        let mut run_args = b.capture_list(&captures);
+        let result_ref = b.expr(Expr::Identifier(names.result), Some(vec_ty.clone()));
+        let slot_arg = b.expr(Expr::MethodCall(result_ref, names.as_ptr, vec![]), Some(TypeDecl::Ptr));
+        run_args.push(slot_arg);
+        let run_args = b.expr(Expr::ExprList(run_args), None);
+        let run_call = b.expr(Expr::Call(site.run, run_args), Some(TypeDecl::UInt64));
+        let handle = b.stmt(Stmt::Val(names.handle, Some(TypeDecl::UInt64), run_call));
+        let task_ty = TypeDecl::Struct(names.task, Rc::new(vec![ret.clone()]));
+        let result_ref = b.expr(Expr::Identifier(names.result), Some(vec_ty));
+        let handle_ref = b.expr(Expr::Identifier(names.handle), Some(TypeDecl::UInt64));
+        let task = b.expr(
+            Expr::StructLiteral(names.task, vec![(names.result_field, result_ref), (names.handle_field, handle_ref)]),
+            Some(task_ty.clone()),
+        );
+        let task = b.stmt(Stmt::Expression(task));
+        b.program.expression.update(&site.wrapper, Expr::Block(vec![result, sized, handle, task]));
+        b.expr_types.insert(site.wrapper, task_ty);
+
+        let mut run_params = captures.clone();
+        run_params.push((names.slot, TypeDecl::Ptr));
+        push_function(program, site.function, captures, ret, body_code);
+        push_function(program, site.run, run_params, TypeDecl::UInt64, run_code);
     }
     errors
+}
+
+fn push_function(
+    program: &mut File,
+    name: DefaultSymbol,
+    parameter: Vec<(DefaultSymbol, TypeDecl)>,
+    ret: TypeDecl,
+    code: StmtRef,
+) {
+    program.function.push(Rc::new(Function {
+        node: Node::new(0, 0),
+        name,
+        generic_params: Vec::new(),
+        generic_bounds: Default::default(),
+        parameter,
+        return_type: Some(ret),
+        requires: Vec::new(),
+        ensures: Vec::new(),
+        ensures_kinds: Vec::new(),
+        never_allocates: false,
+        const_fn: false,
+        is_unsafe: false,
+        old_exprs: Vec::new(),
+        code,
+        is_extern: false,
+        extern_link: None,
+        visibility: Visibility::Private,
+        module_path: None,
+    }));
+    program.function_module_paths.push(None);
+    program.function_module_ranks.push(0);
+}
+
+/// The names the rewrite writes. The parser interned the locals; the
+/// rest are the stdlib's own, so they exist once `task.t` is loaded.
+struct Names {
+    result: DefaultSymbol,
+    handle: DefaultSymbol,
+    slot: DefaultSymbol,
+    value: DefaultSymbol,
+    cell: DefaultSymbol,
+    vec: DefaultSymbol,
+    with_capacity: DefaultSymbol,
+    set_size: DefaultSymbol,
+    as_ptr: DefaultSymbol,
+    ptr: DefaultSymbol,
+    addr: DefaultSymbol,
+    set: DefaultSymbol,
+    task: DefaultSymbol,
+    result_field: DefaultSymbol,
+    handle_field: DefaultSymbol,
+}
+
+impl Names {
+    fn get(interner: &DefaultStringInterner) -> Option<Self> {
+        Some(Names {
+            result: interner.get("__spawn_result")?,
+            handle: interner.get("__spawn_handle")?,
+            slot: interner.get("__spawn_slot")?,
+            value: interner.get("__spawn_value")?,
+            cell: interner.get("__spawn_cell")?,
+            vec: interner.get("Vec")?,
+            with_capacity: interner.get("with_capacity")?,
+            set_size: interner.get("set_size")?,
+            as_ptr: interner.get("as_ptr")?,
+            ptr: interner.get("Ptr")?,
+            addr: interner.get("addr")?,
+            set: interner.get("set")?,
+            task: interner.get("Task")?,
+            result_field: interner.get("result")?,
+            handle_field: interner.get("handle")?,
+        })
+    }
+}
+
+/// Adds nodes to the pools with the spawn's location, and their types
+/// to `expr_types` for the checks that run after this pass.
+struct Builder<'p> {
+    program: &'p mut File,
+    expr_types: &'p mut HashMap<ExprRef, TypeDecl>,
+    at: Option<crate::type_checker::SourceLocation>,
+}
+
+impl Builder<'_> {
+    fn expr(&mut self, expr: Expr, ty: Option<TypeDecl>) -> ExprRef {
+        let r = self.program.expression.add(expr);
+        self.program.location_pool.add_expr_location(self.at);
+        if let Some(ty) = ty {
+            self.expr_types.insert(r, ty);
+        }
+        r
+    }
+
+    fn stmt(&mut self, stmt: Stmt) -> StmtRef {
+        let r = self.program.statement.add(stmt);
+        self.program.location_pool.add_stmt_location(self.at);
+        r
+    }
+
+    fn capture_list(&mut self, captures: &[(DefaultSymbol, TypeDecl)]) -> Vec<ExprRef> {
+        captures
+            .iter()
+            .map(|(name, ty)| self.expr(Expr::Identifier(*name), Some(ty.clone())))
+            .collect()
+    }
+
+    fn capture_args(&mut self, captures: &[(DefaultSymbol, TypeDecl)]) -> ExprRef {
+        let list = self.capture_list(captures);
+        self.expr(Expr::ExprList(list), None)
+    }
 }
 
 /// What keeps a body from becoming a function today, as (what, fix).

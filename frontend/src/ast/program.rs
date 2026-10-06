@@ -411,6 +411,13 @@ pub struct SpawnSite {
     /// `__spawn_body_N`, the function `outline_spawn_bodies` makes of
     /// the body.
     pub function: DefaultSymbol,
+    /// `__spawn_run_N`, the function that calls the body and stores
+    /// its value in the task's result slot — the one a compiled lane
+    /// starts a thread on (`InstKind::TaskSpawn`).
+    pub run: DefaultSymbol,
+    /// The block `spawn { .. }` was written as, which
+    /// `outline_spawn_bodies` rewrites in place.
+    pub wrapper: ExprRef,
 }
 
 /// `from "lib" as "sym"` on an `extern fn` declaration (FFI_PLAN 論点 1).

@@ -479,6 +479,11 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
         toy_net_resolve,
         // EVENT_POLLING N3.
         toy_poll_create,
+        // CONCURRENCY B2.
+        toy_task_spawn,
+        toy_task_wait,
+        toy_task_done,
+        toy_task_release,
         toy_poll_ctl,
         toy_poll_wait,
         toy_poll_event_token,

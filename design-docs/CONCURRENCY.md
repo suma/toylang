@@ -1,7 +1,7 @@
 # CONCURRENCY — 並行性に何を入れるか、まだ入れないか
 
 > 状態: **A (`parallel for`) は A1〜A2-b-2 まで landing 済み (2026-09-21)。
-> B (`spawn`) は §7 で設計を決め、B1 に着手 (2026-10-06)。**
+> B (`spawn`) は §7 で設計を決め、B1 / B2 が landing (2026-10-06)。**
 > todo.md の CONCURRENCY (★★★) と RUNTIME_LIBRARY P3 が「設計文書を
 > 別に取ってから着手」と言っている、その文書。2026-09-18 に書き起こし、
 > 2026-09-20 に §5 の論点を決めた。
@@ -457,7 +457,7 @@ detach したスレッドは残さない。`Task` が join されずにスコー
 | | 中身 |
 |---|---|
 | **B1** | **2026-10-06 に landing**。構文 + `Task<T>` (`core/std/task.t`) + 検査 (`E0050`: print / 外への脱出 / 外側への代入 / 窓の捕捉) + move + **4 レーンとも同期実行**。本文は型検査の直後に「捕捉を値で受ける関数」`__spawn_body_N` に切り出され、全レーンがそれを普通に呼ぶ (下記) |
-| **B2** | `toylang_rt` の `toy_task_spawn` / `toy_task_wait` / `toy_task_done`。切り出した本文をスレッドで走らせ、`Task.handle` に入れる。heap は spawner から借りる (PAR-HEAP-SHARED と同じ `lend_heap`、返すのは join の後) |
+| **B2** | **2026-10-06 に landing**。`toylang_rt` の `toy_task_spawn` / `wait` / `done` / `release`。本文の周りにもう 1 つ関数 `__spawn_run_N(捕捉.., slot)` を切り出し (本文を呼んで値を `Task` の結果スロットに `Ptr::set` する)、spawn の場所は `Vec::with_capacity(1)` + `set_size(1)` + `__spawn_run_N(..)` + `Task { .. }` になる — **全レーン同じ AST**。lowering は `__spawn_run_N` の呼び出しだけを `InstKind::TaskSpawn` にする (引数の葉をフレームの slot に 8 バイトずつ置き、IR で直接組んだトランポリンが読み戻して呼ぶ。runtime は slot を複製してからスレッドを起こす)。IR VM は `ParFor` と同じくその場で呼んで 0 を返す。heap は spawner から借り、返すのは join の後。4 タスクで 0.65 → 0.17 秒 |
 | **B3** | イベントループとの接続 — 完了を `Poller` に登録できる fd (`t.as_fd()`、完了時に書かれる pipe) |
 
 **切り出しは lowering ではなくフロントエンドで、全レーン共通にした**
@@ -500,6 +500,23 @@ generic な関数の中の spawn と `self` の捕捉は E0050 で断る。窓�
 join されずに死んだ task は `Vec` の drop glue が結果を drop するから
 — どちらの経路もバックエンドが `Task` を知らずに済む。確保の集計も
 全レーンで同じになる (Vec の 1 要素ぶんを親が確保する)。
+
+**B2 で決まったこと** (2026-10-06):
+
+- **`join` は `&mut self`**。最初は `self: Self` で Task を消費する形に
+  したが、消費するメソッドの中で `var me = self` から書く形は
+  compiled レーンで結果スロットをリークし (IR VM は解放する — generic な
+  受け手で割れる既存の非対称、todo に登録)、join の後の Drop が解放済みの
+  ハンドルを待つ危険もあった。今は join が値を取り出し、Task は
+  スコープの終わりまで生きて Drop が `toy_task_release` を 1 回呼ぶ
+  (`wait` は冪等)。2 回目の join は panic
+- **逐次レーンとの一致は「本文がいつ走ったかを訊かない」プログラムに
+  限る**。`is_done()` や、join の前に読む確保カウンタは、まさにそれを
+  訊いている (B1 のテストのうち 2 本がそう書かれていたので、join の
+  後で測る形に直した)
+- 本文がスレッドで走るので、**`random()` の状態はスレッドごと**
+  (`ThreadState`) — 逐次レーンでは親と共有する。乱数を使う本文は
+  レーンで答えが割れうる (未対処)
 
 ### 本文に許さないもの (A から引き継ぐもの、変えるもの)
 

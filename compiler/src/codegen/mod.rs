@@ -332,6 +332,9 @@ pub(crate) struct CodegenSession<M: Module> {
     /// splits the range over threads and joins. The outlined body's
     /// address is passed as a plain pointer.
     rt_par_for: cranelift_module::FuncId,
+    /// CONCURRENCY B2: `toy_task_spawn(body, env, size) -> handle` —
+    /// copies the environment and starts the trampoline on a thread.
+    rt_task_spawn: cranelift_module::FuncId,
     /// libm `double pow(double, double)` — used by `BinOp::Pow`.
     libm_pow: cranelift_module::FuncId,
     /// libm transcendentals — `double sin(double)` etc. Used by the
@@ -715,6 +718,11 @@ impl<M: Module> CodegenSession<M> {
             &[abi(I64), abi(I64), abi(I64), abi(I64)],
             &[],
         )?;
+        let rt_task_spawn = imp.declare(
+            "toy_task_spawn",
+            &[abi(I64), abi(I64), abi(I64)],
+            &[abi(I64)],
+        )?;
 
         // (`libc_strlen` was used by an earlier draft of
         // `__builtin_str_len`; the str runtime value now points at
@@ -926,6 +934,7 @@ impl<M: Module> CodegenSession<M> {
             rt_mem_find,
             rt_mem_find_seq,
             rt_par_for,
+            rt_task_spawn,
             libm_pow,
             libm_sin,
             libm_cos,
@@ -1831,6 +1840,7 @@ struct RuntimeRefs {
     mem_find: cranelift_codegen::ir::FuncRef,
     mem_find_seq: cranelift_codegen::ir::FuncRef,
     par_for: cranelift_codegen::ir::FuncRef,
+    task_spawn: cranelift_codegen::ir::FuncRef,
     print_i64: cranelift_codegen::ir::FuncRef,
     println_i64: cranelift_codegen::ir::FuncRef,
     print_u64: cranelift_codegen::ir::FuncRef,

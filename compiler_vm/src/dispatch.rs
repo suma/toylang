@@ -68,6 +68,7 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
         | InstKind::MakeClosure { .. }
         | InstKind::VtableAddr { .. }
         | InstKind::ParFor { .. }
+        | InstKind::TaskSpawn { .. }
         | InstKind::Backtrace => exec_calls(vm, inst),
         InstKind::Print { .. }
         | InstKind::PrintStr { .. }
@@ -334,6 +335,17 @@ fn exec_calls(vm: &mut Vm, inst: &Instruction) {
             let from_v = vm.read_value(*from);
             let until_v = vm.read_value(*until);
             vm.call_function(*body, vec![env_v, from_v, until_v], None, Vec::new());
+        }
+        InstKind::TaskSpawn { body, env, .. } => {
+            // CONCURRENCY B2: a sequential lane runs the task now —
+            // the child finishing before its parent looks is a legal
+            // schedule — and hands back the "already done" handle.
+            // The env is this frame's slot and outlives the call.
+            let env_v = vm.read_value(*env);
+            vm.call_function(*body, vec![env_v], None, Vec::new());
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(0));
+            }
         }
         InstKind::CallIndirect { callee, args, .. } => {
             // Phase 3a: env-based indirect call. `callee` is an env_ptr;

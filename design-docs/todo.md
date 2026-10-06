@@ -12,6 +12,10 @@
 
 ### 2026-10-06
 
+- **CONCURRENCY B2 — `spawn` の本文が compiled レーンでスレッドで走る** — `__spawn_run_N` の呼び出しを
+  `InstKind::TaskSpawn` (`toy_task_spawn`) に。IR VM はその場で呼ぶ。4 タスクで 0.65 → 0.17 秒。
+  `Task::join` は `&mut self` になり、2 回目は panic。
+
 - **CONCURRENCY B1 — `spawn { body }` と `Task<T>`** — 本文は型検査の直後に捕捉を値で受ける関数へ
   切り出され、4 レーンとも spawn の場でその関数を呼ぶ (スレッドは B2)。所有型の捕捉は move、
   print / 捕捉への代入 / 窓 / 本文の外への脱出は `E0050`。未 join の `Task` は Drop が待つ。
@@ -3168,9 +3172,9 @@
 * 並行性 (CONCURRENCY) ★★★ — **A (データ並列 `parallel for`) は完了**
   (A1 2026-09-20、A2-a / A2-b-1 / A2-b-2 2026-09-21、完了済み節)。
   AOT / JIT は `toy_par_for` でスレッドに割り、tree-walker / IR VM は
-  逐次。**B (`spawn` + `Task<T>`) は §7 で設計を決め、B1 (全レーン同期) が
-  landing**。残りは B2 (切り出した `__spawn_body_N` を `toylang_rt` の
-  スレッドで走らせる)、B3 (完了を `Poller` に登録できる fd)、
+  逐次。**B (`spawn` + `Task<T>`) は §7 で設計を決め、B1 / B2 が
+  landing** (compiled レーンはスレッド)。残りは B3 (完了を `Poller` に
+  登録できる fd)、本文の `random()` がスレッドごとの状態を読む件、
   PARALLEL-CAPTURE-WRITE-LANE、C (チャネル)。B1 の既知の穴 (module path・
   窓を持つ struct・region 由来の値) は [`CONCURRENCY.md`](CONCURRENCY.md) §7。
 * データ指向の配列 layout (DOD) ★★ — Phase 0 (`soa [T; N]` + `ps[i].f`
@@ -3271,6 +3275,15 @@
   (a) **root をまたぐ衝突** (パッケージのモジュールと stdlib が同名の型を
   持つ形。entry の型だけは `__std_<name>` の別名で共存できる) と、
   (b) 衝突を許す本当の解決 = 型の名前空間化 (MODULE-IMPORTS P3)。
+- **CONSUMING-SELF-NO-DROP: `self: Self` のメソッドが `self` を解放しない** ★★ —
+  `struct W { v: Vec<u64> }` の `fn take(self: Self) -> u64 { self.v.get(0u64) }` を
+  呼ぶと、`W` の `Vec` が残る (3 レーンとも `live_bytes` 32)。**generic な受け手
+  (`Task<T>` の `join(self: Self)` を `var me = self; me.result.pop()` と書いた形) では
+  IR VM が解放し AOT / JIT が解放せず、レーンで割れる**。CONCURRENCY B2 で踏み、
+  `Task::join` を `&mut self` にして回避した (2026-10-06)。CLAUDE.md の
+  「`self: Self` の method はレシーバを消費する」と食い違う — 消費した側が drop する
+  責任を誰も持っていない。
+
 - **ENUM-CALL-VALUE-COUNT (internal error)** ★ —
   `internal error: enum call returned 19 value(s), expected 15`。
   自由関数が `&mut` の compound を 2 つと `&` を 1 つ取り `u64` を返す形で

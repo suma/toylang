@@ -640,6 +640,10 @@ impl<'a> FunctionLower<'a> {
         }
         let (mut arg_values, ptr_arg_reloads) =
             self.lower_call_args_with_target(args_ref, Some(target))?;
+        // CONCURRENCY B2: the call that starts a `spawn` body.
+        if self.is_spawn_run(fn_name) {
+            return self.lower_task_spawn(target, arg_values);
+        }
         // Phase 6: capturing closure direct call — prepend the
         // env_ptr in front of the user-visible args so the
         // callee's signature `(env: U64, ...user_params)` is

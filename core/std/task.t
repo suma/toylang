@@ -32,9 +32,14 @@
 # ## API
 #
 #   - `t.is_done() -> bool` — whether `join` would return at once
-#   - `t.join() -> T` — wait for the block and take its value
+#   - `t.join() -> T` — wait for the block and take its value (once;
+#     a second `join` panics)
 #   - dropping an unjoined task waits for it and drops the value
 #     (no thread outlives its task; section 7, point 4)
+
+extern fn __extern_task_wait(handle: u64) from "toylang_rt" as "toy_task_wait"
+extern fn __extern_task_done(handle: u64) -> u64 from "toylang_rt" as "toy_task_done"
+extern fn __extern_task_release(handle: u64) from "toylang_rt" as "toy_task_release"
 
 struct Task<T> {
     result: Vec<T>,
@@ -51,19 +56,24 @@ impl<T> Task<T> {
     }
 
     fn is_done(&self) -> bool {
-        self.handle == 0u64
+        __extern_task_done(self.handle) == 1u64
     }
 
-    fn join(self: Self) -> T {
-        var me = self
-        me.handle = 0u64
-        val v: T = me.result.pop()
+    # Wait for the body and take its value. The task itself lives on
+    # until its scope ends, when its drop releases the handle; a second
+    # `join` finds the slot empty and panics.
+    fn join(&mut self) -> T {
+        __extern_task_wait(self.handle)
+        if self.result.size() == 0u64 {
+            panic("Task::join: the task was already joined")
+        }
+        val v: T = self.result.pop()
         v
     }
 }
 
 impl<T> Drop for Task<T> {
     fn drop(&mut self) {
-        self.handle = 0u64
+        __extern_task_release(self.handle)
     }
 }

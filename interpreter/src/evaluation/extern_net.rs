@@ -53,6 +53,11 @@ pub fn build_net_registry() -> HashMap<&'static str, ExternFn> {
     m.insert("__extern_net_last_peer_port", net_last_peer_port);
     m.insert("__extern_net_resolve", net_resolve);
     // EVENT_POLLING N3.
+    // CONCURRENCY B: the sequential lanes run a spawn body in place,
+    // so every handle they hand out is 0 — done, nothing to wait for.
+    m.insert("__extern_task_wait", task_wait);
+    m.insert("__extern_task_done", task_done);
+    m.insert("__extern_task_release", task_wait);
     m.insert("__extern_poll_create", poll_create);
     m.insert("__extern_poll_ctl", poll_ctl);
     m.insert("__extern_poll_wait", poll_wait);
@@ -136,6 +141,16 @@ fn net_accept(args: &[Value]) -> Result<Value, InterpreterError> {
     expect_args("__extern_net_accept", args, 1)?;
     let fd = fd_arg(&args[0], "__extern_net_accept")?;
     Ok(Value::Int32(toylang_rt::net_accept(fd)))
+}
+
+fn task_wait(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_task_wait", args, 1)?;
+    Ok(Value::Unit)
+}
+
+fn task_done(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_task_done", args, 1)?;
+    Ok(Value::UInt64(1))
 }
 
 fn poll_create(args: &[Value]) -> Result<Value, InterpreterError> {

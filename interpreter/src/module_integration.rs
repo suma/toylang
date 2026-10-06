@@ -1341,6 +1341,8 @@ impl<'a> AstIntegrationContext<'a> {
                 at: site.at.in_file(self.module_file),
                 binding: self.map_stmt(&site.binding, "spawn binding")?,
                 function: self.remap_symbol(site.function)?,
+                run: self.remap_symbol(site.run)?,
+                wrapper: self.map_expr(&site.wrapper, "spawn block")?,
             };
             self.main_program.spawn_blocks.insert(mapped, site);
         }

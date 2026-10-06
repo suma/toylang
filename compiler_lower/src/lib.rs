@@ -194,6 +194,7 @@ mod expr;
 mod drop_glue;
 
 mod parallel;
+mod task;
 
 /// Phase 5 (汎用 RAII): one per-binding auto-drop record kept on
 /// the `FunctionLower::drop_scopes` stack. Captures the binding's

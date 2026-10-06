@@ -6278,6 +6278,156 @@ pub extern "C" fn toy_par_for(
     reclaim_heap(heap, lent);
 }
 
+// ---------------------------------------------------------------------------
+// CONCURRENCY B2: `spawn { body }` on a thread.
+//
+// The compiled lanes hand the outlined body to `toy_task_spawn` through a
+// trampoline that reads its arguments out of `env` and writes its result
+// back into it. The handle the program keeps is the address of a
+// `TaskCtl`; 0 means "already done" (what the sequential lanes always
+// answer, and what a failed `pthread_create` falls back to).
+// ---------------------------------------------------------------------------
+
+#[repr(C)]
+struct TaskCtl {
+    thread: usize,
+    done: AtomicUsize,
+    /// Whether `toy_task_wait` has joined the thread. Only the owning
+    /// thread reads or writes it.
+    joined: bool,
+    heap: *mut HeapState,
+    body: extern "C" fn(*mut u8),
+    env: *mut u8,
+}
+
+extern "C" fn task_worker(arg: *mut u8) -> *mut u8 {
+    let ctl = arg as *mut TaskCtl;
+    // Safe: the control block lives until `toy_task_wait` has joined
+    // this thread.
+    let (heap, body, env) = unsafe { ((*ctl).heap, (*ctl).body, (*ctl).env) };
+    attach_heap(heap);
+    body(env);
+    detach_thread();
+    unsafe { (*ctl).done.store(1, Ordering::Release) };
+    core::ptr::null_mut()
+}
+
+/// Start `body(env)` on a thread of its own and answer its handle.
+///
+/// The thread borrows the caller's heap (`lend_heap`), so what it
+/// allocates and frees is counted with the program's — and the loan is
+/// returned only by `toy_task_wait`, after the join. When no thread can
+/// be had the body runs here and the handle is 0, which is what the
+/// sequential lanes answer: running it now is a legal schedule.
+///
+/// # Safety
+/// `env` must point at `size` readable bytes (rounded up to 8), laid
+/// out as `body` reads them.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toy_task_spawn(body: extern "C" fn(*mut u8), env: *mut u8, size: u64) -> u64 {
+    // The caller's environment is a slot in its frame, which may be
+    // gone before the body reads it: the task keeps a copy, freed with
+    // the control block. Raw `malloc`, so it is not a program
+    // allocation — the sequential lanes, which read the frame slot
+    // directly, count none either.
+    let size = size.max(8) as usize;
+    let copy = unsafe { malloc(size) };
+    if copy.is_null() {
+        body(env);
+        return 0;
+    }
+    unsafe { core::ptr::copy_nonoverlapping(env, copy, size) };
+    let env = copy;
+    let heap = lend_heap(1);
+    let ctl = Box::into_raw(Box::new(TaskCtl {
+        thread: 0,
+        done: AtomicUsize::new(0),
+        joined: false,
+        heap,
+        body,
+        env,
+    }));
+    let rc = unsafe { pthread_create(&mut (*ctl).thread, core::ptr::null(), task_worker, ctl as *mut u8) };
+    if rc != 0 {
+        reclaim_heap(heap, 1);
+        unsafe { drop(Box::from_raw(ctl)) };
+        body(env);
+        unsafe { free(env) };
+        return 0;
+    }
+    ctl as u64
+}
+
+/// Whether the task behind `handle` has finished (1) or not (0).
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_task_done(handle: u64) -> u64 {
+    if handle == 0 {
+        return 1;
+    }
+    let ctl = handle as *mut TaskCtl;
+    unsafe { (*ctl).done.load(Ordering::Acquire) as u64 }
+}
+
+/// Wait for the task behind `handle` to finish. Waiting again is a
+/// no-op; 0 is a no-op.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_task_wait(handle: u64) {
+    if handle == 0 {
+        return;
+    }
+    let ctl = handle as *mut TaskCtl;
+    unsafe {
+        if (*ctl).joined {
+            return;
+        }
+        pthread_join((*ctl).thread, core::ptr::null_mut());
+        (*ctl).joined = true;
+        reclaim_heap((*ctl).heap, 1);
+    }
+}
+
+/// Wait for the task if nobody has, then free what the runtime kept
+/// for it. The handle is dead afterwards; 0 is a no-op. `Task`'s drop
+/// calls this exactly once.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_task_release(handle: u64) {
+    if handle == 0 {
+        return;
+    }
+    toy_task_wait(handle);
+    let ctl = handle as *mut TaskCtl;
+    unsafe {
+        free((*ctl).env);
+        drop(Box::from_raw(ctl));
+    }
+}
+
+#[cfg(test)]
+mod task_tests {
+    use super::*;
+
+    extern "C" fn add_one(env: *mut u8) {
+        // The environment holds the address of the cell to bump.
+        unsafe { **(env as *mut *mut u64) += 1 };
+    }
+
+    #[test]
+    fn a_task_runs_its_body_once_and_is_done_after_the_wait() {
+        let mut cell: u64 = 41;
+        let mut env: *mut u64 = &raw mut cell;
+        let h = unsafe { toy_task_spawn(add_one, (&raw mut env) as *mut u8, 8) };
+        // The task has its own copy of the environment, so the slot can
+        // go away now.
+        env = core::ptr::null_mut();
+        let _ = env;
+        toy_task_wait(h);
+        assert_eq!(cell, 42);
+        toy_task_wait(h);
+        toy_task_release(h);
+        assert_eq!(toy_task_done(0), 1);
+    }
+}
+
 #[cfg(test)]
 mod par_tests {
     extern crate std;

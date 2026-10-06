@@ -704,6 +704,8 @@ impl Module {
             // here and nowhere else, so the reachability scan has to
             // see the edge or the body is never compiled.
             InstKind::ParFor { body, .. } => vec![*body],
+            // Likewise the trampoline a `spawn` starts.
+            InstKind::TaskSpawn { body, .. } => vec![*body],
             // Dynamic dispatch: every thunk in the referenced vtable is
             // callable.
             InstKind::VtableAddr { trait_sym, struct_sym } => self
@@ -1692,6 +1694,8 @@ impl InstKind {
             // into the env before the call, and a body that writes
             // to its copy is refused at lowering time.
             InstKind::ParFor { .. } => {}
+            // The body was handed its own copy of the environment.
+            InstKind::TaskSpawn { .. } => {}
             InstKind::CallStruct { dests, .. }
             | InstKind::CallTuple { dests, .. }
             | InstKind::CallEnum { dests, .. }
@@ -2386,6 +2390,20 @@ pub enum InstKind {
         from: ValueId,
         until: ValueId,
     },
+    /// CONCURRENCY B2: start `body(env_copy)` as a task and produce
+    /// its handle (U64; 0 = already done).
+    ///
+    /// `env` is the address of a caller-frame slot of `size` bytes
+    /// holding the arguments, one 8-byte slot per leaf. The task gets
+    /// a **copy** — the caller's frame may be gone before the body
+    /// reads it. The compiled lanes start a thread
+    /// (`toy_task_spawn`); the IR VM, a sequential lane, calls the
+    /// body there and then, which is a legal schedule, and answers 0.
+    TaskSpawn {
+        body: FuncId,
+        env: ValueId,
+        size: ValueId,
+    },
     /// CONST-ARRAY: the address of a read-only blob of bytes.
     ///
     /// A `const K: [u32; 64] = [...]` is laid out once, by the
@@ -2715,6 +2733,10 @@ impl InstKind {
                 one(env);
                 one(from);
                 one(until);
+            }
+            InstKind::TaskSpawn { env, size, .. } => {
+                one(env);
+                one(size);
             }
             // Reads nothing.
             InstKind::Const(_)
@@ -3085,6 +3107,9 @@ impl fmt::Display for DisplayInst<'_> {
             InstKind::Const(c) => write!(f, "{prefix}const {c}"),
             InstKind::ParFor { body, env, from, until } => {
                 write!(f, "{prefix}par_for {body}, {env}, {from}, {until}")
+            }
+            InstKind::TaskSpawn { body, env, size } => {
+                write!(f, "{prefix}task_spawn {body}, {env}, {size}")
             }
             InstKind::ConstBytesAddr { bytes } => {
                 write!(f, "{prefix}const_bytes_addr [{} bytes]", bytes.len())

@@ -2168,7 +2168,7 @@ fn compute_lend(
     let mut methods_by_name: HashMap<DefaultSymbol, Vec<(StmtRef, bool, bool, TypeDecl)>> =
         HashMap::default();
     let spawn_functions: HashSet<DefaultSymbol> =
-        program.spawn_blocks.values().map(|site| site.function).collect();
+        program.spawn_blocks.values().flat_map(|site| [site.function, site.run]).collect();
     let mut spawn_bodies: HashSet<StmtRef> = HashSet::default();
     for f in &program.function {
         if f.is_extern {

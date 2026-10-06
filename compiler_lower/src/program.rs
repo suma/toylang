@@ -1760,7 +1760,18 @@ fn schedule_from_ir(
                 used_vtables.insert((*trait_sym, *struct_sym));
                 continue;
             }
-            for callee in module.call_edges(&inst.kind) {
+            // CONCURRENCY B2: a spawn's trampoline is built in IR
+            // already lowered, so nothing lowers it and nothing would
+            // scan it — look through it to the body it calls.
+            let mut callees = module.call_edges(&inst.kind);
+            if let InstKind::TaskSpawn { body, .. } = &inst.kind
+                && let Some(tramp) = module.functions.get(body.0 as usize)
+            {
+                for tramp_inst in tramp.blocks.iter().flat_map(|b| b.instructions.iter()) {
+                    callees.extend(module.call_edges(&tramp_inst.kind));
+                }
+            }
+            for callee in callees {
                 let Some(callee_fn) = module.functions.get(callee.0 as usize) else {
                     continue;
                 };

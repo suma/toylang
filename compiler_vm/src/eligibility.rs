@@ -155,6 +155,7 @@ fn inst_supported(kind: &InstKind) -> bool {
         // the body is an ordinary function it already knows how to
         // call.
         | InstKind::ParFor { .. }
+        | InstKind::TaskSpawn { .. }
         // CONST-ARRAY: a read-only blob, materialised once.
         | InstKind::ConstBytesAddr { .. } => true,
     }

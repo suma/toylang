@@ -1,7 +1,7 @@
 # CONCURRENCY — 並行性に何を入れるか、まだ入れないか
 
 > 状態: **A (`parallel for`) は A1〜A2-b-2 まで landing 済み (2026-09-21)。
-> B (`spawn`) は §7 で設計を決め、B1 / B2 が landing (2026-10-06)。**
+> B (`spawn`) は §7 で設計を決め、B1〜B3 が landing (2026-10-06)。**
 > todo.md の CONCURRENCY (★★★) と RUNTIME_LIBRARY P3 が「設計文書を
 > 別に取ってから着手」と言っている、その文書。2026-09-18 に書き起こし、
 > 2026-09-20 に §5 の論点を決めた。
@@ -458,7 +458,7 @@ detach したスレッドは残さない。`Task` が join されずにスコー
 |---|---|
 | **B1** | **2026-10-06 に landing**。構文 + `Task<T>` (`core/std/task.t`) + 検査 (`E0050`: print / 外への脱出 / 外側への代入 / 窓の捕捉) + move + **4 レーンとも同期実行**。本文は型検査の直後に「捕捉を値で受ける関数」`__spawn_body_N` に切り出され、全レーンがそれを普通に呼ぶ (下記) |
 | **B2** | **2026-10-06 に landing**。`toylang_rt` の `toy_task_spawn` / `wait` / `done` / `release`。本文の周りにもう 1 つ関数 `__spawn_run_N(捕捉.., slot)` を切り出し (本文を呼んで値を `Task` の結果スロットに `Ptr::set` する)、spawn の場所は `Vec::with_capacity(1)` + `set_size(1)` + `__spawn_run_N(..)` + `Task { .. }` になる — **全レーン同じ AST**。lowering は `__spawn_run_N` の呼び出しだけを `InstKind::TaskSpawn` にする (引数の葉をフレームの slot に 8 バイトずつ置き、IR で直接組んだトランポリンが読み戻して呼ぶ。runtime は slot を複製してからスレッドを起こす)。IR VM は `ParFor` と同じくその場で呼んで 0 を返す。heap は spawner から借り、返すのは join の後。4 タスクで 0.65 → 0.17 秒 |
-| **B3** | イベントループとの接続 — 完了を `Poller` に登録できる fd (`t.as_fd()`、完了時に書かれる pipe) |
+| **B3** | **2026-10-06 に landing**。`t.as_fd()` が完了で readable になる pipe の読み側を返す (`toy_task_notify_fd`、初回に作って Task が持つ。Drop が閉じる)。ワーカーは `done` を立ててから書き側を読み、`as_fd` は書き側を置いてから `done` を読む — 両方 SeqCst なので少なくとも一方が書く (2 度書いても読み手には区別が付かない)。逐次レーンは handle 0 なので、作った pipe にその場で 1 バイト書いて返す: ループは最初の `wait` で完了を見る |
 
 **切り出しは lowering ではなくフロントエンドで、全レーン共通にした**
 (2026-10-06、計画から変えた点)。最初は parser の desugar を全レーンで

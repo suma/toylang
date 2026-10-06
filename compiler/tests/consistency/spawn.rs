@@ -180,3 +180,49 @@ fn several_tasks_run_at_once_and_join_in_any_order() {
     "#;
     assert_renders(src, "spawn_four", "4995000\n");
 }
+
+#[test]
+fn an_event_loop_waits_for_a_task_beside_its_sockets() {
+    // CONCURRENCY B3: the task's descriptor goes into a `Poller` like
+    // a socket's. On a compiled lane it turns readable when the
+    // thread finishes; on a sequential one the body has already run,
+    // so the first `wait` reports it. How many turns the loop took is
+    // the one thing that differs, so it is not printed.
+    let src = r#"
+        fn work(seed: u64) -> u64 {
+            var acc: u64 = seed
+            for i in 0u64..200000u64 {
+                acc = acc ^ (acc * 31u64 + i)
+            }
+            acc
+        }
+
+        fn main() -> u64 {
+            val made = Poller::new()
+            var p = match made {
+                Result::Ok(p) => p,
+                Result::Err(e) => panic("no poller"),
+            }
+            val t: Task<u64> = spawn { work(7u64) }
+            val fd = t.as_fd()
+            println(fd == t.as_fd())
+            val reg = p.register(fd, 42u64, interest_read())
+            var waiting = true
+            while waiting {
+                val got = p.wait(1000i64)
+                val n = got ?? 0u64
+                for i in 0u64..n {
+                    val ev = p.event(i)
+                    if ev.token() == 42u64 && ev.is_readable() {
+                        waiting = false
+                    }
+                }
+            }
+            val dereg = p.deregister(fd)
+            println(t.is_done())
+            println(t.join() == work(7u64))
+            0u64
+        }
+    "#;
+    assert_renders(src, "spawn_poll", "true\ntrue\ntrue\n");
+}

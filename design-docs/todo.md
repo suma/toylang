@@ -12,6 +12,8 @@
 
 ### 2026-10-06
 
+- **CONCURRENCY B3 — `Task::as_fd()` で完了を `Poller` に載せられる** — 完了で readable になる pipe。
+  逐次レーンでは最初から readable なので、イベントループの答えは全レーンで同じ。
 - **CONCURRENCY B2 — `spawn` の本文が compiled レーンでスレッドで走る** — `__spawn_run_N` の呼び出しを
   `InstKind::TaskSpawn` (`toy_task_spawn`) に。IR VM はその場で呼ぶ。4 タスクで 0.65 → 0.17 秒。
   `Task::join` は `&mut self` になり、2 回目は panic。
@@ -3173,8 +3175,8 @@
   (A1 2026-09-20、A2-a / A2-b-1 / A2-b-2 2026-09-21、完了済み節)。
   AOT / JIT は `toy_par_for` でスレッドに割り、tree-walker / IR VM は
   逐次。**B (`spawn` + `Task<T>`) は §7 で設計を決め、B1 / B2 が
-  landing** (compiled レーンはスレッド)。残りは B3 (完了を `Poller` に
-  登録できる fd)、本文の `random()` がスレッドごとの状態を読む件、
+  landing** (compiled レーンはスレッド)、**B3 (`Task::as_fd()` を `Poller` に
+  載せる) も landing**。残りは本文の `random()` がスレッドごとの状態を読む件、
   PARALLEL-CAPTURE-WRITE-LANE、C (チャネル)。B1 の既知の穴 (module path・
   窓を持つ struct・region 由来の値) は [`CONCURRENCY.md`](CONCURRENCY.md) §7。
 * データ指向の配列 layout (DOD) ★★ — Phase 0 (`soa [T; N]` + `ps[i].f`

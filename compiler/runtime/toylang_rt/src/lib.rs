@@ -184,6 +184,8 @@ unsafe extern "C" {
         arg: *mut u8,
     ) -> i32;
     fn pthread_join(thread: usize, retval: *mut *mut u8) -> i32;
+    // CONCURRENCY B3: a task's completion pipe.
+    fn pipe(fds: *mut i32) -> i32;
     fn sched_yield() -> i32;
     fn sysconf(name: i32) -> isize;
 }
@@ -6295,6 +6297,10 @@ struct TaskCtl {
     /// Whether `toy_task_wait` has joined the thread. Only the owning
     /// thread reads or writes it.
     joined: bool,
+    /// CONCURRENCY B3: the write end of the completion pipe, or -1
+    /// until `toy_task_notify_fd` makes one. The worker writes a byte
+    /// to it when the body is done.
+    notify_w: core::sync::atomic::AtomicI32,
     heap: *mut HeapState,
     body: extern "C" fn(*mut u8),
     env: *mut u8,
@@ -6308,7 +6314,17 @@ extern "C" fn task_worker(arg: *mut u8) -> *mut u8 {
     attach_heap(heap);
     body(env);
     detach_thread();
-    unsafe { (*ctl).done.store(1, Ordering::Release) };
+    // CONCURRENCY B3: `done`, then the pipe — and `toy_task_notify_fd`
+    // stores the pipe, then reads `done`. Sequentially consistent on
+    // both sides, so at least one of them sees the other and the byte
+    // is written (possibly twice, which a reader cannot tell apart).
+    unsafe {
+        (*ctl).done.store(1, Ordering::SeqCst);
+        let w = (*ctl).notify_w.load(Ordering::SeqCst);
+        if w >= 0 {
+            notify_byte(w);
+        }
+    }
     core::ptr::null_mut()
 }
 
@@ -6343,6 +6359,7 @@ pub unsafe extern "C" fn toy_task_spawn(body: extern "C" fn(*mut u8), env: *mut 
         thread: 0,
         done: AtomicUsize::new(0),
         joined: false,
+        notify_w: core::sync::atomic::AtomicI32::new(-1),
         heap,
         body,
         env,
@@ -6397,8 +6414,60 @@ pub extern "C" fn toy_task_release(handle: u64) {
     toy_task_wait(handle);
     let ctl = handle as *mut TaskCtl;
     unsafe {
+        let w = (*ctl).notify_w.load(Ordering::SeqCst);
+        if w >= 0 {
+            close(w);
+        }
         free((*ctl).env);
         drop(Box::from_raw(ctl));
+    }
+}
+
+fn notify_byte(fd: i32) {
+    let one = 1u8;
+    unsafe { write(fd, &one, 1) };
+}
+
+/// CONCURRENCY B3: a file descriptor that becomes readable when the
+/// task behind `handle` is done — for a `Poller` to wait on alongside
+/// sockets. -1 when no pipe can be had.
+///
+/// The read end is the caller's to close (`toy_task_close_notify`);
+/// the write end belongs to the task and is closed by
+/// `toy_task_release`. A finished task — handle 0, which is every
+/// task on a sequential lane — gets a pipe that is readable at once.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_task_notify_fd(handle: u64) -> i32 {
+    let mut fds = [-1i32; 2];
+    if unsafe { pipe(fds.as_mut_ptr()) } != 0 {
+        return -1;
+    }
+    let (r, w) = (fds[0], fds[1]);
+    if handle == 0 {
+        notify_byte(w);
+        unsafe { close(w) };
+        return r;
+    }
+    let ctl = handle as *mut TaskCtl;
+    unsafe {
+        let previous = (*ctl).notify_w.swap(w, Ordering::SeqCst);
+        if previous >= 0 {
+            // A second pipe for the same task: the old write end has
+            // no reader the caller still knows about.
+            close(previous);
+        }
+        if (*ctl).done.load(Ordering::SeqCst) == 1 {
+            notify_byte(w);
+        }
+    }
+    r
+}
+
+/// Close the read end `toy_task_notify_fd` handed out.
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_task_close_notify(fd: i32) {
+    if fd >= 0 {
+        unsafe { close(fd) };
     }
 }
 
@@ -6424,6 +6493,28 @@ mod task_tests {
         assert_eq!(cell, 42);
         toy_task_wait(h);
         toy_task_release(h);
+    }
+
+    extern "C" fn nothing(_env: *mut u8) {}
+
+    #[test]
+    fn a_task_s_notify_fd_is_readable_once_it_is_done() {
+        let mut env = 0u64;
+        for _ in 0..50 {
+            let h = unsafe { toy_task_spawn(nothing, (&raw mut env) as *mut u8, 8) };
+            let fd = toy_task_notify_fd(h);
+            assert!(fd >= 0);
+            // A blocking read returns once the byte is there, whichever
+            // of the worker and `notify_fd` wrote it.
+            let mut b = 0u8;
+            assert_eq!(unsafe { read(fd, &mut b, 1) }, 1);
+            toy_task_release(h);
+            toy_task_close_notify(fd);
+        }
+        let fd = toy_task_notify_fd(0);
+        let mut b = 0u8;
+        assert_eq!(unsafe { read(fd, &mut b, 1) }, 1);
+        toy_task_close_notify(fd);
         assert_eq!(toy_task_done(0), 1);
     }
 }

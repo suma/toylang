@@ -26,7 +26,7 @@
 //! var __spawn_result: Vec<T> = Vec::with_capacity(1u64)
 //! __spawn_result.set_size(1u64)
 //! val __spawn_handle: u64 = __spawn_run_N(c1, c2, .., __spawn_result.as_ptr())
-//! Task { result: __spawn_result, handle: __spawn_handle }
+//! Task { result: __spawn_result, handle: __spawn_handle, notify: -1i32 }
 //! ```
 //!
 //! After it, a spawn is something every lane already runs: calls with
@@ -185,8 +185,12 @@ pub fn outline_spawn_bodies(
         let task_ty = TypeDecl::Struct(names.task, Rc::new(vec![ret.clone()]));
         let result_ref = b.expr(Expr::Identifier(names.result), Some(vec_ty));
         let handle_ref = b.expr(Expr::Identifier(names.handle), Some(TypeDecl::UInt64));
+        let no_fd = b.expr(Expr::Int32(-1), Some(TypeDecl::Int32));
         let task = b.expr(
-            Expr::StructLiteral(names.task, vec![(names.result_field, result_ref), (names.handle_field, handle_ref)]),
+            Expr::StructLiteral(
+                names.task,
+                vec![(names.result_field, result_ref), (names.handle_field, handle_ref), (names.notify_field, no_fd)],
+            ),
             Some(task_ty.clone()),
         );
         let task = b.stmt(Stmt::Expression(task));
@@ -250,6 +254,7 @@ struct Names {
     task: DefaultSymbol,
     result_field: DefaultSymbol,
     handle_field: DefaultSymbol,
+    notify_field: DefaultSymbol,
 }
 
 impl Names {
@@ -270,6 +275,7 @@ impl Names {
             task: interner.get("Task")?,
             result_field: interner.get("result")?,
             handle_field: interner.get("handle")?,
+            notify_field: interner.get("notify")?,
         })
     }
 }

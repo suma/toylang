@@ -32,6 +32,7 @@
 # ## API
 #
 #   - `t.is_done() -> bool` — whether `join` would return at once
+#   - `t.as_fd() -> i32` — readable once the block is done (for `Poller`)
 #   - `t.join() -> T` — wait for the block and take its value (once;
 #     a second `join` panics)
 #   - dropping an unjoined task waits for it and drops the value
@@ -40,10 +41,14 @@
 extern fn __extern_task_wait(handle: u64) from "toylang_rt" as "toy_task_wait"
 extern fn __extern_task_done(handle: u64) -> u64 from "toylang_rt" as "toy_task_done"
 extern fn __extern_task_release(handle: u64) from "toylang_rt" as "toy_task_release"
+extern fn __extern_task_notify_fd(handle: u64) -> i32 from "toylang_rt" as "toy_task_notify_fd"
+extern fn __extern_task_close_notify(fd: i32) from "toylang_rt" as "toy_task_close_notify"
 
 struct Task<T> {
     result: Vec<T>,
     handle: u64,
+    # The read end of the completion pipe `as_fd` made, or -1.
+    notify: i32,
 }
 
 impl<T> Task<T> {
@@ -52,7 +57,25 @@ impl<T> Task<T> {
     fn __ready(value: T) -> Self {
         var result: Vec<T> = Vec::with_capacity(1u64)
         result.push(value)
-        Task { result: result, handle: 0u64 }
+        Task { result: result, handle: 0u64, notify: -1i32 }
+    }
+
+    # A descriptor that becomes readable when the body is done, for a
+    # `Poller` to wait on beside sockets (CONCURRENCY B3):
+    #
+    #     val fd = t.as_fd()
+    #     poller.register(fd, TASK_TOKEN, interest_read())
+    #     # ... when TASK_TOKEN comes back, `join` returns at once
+    #
+    # The task owns it — dropping the task closes it, so deregister
+    # first. Asking again answers the same descriptor. A task that is
+    # already done (every task on a sequential lane) is readable at
+    # once, so an event loop sees it on its next `wait`.
+    fn as_fd(&mut self) -> i32 {
+        if self.notify < 0i32 {
+            self.notify = __extern_task_notify_fd(self.handle)
+        }
+        self.notify
     }
 
     fn is_done(&self) -> bool {
@@ -75,5 +98,6 @@ impl<T> Task<T> {
 impl<T> Drop for Task<T> {
     fn drop(&mut self) {
         __extern_task_release(self.handle)
+        __extern_task_close_notify(self.notify)
     }
 }

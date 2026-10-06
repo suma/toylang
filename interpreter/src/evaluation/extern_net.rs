@@ -58,6 +58,8 @@ pub fn build_net_registry() -> HashMap<&'static str, ExternFn> {
     m.insert("__extern_task_wait", task_wait);
     m.insert("__extern_task_done", task_done);
     m.insert("__extern_task_release", task_wait);
+    m.insert("__extern_task_notify_fd", task_notify_fd);
+    m.insert("__extern_task_close_notify", task_close_notify);
     m.insert("__extern_poll_create", poll_create);
     m.insert("__extern_poll_ctl", poll_ctl);
     m.insert("__extern_poll_wait", poll_wait);
@@ -145,6 +147,20 @@ fn net_accept(args: &[Value]) -> Result<Value, InterpreterError> {
 
 fn task_wait(args: &[Value]) -> Result<Value, InterpreterError> {
     expect_args("__extern_task_wait", args, 1)?;
+    Ok(Value::Unit)
+}
+
+/// Every handle here is 0 (done), so the pipe is readable at once —
+/// the same answer an event loop gets from a finished thread.
+fn task_notify_fd(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_task_notify_fd", args, 1)?;
+    Ok(Value::Int32(toylang_rt::toy_task_notify_fd(0)))
+}
+
+fn task_close_notify(args: &[Value]) -> Result<Value, InterpreterError> {
+    expect_args("__extern_task_close_notify", args, 1)?;
+    let fd = fd_arg(&args[0], "__extern_task_close_notify")?;
+    toylang_rt::toy_task_close_notify(fd);
     Ok(Value::Unit)
 }
 

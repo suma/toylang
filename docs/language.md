@@ -2797,6 +2797,23 @@ whose result depends on them is wrong, not configurable.
     outside it. A loop the body writes may `break` as usual;
   - capture `self`, or anything whose type depends on a type parameter
     (bind what it needs to a `val`, in a function that is not generic).
+- **Waiting beside sockets**: `t.as_fd() -> i32` is a descriptor that
+  becomes readable when the body is done, so an event loop can
+  register it with a `Poller` next to its sockets and `join` when its
+  token comes back:
+
+  ```rust
+  val fd = t.as_fd()
+  val reg = poller.register(fd, TASK, interest_read())
+  # ... when an event with token TASK is readable:
+  val dereg = poller.deregister(fd)
+  val r = t.join()                  # returns at once
+  ```
+
+  The task owns the descriptor and closes it when it is dropped
+  (deregister first); asking again answers the same one. A task that
+  is already done — every task on a sequential lane — is readable at
+  once, so the loop sees it on its next `wait`.
 - Opening a scoped allocator inside the body is fine: it is entered
   and left within the body's own control flow.
 - A panic in the body ends the process, as everywhere else.

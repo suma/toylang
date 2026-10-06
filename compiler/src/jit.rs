@@ -484,6 +484,8 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
         toy_task_wait,
         toy_task_done,
         toy_task_release,
+        toy_task_notify_fd,
+        toy_task_close_notify,
         toy_poll_ctl,
         toy_poll_wait,
         toy_poll_event_token,

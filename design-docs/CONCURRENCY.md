@@ -1,7 +1,7 @@
 # CONCURRENCY — 並行性に何を入れるか、まだ入れないか
 
 > 状態: **A (`parallel for`) は A1〜A2-b-2 まで landing 済み (2026-09-21)。
-> 次は B (`spawn`) だが未着手。**
+> B (`spawn`) は §7 で設計を決め、B1 に着手 (2026-10-06)。**
 > todo.md の CONCURRENCY (★★★) と RUNTIME_LIBRARY P3 が「設計文書を
 > 別に取ってから着手」と言っている、その文書。2026-09-18 に書き起こし、
 > 2026-09-20 に §5 の論点を決めた。
@@ -393,6 +393,102 @@ lowering も切り出さない。逐次の答えを先に固定したはずの�
 `v` に書くことは callee のシグネチャを読まないと分からないので、
 型検査器側に同じ検査を置くと**近似の二重実装**になる。今は
 「インタプリタで動いた形が AOT で落ちる」形の 1 つとして残す。
+
+## 7. B — `spawn` + `Task<T>` (決めたこと、2026-10-06)
+
+A は「同じ答えを速く出す」形だった。B の需要は別の所にある —
+[`RUNTIME_GAPS.md`](../poc/logsearch/design-docs/RUNTIME_GAPS.md) の
+G12「8 MiB の書き出し中は取り込みも検索も止まる」。**イベントループを
+回したまま、書き出しや索引の構築を別に走らせたい**。だから子は
+ファイル I/O ができ、親はブロックせずに完了を訊けなければならない。
+
+```rust
+val t: Task<Result<u64, IoError>> = spawn {
+    io::write_file(path, bytes)      # path / bytes はここで子へ move する
+}
+# ... イベントループを続ける ...
+if t.is_done() {
+    val r = t.join()                 # join は Task を消費する
+}
+```
+
+### 1. 形 — **構文** `spawn { body }`
+
+理由は §5-1 と同じ。AOT の closure は捕捉も**引数も**スカラーしか
+扱えない (`closure parameter ... requires a primitive scalar type`、
+2026-10-06 に確かめた) ので、`thread::spawn(fn(..) { .. })` は
+CLOSURE-CAPTURE E5 と closure の compound 引数を待つことになる。
+構文なら本文をその場に置き、lowering が `parallel for` と同じく
+切り出す。`spawn` は `parallel` と同じ contextual keyword
+(`spawn {` のときだけ)。
+
+### 2. 逐次レーン — **spawn の時点で最後まで実行する**
+
+tree-walker / IR VM は本文をその場で回し、結果を `Task` に入れる。
+「子が親より先に全部終わる」は本物のスレッドでも起こりうる順序の 1 つ
+なので、§2-b の「逐次に実行しても同じ答え」を満たす。`is_done()` は
+逐次レーンでは常に true — **join の時点で回す案は採らない**:
+`while !t.is_done() { .. }` で完了を待つループが逐次レーンで止まらなく
+なる。
+
+### 3. 渡せるもの — **所有型は move、窓は拒否**
+
+本文が名指す外側の束縛 (捕捉) を、型で 3 つに分ける。
+
+| 捕捉の型 | 扱い |
+|---|---|
+| スカラー、ptr を含まない compound | **写し** (A と同じ) |
+| 所有型 (`impl Drop` を推移的に持つ: `Vec` / `String` / `Box` / `File` …) | **move**。以後の親での読みは `[E0014]`、drop するのは子 (本文の終わり) |
+| 窓・参照・生 ptr (`Span` / `Column` / `Ptr` / `&T` / `ptr`)、スコープ付き allocator から来た値 | **拒否** |
+
+窓を拒否するのが A との違いである。A は親が join までループの中に
+止まっているので、窓の指す先は必ず生きていた。B の親は先へ進むので、
+窓の指す先を親が解放すれば子は解放済みメモリを読む。結果の型 `T` も
+同じ規則で検査する (窓を返す子は、親に解放済みメモリを渡しうる)。
+
+### 4. join されない `Task` — **Drop が join する**
+
+detach したスレッドは残さない。`Task` が join されずにスコープを
+出たら、Drop が子の完了を待ち、結果を drop する。プロセスの終わりに
+子が途中で切られることがなく、確保の集計がレーン間で割れない。
+
+### 段取り
+
+| | 中身 |
+|---|---|
+| **B1** | 構文 + `Task<T>` (`core/std/task.t`) + 検査 (`spawn_check`: print / 外への脱出 / 外側への代入 / 窓の捕捉) + move (所有型の捕捉は本文へ移り、本文の終わりで drop) + **4 レーンとも同期実行**。compiled レーンは本文を「捕捉を値で受ける関数」に切り出して**その場で呼ぶ** |
+| **B2** | `toylang_rt` の `toy_task_spawn` / `toy_task_wait` / `toy_task_done`。切り出した本文をスレッドで走らせ、`Task.handle` に入れる。heap は spawner から借りる (PAR-HEAP-SHARED と同じ `lend_heap`、返すのは join の後) |
+| **B3** | イベントループとの接続 — 完了を `Poller` に登録できる fd (`t.as_fd()`、完了時に書かれる pipe) |
+
+**B1 の compiled レーンが切り出しを要る理由** (2026-10-06 に確かめた):
+パーサは `spawn { body }` を `{ val __spawn_N = body  Task::__ready(__spawn_N) }`
+と書くが、compiled レーンは「末尾が束縛名の compound ブロック」を
+`val` の右辺に置けない (`val x: String = { val y = ..  y }` が
+`val/var rhs produced no value`、spawn と無関係な既存の制限)。
+本文を関数にすれば普通の関数の戻り値になり、この制限に当たらない。
+どのみち B2 で要る切り出しを B1 で先に作り、B2 は「同じ関数を
+スレッドで呼ぶ」だけにする。
+
+**Task の表現**: `struct Task<T> { result: Vec<T>, handle: u64 }`。
+結果を長さ 1 の `Vec` に入れるのは、`join` が `pop` で取り出せて、
+join されずに死んだ task は `Vec` の drop glue が結果を drop するから
+— どちらの経路もバックエンドが `Task` を知らずに済む。確保の集計も
+全レーンで同じになる (Vec の 1 要素ぶんを親が確保する)。
+
+### 本文に許さないもの (A から引き継ぐもの、変えるもの)
+
+- **出力 (`print` 系) は拒否** — 親の出力と混ざる順序がレーンで割れる。
+  **ただし A と違い extern の I/O (`io::write_file` 等) は許す** —
+  それが需要そのもの。効果の格子では `Io` = print で、extern は
+  「追えない = 全効果」なので、検査は**実際に print に届く経路
+  (sink の証拠) だけ**を断る
+- **外側の名前への代入は拒否** (捕捉は写しか move なので届かない)
+- **`break` / `continue` / `return` / `?` で本文の外へ出るのは拒否** —
+  本文は別の関数として走る。失敗は `Result` を値として返す
+- `with allocator = ...` は**許す** — allocator スタックはスレッド
+  ごとで、本文の中で開いて閉じる allocator は子の制御フローの中で
+  完結する (A で断ったのは複数の反復が 1 つを共有するからだった)
+- panic はプロセスを終える (§2-e)
 
 ## 関連
 

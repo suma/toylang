@@ -628,8 +628,9 @@ struct MoveCheck<'a> {
     /// binding at or above it lives across iterations.
     loops: Vec<usize>,
     /// Per enclosing block statement: how the rest of that block leaves,
-    /// and how many loops enclosed it. See `loop_refusal`.
-    exits: Vec<(usize, Exit)>,
+    /// how many loops enclosed it, and where it is (the block and the
+    /// statement's index in it, for `rest_reinits`). See `loop_refusal`.
+    exits: Vec<(usize, Exit, ExprRef, usize)>,
     /// Closure bodies the walk is inside.
     closure_level: usize,
     /// The expression being walked is the function's value: the body's
@@ -1478,7 +1479,7 @@ impl MoveCheck<'_> {
                 self.enter_scope();
                 for (i, s) in stmts.iter().enumerate() {
                     let exit = self.exit_of(&stmts[i..]);
-                    self.exits.push((self.loops.len(), exit));
+                    self.exits.push((self.loops.len(), exit, expr_ref, i));
                     match self.program.statement.get_ref(s) {
                         // The block's value is its last expression.
                         Some(Stmt::Expression(e)) if tail && i + 1 == stmts.len() => {
@@ -1905,9 +1906,10 @@ impl MoveCheck<'_> {
                     Some("inside a closure, which may run any number of times")
                 } else if anchor.is_none() {
                     Some("here")
-                } else if self.anchor_reinits(anchor, name, owner) {
-                    // `x = keep(p, x)`: owned again before the loop
-                    // can come round to it.
+                } else if self.anchor_reinits(anchor, name, owner) || self.rest_reinits(name, owner) {
+                    // `x = keep(p, x)`, or a later `x = ..` in the same
+                    // iteration: owned again before the loop can come
+                    // round to it.
                     None
                 } else {
                     self.loop_refusal(owner_depth)
@@ -2000,6 +2002,53 @@ impl MoveCheck<'_> {
             && self.reinit_target(owner).is_some()
     }
 
+    /// LOOP-MOVE-THEN-REINIT: a statement after this one, in a block of
+    /// the innermost loop's body, assigns the binding whole before
+    /// anything can leave the iteration —
+    ///
+    /// ```text
+    /// while .. {
+    ///     val t = spawn { write(w) }   # moves `w`
+    ///     w = Writer::new()            # owned again
+    /// }
+    /// ```
+    ///
+    /// so the loop never comes round to a moved `w`. The assignment has
+    /// to be a statement of its own (not inside a branch) and come
+    /// before any `break` / `continue` / `return` in that block.
+    fn rest_reinits(&self, name: DefaultSymbol, owner: DefaultSymbol) -> bool {
+        if self.reinit_target(owner).is_none() {
+            return false;
+        }
+        let innermost = self.loops.len();
+        self.exits.iter().rev().take_while(|(loops, ..)| *loops == innermost).any(
+            |(_, _, block, i)| {
+                let Some(Expr::Block(stmts)) = self.program.expression.get_ref(block) else {
+                    return false;
+                };
+                for s in stmts.iter().skip(i + 1) {
+                    match self.program.statement.get_ref(s) {
+                        Some(Stmt::Return(_)) | Some(Stmt::Break(_)) | Some(Stmt::Continue(_)) => {
+                            return false;
+                        }
+                        Some(Stmt::Expression(e)) => {
+                            if let Some(Expr::Assign(lhs, _)) = self.program.expression.get_ref(e)
+                                && matches!(
+                                    self.program.expression.get_ref(lhs),
+                                    Some(Expr::Identifier(y)) if *y == name || *y == owner
+                                )
+                            {
+                                return true;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                false
+            },
+        )
+    }
+
     /// MOVE-CONDITIONAL: put `decl`'s drop behind a flag, cleared
     /// before `anchor`.
     fn flag(&mut self, decl: StmtRef, anchor: Anchor) {
@@ -2034,7 +2083,7 @@ impl MoveCheck<'_> {
             return None;
         }
         let innermost = self.loops.len();
-        let leaves = self.exits.iter().any(|(loops, exit)| {
+        let leaves = self.exits.iter().any(|(loops, exit, _, _)| {
             *loops == innermost && (*exit == Exit::Return || (*exit == Exit::Break && outlived == 1))
         });
         if leaves {

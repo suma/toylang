@@ -12,6 +12,10 @@
 
 ### 2026-10-06
 
+- **POC に spawn を当てた — `poc/logsearch` のセグメント書き出しがイベントループの外で走る** —
+  取り込み中の `/v1/stats` の最大 24 → 2.5 ms。当てて出た穴を 3 つ直した: ループ内で move して
+  次の文で入れ直す形 (LOOP-MOVE-THEN-REINIT)、本文末尾の compound 呼び出し、モジュール内の spawn
+  (名前が統合で落ちて黙って切り出されていなかった)。
 - **CONCURRENCY B3 — `Task::as_fd()` で完了を `Poller` に載せられる** — 完了で readable になる pipe。
   逐次レーンでは最初から readable なので、イベントループの答えは全レーンで同じ。
 - **CONCURRENCY B2 — `spawn` の本文が compiled レーンでスレッドで走る** — `__spawn_run_N` の呼び出しを
@@ -3277,6 +3281,15 @@
   (a) **root をまたぐ衝突** (パッケージのモジュールと stdlib が同名の型を
   持つ形。entry の型だけは `__std_<name>` の別名で共存できる) と、
   (b) 衝突を許す本当の解決 = 型の名前空間化 (MODULE-IMPORTS P3)。
+- **ALIAS-ROOT-BY-NAME: move 検査の別名の根が名前で引かれる** ★★ — `var poller = match made { .. }`
+  の `poller` は `made` を根に持つ別名として記録されるが、根は**名前**で引かれる。同じ関数の
+  内側のスコープで `val made = f()` / `if val Option::Some(base) = made` と書いて `base` を move
+  すると、外側の `made`、つまり `poller` まで move 済みになり、無関係な行に E0014 が出る
+  (2026-10-07、POC に spawn を当てて踏んだ。名前を変えて回避)。根を宣言 (`StmtRef`) で持てば直る。
+- **OPTION-IS-SOME-CONSUMES: `Option::is_some` / `is_none` が `self: Self`** ★ — 所有型を入れた
+  `Option` は `o.is_some()` と訊くだけで move され、以後の読みが E0014。`&self` にすべき
+  (`Result` の同名も確認)。回避は `if val Option::Some(t) = o { .. }`。
+
 - **CONSUMING-SELF-NO-DROP: `self: Self` のメソッドが `self` を解放しない** ★★ —
   `struct W { v: Vec<u64> }` の `fn take(self: Self) -> u64 { self.v.get(0u64) }` を
   呼ぶと、`W` の `Vec` が残る (3 レーンとも `live_bytes` 32)。**generic な受け手

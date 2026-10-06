@@ -50,10 +50,8 @@
 //! (`compiler_lower::task`, `InstKind::TaskSpawn`) and the handle is
 //! the thread's; the sequential lanes call it, and it answers 0.
 //!
-//! The function gets no module path. A spawn written inside a module
-//! resolves the bare calls in its body as top-level code does, so a
-//! module-private helper whose name a user function shadows would be
-//! the user's. No stdlib module spawns yet.
+//! The functions take the module path of the function the spawn was
+//! written in, so the body's calls resolve as they would have there.
 
 use std::rc::Rc;
 
@@ -68,7 +66,7 @@ use crate::type_decl::TypeDecl;
 
 pub fn outline_spawn_bodies(
     program: &mut File,
-    interner: &DefaultStringInterner,
+    interner: &mut DefaultStringInterner,
     expr_types: &mut HashMap<ExprRef, TypeDecl>,
 ) -> Vec<TypeCheckError> {
     let mut errors = Vec::new();
@@ -101,10 +99,16 @@ pub fn outline_spawn_bodies(
         }
     }
 
+    // The module each spawn was written in, so its functions resolve
+    // the body's calls as the body's own function did.
+    let homes = enclosing_modules(program, &sites);
+
     for (body, site) in sites {
         if refused.contains(&body) {
             continue;
         }
+        let home = homes.get(&site.wrapper).cloned().flatten();
+
         // A body the type checker never reached (an error before it)
         // has nothing to outline.
         let Some(captures) = program.spawn_captures.get(&body).cloned() else {
@@ -126,13 +130,18 @@ pub fn outline_spawn_bodies(
             continue;
         }
 
-        let Some(names) = Names::get(interner) else {
-            continue;
-        };
+        let names = Names::get(interner);
         let _ = (name, annotation);
         let mut b = Builder { program: &mut *program, expr_types: &mut *expr_types, at: Some(site.at) };
 
         // fn __spawn_body_N(captures..) -> T { body }
+        //
+        // A tail that is not already a name is bound first —
+        // `{ .. val __spawn_value: T = tail  __spawn_value }` — because
+        // the compiled lanes cannot return a compound value straight
+        // from a call in tail position, and `spawn { write(w) }` is the
+        // shape a spawn is most often written in.
+        bind_tail(&mut b, body, &ret, names.value);
         let body_code = b.stmt(Stmt::Expression(body));
 
         // fn __spawn_run_N(captures.., __spawn_slot: ptr) -> u64 {
@@ -199,10 +208,36 @@ pub fn outline_spawn_bodies(
 
         let mut run_params = captures.clone();
         run_params.push((names.slot, TypeDecl::Ptr));
-        push_function(program, site.function, captures, ret, body_code);
-        push_function(program, site.run, run_params, TypeDecl::UInt64, run_code);
+        push_function(program, site.function, captures, ret, body_code, home.clone());
+        push_function(program, site.run, run_params, TypeDecl::UInt64, run_code, home);
     }
     errors
+}
+
+fn bind_tail(b: &mut Builder, body: ExprRef, ret: &TypeDecl, name: DefaultSymbol) {
+    let Some(Expr::Block(mut stmts)) = b.program.expression.get(&body) else {
+        return;
+    };
+    let Some(last) = stmts.last().copied() else {
+        return;
+    };
+    let Some(Stmt::Expression(tail)) = b.program.statement.get(&last) else {
+        return;
+    };
+    match b.program.expression.get(&tail) {
+        Some(Expr::Identifier(_)) | None => return,
+        _ => {}
+    }
+    if matches!(ret, TypeDecl::Unit) {
+        return;
+    }
+    let bind = b.stmt(Stmt::Val(name, Some(ret.clone()), tail));
+    let named = b.expr(Expr::Identifier(name), Some(ret.clone()));
+    let named = b.stmt(Stmt::Expression(named));
+    stmts.pop();
+    stmts.push(bind);
+    stmts.push(named);
+    b.program.expression.update(&body, Expr::Block(stmts));
 }
 
 fn push_function(
@@ -211,6 +246,7 @@ fn push_function(
     parameter: Vec<(DefaultSymbol, TypeDecl)>,
     ret: TypeDecl,
     code: StmtRef,
+    module_path: Option<Vec<DefaultSymbol>>,
 ) {
     program.function.push(Rc::new(Function {
         node: Node::new(0, 0),
@@ -230,14 +266,76 @@ fn push_function(
         is_extern: false,
         extern_link: None,
         visibility: Visibility::Private,
-        module_path: None,
+        module_path: module_path.clone(),
     }));
-    program.function_module_paths.push(None);
+    program.function_module_paths.push(module_path);
     program.function_module_ranks.push(0);
 }
 
-/// The names the rewrite writes. The parser interned the locals; the
-/// rest are the stdlib's own, so they exist once `task.t` is loaded.
+/// For each spawn's block, the module path of the function it was
+/// written in (`None` for a user function, or one not found).
+fn enclosing_modules(
+    program: &File,
+    sites: &[(ExprRef, crate::ast::SpawnSite)],
+) -> HashMap<ExprRef, Option<Vec<DefaultSymbol>>> {
+    let wanted: rustc_hash::FxHashSet<ExprRef> = sites.iter().map(|(_, s)| s.wrapper).collect();
+    let mut found: HashMap<ExprRef, Option<Vec<DefaultSymbol>>> = HashMap::default();
+    for f in &program.function {
+        if f.is_extern || f.module_path.is_none() {
+            continue;
+        }
+        let mut work = Vec::new();
+        push_stmt(program, f.code, &mut work);
+        let mut seen: rustc_hash::FxHashSet<u32> = Default::default();
+        while let Some(e) = work.pop() {
+            if !seen.insert(e.0) {
+                continue;
+            }
+            if wanted.contains(&e) {
+                found.insert(e, f.module_path.clone());
+            }
+            let Some(expr) = program.expression.get(&e) else {
+                continue;
+            };
+            match expr {
+                Expr::Block(stmts) => {
+                    for s in &stmts {
+                        push_stmt(program, *s, &mut work);
+                    }
+                }
+                Expr::IfElifElse(c, t, elifs, el) => {
+                    work.push(c);
+                    work.push(t);
+                    for (a, b) in &elifs {
+                        work.push(*a);
+                        work.push(*b);
+                    }
+                    work.push(el);
+                }
+                Expr::Match(scrutinee, arms) => {
+                    work.push(scrutinee);
+                    for arm in &arms {
+                        if let Some(g) = arm.guard {
+                            work.push(g);
+                        }
+                        work.push(arm.body);
+                    }
+                }
+                Expr::With(a, b) => {
+                    work.push(a);
+                    work.push(b);
+                }
+                other => work.extend(child_exprs(&other)),
+            }
+        }
+    }
+    found
+}
+
+/// The names the rewrite writes. Interned here rather than by the
+/// parser: a spawn written in a module is parsed against the module's
+/// own interner, and integration carries over only the names the tree
+/// uses — a name set aside for later would not survive it.
 struct Names {
     result: DefaultSymbol,
     handle: DefaultSymbol,
@@ -258,25 +356,26 @@ struct Names {
 }
 
 impl Names {
-    fn get(interner: &DefaultStringInterner) -> Option<Self> {
-        Some(Names {
-            result: interner.get("__spawn_result")?,
-            handle: interner.get("__spawn_handle")?,
-            slot: interner.get("__spawn_slot")?,
-            value: interner.get("__spawn_value")?,
-            cell: interner.get("__spawn_cell")?,
-            vec: interner.get("Vec")?,
-            with_capacity: interner.get("with_capacity")?,
-            set_size: interner.get("set_size")?,
-            as_ptr: interner.get("as_ptr")?,
-            ptr: interner.get("Ptr")?,
-            addr: interner.get("addr")?,
-            set: interner.get("set")?,
-            task: interner.get("Task")?,
-            result_field: interner.get("result")?,
-            handle_field: interner.get("handle")?,
-            notify_field: interner.get("notify")?,
-        })
+    fn get(interner: &mut DefaultStringInterner) -> Self {
+        let mut n = |s: &str| interner.get_or_intern(s);
+        Names {
+            result: n("__spawn_result"),
+            handle: n("__spawn_handle"),
+            slot: n("__spawn_slot"),
+            value: n("__spawn_value"),
+            cell: n("__spawn_cell"),
+            vec: n("Vec"),
+            with_capacity: n("with_capacity"),
+            set_size: n("set_size"),
+            as_ptr: n("as_ptr"),
+            ptr: n("Ptr"),
+            addr: n("addr"),
+            set: n("set"),
+            task: n("Task"),
+            result_field: n("result"),
+            handle_field: n("handle"),
+            notify_field: n("notify"),
+        }
     }
 }
 

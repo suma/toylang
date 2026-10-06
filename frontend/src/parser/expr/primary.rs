@@ -371,11 +371,6 @@ fn parse_spawn(parser: &mut Parser) -> ParserResult<ExprRef> {
     let temp = parser.string_interner.get_or_intern(format!("__spawn_{n}"));
     let function = parser.string_interner.get_or_intern(format!("__spawn_body_{n}"));
     let run = parser.string_interner.get_or_intern(format!("__spawn_run_{n}"));
-    // The locals `outline_spawn_bodies` writes, interned here because
-    // the passes after the parser cannot add names.
-    for local in ["__spawn_result", "__spawn_handle", "__spawn_slot", "__spawn_value", "__spawn_cell"] {
-        parser.string_interner.get_or_intern(local);
-    }
     let bind = parser.ast_builder.val_stmt(temp, None, body, Some(at));
     let task = parser.string_interner.get_or_intern("Task");
     let ready = parser.string_interner.get_or_intern("__ready");

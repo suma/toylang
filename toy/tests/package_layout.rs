@@ -2721,3 +2721,55 @@ fn hook_feeds_errors_back_and_stays_quiet_otherwise() {
     assert_eq!(out.status.code(), Some(0));
     assert!(out.stdout.is_empty() && out.stderr.is_empty());
 }
+
+#[test]
+fn a_spawn_in_a_module_calls_what_its_module_would() {
+    // CONCURRENCY B: a `spawn` written inside a module. Its body becomes
+    // a function of its own, which has to resolve calls the way the
+    // module's code does -- a module-qualified call returning a struct,
+    // and the module's own helper. The rewrite's names also have to
+    // survive integration, which carries over only what the tree uses:
+    // put into poc/logsearch's server, the spawn was silently left
+    // un-outlined and failed in the lowering.
+    let pkg = scratch("spawn_in_module");
+    write(
+        &pkg,
+        "src/sink.t",
+        r#"
+pub struct Out { pub n: u64, pub v: Vec<u64> }
+
+pub fn drain(v: Vec<u64>) -> Out {
+    val n = v.size()
+    Out { n: n, v: v }
+}
+"#,
+    );
+    write(
+        &pkg,
+        "src/job.t",
+        r#"
+fn twice(n: u64) -> u64 { n * 2u64 }
+
+pub fn run() -> u64 {
+    var v: Vec<u64> = Vec::new()
+    v.push(7u64)
+    v.push(8u64)
+    val t: Task<Out> = spawn { sink::drain(v) }
+    val o = t.join()
+    val u: Task<u64> = spawn { twice(o.n) }
+    u.join()
+}
+"#,
+    );
+    write(&pkg, "main.t", "fn main() -> u64 {\n    println(job::run())\n    0u64\n}\n");
+    for backend in ["aot", "vm"] {
+        let out = run(&pkg, &["run", pkg.0.to_str().unwrap(), "--backend", backend]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(
+            stdout.trim(),
+            "4",
+            "{backend}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}

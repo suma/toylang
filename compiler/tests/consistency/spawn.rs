@@ -226,3 +226,32 @@ fn an_event_loop_waits_for_a_task_beside_its_sockets() {
     "#;
     assert_renders(src, "spawn_poll", "true\ntrue\ntrue\n");
 }
+
+#[test]
+fn a_body_may_end_in_a_call_that_produces_a_compound_value() {
+    // The most natural spawn is `spawn { write(buf) }` with a struct
+    // coming back. The compiled lanes cannot return a compound value
+    // straight from a call in tail position, so the outlining binds the
+    // tail to a `val` first; written by hand, it used to be a lowering
+    // error.
+    let src = r#"
+        struct Out { n: u64, buf: Vec<u64> }
+
+        fn write_out(v: Vec<u64>) -> Out {
+            val n = v.size()
+            Out { n: n, buf: v }
+        }
+
+        fn main() -> u64 {
+            var v: Vec<u64> = Vec::new()
+            v.push(4u64)
+            v.push(5u64)
+            val t: Task<Out> = spawn { write_out(v) }
+            val o = t.join()
+            println(o.n)
+            println(o.buf.get(1u64))
+            0u64
+        }
+    "#;
+    assert_renders(src, "spawn_compound_tail", "2\n5\n");
+}

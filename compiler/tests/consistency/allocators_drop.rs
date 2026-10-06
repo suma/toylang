@@ -1254,3 +1254,38 @@ fn for_in_over_owning_elements_does_not_free_them() {
     "#;
     assert_renders(src, "for_in_over_owning_elements_does_not_free_them", "108\n");
 }
+
+/// LOOP-MOVE-THEN-REINIT: a binding handed over in a loop body and
+/// assigned whole by a later statement of the same iteration is owned
+/// again before the loop comes round, so the move is allowed -- the
+/// shape of "give the full buffer away, start a fresh one" (found
+/// putting `spawn` into poc/logsearch's event loop). Every value
+/// closes exactly once, on the path that owns it.
+#[test]
+fn a_binding_moved_in_a_loop_and_assigned_again_is_owned_each_round() {
+    let src = r#"
+struct H { id: u64 }
+impl Drop for H {
+    fn drop(&mut self) { println("close {self.id}") }
+}
+fn mk(n: u64) -> H { H { id: n } }
+fn main() -> u64 {
+    var out: Vec<H> = Vec::with_capacity(4u64)
+    var cur = mk(0u64)
+    for i in 1u64..4u64 {
+        if i % 2u64 == 1u64 {
+            out.push(cur)
+            cur = mk(i)
+        }
+        println("round {i} holds {cur.id}")
+    }
+    println("kept {out.size()}")
+    0u64
+}
+    "#;
+    assert_renders(
+        src,
+        "loop_move_reinit",
+        "round 1 holds 1\nround 2 holds 1\nround 3 holds 3\nkept 2\nclose 3\nclose 0\nclose 1\n",
+    );
+}

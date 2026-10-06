@@ -2821,9 +2821,10 @@ whose result depends on them is wrong, not configurable.
   one-element `Vec<T>`, so a spawn allocates that slot (`size_of T`
   bytes) on every lane alike. The allocation counters are the sum over
   every thread, as for `parallel for`.
-- On the compiled lanes the body is subject to what any function body
-  is: a compound value produced by a call is best bound to a `val`
-  before it is the body's last expression.
+- The body's last expression may be any call, a compound one included
+  (`spawn { write_out(buf) }`): the outlining binds it to a `val` before
+  returning it, which the compiled lanes need for a compound value
+  from a call.
 
 By default, `break` / `continue` apply to the innermost enclosing
 loop. **Labelled loops** (LABEL feature) let you target an outer
@@ -6938,8 +6939,20 @@ After a branch that carries on, reading the binding is `[E0014]` — it
 may have moved. A transfer inside a **loop body** of a binding declared
 outside the loop is refused unless the block holding it goes on to
 leave the loop: `return` always does, `break` does when that one loop
-is all the binding outlives. Otherwise the next round would hand the
-value over again. A transfer inside a closure is refused too.
+is all the binding outlives — or unless a **later statement of the same
+iteration assigns the binding whole** (`x = ..`, a statement of its own,
+before any `break` / `continue` / `return` in that block), so the next
+round finds it owned again:
+
+    while serving {
+        if buf.is_full() {
+            val t: Task<u64> = spawn { write_out(buf) }   # moves `buf`
+            buf = Writer::new()                           # owned again
+        }
+    }
+
+Otherwise the next round would hand the value over again. A transfer
+inside a closure is refused too.
 (Before 2026-09-25 every transfer inside a branch or a loop body was
 refused.)
 

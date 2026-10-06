@@ -10,6 +10,12 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-10-06
+
+- **PAR-HEAP-SHARED — `parallel for` のワーカーが spawner の heap を共有する** — 確保の帳簿を
+  `HeapState` に切り出し、貸し出し中だけロックする。ワーカーの確保がカウンタに届かず
+  (64 → 2)、スレッドをまたぐ free が no-op になっていた。単一スレッドの確保は 0.80 → 0.73 秒。
+
 ### 2026-10-02
 
 - **BUILD-TOOL D6 — `toy build` / `toy run --backend aot` は入力が変わっていなければビルドを飛ばす** —

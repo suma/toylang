@@ -184,6 +184,7 @@ unsafe extern "C" {
         arg: *mut u8,
     ) -> i32;
     fn pthread_join(thread: usize, retval: *mut *mut u8) -> i32;
+    fn sched_yield() -> i32;
     fn sysconf(name: i32) -> isize;
 }
 
@@ -561,17 +562,19 @@ pub struct RtLayout {
     pub largest_free: u64,
 }
 
-struct ThreadState {
-    sink: SinkFn,
-    // CONCURRENCY A2: this thread's shadow stack (DEBUG-OBS D4), or
-    // null until the first function with frames runs. Boxed: 8 KiB,
-    // and most of this struct is touched on every `print`.
-    shadow: *mut ToyShadowCtx,
-    // #121 Phase B-min: active-allocator stack. 64 nesting levels
-    // covers any realistic `with allocator = ...` structure; overflow
-    // aborts (the only way to hit it is a codegen bug).
-    alloc_stack: [u64; ALLOC_STACK_CAP],
-    alloc_stack_len: usize,
+/// The allocation side of the runtime: the bump region, the size
+/// table, the counters and the heap-check books. Split out of
+/// `ThreadState` because memory is shared between threads while
+/// output sinks, the shadow stack and the allocator stack are not.
+/// See `heap_lock` for who may touch it when.
+struct HeapState {
+    /// Threads borrowing this heap besides its owner. While it is 0
+    /// the owner is alone and `heap_lock` costs one load.
+    borrowers: AtomicUsize,
+    /// The thread holding the lock (its `ThreadState` address), or 0.
+    owner: AtomicUsize,
+    /// How many times the owner has re-entered. Touched only by it.
+    depth: usize,
     // Bump region (DROP-GLUE). See the dispatcher section below.
     bump_head: *mut BumpChunk,
     // Profiler (MEMORY_PROFILING). State: -1 unresolved, 0 off, 1 on.
@@ -611,6 +614,19 @@ struct ThreadState {
     /// its file), for finding the block an access past an end
     /// belongs to.
     hc_live: alloc::collections::BTreeMap<usize, (u64, u64, *const u8)>,
+}
+
+struct ThreadState {
+    sink: SinkFn,
+    // CONCURRENCY A2: this thread's shadow stack (DEBUG-OBS D4), or
+    // null until the first function with frames runs. Boxed: 8 KiB,
+    // and most of this struct is touched on every `print`.
+    shadow: *mut ToyShadowCtx,
+    // #121 Phase B-min: active-allocator stack. 64 nesting levels
+    // covers any realistic `with allocator = ...` structure; overflow
+    // aborts (the only way to hit it is a codegen bug).
+    alloc_stack: [u64; ALLOC_STACK_CAP],
+    alloc_stack_len: usize,
     // Program arguments for `toy_io_argc` / `toy_io_arg`. The AOT
     // binary reads the real process argv; the JIT injects these
     // (default: empty, matching a compiled binary with no arguments).
@@ -684,6 +700,12 @@ struct ThreadState {
     /// the line after the call it belongs to, so nothing can
     /// interleave between the two.
     net_status: u64,
+    /// CONCURRENCY: the heap this thread allocates from and reports
+    /// to. Owned by the thread that created it; a `parallel for`
+    /// worker borrows its spawner's, so a block allocated on one
+    /// thread and freed on another is found in one size table and
+    /// counted in one set of counters. Null until first use.
+    heap: *mut HeapState,
 }
 
 impl Default for ThreadState {
@@ -693,28 +715,6 @@ impl Default for ThreadState {
             shadow: core::ptr::null_mut(),
             alloc_stack: [0; ALLOC_STACK_CAP],
             alloc_stack_len: 0,
-            bump_head: core::ptr::null_mut(),
-            prof_state: -1,
-            prof_json: false,
-            prof_forced: false,
-            stats: RtMemoryStats::default(),
-            prof_tab: core::ptr::null_mut(),
-            prof_tab_cap: 0,
-            prof_tab_occupied: 0,
-            prof_tab_used: 0,
-            prof_sites: [PROF_SITE_ZERO; PROF_SITES_CAP],
-            prof_site_len: 0,
-            prof_layouts: [PROF_LAYOUT_ZERO; PROF_LAYOUT_CAP],
-            prof_layout_len: 0,
-            hc_state: -1,
-            hc_freed: alloc::collections::BTreeMap::new(),
-            hc_events: alloc::collections::BTreeMap::new(),
-            hc_quarantine: alloc::collections::VecDeque::new(),
-            hc_q_bytes: 0,
-            hc_q_limit: HC_QUARANTINE_DEFAULT,
-            hc_free_lists: alloc::collections::BTreeMap::new(),
-            hc_reused: 0,
-            hc_live: alloc::collections::BTreeMap::new(),
             io_args: core::ptr::null_mut(),
             io_args_len: 0,
             random_state: 0,
@@ -741,6 +741,39 @@ impl Default for ThreadState {
             dest: [0; 16],
             dest_len: 0,
             dest_port: 0,
+            heap: core::ptr::null_mut(),
+        }
+    }
+}
+
+impl Default for HeapState {
+    fn default() -> Self {
+        HeapState {
+            borrowers: AtomicUsize::new(0),
+            owner: AtomicUsize::new(0),
+            depth: 0,
+            bump_head: core::ptr::null_mut(),
+            prof_state: -1,
+            prof_json: false,
+            prof_forced: false,
+            stats: RtMemoryStats::default(),
+            prof_tab: core::ptr::null_mut(),
+            prof_tab_cap: 0,
+            prof_tab_occupied: 0,
+            prof_tab_used: 0,
+            prof_sites: [PROF_SITE_ZERO; PROF_SITES_CAP],
+            prof_site_len: 0,
+            prof_layouts: [PROF_LAYOUT_ZERO; PROF_LAYOUT_CAP],
+            prof_layout_len: 0,
+            hc_state: -1,
+            hc_freed: alloc::collections::BTreeMap::new(),
+            hc_events: alloc::collections::BTreeMap::new(),
+            hc_quarantine: alloc::collections::VecDeque::new(),
+            hc_q_bytes: 0,
+            hc_q_limit: HC_QUARANTINE_DEFAULT,
+            hc_free_lists: alloc::collections::BTreeMap::new(),
+            hc_reused: 0,
+            hc_live: alloc::collections::BTreeMap::new(),
         }
     }
 }
@@ -781,6 +814,119 @@ fn thread_state() -> &'static mut ThreadState {
     }
     // Safe: `raw` is uniquely owned by this thread now.
     unsafe { &mut *raw }
+}
+
+/// The heap the calling thread allocates from: its own, created on
+/// first use, or the one a spawner lent it (`attach_heap`).
+///
+/// Callers that read or write it must hold `heap_lock` while another
+/// thread may be borrowing it.
+fn heap() -> &'static mut HeapState {
+    let st = thread_state();
+    if st.heap.is_null() {
+        st.heap = Box::into_raw(Box::new(HeapState::default()));
+    }
+    // Safe: the pointer is a leaked box, ours or our spawner's, and
+    // the spawner outlives every thread it lends it to.
+    unsafe { &mut *st.heap }
+}
+
+/// Held for the length of one runtime entry point that touches the
+/// heap. Re-entrant (an entry point may call another), and free while
+/// no thread is borrowing the heap: the owner is then the only thread
+/// that can reach it, and only the owner can lend it, never from
+/// inside a held section.
+struct HeapGuard {
+    heap: *mut HeapState,
+    locked: bool,
+}
+
+fn heap_lock() -> HeapGuard {
+    let hp = heap() as *mut HeapState;
+    let h = unsafe { &*hp };
+    if h.borrowers.load(Ordering::Acquire) == 0 && h.owner.load(Ordering::Relaxed) == 0 {
+        return HeapGuard { heap: hp, locked: false };
+    }
+    let me = thread_state() as *mut ThreadState as usize;
+    if h.owner.load(Ordering::Relaxed) == me {
+        unsafe { (*hp).depth += 1 };
+        return HeapGuard { heap: hp, locked: true };
+    }
+    let mut spins = 0u32;
+    while h
+        .owner
+        .compare_exchange_weak(0, me, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        spins += 1;
+        if spins < 64 {
+            core::hint::spin_loop();
+        } else {
+            unsafe { sched_yield() };
+        }
+    }
+    unsafe { (*hp).depth = 1 };
+    HeapGuard { heap: hp, locked: true }
+}
+
+impl HeapGuard {
+    /// The heap this guard holds. One TLS lookup per entry point; the
+    /// helpers below it take the reference rather than looking again.
+    fn get(&mut self) -> &mut HeapState {
+        unsafe { &mut *self.heap }
+    }
+}
+
+impl Drop for HeapGuard {
+    fn drop(&mut self) {
+        if !self.locked {
+            return;
+        }
+        let hp = self.heap;
+        unsafe {
+            (*hp).depth -= 1;
+            if (*hp).depth == 0 {
+                (*hp).owner.store(0, Ordering::Release);
+            }
+        }
+    }
+}
+
+/// Lend the calling thread's heap to `n` threads about to start.
+/// Called by the spawner before the threads exist, so that the
+/// spawner's own allocations from here on take the lock.
+fn lend_heap(n: usize) -> *mut HeapState {
+    let hp = heap();
+    hp.borrowers.fetch_add(n, Ordering::AcqRel);
+    hp as *mut HeapState
+}
+
+/// Take back `n` loans once the borrowing threads have been joined.
+fn reclaim_heap(hp: *mut HeapState, n: usize) {
+    unsafe { (*hp).borrowers.fetch_sub(n, Ordering::AcqRel) };
+}
+
+/// Make a freshly started thread allocate from `hp`. Must run before
+/// the thread's first allocation.
+fn attach_heap(hp: *mut HeapState) {
+    thread_state().heap = hp;
+}
+
+/// Release what a borrowing thread created for itself — its state and
+/// shadow stack. The heap is the spawner's and stays.
+fn detach_thread() {
+    let key = tls_key();
+    let p = unsafe { pthread_getspecific(key) } as *mut ThreadState;
+    if p.is_null() {
+        return;
+    }
+    unsafe {
+        pthread_setspecific(key, core::ptr::null_mut());
+        let st = Box::from_raw(p);
+        if !st.shadow.is_null() {
+            drop(Box::from_raw(st.shadow));
+        }
+    }
 }
 
 /// Replace the calling thread's output sink. `None` restores the
@@ -1070,10 +1216,9 @@ pub extern "C" fn toy_alloc_current() -> u64 {
 // idempotent without any reuse races.
 // ---------------------------------------------------------------------------
 
-fn bump_alloc_raw(size: usize) -> *mut u8 {
+fn bump_alloc_raw(hp: &mut HeapState, size: usize) -> *mut u8 {
     let size = (size + 15) & !15usize; // 16-byte align
-    let st = thread_state();
-    let chunk = st.bump_head;
+    let chunk = hp.bump_head;
     if chunk.is_null() || unsafe { (*chunk).used } + size > BUMP_CHUNK_SIZE {
         // A request larger than a chunk gets a chunk its own size.
         // Without this the chunk was allocated at `BUMP_CHUNK_SIZE`
@@ -1098,7 +1243,7 @@ fn bump_alloc_raw(size: usize) -> *mut u8 {
             (*fresh).next = chunk;
             (*fresh).used = 0;
         }
-        st.bump_head = fresh;
+        hp.bump_head = fresh;
         let p = unsafe { (fresh as *mut u8).add(core::mem::size_of::<BumpChunk>()) };
         unsafe { (*fresh).used += size };
         p
@@ -1131,9 +1276,8 @@ fn prof_hash(p: *mut u8) -> u64 {
     x ^ (x >> 29)
 }
 
-fn prof_enabled() -> bool {
-    let st = thread_state();
-    if st.prof_state < 0 {
+fn prof_enabled(hp: &mut HeapState) -> bool {
+    if hp.prof_state < 0 {
         let p = unsafe { getenv(c"TOY_PROFILE_MEM".as_ptr().cast()) };
         let mut want_report = false;
         let mut json = false;
@@ -1142,8 +1286,8 @@ fn prof_enabled() -> bool {
             want_report = !v.is_empty() && v[0] != b'0';
             json = want_report && v == b"json";
         }
-        st.prof_json = json;
-        st.prof_state = (want_report || st.prof_forced) as i8;
+        hp.prof_json = json;
+        hp.prof_state = (want_report || hp.prof_forced) as i8;
         // Only an explicit request prints anything. A program that
         // asserts on `__builtin_live_bytes()` in a contract has not
         // asked for its stderr to grow a report.
@@ -1153,10 +1297,10 @@ fn prof_enabled() -> bool {
             }
         }
     }
-    st.prof_state != 0
+    hp.prof_state != 0
 }
 
-fn prof_put(p: *mut u8, size: u64, site: u64, file: *const u8) {
+fn prof_put(hp: &mut HeapState, p: *mut u8, size: u64, site: u64, file: *const u8) {
     // **The load factor counts tombstones**, not just live entries.
     // A program that allocates and frees in a loop keeps a small live
     // set for ever, so a threshold on live entries alone never fires
@@ -1166,13 +1310,11 @@ fn prof_put(p: *mut u8, size: u64, site: u64, file: *const u8) {
     // freeing an address the table no longer holds is the documented
     // no-op case.
     let rebuild = {
-        let st = thread_state();
-        st.prof_tab_cap == 0 || (st.prof_tab_used + 1) * 4 >= st.prof_tab_cap * 3
+        hp.prof_tab_cap == 0 || (hp.prof_tab_used + 1) * 4 >= hp.prof_tab_cap * 3
     };
     if rebuild {
         let (cap, live) = {
-            let st = thread_state();
-            (st.prof_tab_cap, st.prof_tab_occupied)
+            (hp.prof_tab_cap, hp.prof_tab_occupied)
         };
         // Tombstones, not entries, are usually what filled the table.
         // Rebuilding at the same capacity drops them; doubling is for
@@ -1184,22 +1326,21 @@ fn prof_put(p: *mut u8, size: u64, site: u64, file: *const u8) {
         } else {
             cap * 2
         };
-        prof_tab_grow(next);
+        prof_tab_grow(hp, next);
     }
-    let st = thread_state();
-    let mask = st.prof_tab_cap - 1;
+    let mask = hp.prof_tab_cap - 1;
     let mut i = prof_hash(p) & mask;
-    let tab = st.prof_tab;
+    let tab = hp.prof_tab;
     while unsafe { (*tab.add(i as usize)).state } == 1
         && unsafe { (*tab.add(i as usize)).key } != p
     {
         i = (i + 1) & mask;
     }
     if unsafe { (*tab.add(i as usize)).state } == 0 {
-        st.prof_tab_used += 1;
+        hp.prof_tab_used += 1;
     }
     if unsafe { (*tab.add(i as usize)).state } != 1 {
-        st.prof_tab_occupied += 1;
+        hp.prof_tab_occupied += 1;
     }
     unsafe {
         (*tab.add(i as usize)).key = p;
@@ -1215,26 +1356,24 @@ fn prof_put(p: *mut u8, size: u64, site: u64, file: *const u8) {
 /// Called to grow *and* to clear tombstones at the same capacity, so
 /// the name is a slight lie -- it is the one place that decides what
 /// a probe will have to walk past next.
-fn prof_tab_grow(new_cap: u64) {
+fn prof_tab_grow(hp: &mut HeapState, new_cap: u64) {
     let (old_cap, old) = {
-        let st = thread_state();
-        (st.prof_tab_cap, st.prof_tab)
+        (hp.prof_tab_cap, hp.prof_tab)
     };
     let fresh = unsafe { calloc(new_cap as usize, core::mem::size_of::<ProfSlot>()) } as *mut ProfSlot;
     if fresh.is_null() {
         return; // out of memory while profiling: keep running, lose accuracy
     }
     {
-        let st = thread_state();
-        st.prof_tab = fresh;
-        st.prof_tab_cap = new_cap;
-        st.prof_tab_occupied = 0;
-        st.prof_tab_used = 0;
+        hp.prof_tab = fresh;
+        hp.prof_tab_cap = new_cap;
+        hp.prof_tab_occupied = 0;
+        hp.prof_tab_used = 0;
     }
     for i in 0..old_cap as usize {
         if unsafe { (*old.add(i)).state } == 1 {
             let slot = unsafe { *old.add(i) };
-            prof_put(slot.key, slot.size, slot.site, slot.file);
+            prof_put(hp, slot.key, slot.size, slot.site, slot.file);
         }
     }
     if !old.is_null() {
@@ -1244,14 +1383,13 @@ fn prof_tab_grow(new_cap: u64) {
 
 /// Remove `p` and return the size it held, or 0 if it was not tracked
 /// (a double free, or a pointer this runtime never handed out).
-fn prof_take(p: *mut u8) -> (u64, u64, *const u8) {
-    let st = thread_state();
-    if st.prof_tab_cap == 0 {
+fn prof_take(hp: &mut HeapState, p: *mut u8) -> (u64, u64, *const u8) {
+    if hp.prof_tab_cap == 0 {
         return (0, 0, core::ptr::null());
     }
-    let mask = st.prof_tab_cap - 1;
+    let mask = hp.prof_tab_cap - 1;
     let mut i = prof_hash(p) & mask;
-    let tab = st.prof_tab;
+    let tab = hp.prof_tab;
     while unsafe { (*tab.add(i as usize)).state } != 0 {
         if unsafe { (*tab.add(i as usize)).state } == 1
             && unsafe { (*tab.add(i as usize)).key } == p
@@ -1261,7 +1399,7 @@ fn prof_take(p: *mut u8) -> (u64, u64, *const u8) {
             // here must still be reachable. `prof_tab_used` therefore
             // stays as it was -- the slot still costs a probe step.
             unsafe { (*tab.add(i as usize)).state = 2 };
-            st.prof_tab_occupied -= 1;
+            hp.prof_tab_occupied -= 1;
             return (slot.size, slot.site, slot.file);
         }
         i = (i + 1) & mask;
@@ -1269,33 +1407,33 @@ fn prof_take(p: *mut u8) -> (u64, u64, *const u8) {
     (0, 0, core::ptr::null())
 }
 
-fn prof_site_for(st: &mut ThreadState, site: u64, file: *const u8) -> *mut ProfSite {
-    for i in 0..st.prof_site_len {
-        if st.prof_sites[i].site == site {
-            return &mut st.prof_sites[i];
+fn prof_site_for(hp: &mut HeapState, site: u64, file: *const u8) -> *mut ProfSite {
+    for i in 0..hp.prof_site_len {
+        if hp.prof_sites[i].site == site {
+            return &mut hp.prof_sites[i];
         }
     }
-    if st.prof_site_len >= PROF_SITES_CAP {
+    if hp.prof_site_len >= PROF_SITES_CAP {
         return core::ptr::null_mut(); // beyond the cap the per-site view degrades; totals stay exact
     }
-    let e = &mut st.prof_sites[st.prof_site_len];
-    st.prof_site_len += 1;
+    let e = &mut hp.prof_sites[hp.prof_site_len];
+    hp.prof_site_len += 1;
     e.site = site;
     e.file = file;
     e
 }
 
-fn prof_obtained(st: &mut ThreadState, bytes: u64) {
-    st.stats.cumulative_bytes += bytes;
-    st.stats.live_bytes += bytes;
-    if st.stats.live_bytes > st.stats.peak_live_bytes {
-        st.stats.peak_live_bytes = st.stats.live_bytes;
-        st.stats.peak_at_request = st.stats.alloc_count + st.stats.realloc_count;
+fn prof_obtained(hp: &mut HeapState, bytes: u64) {
+    hp.stats.cumulative_bytes += bytes;
+    hp.stats.live_bytes += bytes;
+    if hp.stats.live_bytes > hp.stats.peak_live_bytes {
+        hp.stats.peak_live_bytes = hp.stats.live_bytes;
+        hp.stats.peak_at_request = hp.stats.alloc_count + hp.stats.realloc_count;
     }
 }
 
-fn prof_released(st: &mut ThreadState, bytes: u64) {
-    st.stats.live_bytes = st.stats.live_bytes.saturating_sub(bytes);
+fn prof_released(hp: &mut HeapState, bytes: u64) {
+    hp.stats.live_bytes = hp.stats.live_bytes.saturating_sub(bytes);
 }
 
 /// Emitted at the top of `main` when the program reads a counter, so
@@ -1303,7 +1441,9 @@ fn prof_released(st: &mut ThreadState, bytes: u64) {
 /// resolved yet.
 #[unsafe(no_mangle)]
 pub extern "C" fn toy_prof_force_counting() {
-    thread_state().prof_forced = true;
+    let mut heap_guard = heap_lock();
+    let hp = heap_guard.get();
+    hp.prof_forced = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1867,15 +2007,16 @@ pub unsafe extern "C" fn toy_panic_alloc_budget(
 /// implementation detail.
 #[unsafe(no_mangle)]
 pub extern "C" fn toy_prof_stat(which: u64) -> u64 {
-    prof_enabled();
-    let st = thread_state();
+    let mut heap_guard = heap_lock();
+    let hp = heap_guard.get();
+    prof_enabled(hp);
     match which {
-        0 => st.stats.alloc_count,
-        1 => st.stats.free_count,
-        2 => st.stats.realloc_count,
-        3 => st.stats.cumulative_bytes,
-        4 => st.stats.live_bytes,
-        5 => st.stats.peak_live_bytes,
+        0 => hp.stats.alloc_count,
+        1 => hp.stats.free_count,
+        2 => hp.stats.realloc_count,
+        3 => hp.stats.cumulative_bytes,
+        4 => hp.stats.live_bytes,
+        5 => hp.stats.peak_live_bytes,
         _ => 0,
     }
 }
@@ -1893,12 +2034,13 @@ pub extern "C" fn toy_record_allocator_layout(
     free_blocks: u64,
     largest_free: u64,
 ) {
-    let st = thread_state();
-    if st.prof_layout_len >= PROF_LAYOUT_CAP {
+    let mut heap_guard = heap_lock();
+    let hp = heap_guard.get();
+    if hp.prof_layout_len >= PROF_LAYOUT_CAP {
         return;
     }
-    let e = &mut st.prof_layouts[st.prof_layout_len];
-    st.prof_layout_len += 1;
+    let e = &mut hp.prof_layouts[hp.prof_layout_len];
+    hp.prof_layout_len += 1;
     e.name = name;
     e.managed = managed;
     e.live = live;
@@ -1932,13 +2074,13 @@ fn layout_name(l: &ProfLayout) -> String {
 }
 
 fn prof_report_layouts() {
-    let st = thread_state();
-    if st.prof_layout_len == 0 {
+    let hp = heap();
+    if hp.prof_layout_len == 0 {
         return;
     }
     err_write("allocator layouts\n");
-    for i in 0..st.prof_layout_len {
-        let l = &st.prof_layouts[i];
+    for i in 0..hp.prof_layout_len {
+        let l = &hp.prof_layouts[i];
         err_write(&format!(
             "  {}  managed {}  live {}  free_blocks {}  largest_free {}  external_fragmentation {} permille\n",
             layout_name(l),
@@ -1952,15 +2094,15 @@ fn prof_report_layouts() {
 }
 
 fn prof_report_layouts_json() {
-    let st = thread_state();
-    if st.prof_layout_len == 0 {
+    let hp = heap();
+    if hp.prof_layout_len == 0 {
         err_write("  \"layouts\": []\n");
         return;
     }
     err_write("  \"layouts\": [\n");
-    for i in 0..st.prof_layout_len {
-        let l = &st.prof_layouts[i];
-        let comma = if i + 1 == st.prof_layout_len { "" } else { "," };
+    for i in 0..hp.prof_layout_len {
+        let l = &hp.prof_layouts[i];
+        let comma = if i + 1 == hp.prof_layout_len { "" } else { "," };
         err_write(&format!(
             "    {{\n      \"name\": \"{}\",\n      \"managed\": {},\n      \"live\": {},\n      \"free_blocks\": {},\n      \"largest_free\": {},\n      \"external_fragmentation_permille\": {}\n    }}{}\n",
             layout_name(l),
@@ -1979,10 +2121,10 @@ fn prof_report_layouts_json() {
 /// sort by packed position: the table is tiny and insertion order is
 /// not source order).
 fn leak_sites_sorted() -> Vec<(u64, RtSiteStats)> {
-    let st = thread_state();
+    let hp = heap();
     let mut leaked = Vec::new();
-    for i in 0..st.prof_site_len {
-        let s = &st.prof_sites[i];
+    for i in 0..hp.prof_site_len {
+        let s = &hp.prof_sites[i];
         if s.live_count > 0 {
             leaked.push((
                 s.site,
@@ -2001,6 +2143,7 @@ fn leak_sites_sorted() -> Vec<(u64, RtSiteStats)> {
 }
 
 fn prof_report_leaks() {
+    let _heap = heap_lock();
     let leaked = leak_sites_sorted();
     if leaked.is_empty() {
         return;
@@ -2028,7 +2171,7 @@ fn prof_report_leaks() {
 }
 
 fn prof_report_json() {
-    let stats = thread_state().stats;
+    let stats = heap().stats;
     err_write("{\n  \"memory_profile\": {\n");
     err_write(&format!("    \"alloc_count\": {},\n", stats.alloc_count));
     err_write(&format!("    \"free_count\": {},\n", stats.free_count));
@@ -2064,19 +2207,20 @@ fn prof_report_json() {
 }
 
 extern "C" fn toy_prof_report() {
-    if thread_state().prof_json {
+    let mut heap_guard = heap_lock();
+    let hp = heap_guard.get();
+    if hp.prof_json {
         prof_report_json();
         return;
     }
-    let st = thread_state();
     err_write("memory profile\n");
-    err_write(&format!("  {:<16}  {}\n", "alloc_count", st.stats.alloc_count));
-    err_write(&format!("  {:<16}  {}\n", "free_count", st.stats.free_count));
-    err_write(&format!("  {:<16}  {}\n", "realloc_count", st.stats.realloc_count));
-    err_write(&format!("  {:<16}  {}\n", "cumulative_bytes", st.stats.cumulative_bytes));
-    err_write(&format!("  {:<16}  {}\n", "live_bytes", st.stats.live_bytes));
-    err_write(&format!("  {:<16}  {}\n", "peak_live_bytes", st.stats.peak_live_bytes));
-    err_write(&format!("  {:<16}  {}\n", "peak_at_request", st.stats.peak_at_request));
+    err_write(&format!("  {:<16}  {}\n", "alloc_count", hp.stats.alloc_count));
+    err_write(&format!("  {:<16}  {}\n", "free_count", hp.stats.free_count));
+    err_write(&format!("  {:<16}  {}\n", "realloc_count", hp.stats.realloc_count));
+    err_write(&format!("  {:<16}  {}\n", "cumulative_bytes", hp.stats.cumulative_bytes));
+    err_write(&format!("  {:<16}  {}\n", "live_bytes", hp.stats.live_bytes));
+    err_write(&format!("  {:<16}  {}\n", "peak_live_bytes", hp.stats.peak_live_bytes));
+    err_write(&format!("  {:<16}  {}\n", "peak_at_request", hp.stats.peak_at_request));
     prof_report_leaks();
     prof_report_layouts();
 }
@@ -2087,36 +2231,52 @@ extern "C" fn toy_prof_report() {
 /// The injected program arguments are preserved — they are harness
 /// state for the current run, not profiler state.
 pub fn profiler_reset() {
+    let mut heap_guard = heap_lock();
+    let hp = heap_guard.get();
     let st = thread_state();
     let io_args = st.io_args;
     let io_args_len = st.io_args_len;
+    let heap = st.heap;
     *st = ThreadState::default();
     st.io_args = io_args;
     st.io_args_len = io_args_len;
-    st.prof_forced = true;
+    st.heap = heap;
+    // A fresh heap, but the same lock: the guard we hold is in it.
+    let borrowers = hp.borrowers.load(Ordering::Relaxed);
+    let owner = hp.owner.load(Ordering::Relaxed);
+    let depth = hp.depth;
+    *hp = HeapState::default();
+    hp.borrowers.store(borrowers, Ordering::Relaxed);
+    hp.owner.store(owner, Ordering::Relaxed);
+    hp.depth = depth;
+    hp.prof_forced = true;
 }
 
 /// The calling thread's allocation totals (JIT accessor).
 pub fn profiler_stats() -> RtMemoryStats {
-    thread_state().stats
+    let mut heap_guard = heap_lock();
+    let hp = heap_guard.get();
+    hp.stats
 }
 
 /// Leaking sites, in source order (JIT accessor). Sorted so the text
 /// report reads the same as the interpreter's.
 pub fn profiler_sites() -> Vec<(u64, RtSiteStats)> {
+    let _heap = heap_lock();
     leak_sites_sorted()
 }
 
 /// Registered allocator layouts, in registration order (JIT accessor).
 pub fn profiler_layouts() -> Vec<RtLayout> {
-    let st = thread_state();
-    (0..st.prof_layout_len)
+    let mut heap_guard = heap_lock();
+    let hp = heap_guard.get();
+    (0..hp.prof_layout_len)
         .map(|i| RtLayout {
-            name: layout_name(&st.prof_layouts[i]),
-            managed: st.prof_layouts[i].managed,
-            live: st.prof_layouts[i].live,
-            free_blocks: st.prof_layouts[i].free_blocks,
-            largest_free: st.prof_layouts[i].largest_free,
+            name: layout_name(&hp.prof_layouts[i]),
+            managed: hp.prof_layouts[i].managed,
+            live: hp.prof_layouts[i].live,
+            free_blocks: hp.prof_layouts[i].free_blocks,
+            largest_free: hp.prof_layouts[i].largest_free,
         })
         .collect()
 }
@@ -2141,24 +2301,25 @@ pub extern "C" fn toy_dispatched_alloc(
     site: u64,
     file: *const u8,
 ) -> *mut u8 {
+    let mut heap_guard = heap_lock();
+    let hp = heap_guard.get();
     // A zero-size request yields the null pointer and is not counted,
     // matching the interpreter. libc would hand back a unique
     // non-null pointer here, which would then differ.
     if size == 0 {
         return core::ptr::null_mut();
     }
-    let p = hc_alloc_raw(size as usize);
+    let p = hc_alloc_raw(hp, size as usize);
     if !p.is_null() {
         // DROP-GLUE: the size table is maintained even when no report
         // was asked for — an always-on registry is what makes
         // `toy_dispatched_free` idempotent (see below).
-        prof_put(p, size, site, file);
-        hc_note_live(p, size, site, file);
-        if prof_enabled() {
-            let st = thread_state();
-            st.stats.alloc_count += 1;
-            prof_obtained(st, size);
-            let e = prof_site_for(st, site, file);
+        prof_put(hp, p, size, site, file);
+        hc_note_live(hp, p, size, site, file);
+        if prof_enabled(hp) {
+            hp.stats.alloc_count += 1;
+            prof_obtained(hp, size);
+            let e = prof_site_for(hp, site, file);
             if !e.is_null() {
                 unsafe {
                     (*e).alloc_count += 1;
@@ -2188,29 +2349,30 @@ pub extern "C" fn toy_dispatched_free(
     free_site: u64,
     free_file: *const u8,
 ) {
+    let mut heap_guard = heap_lock();
+    let hp = heap_guard.get();
     if p.is_null() {
         return; // freeing null is a no-op and is not counted
     }
-    let (size, site, file) = prof_take(p);
+    let (size, site, file) = prof_take(hp, p);
     if size == 0 {
         // Already freed, or not this runtime's memory. HEAP-CHECK H0:
         // the first is worth counting.
-        if hc_enabled() {
-            hc_freed_again(p, free_site, free_file);
+        if hc_enabled(hp) {
+            hc_freed_again(hp, p, free_site, free_file);
         }
         return;
     }
-    if hc_enabled() {
-        hc_note_dead(p);
-        hc_note_freed(p, size, site, file, free_site, free_file);
-        hc_poison(p, size);
-        hc_quarantine(p, size);
+    if hc_enabled(hp) {
+        hc_note_dead(hp, p);
+        hc_note_freed(hp, p, size, site, file, free_site, free_file);
+        hc_poison(hp, p, size);
+        hc_quarantine(hp, p, size);
     }
-    if prof_enabled() {
-        let st = thread_state();
-        st.stats.free_count += 1;
-        prof_released(st, size);
-        let e = prof_site_for(st, site, file);
+    if prof_enabled(hp) {
+        hp.stats.free_count += 1;
+        prof_released(hp, size);
+        let e = prof_site_for(hp, site, file);
         if !e.is_null() {
             unsafe {
                 (*e).live_count = (*e).live_count.saturating_sub(1);
@@ -2233,6 +2395,8 @@ pub unsafe extern "C" fn toy_dispatched_realloc(
     site: u64,
     file: *const u8,
 ) -> *mut u8 {
+    let mut heap_guard = heap_lock();
+    let hp = heap_guard.get();
     if p.is_null() {
         // A null resize is an allocation, and is attributed to the
         // call site — most stdlib collections grow through this shape
@@ -2249,19 +2413,19 @@ pub unsafe extern "C" fn toy_dispatched_realloc(
     // `toy_dispatched_free`), so the old-size lookup is unconditional
     // too — a resize of an untracked pointer is a no-op bookkeeping
     // wise.
-    let (old_size, site, file) = prof_take(p);
+    let (old_size, site, file) = prof_take(hp, p);
     // Bump-region move: a fresh block, old contents copied, the old
     // block left in place (it is never reused).
-    let np = hc_alloc_raw(new_size as usize);
+    let np = hc_alloc_raw(hp, new_size as usize);
     if np.is_null() {
-        prof_put(p, old_size, site, file); // restore tracking on failure
+        prof_put(hp, p, old_size, site, file); // restore tracking on failure
         return core::ptr::null_mut();
     }
     // The old block is released by the move: a later free of it is a
     // double free, and says so.
-    if old_size > 0 && hc_enabled() {
-        hc_note_dead(p);
-        hc_note_freed(p, old_size, site, file, HC_RESIZE, core::ptr::null());
+    if old_size > 0 && hc_enabled(hp) {
+        hc_note_dead(hp, p);
+        hc_note_freed(hp, p, old_size, site, file, HC_RESIZE, core::ptr::null());
     }
     // ERROR_MODEL D5: the accounting belongs on the success path. A
     // refused request obtained nothing, and reporting the growth
@@ -2269,17 +2433,16 @@ pub unsafe extern "C" fn toy_dispatched_realloc(
     // interpreter's heap had the same bug on the other side, so the
     // lanes disagreed about a failed resize instead of agreeing that
     // nothing happened.
-    if prof_enabled() {
-        let st = thread_state();
-        st.stats.realloc_count += 1;
+    if prof_enabled(hp) {
+        hp.stats.realloc_count += 1;
         if new_size > old_size {
-            prof_obtained(st, new_size - old_size);
+            prof_obtained(hp, new_size - old_size);
         } else {
-            prof_released(st, old_size - new_size);
+            prof_released(hp, old_size - new_size);
         }
         // A resize keeps the site its block already had, so a leak
         // still points at where the memory came from.
-        let e = prof_site_for(st, site, file);
+        let e = prof_site_for(hp, site, file);
         if !e.is_null() {
             unsafe {
                 if new_size > old_size {
@@ -2299,13 +2462,13 @@ pub unsafe extern "C" fn toy_dispatched_realloc(
     }
     // H1/H2: the moved-from block is poisoned only now, after its
     // contents reached the new one.
-    if old_size > 0 && hc_enabled() {
-        hc_poison(p, old_size);
-        hc_quarantine(p, old_size);
+    if old_size > 0 && hc_enabled(hp) {
+        hc_poison(hp, p, old_size);
+        hc_quarantine(hp, p, old_size);
     }
-    prof_put(np, new_size, site, file);
-    if hc_enabled() {
-        hc_note_live(np, new_size, site, file);
+    prof_put(hp, np, new_size, site, file);
+    if hc_enabled(hp) {
+        hc_note_live(hp, np, new_size, site, file);
     }
     np
 }
@@ -2343,16 +2506,15 @@ struct HcEvent {
     again_file: *const u8,
 }
 
-fn hc_enabled() -> bool {
-    let st = thread_state();
-    if st.hc_state < 0 {
+fn hc_enabled(hp: &mut HeapState) -> bool {
+    if hp.hc_state < 0 {
         let p = unsafe { getenv(c"TOY_HEAP_CHECK".as_ptr().cast()) };
         let v: &[u8] = if p.is_null() {
             b""
         } else {
             unsafe { core::ffi::CStr::from_ptr(p as *const core::ffi::c_char) }.to_bytes()
         };
-        st.hc_state = match v {
+        hp.hc_state = match v {
             b"report" => 1,
             b"poison" => 2,
             b"reuse" => 3,
@@ -2365,26 +2527,27 @@ fn hc_enabled() -> bool {
                 0
             }
         };
-        if st.hc_state == 3 {
+        if hp.hc_state == 3 {
             let q = unsafe { getenv(c"TOY_HEAP_QUARANTINE".as_ptr().cast()) };
             if !q.is_null() {
                 let text = unsafe { core::ffi::CStr::from_ptr(q as *const core::ffi::c_char) };
                 match text.to_str().ok().and_then(|t| t.parse::<u64>().ok()) {
-                    Some(n) => st.hc_q_limit = n,
+                    Some(n) => hp.hc_q_limit = n,
                     None => err_write("toylang: TOY_HEAP_QUARANTINE expects a number of bytes\n"),
                 }
             }
         }
-        if st.hc_state > 0 {
+        if hp.hc_state > 0 {
             unsafe {
                 atexit(toy_heap_check_report);
             }
         }
     }
-    st.hc_state > 0
+    hp.hc_state > 0
 }
 
 fn hc_note_freed(
+    hp: &mut HeapState,
     p: *mut u8,
     size: u64,
     alloc_site: u64,
@@ -2392,8 +2555,7 @@ fn hc_note_freed(
     free_site: u64,
     free_file: *const u8,
 ) {
-    thread_state()
-        .hc_freed
+    hp.hc_freed
         .insert(p as usize, HcFreed { size, alloc_site, alloc_file, free_site, free_file });
 }
 
@@ -2402,8 +2564,8 @@ fn hc_note_freed(
 /// again; what it buys is that an access the instrumentation cannot
 /// see (runtime-internal) reads a recognisable pattern, not the old
 /// contents.
-fn hc_poison(p: *mut u8, size: u64) {
-    if thread_state().hc_state >= 2 && size > 0 {
+fn hc_poison(hp: &mut HeapState, p: *mut u8, size: u64) {
+    if hp.hc_state >= 2 && size > 0 {
         unsafe { core::ptr::write_bytes(p, HC_POISON_BYTE, size as usize) };
     }
 }
@@ -2423,23 +2585,22 @@ fn hc_size_class(size: u64) -> u64 {
 
 /// H3: a block for a request of `size` bytes -- in reuse mode, the
 /// last one released of its size class if there is one.
-fn hc_alloc_raw(size: usize) -> *mut u8 {
-    if hc_enabled() {
-        let st = thread_state();
-        if st.hc_state == 3 {
+fn hc_alloc_raw(hp: &mut HeapState, size: usize) -> *mut u8 {
+    if hc_enabled(hp) {
+        if hp.hc_state == 3 {
             let class = hc_size_class(size as u64);
-            if let Some(p) = st.hc_free_lists.get_mut(&class).and_then(Vec::pop) {
-                st.hc_reused += 1;
+            if let Some(p) = hp.hc_free_lists.get_mut(&class).and_then(Vec::pop) {
+                hp.hc_reused += 1;
                 return p as *mut u8;
             }
         }
-        if st.hc_state >= 2 {
+        if hp.hc_state >= 2 {
             // H4: the class and a redzone after it, as the
             // interpreter's heap lays blocks out in poison mode.
-            return bump_alloc_raw(hc_size_class(size as u64) as usize + HC_REDZONE);
+            return bump_alloc_raw(hp, hc_size_class(size as u64) as usize + HC_REDZONE);
         }
     }
-    bump_alloc_raw(size)
+    bump_alloc_raw(hp, size)
 }
 
 /// H4: the interpreter's `HEAP_REDZONE`.
@@ -2447,17 +2608,15 @@ const HC_REDZONE: usize = 16;
 
 /// H4: in poison and reuse mode, remember a block handed out (or
 /// forget one released) for the past-the-end check.
-fn hc_note_live(p: *mut u8, size: u64, site: u64, file: *const u8) {
-    let st = thread_state();
-    if st.hc_state >= 2 {
-        st.hc_live.insert(p as usize, (size, site, file));
+fn hc_note_live(hp: &mut HeapState, p: *mut u8, size: u64, site: u64, file: *const u8) {
+    if hp.hc_state >= 2 {
+        hp.hc_live.insert(p as usize, (size, site, file));
     }
 }
 
-fn hc_note_dead(p: *mut u8) {
-    let st = thread_state();
-    if st.hc_state >= 2 {
-        st.hc_live.remove(&(p as usize));
+fn hc_note_dead(hp: &mut HeapState, p: *mut u8) {
+    if hp.hc_state >= 2 {
+        hp.hc_live.remove(&(p as usize));
     }
 }
 
@@ -2466,21 +2625,20 @@ fn hc_note_dead(p: *mut u8) {
 /// is forgotten -- an access to it is no longer an access to freed
 /// memory once it can be handed out again -- and waits for a request
 /// of its class. The interpreter's `quarantine_block`, step for step.
-fn hc_quarantine(p: *mut u8, size: u64) {
-    let st = thread_state();
-    if st.hc_state != 3 {
+fn hc_quarantine(hp: &mut HeapState, p: *mut u8, size: u64) {
+    if hp.hc_state != 3 {
         return;
     }
     let class = hc_size_class(size);
-    st.hc_quarantine.push_back((p as usize, class));
-    st.hc_q_bytes += class;
-    while st.hc_q_bytes > st.hc_q_limit {
-        let Some((a, c)) = st.hc_quarantine.pop_front() else {
+    hp.hc_quarantine.push_back((p as usize, class));
+    hp.hc_q_bytes += class;
+    while hp.hc_q_bytes > hp.hc_q_limit {
+        let Some((a, c)) = hp.hc_quarantine.pop_front() else {
             break;
         };
-        st.hc_q_bytes -= c;
-        st.hc_freed.remove(&a);
-        st.hc_free_lists.entry(c).or_default().push(a);
+        hp.hc_q_bytes -= c;
+        hp.hc_freed.remove(&a);
+        hp.hc_free_lists.entry(c).or_default().push(a);
     }
 }
 
@@ -2500,13 +2658,14 @@ pub unsafe extern "C" fn toy_heap_check(
     prefix: *const u8,
     suffix: *const u8,
 ) {
-    let st = thread_state();
-    if st.hc_state < 2 || addr == 0 {
+    let mut heap_guard = heap_lock();
+    let hp = heap_guard.get();
+    if hp.hc_state < 2 || addr == 0 {
         return;
     }
     let len = len.max(1);
     let end = (addr as usize).saturating_add(len as usize);
-    let freed = st
+    let freed = hp
         .hc_freed
         .range(..end)
         .next_back()
@@ -2516,7 +2675,7 @@ pub unsafe extern "C" fn toy_heap_check(
         // H4: an access that starts past a live block's end, in its
         // class's slack or the redzone after it -- judged by where it
         // starts, as the interpreter judges it.
-        let Some((&start, &(size, site, file))) = st.hc_live.range(..=addr as usize).next_back()
+        let Some((&start, &(size, site, file))) = hp.hc_live.range(..=addr as usize).next_back()
         else {
             return;
         };
@@ -2566,11 +2725,12 @@ pub unsafe extern "C" fn toy_heap_check(
 /// `prefix` and `suffix` are NUL-terminated or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn toy_heap_check_free(p: *mut u8, prefix: *const u8, suffix: *const u8) {
-    let st = thread_state();
-    if st.hc_state < 2 || p.is_null() || st.hc_live.contains_key(&(p as usize)) {
+    let mut heap_guard = heap_lock();
+    let hp = heap_guard.get();
+    if hp.hc_state < 2 || p.is_null() || hp.hc_live.contains_key(&(p as usize)) {
         return;
     }
-    let Some(f) = st.hc_freed.get(&(p as usize)).copied() else {
+    let Some(f) = hp.hc_freed.get(&(p as usize)).copied() else {
         return;
     };
     let first = if f.free_site == HC_RESIZE {
@@ -2604,22 +2764,23 @@ pub unsafe extern "C" fn toy_heap_check_free(p: *mut u8, prefix: *const u8, suff
 /// `file` is NUL-terminated or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn toy_heap_poison(p: *mut u8, size: u64, site: u64, file: *const u8) {
-    if p.is_null() || size == 0 || !hc_enabled() {
+    let mut heap_guard = heap_lock();
+    let hp = heap_guard.get();
+    if p.is_null() || size == 0 || !hc_enabled(hp) {
         return;
     }
-    let st = thread_state();
-    if st.hc_state < 2 {
+    if hp.hc_state < 2 {
         return;
     }
     let addr = p as usize;
-    let Some((&start, &(bsize, alloc_site, alloc_file))) = st.hc_live.range(..=addr).next_back()
+    let Some((&start, &(bsize, alloc_site, alloc_file))) = hp.hc_live.range(..=addr).next_back()
     else {
         return;
     };
     if addr >= start + bsize as usize {
         return;
     }
-    st.hc_freed.insert(
+    hp.hc_freed.insert(
         addr,
         HcFreed { size, alloc_site, alloc_file, free_site: site, free_file: file },
     );
@@ -2632,15 +2793,16 @@ pub unsafe extern "C" fn toy_heap_poison(p: *mut u8, size: u64, site: u64, file:
 /// overridden: the build asked for the mode.
 #[unsafe(no_mangle)]
 pub extern "C" fn toy_heap_check_start_mode(mode: u64, quarantine: u64) {
-    let _ = hc_enabled();
-    let st = thread_state();
-    if st.hc_state == 0 {
+    let mut heap_guard = heap_lock();
+    let hp = heap_guard.get();
+    let _ = hc_enabled(hp);
+    if hp.hc_state == 0 {
         unsafe {
             atexit(toy_heap_check_report);
         }
     }
-    st.hc_state = if mode == 3 { 3 } else { 2 };
-    st.hc_q_limit = quarantine;
+    hp.hc_state = if mode == 3 { 3 } else { 2 };
+    hp.hc_q_limit = quarantine;
 }
 
 /// HEAP-CHECK H0b: the function that set the second free off -- the
@@ -2666,14 +2828,12 @@ fn hc_culprit() -> String {
     String::new()
 }
 
-fn hc_freed_again(p: *mut u8, site: u64, file: *const u8) {
-    let st = thread_state();
-    let Some(f) = st.hc_freed.get(&(p as usize)).copied() else {
+fn hc_freed_again(hp: &mut HeapState, p: *mut u8, site: u64, file: *const u8) {
+    let Some(f) = hp.hc_freed.get(&(p as usize)).copied() else {
         return; // not memory this runtime handed out
     };
     let culprit = hc_culprit();
-    let st = thread_state();
-    let e = st.hc_events.entry((f.alloc_site, f.free_site, site, culprit)).or_insert(HcEvent {
+    let e = hp.hc_events.entry((f.alloc_site, f.free_site, site, culprit)).or_insert(HcEvent {
         count: 0,
         alloc_file: f.alloc_file,
         first_file: f.free_file,
@@ -2697,18 +2857,19 @@ fn hc_position(site: u64, file: *const u8) -> String {
 
 /// The report, as text (also the JIT accessor).
 pub fn heap_check_report() -> String {
-    let st = thread_state();
-    let total: u64 = st.hc_events.values().map(|e| e.count).sum();
-    let reused = if st.hc_state == 3 {
-        format!(", {} blocks reused", st.hc_reused)
+    let mut heap_guard = heap_lock();
+    let hp = heap_guard.get();
+    let total: u64 = hp.hc_events.values().map(|e| e.count).sum();
+    let reused = if hp.hc_state == 3 {
+        format!(", {} blocks reused", hp.hc_reused)
     } else {
         String::new()
     };
     let mut out = format!(
         "heap check: {total} double frees ({} distinct){reused}\n",
-        st.hc_events.len()
+        hp.hc_events.len()
     );
-    for ((alloc, first, again, culprit), e) in &st.hc_events {
+    for ((alloc, first, again, culprit), e) in &hp.hc_events {
         let (alloc, first, again) = (*alloc, *first, *again);
         let first = if first == HC_RESIZE {
             String::from("moved by a resize")
@@ -2729,34 +2890,38 @@ pub fn heap_check_report() -> String {
 /// Start report mode on this thread, forgetting what an earlier run
 /// recorded (JIT accessor; an AOT binary reads `TOY_HEAP_CHECK`).
 pub fn heap_check_start() {
-    let st = thread_state();
-    st.hc_state = 1;
-    st.hc_freed.clear();
-    st.hc_events.clear();
-    st.hc_quarantine.clear();
-    st.hc_q_bytes = 0;
-    st.hc_q_limit = HC_QUARANTINE_DEFAULT;
-    st.hc_free_lists.clear();
-    st.hc_reused = 0;
-    st.hc_live.clear();
+    let mut heap_guard = heap_lock();
+    let hp = heap_guard.get();
+    hp.hc_state = 1;
+    hp.hc_freed.clear();
+    hp.hc_events.clear();
+    hp.hc_quarantine.clear();
+    hp.hc_q_bytes = 0;
+    hp.hc_q_limit = HC_QUARANTINE_DEFAULT;
+    hp.hc_free_lists.clear();
+    hp.hc_reused = 0;
+    hp.hc_live.clear();
 }
 
 /// Start poison mode on this thread (JIT accessor).
 pub fn heap_check_start_poison() {
+    let mut heap_guard = heap_lock();
     heap_check_start();
-    thread_state().hc_state = 2;
+    heap_guard.get().hc_state = 2;
 }
 
 /// Start reuse mode on this thread, with `quarantine` bytes (JIT
 /// accessor).
 pub fn heap_check_start_reuse(quarantine: u64) {
+    let mut heap_guard = heap_lock();
     heap_check_start();
-    let st = thread_state();
-    st.hc_state = 3;
-    st.hc_q_limit = quarantine;
+    let hp = heap_guard.get();
+    hp.hc_state = 3;
+    hp.hc_q_limit = quarantine;
 }
 
 extern "C" fn toy_heap_check_report() {
+    let _heap = heap_lock();
     err_write(&heap_check_report());
 }
 
@@ -2765,7 +2930,9 @@ extern "C" fn toy_heap_check_report() {
 /// then says "0 double frees", as the interpreter does, instead of
 /// saying nothing.
 extern "C" fn hc_init() {
-    let _ = hc_enabled();
+    let mut heap_guard = heap_lock();
+    let hp = heap_guard.get();
+    let _ = hc_enabled(hp);
 }
 
 #[used]
@@ -5968,6 +6135,13 @@ struct ParJob {
     env: *mut u8,
     from: u64,
     until: u64,
+    /// The spawner's heap, which the worker allocates from and frees
+    /// into (`attach_heap`). Without it a worker kept books of its
+    /// own: its allocations never reached the counters a program
+    /// reads, and a block freed on a thread other than the one that
+    /// allocated it was not in that thread's size table, so the free
+    /// was a silent no-op.
+    heap: *mut HeapState,
 }
 
 /// How many threads a `parallel for` uses.
@@ -6011,9 +6185,11 @@ fn par_threads() -> usize {
 /// until this returns.
 extern "C" fn par_worker(arg: *mut u8) -> *mut u8 {
     let job = unsafe { *(arg as *mut ParJob) };
+    attach_heap(job.heap);
     if let Some(body) = job.body {
         body(job.env, job.from, job.until);
     }
+    detach_thread();
     core::ptr::null_mut()
 }
 
@@ -6051,8 +6227,17 @@ pub extern "C" fn toy_par_for(
         return;
     }
 
-    let mut jobs = [ParJob { body: None, env: core::ptr::null_mut(), from: 0, until: 0 };
-        PAR_MAX_THREADS];
+    // Lent before the first thread starts, so that our own
+    // allocations from here on take the lock too.
+    let lent = (parts - 1) as usize;
+    let heap = lend_heap(lent);
+    let mut jobs = [ParJob {
+        body: None,
+        env: core::ptr::null_mut(),
+        from: 0,
+        until: 0,
+        heap: core::ptr::null_mut(),
+    }; PAR_MAX_THREADS];
     let mut threads = [0usize; PAR_MAX_THREADS];
     let mut spawned = 0usize;
 
@@ -6070,7 +6255,7 @@ pub extern "C" fn toy_par_for(
             body(env, start, end);
         } else {
             let slot = part as usize;
-            jobs[slot] = ParJob { body: Some(body), env, from: start, until: end };
+            jobs[slot] = ParJob { body: Some(body), env, from: start, until: end, heap };
             let arg = (&raw mut jobs[slot]) as *mut u8;
             let rc = unsafe {
                 pthread_create(&mut threads[spawned], core::ptr::null(), par_worker, arg)
@@ -6090,6 +6275,7 @@ pub extern "C" fn toy_par_for(
             pthread_join(*t, core::ptr::null_mut());
         }
     }
+    reclaim_heap(heap, lent);
 }
 
 #[cfg(test)]

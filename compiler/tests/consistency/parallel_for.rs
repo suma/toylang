@@ -415,3 +415,46 @@ fn a_parallel_loop_allocates_nothing() {
     "#;
     assert_renders(src, "parallel_for_allocation_free", "0\n14\n");
 }
+
+#[test]
+fn a_parallel_body_that_allocates_is_counted_once_per_allocation() {
+    // The counters are the program's sum over every thread
+    // (CONCURRENCY.md section 5, point 5). Before the heap was shared,
+    // a worker thread kept counters of its own: the compiled lanes
+    // answered with whatever share of the 64 iterations the calling
+    // thread happened to run (`2` on an 8-core machine) while the
+    // sequential lanes answered 64. The worker's size table was its
+    // own too, so the frees balanced only because each block died on
+    // the thread that made it.
+    let src = r#"
+        fn work(i: u64) -> u64 {
+            val s = String::from_str("one block per iteration")
+            s.len() + i
+        }
+
+        fn main() -> u64 {
+            var v: Vec<u64> = Vec::new()
+            var k: u64 = 0u64
+            while k < 64u64 {
+                v.push(0u64)
+                k = k + 1u64
+            }
+            val w = v.as_span()
+            val allocs: u64 = __builtin_alloc_count()
+            val live: u64 = __builtin_live_bytes()
+            match w {
+                Option::Some(s) => {
+                    parallel for i in 0u64..64u64 {
+                        s.set(i, work(i))
+                    }
+                }
+                Option::None => { }
+            }
+            println(__builtin_alloc_count() - allocs)
+            println(__builtin_live_bytes() - live)
+            println(v.get(63u64))
+            0u64
+        }
+    "#;
+    assert_renders(src, "parallel_for_counts_every_thread", "64\n0\n86\n");
+}

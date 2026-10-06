@@ -54,6 +54,10 @@ const LISTENER_TOKEN: u64 = 1u64
 fn conn_token(slot: u64) -> u64 { slot + 2u64 }
 fn token_slot(tok: u64) -> u64 { tok - 2u64 }
 
+# The background flush's completion pipe (CONCURRENCY B3). Slots start
+# at 2 and the listener is 1, so 0 is free.
+const FLUSH_TOKEN: u64 = 0u64
+
 # How many connections are served at once, and what each one costs.
 #
 # The table is allocated at startup (HTTP_API.md section 4): two
@@ -222,6 +226,39 @@ fn flush_active(w: &mut ArchiveWriter, ms: &mut MountSet, gens: &Vec<u64>,
         w.reset()
     }
     done
+}
+
+# What the event loop does when a background flush comes back: the
+# third step of `store::flush_segment` -- count it, record it in the
+# catalog, say so -- on this thread, where the catalog is only ever
+# written from.
+#
+# Hands the writer back. Emptied when the segment was written; still
+# holding its records when it was not, so the caller can keep them.
+fn settle_flush(f: Flushed, mi: u64, gen: u64, ms: &mut MountSet, st: &mut Stats,
+                crc: &Crc32) -> ArchiveWriter {
+    val Flushed { bytes, w: back, base } = f
+    var writer = back
+    val records = writer.count()
+    val arena = writer.arena_bytes()
+    if bytes > 0u64 {
+        st.segments = st.segments + 1u64
+        val now = ms.used_of(mi)
+        ms.set_used(mi, now + bytes)
+        if gen > 0u64 {
+            val p = ms.path_of(mi)
+            if !store::record_segment(p.to_str(), base.to_str(), gen, crc) {
+                println("  {base}.seg: written, but not recorded in the catalog")
+            }
+        }
+        val pct = if arena > 0u64 { (bytes * 100u64) / arena } else { 0u64 }
+        println("  {base}.seg  {records} records  {arena} B -> {bytes} B ({pct}%)")
+        writer.reset()
+    } else {
+        ms.mark(mi, MountState::Degraded)
+        println("  write {base}.seg: failed; {records} records kept")
+    }
+    writer
 }
 
 # `POST /v1/ingest` -- newline-separated lines, one record each.
@@ -1754,6 +1791,14 @@ pub fn serve(spec: str, addr: str, port: u64, idle_s: u64) -> u64 {
         eprintln("ingest is off: no writable mount under {spec}")
     }
     var last_flush = time::now_mono_ns()
+    # At most one segment is being written in the background at a time
+    # (CONCURRENCY B): the task, the mount and catalog generation it
+    # goes to, and the descriptor the poller watches for it.
+    var inflight: Option<Task<Flushed>> = Option::None
+    var fl_mount: u64 = 0u64
+    var fl_gen: u64 = 0u64
+    var fl_fd: i32 = -1i32
+    var flush_ready = false
 
     # The port goes to stderr so a caller can read it while stdout
     # stays whatever the server prints about its work. Binding port 0
@@ -1784,7 +1829,9 @@ pub fn serve(spec: str, addr: str, port: u64, idle_s: u64) -> u64 {
             while i < n && running {
                 val ev = poller.event(i)
                 val tok = ev.token()
-                if tok == LISTENER_TOKEN {
+                if tok == FLUSH_TOKEN {
+                    flush_ready = true
+                } elif tok == LISTENER_TOKEN {
                     # Take as many as the table will hold. A slot that
                     # cannot be opened means the listener comes out of
                     # the poller until one frees up -- the clients wait
@@ -1856,12 +1903,65 @@ pub fn serve(spec: str, addr: str, port: u64, idle_s: u64) -> u64 {
                 }
             }
 
+            # A background flush that has finished.
+            if flush_ready {
+                flush_ready = false
+                val off = poller.deregister(fl_fd)
+                if val Option::Some(t) = inflight {
+                    val f = t.join()
+                    val back = settle_flush(f, fl_mount, fl_gen, &mut ms, &mut st, &crc)
+                    if !back.is_empty() {
+                        if w.is_empty() {
+                            w = back
+                        } else {
+                            eprintln("a segment could not be written and newer records are held; its records are lost")
+                        }
+                    }
+                }
+                inflight = Option::None
+            }
+
             # A record that is only in memory is a record a crash
             # loses, so the segment goes out on a timer as well as
             # when it fills (DATA_MODEL.md section 4).
+            #
+            # It goes out **in the background** (CONCURRENCY B): the
+            # writer is handed to a task and a fresh one takes the
+            # next records, so a full arena's compression no longer
+            # stops ingest and queries (RUNTIME_GAPS.md G12). One at a
+            # time; a request that fills the new writer meanwhile
+            # flushes it in place, as it always did.
+            #
+            # "Full" here is one request short of full. A request fills
+            # the writer line by line and flushes in place the moment
+            # it is full, so a writer that is merely full by the end of
+            # a dispatch round is the rare case -- the background has
+            # to start while the next request still fits. A request is
+            # at most a receive slot (`RECV_SLOT_BYTES`; the 1 MiB of
+            # `MAX_REQUEST_BYTES` never arrives whole, see the slot's
+            # comment).
             val now_ns = time::now_mono_ns()
-            if !w.is_empty() && now_ns - last_flush >= FLUSH_AFTER_NS {
-                val put = flush_active(&mut w, &mut ms, &gens, &mut st, &crc)
+            var idle_writer = true
+            if val Option::Some(t) = inflight { idle_writer = false }
+            val nearly_full = w.arena_bytes() + RECV_SLOT_BYTES >= SEGMENT_TARGET_BYTES
+            val due = !w.is_empty() && (nearly_full || now_ns - last_flush >= FLUSH_AFTER_NS)
+            if due && idle_writer && st.ready {
+                val at = ms.pick()
+                if val Option::Some(mi) = at {
+                    val p = ms.path_of(mi)
+                    val segid = st.segid
+                    val placed = store::segment_base(&w, p.to_str(), segid)
+                    if val Option::Some(base) = placed {
+                        st.segid = segid + 1u64
+                        var t: Task<Flushed> = spawn { store::write_segment(w, base, segid) }
+                        w = ArchiveWriter::new()
+                        fl_fd = t.as_fd()
+                        val reg = poller.register(fl_fd, FLUSH_TOKEN, interest_read())
+                        fl_mount = mi
+                        fl_gen = gens.get(mi)
+                        inflight = Option::Some(t)
+                    }
+                }
                 last_flush = now_ns
             }
         }
@@ -1873,6 +1973,16 @@ pub fn serve(spec: str, addr: str, port: u64, idle_s: u64) -> u64 {
     while k < MAX_CONNS {
         if conns.fd_of(k) >= 0i32 { conn_close(&mut conns, &poller, k, &mut outbox) }
         k = k + 1u64
+    }
+
+    # A background flush still running is waited for: its records are
+    # as much the server's as the ones still held.
+    if val Option::Some(t) = inflight {
+        val f = t.join()
+        val back = settle_flush(f, fl_mount, fl_gen, &mut ms, &mut st, &crc)
+        if !back.is_empty() {
+            eprintln("the segment being written in the background failed; its records are lost")
+        }
     }
 
     # Whatever is still held goes out before the process does. This

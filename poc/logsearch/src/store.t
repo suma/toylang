@@ -31,6 +31,51 @@ pub fn day_dir(out: str, secs: i64) -> String {
     full
 }
 
+# ---------------------------------------------------------------------
+# A flush off the event loop (CONCURRENCY B, RUNTIME_GAPS.md G12)
+#
+# `flush_segment` does three things: decide where the segment goes,
+# compress and write it, and record it in the catalog. The middle one
+# is the one that takes time -- hundreds of milliseconds for a full
+# arena -- and it touches nothing the server shares: the writer is
+# handed over whole, and the file is not in the catalog until the
+# third step says so, so no query can see it half-written. That step
+# and the first stay on the event loop.
+
+# What a background write hands back: the bytes the `.seg` came to (0
+# when it could not be written), the writer itself -- so a failed
+# write loses nothing -- and where it went.
+pub struct Flushed {
+    pub bytes: u64,
+    pub w: ArchiveWriter,
+    pub base: String,
+}
+
+# Step 1: where a segment written now goes on mount `out`, with its
+# day directory made. `None` when the directory cannot be made.
+pub fn segment_base(w: &ArchiveWriter, out: str, segid: u64) -> Option<String> {
+    var stamp = w.ts_min()
+    if stamp == 0i64 { stamp = time::now_unix_secs() }
+    val dir = day_dir(out, stamp)
+    val dir_str = dir.to_str()
+    val made = fs::mkdir_all(dir_str)
+    if val Result::Err(e) = made { return Option::None }
+    val base = String::from_str("{dir_str}/{segid:012}")
+    Option::Some(base)
+}
+
+# Step 2, the one a `spawn` runs: compress and write `<base>.seg`.
+# Prints nothing -- a task's output would land among the server's
+# lines in whatever order the threads ran (E0050).
+pub fn write_segment(w: ArchiveWriter, base: String, segid: u64) -> Flushed {
+    val crc = Crc32::new()
+    var writer = w
+    val wrote = writer.finish(base.to_str(), segid, &crc)
+    var n: u64 = 0u64
+    if val Result::Ok(k) = wrote { n = k }
+    Flushed { bytes: n, w: writer, base: base }
+}
+
 # Write one segment and say how many bytes its `.seg` came to, or 0
 # when it could not be written.
 pub fn flush_segment(w: &mut ArchiveWriter, out: str, segid: u64, crc: &Crc32,

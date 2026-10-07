@@ -3163,6 +3163,16 @@
   toylang 化) と R4 (f64 整形等) は計測で中止条件に該当 (interpreter
   ~20 倍〜~1000 倍遅延) し、Layer 1 に残すのが確定。R4 の byte 一致
   テスト固定のみ実施済み。
+* **AOT のバックエンドに LLVM を採用する (AOT-LLVM)** — 今の AOT は
+  cranelift (`compiler/src/codegen/`) で IR → object を作っている。これを
+  LLVM でも作れるようにする。**形は要検討**:
+  (a) AOT コンパイラが cranelift と LLVM の 2 種類のバックエンドを持ち、
+  フラグで選ぶ、(b) AOT コンパイラとは別に LLVM 版のコンパイラを作る。
+  どちらにしても入力は共有 IR (`compiler_ir`) で、lowering より手前は
+  変わらない。決めるときに見ること: JIT は cranelift のまま残るので、
+  (a) なら codegen 層に 2 実装が並ぶ (consistency harness のレーンも 1 本
+  増える)、(b) なら `toylang_rt` とのリンクや `--all-backends` / `toy` の
+  `--backend` にどう載せるか。
 * フロントエンドの並列化 (PARALLEL-FRONTEND) — **今は着手しない**。検討と
   実測の記録は [`PARALLEL_FRONTEND.md`](PARALLEL_FRONTEND.md)。stdlib の
   pre-parse (rayon) と AOT codegen は既に並列で、取り分は warm 0.2ms /

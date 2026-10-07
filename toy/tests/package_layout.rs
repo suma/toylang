@@ -9,6 +9,15 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+
+/// AOT-LLVM: `--release` builds with LLVM, which a `toy` without the
+/// `llvm` feature refuses. The tests that only care about the release
+/// *profile* name cranelift there.
+#[cfg(feature = "llvm")]
+const RELEASE: &[&str] = &["--release", "--codegen=llvm"];
+#[cfg(not(feature = "llvm"))]
+const RELEASE: &[&str] = &["--release", "--codegen=cranelift"];
+
 fn toy_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_toy"))
 }
@@ -566,7 +575,7 @@ fn debug_and_release_do_not_share_a_path() {
     write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
     assert!(run(&pkg, &["build", pkg.0.to_str().unwrap()]).status.success());
     assert!(
-        run(&pkg, &["build", pkg.0.to_str().unwrap(), "--release"])
+        run(&pkg, &["build", pkg.0.to_str().unwrap(), RELEASE[0], RELEASE[1]])
             .status
             .success()
     );
@@ -617,7 +626,7 @@ fn build_skips_when_nothing_changed() {
 
     // A different profile is a different output, and a replaced output
     // is rebuilt rather than trusted.
-    assert!(!up_to_date(&["--release"]));
+    assert!(!up_to_date(RELEASE));
     assert!(up_to_date(&[]), "the release build leaves the debug stamp alone");
     std::fs::write(&exe, b"not the program").unwrap();
     assert!(!up_to_date(&[]));
@@ -726,7 +735,7 @@ fn clean_removes_the_outputs_and_keeps_the_link_cache() {
     write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
     assert!(run(&pkg, &["build", pkg.0.to_str().unwrap()]).status.success());
     assert!(
-        run(&pkg, &["build", pkg.0.to_str().unwrap(), "--release"])
+        run(&pkg, &["build", pkg.0.to_str().unwrap(), RELEASE[0], RELEASE[1]])
             .status
             .success()
     );
@@ -2772,4 +2781,21 @@ pub fn run() -> u64 {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+}
+
+#[cfg(not(feature = "llvm"))]
+#[test]
+fn release_without_the_llvm_feature_says_how_to_build_anyway() {
+    // `--release` means optimised LLVM. A `toy` built without it does not
+    // quietly build something else: it says so, and names both ways out.
+    let pkg = scratch("release_needs_llvm");
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\n");
+    let out = run(&pkg, &["build", pkg.0.to_str().unwrap(), "--release"]);
+    assert!(!out.status.success(), "a release build without LLVM fails");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("`llvm` feature") && stderr.contains("--release --codegen=cranelift"),
+        "the error says how to get LLVM or how to do without: {stderr}"
+    );
+    assert!(run(&pkg, &["build", pkg.0.to_str().unwrap(), RELEASE[0], RELEASE[1]]).status.success());
 }

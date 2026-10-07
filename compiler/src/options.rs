@@ -131,11 +131,13 @@ impl Codegen {
 }
 
 impl CompilerOptions {
-    /// The backend this compile uses. Cranelift unless `--codegen` said
-    /// otherwise: `--release` choosing LLVM waits for the LLVM backend
-    /// to cover the whole IR (AOT_LLVM.md section 2, L5).
+    /// The backend this compile uses: what `--codegen` said, else
+    /// **LLVM for `--release`** (optimised, `-O2`) and cranelift for
+    /// everything else (AOT_LLVM.md, L5). A compiler built without the
+    /// `llvm` feature refuses a `--release` that does not name
+    /// `--codegen=cranelift` rather than quietly building something else.
     pub fn codegen(&self) -> Codegen {
-        self.codegen.unwrap_or(Codegen::Cranelift)
+        self.codegen.unwrap_or(if self.release { Codegen::Llvm } else { Codegen::Cranelift })
     }
 
     /// Defaults for everything but the input path, which has no

@@ -190,6 +190,14 @@ cargo run -q -p compiler -- --core-modules core --core-modules mypkg/src mypkg/m
 cargo run -q -p toy -- new   mypkg                    # 雛形 (main.t / src/greet.t / tests/basic.t)。そのまま run / test / check が通る
 cargo run -q -p toy -- init  [DIR]                    # 既存ディレクトリに同じ雛形。どちらも既存ファイルを上書きしない
 cargo run -q -p toy -- build mypkg [--release] [-o PATH] [--format=text|json]
+# AOT のバックエンドは cranelift と LLVM の 2 つ (AOT-LLVM)。debug は cranelift、
+# **`--release` は LLVM の -O2** で、`llvm` feature (LLVM 22) が要る。feature 無しの
+# toy / compiler で `--release` だけ指定するとエラーになるので、LLVM の無い環境では
+# `--release --codegen=cranelift` と明示する。`--codegen=cranelift|llvm` で常に選べる
+LLVM_SYS_221_PREFIX=/opt/homebrew/opt/llvm@22 cargo build --release -p toy --features llvm
+# LLVM バックエンドのテスト: consistency / example_consistency の AOT レーンを
+# LLVM でも作って cranelift と突き合わせる
+LLVM_SYS_221_PREFIX=/opt/homebrew/opt/llvm@22 cargo nextest run -p compiler -p toy --features llvm
 # 入力 (ソース木・フラグ・環境変数・toy 自身) が前回と同じで出力が手つかずなら
 # 何もしない (BUILD-TOOL D6、build/.stamp/)。JSON の `up_to_date` で分かる。
 # `--profile=compile` は常にコンパイルする

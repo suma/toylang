@@ -116,12 +116,23 @@ fn emit_llvm_object(
 fn emit_llvm_object(
     _ir_module: &IrModule,
     _interner: &DefaultStringInterner,
-    _options: &CompilerOptions,
+    options: &CompilerOptions,
 ) -> Result<Vec<u8>, String> {
-    Err("`--codegen=llvm` needs a compiler built with the `llvm` feature \
+    let asked = if options.codegen.is_some() {
+        "`--codegen=llvm`"
+    } else {
+        "`--release` (which builds with optimised LLVM)"
+    };
+    let instead = if options.codegen.is_some() {
+        "`--codegen=cranelift`"
+    } else {
+        "`--release --codegen=cranelift`"
+    };
+    Err(format!(
+        "{asked} needs a compiler built with the `llvm` feature \
          (`cargo build --features llvm`, with LLVM 22 installed); \
-         `--codegen=cranelift` works without it"
-        .to_string())
+         {instead} works without it"
+    ))
 }
 
 /// COMPILE-PROFILE: the size of one function's IR, terminators included.

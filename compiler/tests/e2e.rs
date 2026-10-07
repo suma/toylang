@@ -670,6 +670,11 @@ fn release_flag_skips_requires_check() {
     let mut opts_rel = CompilerOptions::new(src_path.clone());
     opts_rel.output = Some(exe_rel.clone());
     opts_rel.release = true;
+    // AOT-LLVM: `--release` builds with LLVM, which a compiler without
+    // the `llvm` feature refuses; name cranelift there.
+    if !cfg!(feature = "llvm") {
+        opts_rel.codegen = Some(compiler::Codegen::Cranelift);
+    }
     opts_rel.link_cache_dir = Some(link_cache_dir_for_tests());
     compile_file(&opts_rel).expect("compile release");
     let out_rel = Command::new(&exe_rel).output().expect("spawn release");
@@ -998,6 +1003,10 @@ fn release_drops_the_backtrace_but_keeps_the_position() {
         let mut opts = CompilerOptions::new(src_path.clone());
         opts.output = Some(exe.clone());
         opts.release = release;
+        // AOT-LLVM: a compiler without the `llvm` feature names cranelift.
+        if release && !cfg!(feature = "llvm") {
+            opts.codegen = Some(compiler::Codegen::Cranelift);
+        }
         opts.link_cache_dir = Some(link_cache_dir_for_tests());
         compile_file(&opts).expect("compile");
         let out = Command::new(&exe).output().expect("spawn");

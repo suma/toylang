@@ -1,11 +1,11 @@
 # AOT_LLVM — AOT の 2 つ目のバックエンドとしての LLVM
 
-> 状態: **L0〜L4 が landing (2026-10-08)**。LLVM バックエンドは IR の
-> **全命令**を扱い (命令の `match` に catch-all は無い)、
-> `interpreter/example/` の 158 本中 157 本が cranelift と stdout・stderr・
-> 終了コードまで一致する (残る 1 本はポート番号が毎回違うだけ)。
-> `--features llvm` でテストすると、consistency と example_consistency の
-> AOT レーンが LLVM でも同じ答えを出すかを全件で確かめる。残りは L5
+> 状態: **L0〜L5 すべて landing (2026-10-08)**。LLVM バックエンドは IR の
+> 全命令を扱い、`interpreter/example/` 158 本中 157 本が cranelift と
+> stdout・stderr・終了コードまで一致 (残る 1 本はポート番号)。
+> **`--release` は LLVM `-O2`** で、feature 無しの `--release` はエラー。
+> `--features llvm` のテストで consistency / example_consistency の AOT
+> レーンを LLVM でも突き合わせる
 
 ## 0. 決めたこと
 
@@ -98,6 +98,27 @@ L4 までは debug のまま `--codegen=llvm` で答えを突き合わせる。
   cranelift のバイナリと stdout (example は stderr も) と終了コード
   (example を除く) を突き合わせる。LLVM の出力をわざと変えると
   「the LLVM backend disagrees with cranelift」で落ちることを確かめた
+
+## 2.6 L5 の実測 (2026-10-08、aarch64 Apple Silicon)
+
+release どうしの比較 (cranelift `speed` / LLVM `default<O2>`、どちらも
+ホストの CPU 向け):
+
+| | cranelift | LLVM -O2 | |
+|---|---:|---:|---|
+| `fib(40)` | 0.30 s | 0.14 s | 2.1x |
+| 整数演算のループ (`seq4`) | 0.65 s | 0.40 s | 1.6x |
+| 確保 3,000 万回 (`allocbench`) | 0.65 s | 0.58 s | 1.1x |
+| POC `verify` (65 万件 / 5 セグメント) | 0.150 s | 0.091 s | 1.65x |
+| POC `query` 全走査 (`host=web3`) | 0.220 s | 0.115 s | 1.9x |
+| POC `fields host` (索引) | 0.010 s | 0.007 s | |
+| POC バイナリ | 586 KB | 475 KB | -19% |
+| POC の release ビルド時間 | 0.08 s | 1.95 s | |
+
+POC の 3 コマンドは出力が一致した。確保が多い処理の伸びが小さいのは、
+時間の大半がランタイム (`toylang_rt`、Rust で書かれ同じもの) にあるため。
+ビルド時間は 25 倍になるが、それは release の対価で、debug は
+cranelift のまま速い (LLVM の `-O0` は 0.37 s)。
 
 ## 3. ビルドの仕方
 

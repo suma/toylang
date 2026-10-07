@@ -196,7 +196,9 @@ store → catalog, mount
 **stdlib → このパッケージの `src/`** の順に並ぶ (後の根が勝つ)。
 
 ```bash
-cargo build --release -p toy                      # 処理系 (初回のみ)
+# 処理系 (初回のみ)。--release は LLVM -O2 なので `llvm` feature が要る。
+# LLVM 無しなら feature を外し、次の行を `--release --codegen=cranelift` に
+LLVM_SYS_221_PREFIX=/opt/homebrew/opt/llvm@22 cargo build --release -p toy --features llvm
 ./target/release/toy build poc/logsearch --release
 ./poc/logsearch/build/release/logsearch archive poc/logsearch/log/apache2 /tmp/arc
 ./poc/logsearch/build/release/logsearch query /tmp/arc "status=404 limit=5"

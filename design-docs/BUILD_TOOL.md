@@ -176,7 +176,8 @@ content-addressed なので古くなりようがない。`--all` は `build/` �
 ### D3. サブコマンド
 
 ```
-toy build [--release] [--backend aot|jit|vm] [-o PATH]
+toy build [--release] [--codegen=cranelift|llvm] [--backend aot|jit|vm] [-o PATH]
+                                  # --release は LLVM -O2 (AOT_LLVM.md)
 toy clean [--all]                 # 出力を消す。--all は build/ ごと
 toy run   [--release] [--backend ...] [-- ARGS...]
 toy check                         # 型検査だけ。コード生成をしない

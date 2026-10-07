@@ -10,6 +10,12 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-10-08
+
+- **AOT-LLVM — AOT の 2 つ目のバックエンドとして LLVM (L0〜L5)** — `--codegen=cranelift|llvm`、
+  `--release` は LLVM `-O2` (feature 無しならエラー)。全 IR 命令を扱い、example 157/158 が cranelift と
+  一致、`--features llvm` のテストで AOT レーンを突き合わせる。POC の全走査 1.9x、`fib(40)` 2.1x。
+
 ### 2026-10-06
 
 - **POC に spawn を当てた — `poc/logsearch` のセグメント書き出しがイベントループの外で走る** —
@@ -3163,11 +3169,10 @@
   toylang 化) と R4 (f64 整形等) は計測で中止条件に該当 (interpreter
   ~20 倍〜~1000 倍遅延) し、Layer 1 に残すのが確定。R4 の byte 一致
   テスト固定のみ実施済み。
-* **AOT のバックエンドに LLVM を採用する (AOT-LLVM)** — **着手済み
-  (2026-10-07)。L0〜L4 が landing: 全 IR 命令を扱い、example 158 本中
-  157 本が cranelift と一致、`--features llvm` のテストで consistency /
-  example_consistency の AOT レーンを LLVM でも突き合わせる。残りは L5
-  (`-O2`、`--release` の既定化、計測)。[`AOT_LLVM.md`](AOT_LLVM.md)**。今の AOT は
+* **AOT のバックエンドに LLVM を採用する (AOT-LLVM)** — **完了
+  (2026-10-08、完了済み節)。L0〜L5 が landing し、`--release` は LLVM `-O2`
+  (POC の全走査 1.9x、`fib` 2.1x)。[`AOT_LLVM.md`](AOT_LLVM.md)**。
+  以下は決定の記録今の AOT は
   cranelift (`compiler/src/codegen/`) で IR → object を作っている。これを
   LLVM でも作れるようにする。
   **形は決定 (2026-10-07): 1 つの AOT コンパイラに 2 つ目のバックエンドとして

@@ -11,8 +11,10 @@
 リポジトリルート (`~/dev/lang`) から:
 
 ```bash
-# 1. 処理系 (初回のみ / HEAD が進んだら再実行)
-cargo build --release -p toy
+# 1. 処理系 (初回のみ / HEAD が進んだら再実行)。`--release` のビルドは
+#    LLVM の -O2 で作るので `llvm` feature が要る (LLVM 22、design-docs/AOT_LLVM.md)。
+#    LLVM が無ければ feature を外し、2. を `--release --codegen=cranelift` にする
+LLVM_SYS_221_PREFIX=/opt/homebrew/opt/llvm@22 cargo build --release -p toy --features llvm
 
 # 2. ビルド -> poc/logsearch/build/release/logsearch
 ./target/release/toy build poc/logsearch --release
@@ -60,6 +62,9 @@ toy clean poc/logsearch --all    # build/ とリンクキャッシュを消す
 ./target/release/compiler --core-modules core --core-modules poc/logsearch/src \
     poc/logsearch/main.t --release -o /tmp/logsearch
 ```
+
+(この `compiler` も `--features llvm` でビルドしたもの。LLVM 無しなら
+`--release --codegen=cranelift`。)
 
 ### bare 名の衝突を避ける命名
 

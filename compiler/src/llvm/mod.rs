@@ -51,17 +51,22 @@ pub fn emit_object(
     interner: &DefaultStringInterner,
     options: &CompilerOptions,
 ) -> Result<Vec<u8>, String> {
-    let _ = options;
     Target::initialize_native(&InitializationConfig::default())
         .map_err(|e| format!("LLVM: cannot initialise the native target: {e}"))?;
     let triple = TargetMachine::get_default_triple();
     let target = Target::from_triple(&triple).map_err(|e| format!("LLVM: {e}"))?;
+    // `--release` is `-O2`, for the host's CPU as cranelift builds for
+    // its (`cranelift-native`). Anything else is `-O0`: the point of a
+    // debug build is a quick compile.
+    let optimise = options.release;
+    let cpu = TargetMachine::get_host_cpu_name().to_string();
+    let features = TargetMachine::get_host_cpu_features().to_string();
     let machine = target
         .create_target_machine(
             &triple,
-            "generic",
-            "",
-            OptimizationLevel::None,
+            &cpu,
+            &features,
+            if optimise { OptimizationLevel::Default } else { OptimizationLevel::None },
             RelocMode::PIC,
             CodeModel::Default,
         )
@@ -81,6 +86,12 @@ pub fn emit_object(
     g.module
         .verify()
         .map_err(|e| format!("LLVM: the module does not verify: {}", e.to_string()))?;
+    if optimise {
+        let _phase = frontend::compile_profile::phase("llvm_O2");
+        g.module
+            .run_passes("default<O2>", &machine, inkwell::passes::PassBuilderOptions::create())
+            .map_err(|e| format!("LLVM: the -O2 pipeline failed: {}", e.to_string()))?;
+    }
 
     let buffer = machine
         .write_to_memory_buffer(&g.module, FileType::Object)

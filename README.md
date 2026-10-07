@@ -21,7 +21,7 @@ which is the constraint most of the design answers to:
 | `frontend` | Parser, AST pools, type checker, and the whole-program checks (ownership, regions, effects, contracts) |
 | `interpreter` | The tree-walking engine — the **reference oracle** — plus an AST-level Cranelift JIT |
 | `compiler_ir` / `compiler_lower` / `compiler_vm` | The shared IR, the AST → IR lowering, and an IR interpreter (the engine `interpreter` actually uses by default) |
-| `compiler` | AOT: IR → Cranelift → object file → executable, and a Cranelift JIT over the same IR |
+| `compiler` | AOT: IR → object file → executable through **Cranelift** (debug builds) or **LLVM** (`--release`, `-O2`), and a Cranelift JIT over the same IR |
 | `compiler/runtime/toylang_rt` | The runtime both compiled lanes link: output, allocator, profiler, backtraces |
 | `toy` | The build tool — `toy build` / `run` / `test` / `check` for a program with its own modules |
 
@@ -80,8 +80,13 @@ is where most of the gaps in the language were found.
 - **Effects**: what a declaration can do besides compute — `never_allocates`
   and `const fn` are checked against the same reachability walk
 - **Data parallelism**: `parallel for i in 0u64..n { .. }` — the iterations
-  may run in any order (every engine runs them in order today; the answer is
-  fixed before the threads arrive)
+  may run in any order; the compiled engines split the range across threads,
+  the interpreters run it in order, and the answer is the same
+- **Tasks**: `val t: Task<T> = spawn { body }` runs the body on a thread of
+  its own (compiled engines) and hands back its value with `t.join()`; owned
+  values the body captures move into it. `t.as_fd()` is a descriptor a
+  `Poller` can wait on beside sockets, so an event loop can hand off a slow
+  write and keep serving
 - **Comments**: `# line` and `/* block */`
 - **No Semicolons**: Statements are separated by newlines, not semicolons
 - **Module System**: Go-style modules with `package`/`import` declarations,
@@ -132,6 +137,9 @@ Where each concern is implemented is mapped in
 - Rust 1.85+ (the workspace uses edition 2024)
 - Cargo package manager
 - `cargo-nextest` for the test suite (`cargo install cargo-nextest`)
+- **LLVM 22**, only for optimised (`--release`) builds — see
+  [The LLVM backend](#the-llvm-backend-release-builds) below. Everything
+  else builds and runs without it
 
 ### Building
 
@@ -150,6 +158,55 @@ cargo build -p compiler
 # Release
 cargo build --release -p interpreter
 ```
+
+### The LLVM backend (release builds)
+
+The AOT compiler has two backends behind the same lowering, runtime and
+link step: **Cranelift**, which compiles fast and is what a debug build
+uses, and **LLVM 22**, which `--release` uses with the `-O2` pipeline
+([`design-docs/AOT_LLVM.md`](design-docs/AOT_LLVM.md)). LLVM is the
+optional `llvm` cargo feature, off by default, so a plain build needs no
+LLVM on the machine.
+
+```bash
+# 1. Install LLVM 22 (Homebrew keeps it out of the PATH: it is keg-only)
+brew install llvm@22                      # macOS
+# sudo apt install llvm-22-dev            # Debian / Ubuntu (apt.llvm.org)
+
+# 2. Tell llvm-sys where it is, and build with the feature
+export LLVM_SYS_221_PREFIX=/opt/homebrew/opt/llvm@22   # or /usr/lib/llvm-22
+cargo build --release -p toy -p compiler --features llvm
+```
+
+`LLVM_SYS_221_PREFIX` is read by the `llvm-sys` build script (the `221`
+is LLVM 22.1). Without it, `llvm-sys` looks for an `llvm-config` of
+version 22 on the `PATH`. It is deliberately not set in
+`.cargo/config.toml`: the path differs from machine to machine.
+
+Choosing the backend:
+
+| Flags | Backend |
+|---|---|
+| *(none)* | Cranelift |
+| `--release` | LLVM, `-O2`, for the host CPU (contracts are compiled out, as always with `--release`) |
+| `--codegen=cranelift` / `--codegen=llvm` | the one named, with or without `--release` |
+
+A `compiler` or `toy` built **without** the feature refuses a bare
+`--release` rather than quietly building something else, and says how to
+proceed: rebuild with `--features llvm`, or ask for
+`--release --codegen=cranelift`, which works anywhere.
+
+```bash
+target/release/compiler interpreter/example/fib.t --release -o /tmp/fib   # LLVM -O2
+target/release/toy build poc/logsearch --release                         # LLVM -O2
+target/release/toy build poc/logsearch --release --codegen=cranelift     # no LLVM needed
+target/release/toy test  poc/logsearch --codegen=llvm                    # LLVM -O0
+```
+
+Release against release on Apple Silicon, LLVM over Cranelift: `fib(40)`
+2.1×, a full-scan query in `poc/logsearch` 1.9×, its `verify` 1.65×, and a
+19% smaller binary; the release compile of the POC goes from 0.08 s to
+1.95 s.
 
 ### Running Programs
 
@@ -194,7 +251,7 @@ cargo run -q -p compiler -- interpreter/example/allocator_list.t --heap-check=po
 
 ```bash
 cargo run -q -p toy -- new   mypkg                  # a package that runs, tests and checks as is
-cargo run -q -p toy -- build poc/logsearch [--release]
+cargo run -q -p toy -- build poc/logsearch [--release]   # --release needs LLVM (above)
 cargo run -q -p toy -- run   poc/logsearch -- serve /var/log/archive 8080
 cargo run -q -p toy -- test  poc/logsearch          # AOT by default, in parallel
 cargo run -q -p toy -- check poc/logsearch --format=json
@@ -242,6 +299,26 @@ and [`design-docs/CLAUDE_CODE_INTEGRATION.md`](design-docs/CLAUDE_CODE_INTEGRATI
 
 For the full CLI / env-var reference see [`interpreter/README.md`](interpreter/README.md).
 
+### Environment variables
+
+| Variable | Read by | What it does |
+|---|---|---|
+| `LLVM_SYS_221_PREFIX` | build (`llvm-sys`) | Where LLVM 22 is installed, for `--features llvm` |
+| `TOYLANG_CORE_MODULES` | `compiler` / `interpreter` | The stdlib root when it is not found next to the binary |
+| `TOY_PAR_THREADS` | compiled programs | Threads a `parallel for` uses (default: the core count, at most 64). Never changes the answer |
+| `TOY_PROFILE_MEM` | compiled programs | `1` prints allocation totals and leaks at exit, `json` as JSON |
+| `TOY_HEAP_CHECK` / `TOY_HEAP_QUARANTINE` | compiled programs | `report` / `reuse` heap checking at run time, and the quarantine size |
+| `TOY_LINK_CACHE_DIR` | `compiler` | A content-addressed cache of linked executables |
+| `TOYLANG_CRANELIFT_OPT_LEVEL` | `compiler` | `none` / `speed` (default) / `speed_and_size` for the Cranelift backend; the test suite uses `none` |
+| `TOYLANG_CRANELIFT_VERIFY` | `compiler` | `1` / `0` forces Cranelift's IR verifier on or off (default: on in a debug build of the compiler) |
+| `TOYLANG_CODEGEN_THREADS` | `compiler` | Fixes the number of Cranelift codegen threads |
+| `INTERPRETER_JIT` | `interpreter` | `1` turns on the AST-level JIT |
+| `INTERPRETER_CONTRACTS` | `interpreter` | `all` (default) / `pre` / `post` / `off` |
+| `TOY_BLESS` | `toy test` | Set by `--bless`: record golden files instead of checking them |
+
+The test-only ones (`PROPTEST_CASES`, `TOYLANG_CRANELIFT_OPT_LEVEL=none`,
+`TOY_LINK_CACHE_DIR`) are already set in `.cargo/config.toml`.
+
 ### Testing
 
 `cargo nextest` is what the suite is tuned for — a green run prints six
@@ -254,6 +331,10 @@ cargo nextest run
 # One crate, or a name (filters are substring matches, not exact)
 cargo nextest run -p compiler
 cargo nextest run -E 'test(basic_arithmetic)'
+
+# The LLVM backend: with the feature, the consistency and example suites
+# also build every program with LLVM and hold it to the Cranelift binary
+LLVM_SYS_221_PREFIX=/opt/homebrew/opt/llvm@22 cargo nextest run -p compiler -p toy --features llvm
 
 # Doc-tests, which nextest does not run
 cargo test --doc --workspace
@@ -815,12 +896,17 @@ written entirely in the language, and the source of most of the gaps that
 have since been closed (a container could not hold socket handles; a
 `match` arm copied its payload; reading an element freed it).
 
+It also uses the language's concurrency: the server hands a full segment
+to a `spawn`ed task and keeps ingesting, waiting for the task's descriptor
+in the same poller as its sockets — the worst `/v1/stats` latency during a
+heavy ingest went from 24 ms to 2.5 ms
+([`design-docs/CONCURRENCY.md`](design-docs/CONCURRENCY.md)).
+
 What is missing is listed, not hidden:
 [`design-docs/todo.md`](design-docs/todo.md) has the unimplemented section
 and the known defects, each with what it costs and what it would take. The
-largest open item is real parallel execution — the semantics of
-`parallel for` are in, the threads are not
-([`design-docs/CONCURRENCY.md`](design-docs/CONCURRENCY.md)).
+largest open items are trait inheritance and associated types, and the
+compiled engines' refusal of a compound-returning call outside a `val`.
 
 ## Technical Highlights
 
@@ -828,7 +914,7 @@ largest open item is real parallel execution — the semantics of
 - **Generic Type System**: Generic functions / structures / impls with constraint-based inference and `<A: Allocator>` bounds
 - **Allocator system**: `with allocator = expr { … }` lexically-scoped allocator binding, ambient sugar, Arena / FixedBuffer / Global allocators (see [`design-docs/ALLOCATOR_PLAN.md`](design-docs/ALLOCATOR_PLAN.md))
 - **Cranelift JIT** (default-on cargo feature, `INTERPRETER_JIT=1` to opt in at runtime): native-code compilation for numeric / bool / struct / tuple / `f64` subsets, with `panic("literal")` and `assert(cond, "literal")` lowered through a host helper + `trap` (see [`design-docs/JIT.md`](design-docs/JIT.md))
-- **Multi-backend Architecture**: Tree-walker (reference oracle) + AOT compiler (IR → cranelift → object file) + Cranelift JIT (AST direct) + IR VM (shared IR flat-slot interpreter). 4-way consistency is continuously validated via `compiler/tests/consistency/` (see [`design-docs/BACKEND.md`](design-docs/BACKEND.md) for the full backend technical specification)
+- **Multi-backend Architecture**: Tree-walker (reference oracle) + AOT compiler (IR → Cranelift or LLVM → object file) + Cranelift JIT (AST direct) + IR VM (shared IR flat-slot interpreter). 4-way consistency is continuously validated via `compiler/tests/consistency/` (see [`design-docs/BACKEND.md`](design-docs/BACKEND.md) for the full backend technical specification)
 - **Design by Contract**: `requires` / `ensures` clauses with `result` binding and an `INTERPRETER_CONTRACTS=all|pre|post|off` runtime gate (D `-release` equivalent)
 - **Memory profiling**: request-based allocation counters, leak detection (per allocation site), and allocator layout reports — `--profile=mem` / `--format=json` on the interpreter and `TOY_PROFILE_MEM=1` on AOT binaries, byte-identical across all four backends. The same counters are readable from `requires` / `ensures` / `test`, so memory use can be pinned by contract (see [`design-docs/MEMORY_PROFILING.md`](design-docs/MEMORY_PROFILING.md))
 - **Efficient Memory Management**: Append-only `StmtPool` / `ExprPool` plus automatic destruction with custom `drop` methods

@@ -14,11 +14,9 @@
 //! - the runtime is called by the `toy_*` names, with `signext` /
 //!   `zeroext` on narrow integers as cranelift's `sext` / `uext`
 //!
-//! L1 (this file, so far) covers the scalar core: constants, arithmetic,
-//! comparisons, casts, locals, direct calls (compound returns included),
-//! printing, string constants, raw pointer reads and writes, and the
-//! terminators. Anything else is refused **by name** rather than
-//! compiled into something that might be wrong.
+//! Every IR instruction is lowered: the `match` in `lower_inst` has no
+//! catch-all, so an instruction added to the IR does not compile here
+//! until this backend knows it too.
 
 use std::collections::BTreeSet;
 
@@ -126,6 +124,10 @@ struct Gen<'ctx, 'a> {
     diag_global: Option<inkwell::values::GlobalValue<'ctx>>,
     /// File names for allocation sites, NUL-terminated.
     file_blobs: HashMap<String, PointerValue<'ctx>>,
+    vtables: HashMap<(DefaultSymbol, DefaultSymbol), PointerValue<'ctx>>,
+    /// DEBUG-OBS D4: backtrace records, by `FrameId`, and `main`'s.
+    frame_records: Vec<PointerValue<'ctx>>,
+    entry_record: Option<PointerValue<'ctx>>,
 }
 
 impl<'ctx, 'a> Gen<'ctx, 'a> {
@@ -149,6 +151,9 @@ impl<'ctx, 'a> Gen<'ctx, 'a> {
             frame_offsets: HashMap::default(),
             diag_global: None,
             file_blobs: HashMap::default(),
+            vtables: HashMap::default(),
+            frame_records: Vec::new(),
+            entry_record: None,
         }
     }
 
@@ -167,9 +172,21 @@ impl<'ctx, 'a> Gen<'ctx, 'a> {
             IrType::I8 | IrType::U8 | IrType::Bool => self.ctx.i8_type().into(),
             IrType::F64 => self.ctx.f64_type().into(),
             IrType::F32 => self.ctx.f32_type().into(),
-            IrType::Vector(_) => self.ctx.i128_type().into(),
+            IrType::Vector(v) => self.vec_ty(v).into(),
             IrType::Unit | IrType::Struct(_) | IrType::Tuple(_) | IrType::Enum(_) => return None,
         })
+    }
+
+    /// SIMD: the LLVM vector type of a 128-bit IR vector.
+    fn vec_ty(&self, v: compiler_ir::VecTy) -> inkwell::types::VectorType<'ctx> {
+        use compiler_ir::VecTy;
+        match v {
+            VecTy::F64x2 => self.ctx.f64_type().vec_type(2),
+            VecTy::F32x4 => self.ctx.f32_type().vec_type(4),
+            VecTy::I32x4 => self.ctx.i32_type().vec_type(4),
+            VecTy::I64x2 => self.ctx.i64_type().vec_type(2),
+            VecTy::U8x16 => self.ctx.i8_type().vec_type(16),
+        }
     }
 
     /// The leaves an IR type occupies at a function boundary, with the
@@ -323,6 +340,34 @@ impl<'ctx, 'a> Gen<'ctx, 'a> {
                 }
             }
         }
+        // DEBUG-OBS D4: one `{ u64 line }{ name }{ 0 }` record per
+        // frame, and the entry function's (`toylang_rt::ToyFrameInfo`).
+        if self.ir.debug_frames {
+            for (i, frame) in self.ir.frames.iter().enumerate() {
+                let line = self.ir.frame_line(compiler_ir::FrameId(i as u32)).unwrap_or(0);
+                let g = self.frame_record(&format!("toy_bt_{i}"), &frame.name, line);
+                self.frame_records.push(g);
+            }
+            let entry = self
+                .ir
+                .functions
+                .iter()
+                .position(|f| f.export_name == "main")
+                .map(|i| self.ir.frame_name(FuncId(i as u32)))
+                .unwrap_or_else(|| "main".to_string());
+            self.entry_record = Some(self.frame_record("toy_bt_entry", &entry, 0));
+        }
+        // HEAP-CHECK H2 / H5: the instrumented accesses report with a
+        // frame of their own.
+        for id in &self.bodies {
+            for blk in &self.ir.function(*id).blocks {
+                for inst in &blk.instructions {
+                    if let InstKind::HeapCheck { site, .. } | InstKind::HeapCheckFree { site, .. } = &inst.kind {
+                        frames.insert((*site, None));
+                    }
+                }
+            }
+        }
         for (sym, site) in panics {
             let msg = self.interner.resolve(sym).unwrap_or("<unknown>");
             let message = format!("panic: {msg}");
@@ -357,6 +402,19 @@ impl<'ctx, 'a> Gen<'ctx, 'a> {
             self.diag_global = Some(g);
         }
         Ok(())
+    }
+
+    fn frame_record(&mut self, name: &str, display: &str, line: u32) -> PointerValue<'ctx> {
+        let mut bytes = (line as u64).to_le_bytes().to_vec();
+        bytes.extend_from_slice(display.as_bytes());
+        let init = self.ctx.const_string(&bytes, true);
+        let g = self.module.add_global(init.get_type(), None, name);
+        g.set_initializer(&init);
+        g.set_constant(true);
+        g.set_linkage(LLinkage::Internal);
+        // The runtime reads the line as a u64.
+        g.set_alignment(8);
+        g.as_pointer_value()
     }
 
     /// The address of a `[bytes][NUL][u64 len LE]` blob's first byte.
@@ -395,6 +453,7 @@ impl<'ctx, 'a> Gen<'ctx, 'a> {
             blocks: HashMap::default(),
             dyn_slots: Vec::new(),
             array_slots: Vec::new(),
+            shadow: None,
         };
         let entry = self.ctx.append_basic_block(fv, "entry");
         for b in &f.blocks {
@@ -466,16 +525,32 @@ impl<'ctx, 'a> Gen<'ctx, 'a> {
                 }
             }
         }
+        // HEAP-CHECK H2 / H3: an instrumented build is in poison (or
+        // reuse) mode from its first instruction.
         if f.export_name == "main" && self.ir.heap_check {
-            return Err(unsupported("`--heap-check=poison` / `reuse` instrumentation"));
+            let (mode, q) = match self.ir.heap_reuse {
+                Some(q) => (3u64, q),
+                None => (2u64, 0u64),
+            };
+            let start = self.runtime("toy_heap_check_start_mode", &[IrType::U64; 2], &[]);
+            self.call(start, &[self.i64c(mode).into(), self.i64c(q).into()])?;
         }
+        self.shadow_prologue(&mut fc)?;
         let first = fc.blocks[&f.entry.0];
         self.b(self.builder.build_unconditional_branch(first))?;
 
         for blk in &f.blocks {
             self.builder.position_at_end(fc.blocks[&blk.id.0]);
             for inst in &blk.instructions {
+                // DEBUG-OBS D4: a call names its frame for its duration.
+                let pushed = match inst.frame {
+                    Some(id) => self.frame_push(&fc, id)?,
+                    None => false,
+                };
                 self.lower_inst(&mut fc, inst)?;
+                if pushed {
+                    self.frame_pop(&fc)?;
+                }
             }
             match &blk.terminator {
                 Some(t) => self.lower_term(&mut fc, t)?,
@@ -483,6 +558,82 @@ impl<'ctx, 'a> Gen<'ctx, 'a> {
                     self.b(self.builder.build_unreachable())?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// DEBUG-OBS D4: find this activation's slot on the shadow stack,
+    /// once, in the entry block (the cranelift prologue's shape). `main`
+    /// pushes its own frame here; a function whose calls push frames
+    /// also checks the recursion limit.
+    fn shadow_prologue(&self, fc: &mut FnCtx<'ctx, 'a>) -> Result<(), String> {
+        if !self.ir.debug_frames {
+            return Ok(());
+        }
+        let f = fc.func;
+        let is_entry = f.export_name == "main";
+        let pushes = f.blocks.iter().any(|b| b.instructions.iter().any(|i| i.frame.is_some()));
+        if !is_entry && !pushes {
+            return Ok(());
+        }
+        let depth_addr = self.rt("toy_shadow_ctx", &[], IrType::U64, &[])?.into_int_value();
+        let stack_addr = self.addr(depth_addr, 8)?;
+        let found = self.load_at(depth_addr, IrType::U64)?.into_int_value();
+        let my_depth = if is_entry {
+            if let Some(rec) = self.entry_record {
+                let slot = self.shadow_slot(stack_addr, found)?;
+                self.store_at(slot, self.ptr_to_int(rec)?.into())?;
+            }
+            let next = self.b(self.builder.build_int_add(found, self.i64c(1), "d"))?;
+            self.store_at(depth_addr, next.into())?;
+            next
+        } else {
+            found
+        };
+        if pushes {
+            let over = self.b(self.builder.build_int_compare(
+                IntPredicate::UGE,
+                my_depth,
+                self.i64c(compiler_ir::RECURSION_LIMIT),
+                "deep",
+            ))?;
+            let fail = self.ctx.append_basic_block(fc.fv, "too_deep");
+            let cont = self.ctx.append_basic_block(fc.fv, "shadow");
+            self.b(self.builder.build_conditional_branch(over, fail, cont))?;
+            self.builder.position_at_end(fail);
+            let f = self.runtime("toy_panic_recursion", &[], &[]);
+            self.call(f, &[])?;
+            self.b(self.builder.build_unreachable())?;
+            self.builder.position_at_end(cont);
+            let slot = self.shadow_slot(stack_addr, my_depth)?;
+            let inner = self.b(self.builder.build_int_add(my_depth, self.i64c(1), "inner"))?;
+            fc.shadow = Some(Shadow { depth_addr, slot, my_depth, inner });
+        }
+        Ok(())
+    }
+
+    fn shadow_slot(&self, stack: IntValue<'ctx>, depth: IntValue<'ctx>) -> Result<IntValue<'ctx>, String> {
+        let masked = self.b(self.builder.build_and(
+            depth,
+            self.i64c(toylang_rt::TOY_SHADOW_CAP as u64 - 1),
+            "m",
+        ))?;
+        let off = self.b(self.builder.build_left_shift(masked, self.i64c(3), "o"))?;
+        self.b(self.builder.build_int_add(stack, off, "slot"))
+    }
+
+    fn frame_push(&self, fc: &FnCtx<'ctx, 'a>, id: compiler_ir::FrameId) -> Result<bool, String> {
+        let (Some(sh), Some(rec)) = (fc.shadow, self.frame_records.get(id.0 as usize)) else {
+            return Ok(false);
+        };
+        self.store_at(sh.slot, self.ptr_to_int(*rec)?.into())?;
+        self.store_at(sh.depth_addr, sh.inner.into())?;
+        Ok(true)
+    }
+
+    fn frame_pop(&self, fc: &FnCtx<'ctx, 'a>) -> Result<(), String> {
+        if let Some(sh) = fc.shadow {
+            self.store_at(sh.depth_addr, sh.my_depth.into())?;
         }
         Ok(())
     }
@@ -587,8 +738,10 @@ impl<'ctx, 'a> Gen<'ctx, 'a> {
             }
             InstKind::BinOp { op, lhs, rhs } => {
                 let ty = fc.ty(*lhs);
-                if let IrType::Vector(_) = ty {
-                    return Err(unsupported("SIMD arithmetic"));
+                if let IrType::Vector(vt) = ty {
+                    let v = self.simd_binop(*op, vt, fc.val(*lhs).into_vector_value(), fc.val(*rhs))?;
+                    result(fc, v);
+                    return Ok(());
                 }
                 let v = if ty.is_float() {
                     self.float_binop(*op, fc.val(*lhs).into_float_value(), fc.val(*rhs).into_float_value())?
@@ -599,8 +752,16 @@ impl<'ctx, 'a> Gen<'ctx, 'a> {
             }
             InstKind::UnaryOp { op, operand } => {
                 let ty = fc.ty(*operand);
-                if let IrType::Vector(_) = ty {
-                    return Err(unsupported("SIMD unary operators"));
+                if let IrType::Vector(vt) = ty {
+                    let x = fc.val(*operand).into_vector_value();
+                    let v: BasicValueEnum = match op {
+                        UnaryOp::Neg if vt.is_float() => self.b(self.builder.build_float_neg(x, "vneg"))?.into(),
+                        UnaryOp::Neg => self.b(self.builder.build_int_neg(x, "vneg"))?.into(),
+                        UnaryOp::BitNot => self.b(self.builder.build_not(x, "vnot"))?.into(),
+                        other => return Err(format!("`{other:?}` is not defined on {}", vt.source_name())),
+                    };
+                    result(fc, v);
+                    return Ok(());
                 }
                 let v = self.unaryop(*op, ty, fc.val(*operand))?;
                 result(fc, v);
@@ -671,6 +832,16 @@ impl<'ctx, 'a> Gen<'ctx, 'a> {
                 self.scatter(fc, ret, dests)?;
             }
             InstKind::Print { value, value_ty, newline, stderr } => {
+                if let IrType::Vector(vt) = value_ty {
+                    if *stderr {
+                        self.print_stream(true)?;
+                    }
+                    self.simd_render(fc.val(*value), *vt, Some(*newline))?;
+                    if *stderr {
+                        self.print_stream(false)?;
+                    }
+                    return Ok(());
+                }
                 if *stderr {
                     self.print_stream(true)?;
                 }
@@ -762,6 +933,21 @@ impl<'ctx, 'a> Gen<'ctx, 'a> {
                 let f = self.runtime("toy_heap_poison", &[IrType::U64; 4], &[]);
                 self.call(f, &[fc.val(*ptr), fc.val(*size), site_v.into(), file_v.into()])?;
             }
+            InstKind::HeapCheck { ptr, offset, len, write, site } => {
+                let p = fc.val(*ptr).into_int_value();
+                let a = match offset {
+                    Some(o) => self.b(self.builder.build_int_add(p, fc.val(*o).into_int_value(), "a"))?,
+                    None => p,
+                };
+                let (pre, suf) = self.frame(*site, None)?;
+                let f = self.runtime("toy_heap_check", &[IrType::U64; 5], &[]);
+                self.call(f, &[a.into(), fc.val(*len), self.i64c(*write as u64).into(), pre.into(), suf.into()])?;
+            }
+            InstKind::HeapCheckFree { ptr, site } => {
+                let (pre, suf) = self.frame(*site, None)?;
+                let f = self.runtime("toy_heap_check_free", &[IrType::U64; 3], &[]);
+                self.call(f, &[fc.val(*ptr), pre.into(), suf.into()])?;
+            }
             InstKind::StrLen { value } => {
                 let v = self.load_at(fc.val(*value).into_int_value(), IrType::U64)?;
                 result(fc, v);
@@ -792,7 +978,11 @@ impl<'ctx, 'a> Gen<'ctx, 'a> {
                     IrType::U16 => "toy_to_string_u16",
                     IrType::I32 => "toy_to_string_i32",
                     IrType::U32 => "toy_to_string_u32",
-                    IrType::Vector(_) => return Err(unsupported("SIMD rendering")),
+                    IrType::Vector(vt) => {
+                        let v = self.simd_render(fc.val(*value), *vt, None)?.ok_or("to_string_vec returned nothing")?;
+                        result(fc, v);
+                        return Ok(());
+                    }
                     other => {
                         return Err(format!("internal error: __builtin_to_string of {other:?} reached codegen"))
                     }
@@ -905,9 +1095,179 @@ impl<'ctx, 'a> Gen<'ctx, 'a> {
                     &[fc.val(*name), fc.val(*managed), fc.val(*live), fc.val(*free_blocks), fc.val(*largest)],
                 )?;
             }
-            other => return Err(unsupported(&format!("`{}`", inst_name(other)))),
+            InstKind::FuncAddr { target } => {
+                let a = self.func_addr(*target)?;
+                result(fc, a.into());
+            }
+            InstKind::MakeClosure { target, captures, capture_tys } => {
+                // [fn ptr][capture 0][capture 1].. in 8-byte slots, from
+                // libc `malloc` directly (cranelift's shape: not a
+                // program allocation).
+                let size = self.i64c((1 + captures.len() as u64) * 8);
+                let env = self.rt("malloc", &[IrType::U64], IrType::U64, &[size.into()])?.into_int_value();
+                let f = self.func_addr(*target)?;
+                self.store_at(env, f.into())?;
+                for (i, (c, _)) in captures.iter().zip(capture_tys.iter()).enumerate() {
+                    let a = self.addr(env, (i as u64 + 1) * 8)?;
+                    self.store_at(a, fc.val(*c))?;
+                }
+                result(fc, env.into());
+            }
+            InstKind::CallIndirect { callee, args, param_tys, ret_ty } => {
+                // The callee is a closure environment: its function is
+                // in the first slot, and the environment rides first.
+                let env = fc.val(*callee).into_int_value();
+                let fp = self.load_at(env, IrType::U64)?.into_int_value();
+                let mut params = vec![IrType::U64];
+                params.extend(param_tys.iter().copied());
+                let mut argv = vec![BasicValueEnum::from(env)];
+                argv.extend(args.iter().map(|a| fc.val(*a)));
+                let rets = self.leaves(*ret_ty);
+                let v = self.call_indirect(fp, &params, &rets, &argv)?;
+                if let (Some(v), Some(_)) = (v, inst.result) {
+                    result(fc, v);
+                }
+            }
+            InstKind::CallIndirectFn { callee, args, param_tys, ret_ty } => {
+                let fp = fc.val(*callee).into_int_value();
+                let argv: Vec<BasicValueEnum> = args.iter().map(|a| fc.val(*a)).collect();
+                let rets = self.leaves(*ret_ty);
+                let v = self.call_indirect(fp, param_tys, &rets, &argv)?;
+                if let (Some(v), Some(_)) = (v, inst.result) {
+                    result(fc, v);
+                }
+            }
+            InstKind::CallIndirectFnTuple { callee, args, param_tys, ret_tuple_id, dests } => {
+                self.indirect_compound(fc, *callee, args, param_tys, IrType::Tuple(*ret_tuple_id), dests)?;
+            }
+            InstKind::CallIndirectFnEnum { callee, args, param_tys, ret_enum_id, dests } => {
+                self.indirect_compound(fc, *callee, args, param_tys, IrType::Enum(*ret_enum_id), dests)?;
+            }
+            InstKind::CallIndirectFnStruct { callee, args, param_tys, ret_struct_id, dests } => {
+                self.indirect_compound(fc, *callee, args, param_tys, IrType::Struct(*ret_struct_id), dests)?;
+            }
+            InstKind::VtableAddr { trait_sym, struct_sym } => {
+                let g = self.vtable(*trait_sym, *struct_sym)?;
+                let a = self.ptr_to_int(g)?;
+                result(fc, a.into());
+            }
+            InstKind::ParFor { body, env, from, until } => {
+                let b = self.func_addr(*body)?;
+                let f = self.runtime("toy_par_for", &[IrType::U64; 4], &[]);
+                self.call(f, &[fc.val(*from), fc.val(*until), fc.val(*env), b.into()])?;
+            }
+            InstKind::TaskSpawn { body, env, size } => {
+                let b = self.func_addr(*body)?;
+                let v = self.rt("toy_task_spawn", &[IrType::U64; 3], IrType::U64, &[b.into(), fc.val(*env), fc.val(*size)])?;
+                result(fc, v);
+            }
+            InstKind::SimdSplat { .. }
+            | InstKind::SimdLoad { .. }
+            | InstKind::SimdStore { .. }
+            | InstKind::SimdExtract { .. }
+            | InstKind::SimdInsert { .. }
+            | InstKind::SimdSelect { .. }
+            | InstKind::SimdReduce { .. }
+            | InstKind::SimdTest { .. }
+            | InstKind::SimdBitmask { .. }
+            | InstKind::SimdSwizzle { .. }
+            | InstKind::SimdShuffle { .. }
+            | InstKind::SimdBitcast { .. } => {
+                if let Some(v) = self.simd(fc, &inst.kind)? {
+                    result(fc, v);
+                }
+            }
         }
         Ok(())
+    }
+
+    fn func_addr(&self, target: FuncId) -> Result<IntValue<'ctx>, String> {
+        let f = self.callee(target)?;
+        self.ptr_to_int(f.as_global_value().as_pointer_value())
+    }
+
+    /// Call through a function pointer held as an `i64`.
+    fn call_indirect(
+        &self,
+        fp: IntValue<'ctx>,
+        params: &[IrType],
+        rets: &[IrType],
+        args: &[BasicValueEnum<'ctx>],
+    ) -> Result<Option<BasicValueEnum<'ctx>>, String> {
+        let ty = self.fn_type(params, rets);
+        let ptr = self.int_to_ptr(fp)?;
+        let argv: Vec<BasicMetadataValueEnum> = args.iter().map(|a| (*a).into()).collect();
+        let cs = self.b(self.builder.build_indirect_call(ty, ptr, &argv, ""))?;
+        // The callee was declared with the extension attributes its
+        // types call for; the call site has to say the same.
+        for (i, p) in params.iter().enumerate() {
+            let name = match ext_of(*p) {
+                Ext::Sign => "signext",
+                Ext::Zero => "zeroext",
+                Ext::None => continue,
+            };
+            cs.add_attribute(AttributeLoc::Param(i as u32), self.enum_attr(name));
+        }
+        if let [one] = rets {
+            match ext_of(*one) {
+                Ext::Sign => cs.add_attribute(AttributeLoc::Return, self.enum_attr("signext")),
+                Ext::Zero => cs.add_attribute(AttributeLoc::Return, self.enum_attr("zeroext")),
+                Ext::None => {}
+            }
+        }
+        Ok(match cs.try_as_basic_value() {
+            ValueKind::Basic(v) => Some(v),
+            _ => None,
+        })
+    }
+
+    fn indirect_compound(
+        &self,
+        fc: &mut FnCtx<'ctx, 'a>,
+        callee: ValueId,
+        args: &[ValueId],
+        param_tys: &[IrType],
+        ret: IrType,
+        dests: &[LocalId],
+    ) -> Result<(), String> {
+        let fp = fc.val(callee).into_int_value();
+        let argv: Vec<BasicValueEnum> = args.iter().map(|a| fc.val(*a)).collect();
+        let rets = self.leaves(ret);
+        let v = self.call_indirect(fp, param_tys, &rets, &argv)?;
+        self.scatter(fc, v, dests)
+    }
+
+    /// The vtable of `impl trait for struct`: the methods' addresses in
+    /// slot order, as a constant array.
+    fn vtable(
+        &mut self,
+        trait_sym: DefaultSymbol,
+        struct_sym: DefaultSymbol,
+    ) -> Result<PointerValue<'ctx>, String> {
+        if let Some(p) = self.vtables.get(&(trait_sym, struct_sym)) {
+            return Ok(*p);
+        }
+        let ids = self.ir.vtables.get(&(trait_sym, struct_sym)).cloned().ok_or_else(|| {
+            "vtable_addr: no `impl` for this pair (no vtable layout)".to_string()
+        })?;
+        let pt = self.ctx.ptr_type(AddressSpace::default());
+        let mut entries = Vec::with_capacity(ids.len());
+        for id in &ids {
+            entries.push(self.callee(*id)?.as_global_value().as_pointer_value());
+        }
+        let init = pt.const_array(&entries);
+        let name = format!(
+            "toy_vtable_{}_{}",
+            self.interner.resolve(trait_sym).unwrap_or("trait"),
+            self.interner.resolve(struct_sym).unwrap_or("struct")
+        );
+        let g = self.module.add_global(init.get_type(), None, &name);
+        g.set_initializer(&init);
+        g.set_constant(true);
+        g.set_linkage(LLinkage::Internal);
+        let p = g.as_pointer_value();
+        self.vtables.insert((trait_sym, struct_sym), p);
+        Ok(p)
     }
 
     /// Call a runtime function that returns one value.
@@ -1370,6 +1730,256 @@ impl<'ctx, 'a> Gen<'ctx, 'a> {
     }
 }
 
+// ---------------------------------------------------------------------
+// SIMD (the shapes of `codegen/simd.rs`)
+
+impl<'ctx, 'a> Gen<'ctx, 'a> {
+    /// An integer type of `w` bits (`w` > 0).
+    fn int_w(&self, w: u32) -> inkwell::types::IntType<'ctx> {
+        self.ctx
+            .custom_width_int_type(std::num::NonZeroU32::new(w).expect("non-zero width"))
+            .expect("a valid integer width")
+    }
+
+    fn lane_int(&self, vt: compiler_ir::VecTy) -> inkwell::types::VectorType<'ctx> {
+        let w = (vt.lane_bytes() * 8) as u32;
+        self.int_w(w).vec_type(vt.lanes() as u32)
+    }
+
+    fn as_ints(&self, v: inkwell::values::VectorValue<'ctx>, vt: compiler_ir::VecTy)
+        -> Result<inkwell::values::VectorValue<'ctx>, String> {
+        if vt.is_float() {
+            Ok(self.b(self.builder.build_bit_cast(v, self.lane_int(vt), "bits"))?.into_vector_value())
+        } else {
+            Ok(v)
+        }
+    }
+
+    /// `<N x i1>` -> a lane-wide all-ones / all-zeros mask.
+    fn mask_of(&self, c: inkwell::values::VectorValue<'ctx>, vt: compiler_ir::VecTy)
+        -> Result<BasicValueEnum<'ctx>, String> {
+        Ok(self.b(self.builder.build_int_s_extend(c, self.lane_int(vt), "mask"))?.into())
+    }
+
+    fn splat(&self, scalar: BasicValueEnum<'ctx>, vt: compiler_ir::VecTy)
+        -> Result<inkwell::values::VectorValue<'ctx>, String> {
+        let mut v = self.vec_ty(vt).get_undef();
+        for lane in 0..vt.lanes() as u64 {
+            v = self.b(self.builder.build_insert_element(v, scalar, self.i64c(lane), "splat"))?;
+        }
+        Ok(v)
+    }
+
+    fn simd_binop(
+        &self,
+        op: BinOp,
+        vt: compiler_ir::VecTy,
+        l: inkwell::values::VectorValue<'ctx>,
+        r: BasicValueEnum<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let bd = &self.builder;
+        if vt.is_float() {
+            let r = r.into_vector_value();
+            let cmp = |p: FloatPredicate| -> Result<BasicValueEnum<'ctx>, String> {
+                let c = self.b(bd.build_float_compare(p, l, r, "vc"))?;
+                self.mask_of(c, vt)
+            };
+            return Ok(match op {
+                BinOp::Add => self.b(bd.build_float_add(l, r, "vadd"))?.into(),
+                BinOp::Sub => self.b(bd.build_float_sub(l, r, "vsub"))?.into(),
+                BinOp::Mul => self.b(bd.build_float_mul(l, r, "vmul"))?.into(),
+                BinOp::Div => self.b(bd.build_float_div(l, r, "vdiv"))?.into(),
+                // cranelift's fmin / fmax propagate NaN and order -0 < +0:
+                // LLVM's `minimum` / `maximum`.
+                BinOp::Min => self.intrinsic("llvm.minimum", &[l.get_type().into()], &[l.into(), r.into()])?,
+                BinOp::Max => self.intrinsic("llvm.maximum", &[l.get_type().into()], &[l.into(), r.into()])?,
+                BinOp::Eq => cmp(FloatPredicate::OEQ)?,
+                BinOp::Ne => cmp(FloatPredicate::UNE)?,
+                BinOp::Lt => cmp(FloatPredicate::OLT)?,
+                BinOp::Le => cmp(FloatPredicate::OLE)?,
+                BinOp::Gt => cmp(FloatPredicate::OGT)?,
+                BinOp::Ge => cmp(FloatPredicate::OGE)?,
+                other => {
+                    return Err(format!("`{other:?}` is not defined on the float lanes of {}", vt.source_name()))
+                }
+            });
+        }
+        let signed = !matches!(vt, compiler_ir::VecTy::U8x16);
+        if matches!(op, BinOp::Shl | BinOp::Shr) {
+            // The amount is one u64 for every lane, taken modulo the lane
+            // width as cranelift's vector shifts take it.
+            let lane_t = self.lane_int(vt).get_element_type().into_int_type();
+            let amt = self.b(bd.build_int_cast_sign_flag(r.into_int_value(), lane_t, false, "amt"))?;
+            let mask = lane_t.const_int(lane_t.get_bit_width() as u64 - 1, false);
+            let amt = self.b(bd.build_and(amt, mask, "amt"))?;
+            let amt = self.splat(amt.into(), vt)?;
+            return Ok(match op {
+                BinOp::Shl => self.b(bd.build_left_shift(l, amt, "vshl"))?.into(),
+                _ => self.b(bd.build_right_shift(l, amt, signed, "vshr"))?.into(),
+            });
+        }
+        let r = r.into_vector_value();
+        let pick = |s: IntPredicate, u: IntPredicate| if signed { s } else { u };
+        let cmp = |p: IntPredicate| -> Result<BasicValueEnum<'ctx>, String> {
+            let c = self.b(bd.build_int_compare(p, l, r, "vc"))?;
+            self.mask_of(c, vt)
+        };
+        let minmax = |name: &str| self.intrinsic(name, &[l.get_type().into()], &[l.into(), r.into()]);
+        Ok(match op {
+            BinOp::Add => self.b(bd.build_int_add(l, r, "vadd"))?.into(),
+            BinOp::Sub => self.b(bd.build_int_sub(l, r, "vsub"))?.into(),
+            BinOp::Mul => self.b(bd.build_int_mul(l, r, "vmul"))?.into(),
+            BinOp::BitAnd => self.b(bd.build_and(l, r, "vand"))?.into(),
+            BinOp::BitOr => self.b(bd.build_or(l, r, "vor"))?.into(),
+            BinOp::BitXor => self.b(bd.build_xor(l, r, "vxor"))?.into(),
+            BinOp::Min => minmax(if signed { "llvm.smin" } else { "llvm.umin" })?,
+            BinOp::Max => minmax(if signed { "llvm.smax" } else { "llvm.umax" })?,
+            BinOp::Eq => cmp(IntPredicate::EQ)?,
+            BinOp::Ne => cmp(IntPredicate::NE)?,
+            BinOp::Lt => cmp(pick(IntPredicate::SLT, IntPredicate::ULT))?,
+            BinOp::Le => cmp(pick(IntPredicate::SLE, IntPredicate::ULE))?,
+            BinOp::Gt => cmp(pick(IntPredicate::SGT, IntPredicate::UGT))?,
+            BinOp::Ge => cmp(pick(IntPredicate::SGE, IntPredicate::UGE))?,
+            other => {
+                return Err(format!(
+                    "`{other:?}` is not defined on the integer lanes of {} \
+                     (a per-lane divide guard would defeat the vectorisation)",
+                    vt.source_name()
+                ))
+            }
+        })
+    }
+
+    /// `print` / `to_string` of a vector: spill it and hand the runtime
+    /// its address and type code.
+    fn simd_render(
+        &self,
+        v: BasicValueEnum<'ctx>,
+        vt: compiler_ir::VecTy,
+        newline: Option<bool>,
+    ) -> Result<Option<BasicValueEnum<'ctx>>, String> {
+        let slot = self.b(self.builder.build_alloca(self.vec_ty(vt), "vspill"))?;
+        self.b(self.builder.build_store(slot, v))?;
+        let addr = self.ptr_to_int(slot)?;
+        let code = self.i64c(crate::codegen::simd_type_code(vt));
+        match newline {
+            Some(nl) => {
+                let f = self.runtime("toy_print_vec", &[IrType::U64, IrType::U64, IrType::Bool], &[]);
+                self.call(f, &[addr.into(), code.into(), self.ctx.i8_type().const_int(nl as u64, false).into()])?;
+                Ok(None)
+            }
+            None => Ok(Some(self.rt("toy_to_string_vec", &[IrType::U64, IrType::U64], IrType::U64, &[addr.into(), code.into()])?)),
+        }
+    }
+
+    fn simd(&self, fc: &FnCtx<'ctx, 'a>, kind: &InstKind) -> Result<Option<BasicValueEnum<'ctx>>, String> {
+        use compiler_ir::SimdReduceOp;
+        let bd = &self.builder;
+        let lane = |i: u64| self.i64c(i);
+        Ok(Some(match kind {
+            InstKind::SimdSplat { value, ty } => self.splat(fc.val(*value), *ty)?.into(),
+            InstKind::SimdLoad { ptr, offset, ty } => {
+                let a = self.b(bd.build_int_add(fc.val(*ptr).into_int_value(), fc.val(*offset).into_int_value(), "va"))?;
+                let p = self.int_to_ptr(a)?;
+                let v = self.b(bd.build_load(self.vec_ty(*ty), p, "vld"))?;
+                set_align(v, 1);
+                v
+            }
+            InstKind::SimdStore { ptr, offset, value, .. } => {
+                let a = self.b(bd.build_int_add(fc.val(*ptr).into_int_value(), fc.val(*offset).into_int_value(), "va"))?;
+                self.store_at(a, fc.val(*value))?;
+                return Ok(None);
+            }
+            InstKind::SimdExtract { value, lane: l, .. } => {
+                self.b(bd.build_extract_element(fc.val(*value).into_vector_value(), lane(*l as u64), "ext"))?
+            }
+            InstKind::SimdInsert { value, lane: l, scalar, .. } => self
+                .b(bd.build_insert_element(fc.val(*value).into_vector_value(), fc.val(*scalar), lane(*l as u64), "ins"))?
+                .into(),
+            InstKind::SimdSelect { mask, a, b, ty } => {
+                // Bitwise: (m & a) | (!m & b), on the integer view.
+                let m = fc.val(*mask).into_vector_value();
+                let ia = self.as_ints(fc.val(*a).into_vector_value(), *ty)?;
+                let ib = self.as_ints(fc.val(*b).into_vector_value(), *ty)?;
+                let m = self.b(bd.build_bit_cast(m, ia.get_type(), "m"))?.into_vector_value();
+                let x = self.b(bd.build_and(m, ia, "sa"))?;
+                let nm = self.b(bd.build_not(m, "nm"))?;
+                let y = self.b(bd.build_and(nm, ib, "sb"))?;
+                let r = self.b(bd.build_or(x, y, "sel"))?;
+                self.b(bd.build_bit_cast(r, self.vec_ty(*ty), "selv"))?
+            }
+            InstKind::SimdReduce { value, op, ty } => {
+                // Lane 0 to n, in order: the order is the specification.
+                let v = fc.val(*value).into_vector_value();
+                let signed = !matches!(ty, compiler_ir::VecTy::U8x16);
+                let mut acc = self.b(bd.build_extract_element(v, lane(0), "r0"))?;
+                for i in 1..ty.lanes() as u64 {
+                    let next = self.b(bd.build_extract_element(v, lane(i), "rn"))?;
+                    acc = match (op, ty.is_float()) {
+                        (SimdReduceOp::Add, true) => self.b(bd.build_float_add(acc.into_float_value(), next.into_float_value(), "r"))?.into(),
+                        (SimdReduceOp::Add, false) => self.b(bd.build_int_add(acc.into_int_value(), next.into_int_value(), "r"))?.into(),
+                        (SimdReduceOp::Min, true) => self.intrinsic("llvm.minimum", &[acc.get_type()], &[acc, next])?,
+                        (SimdReduceOp::Max, true) => self.intrinsic("llvm.maximum", &[acc.get_type()], &[acc, next])?,
+                        (SimdReduceOp::Min, false) => self.intrinsic(if signed { "llvm.smin" } else { "llvm.umin" }, &[acc.get_type()], &[acc, next])?,
+                        (SimdReduceOp::Max, false) => self.intrinsic(if signed { "llvm.smax" } else { "llvm.umax" }, &[acc.get_type()], &[acc, next])?,
+                        (SimdReduceOp::And, false) => self.b(bd.build_and(acc.into_int_value(), next.into_int_value(), "r"))?.into(),
+                        (SimdReduceOp::Or, false) => self.b(bd.build_or(acc.into_int_value(), next.into_int_value(), "r"))?.into(),
+                        (SimdReduceOp::And | SimdReduceOp::Or, true) => {
+                            return Err(format!(
+                                "a bitwise reduction needs integer lanes, but {} has float lanes",
+                                ty.source_name()
+                            ))
+                        }
+                    };
+                }
+                acc
+            }
+            InstKind::SimdTest { value, all, ty } => {
+                let v = self.as_ints(fc.val(*value).into_vector_value(), *ty)?;
+                let zero = v.get_type().const_zero();
+                let nz = self.b(bd.build_int_compare(IntPredicate::NE, v, zero, "nz"))?;
+                let name = if *all { "llvm.vector.reduce.and" } else { "llvm.vector.reduce.or" };
+                let r = self.intrinsic(name, &[nz.get_type().into()], &[nz.into()])?.into_int_value();
+                self.bool_of(r)?
+            }
+            InstKind::SimdBitmask { value, ty } => {
+                // Bit k = the top bit of lane k.
+                let v = self.as_ints(fc.val(*value).into_vector_value(), *ty)?;
+                let zero = v.get_type().const_zero();
+                let neg = self.b(bd.build_int_compare(IntPredicate::SLT, v, zero, "msb"))?;
+                let bits_t = self.int_w(ty.lanes() as u32);
+                let packed = self.b(bd.build_bit_cast(neg, bits_t, "bits"))?.into_int_value();
+                self.b(bd.build_int_z_extend(packed, self.i64t(), "bm"))?.into()
+            }
+            InstKind::SimdSwizzle { table, indices } => {
+                // out[k] = idx[k] < 16 ? table[idx[k]] : 0
+                let t = fc.val(*table).into_vector_value();
+                let ix = fc.val(*indices).into_vector_value();
+                let i8t = self.ctx.i8_type();
+                let mut out = t.get_type().const_zero();
+                for k in 0..16u64 {
+                    let idx = self.b(bd.build_extract_element(ix, lane(k), "i"))?.into_int_value();
+                    let inb = self.b(bd.build_int_compare(IntPredicate::ULT, idx, i8t.const_int(16, false), "in"))?;
+                    let masked = self.b(bd.build_and(idx, i8t.const_int(15, false), "i15"))?;
+                    let e = self.b(bd.build_extract_element(t, masked, "e"))?.into_int_value();
+                    let r = self.b(bd.build_select(inb, e, i8t.const_zero(), "r"))?;
+                    out = self.b(bd.build_insert_element(out, r, lane(k), "o"))?;
+                }
+                out.into()
+            }
+            InstKind::SimdShuffle { a, b, mask, ty } => {
+                let lanes = ty.lanes() as u32;
+                let i32t = self.ctx.i32_type();
+                let m: Vec<IntValue> = mask.iter().take(lanes as usize).map(|i| i32t.const_int(*i as u64, false)).collect();
+                let mv = inkwell::types::VectorType::const_vector(&m);
+                self.b(bd.build_shuffle_vector(fc.val(*a).into_vector_value(), fc.val(*b).into_vector_value(), mv, "shuf"))?.into()
+            }
+            InstKind::SimdBitcast { value, to, .. } => self.b(bd.build_bit_cast(fc.val(*value), self.vec_ty(*to), "vcast"))?,
+            _ => unreachable!("simd() handed a non-SIMD instruction"),
+        }))
+    }
+}
+
 /// What one function's body needs while it is being emitted.
 struct FnCtx<'ctx, 'a> {
     fv: FunctionValue<'ctx>,
@@ -1386,6 +1996,20 @@ struct FnCtx<'ctx, 'a> {
     blocks: HashMap<u32, BasicBlock<'ctx>>,
     dyn_slots: Vec<PointerValue<'ctx>>,
     array_slots: Vec<PointerValue<'ctx>>,
+    shadow: Option<Shadow<'ctx>>,
+}
+
+/// DEBUG-OBS D4: what the shadow-stack prologue left for the pushes.
+#[derive(Clone, Copy)]
+struct Shadow<'ctx> {
+    /// Address of the depth counter (the slots follow it).
+    depth_addr: IntValue<'ctx>,
+    /// This activation's slot.
+    slot: IntValue<'ctx>,
+    /// The depth while this function runs, which a pop restores.
+    my_depth: IntValue<'ctx>,
+    /// The depth while a callee runs.
+    inner: IntValue<'ctx>,
 }
 
 impl<'ctx> FnCtx<'ctx, '_> {
@@ -1444,16 +2068,4 @@ fn print_helper(t: IrType, newline: bool) -> Option<&'static str> {
     })
 }
 
-fn unsupported(what: &str) -> String {
-    format!(
-        "the LLVM backend does not lower {what} yet (AOT-LLVM L1, design-docs/AOT_LLVM.md); \
-         `--codegen=cranelift` does"
-    )
-}
 
-/// The variant name of an instruction, for the refusal.
-fn inst_name(k: &InstKind) -> String {
-    let s = format!("{k:?}");
-    let end = s.find([' ', '(', '{']).unwrap_or(s.len());
-    s[..end].to_string()
-}

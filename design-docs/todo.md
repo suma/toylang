@@ -3164,9 +3164,10 @@
   ~20 倍〜~1000 倍遅延) し、Layer 1 に残すのが確定。R4 の byte 一致
   テスト固定のみ実施済み。
 * **AOT のバックエンドに LLVM を採用する (AOT-LLVM)** — **着手済み
-  (2026-10-07)。L0 (`--codegen`、`llvm` feature) と L1 が landing し、
-  example 158 本中 143 本が cranelift と一致。残りの段取りと実装の決定は
-  [`AOT_LLVM.md`](AOT_LLVM.md)**。今の AOT は
+  (2026-10-07)。L0〜L4 が landing: 全 IR 命令を扱い、example 158 本中
+  157 本が cranelift と一致、`--features llvm` のテストで consistency /
+  example_consistency の AOT レーンを LLVM でも突き合わせる。残りは L5
+  (`-O2`、`--release` の既定化、計測)。[`AOT_LLVM.md`](AOT_LLVM.md)**。今の AOT は
   cranelift (`compiler/src/codegen/`) で IR → object を作っている。これを
   LLVM でも作れるようにする。
   **形は決定 (2026-10-07): 1 つの AOT コンパイラに 2 つ目のバックエンドとして

@@ -1,10 +1,11 @@
 # AOT_LLVM — AOT の 2 つ目のバックエンドとしての LLVM
 
-> 状態: **L0 と L1 が landing、L2 の大半も (2026-10-07)**。
-> `interpreter/example/` の 158 本のうち **143 本が cranelift と stdout・
-> stderr・終了コードまで一致**、12 本は未対応の命令で断る (closure /
-> 間接呼び出し / SIMD)、3 本の差は backtrace が出ないこと (L3) と
-> ポート番号 (毎回違う)。決定の経緯は `todo.md` の AOT-LLVM 項。
+> 状態: **L0〜L4 が landing (2026-10-08)**。LLVM バックエンドは IR の
+> **全命令**を扱い (命令の `match` に catch-all は無い)、
+> `interpreter/example/` の 158 本中 157 本が cranelift と stdout・stderr・
+> 終了コードまで一致する (残る 1 本はポート番号が毎回違うだけ)。
+> `--features llvm` でテストすると、consistency と example_consistency の
+> AOT レーンが LLVM でも同じ答えを出すかを全件で確かめる。残りは L5
 
 ## 0. 決めたこと
 
@@ -80,6 +81,23 @@ L4 までは debug のまま `--codegen=llvm` で答えを突き合わせる。
   共有する — ランタイムが読む record 形式がそのまま揃う
 - `main` が `str` を返すプログラムの終了コードは文字列の番地の下位
   8 bit なので、バックエンドどうしで比べない
+- **shadow stack は cranelift と同じ形**: 関数の入口で `toy_shadow_ctx()`
+  を 1 回呼び、slot と深さを先に計算しておき、呼び出しの前後は store
+  2 つと 1 つ。`main` は自分のフレームを積む。backtrace が cranelift と
+  1 バイトも違わない
+- **SIMD**: float の `min` / `max` は `llvm.minimum` / `llvm.maximum`
+  (cranelift の `fmin` / `fmax` と同じく NaN を伝播し `-0 < +0`)、
+  比較は `<N x i1>` を lane 幅に sign-extend したマスク、シフト量は
+  lane 幅でマスク、`__simd_reduce_*` は lane 0 から順の逐次畳み込み
+  (仕様)、`swizzle` は lane ごとに `idx < 16 ? t[idx] : 0`
+- 間接呼び出しにも `signext` / `zeroext` を付ける — LLVM は呼び出し側と
+  受け側の属性が揃っていることを前提にする (cranelift は付けない)
+- **テストのレーン**: `--features llvm` のとき、consistency harness の
+  `compile_file` / `checked_compiler_run` と example_consistency の
+  `run_compiled_with` が、同じプログラムを LLVM でも作って走らせ、
+  cranelift のバイナリと stdout (example は stderr も) と終了コード
+  (example を除く) を突き合わせる。LLVM の出力をわざと変えると
+  「the LLVM backend disagrees with cranelift」で落ちることを確かめた
 
 ## 3. ビルドの仕方
 

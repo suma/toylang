@@ -274,11 +274,34 @@ fn run_compiled_with(checked: &CheckedProgram, stem: &str, heap_poison: bool) ->
     }
     let output = Command::new(&exe_path).output().expect("spawn compiled binary");
     let _ = std::fs::remove_file(&exe_path);
-    Some(Run {
+    let run = Run {
         exit_code: output.status.code(),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    })
+    };
+    #[cfg(feature = "llvm")]
+    llvm_agrees(checked, stem, &options, &run);
+    Some(run)
+}
+
+/// AOT-LLVM: the same example through the LLVM backend, held to the
+/// cranelift binary's stdout and stderr. Not the exit code: an example
+/// whose `main` returns a `str` exits with the low byte of an address,
+/// which no two binaries share.
+#[cfg(feature = "llvm")]
+fn llvm_agrees(checked: &CheckedProgram, stem: &str, cranelift: &CompilerOptions, run: &Run) {
+    let exe_path = unique_path(&format!("{stem}_llvm"));
+    let mut options = cranelift.clone();
+    options.output = Some(exe_path.clone());
+    options.codegen = Some(compiler::Codegen::Llvm);
+    compiler::compile_checked_program(&checked.program, checked.interner, &checked.contract_msgs, &options)
+        .unwrap_or_else(|e| panic!("the LLVM backend failed where cranelift built `{stem}`: {e}"));
+    let output = Command::new(&exe_path).output().expect("spawn compiled binary (LLVM)");
+    let _ = std::fs::remove_file(&exe_path);
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(stdout, run.stdout, "the LLVM backend's stdout disagrees with cranelift for `{stem}`");
+    assert_eq!(stderr, run.stderr, "the LLVM backend's stderr disagrees with cranelift for `{stem}`");
 }
 
 /// Check one example, isolating panics.

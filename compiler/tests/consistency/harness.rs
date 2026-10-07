@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{LazyLock, Mutex};
 
-use compiler::{compile_file, compile_to_jit_main_with_options, CompilerOptions};
+use compiler::{compile_to_jit_main_with_options, CompilerOptions};
 use interpreter::object::Object;
 use interpreter::{RunOptions, RunOutcome};
 
@@ -360,10 +360,74 @@ pub(super) fn checked_compiler_run(checked: &CheckedProgram, stem: &str) -> (i32
     .expect("compile_checked_program failed");
     let output = Command::new(&exe_path).output().expect("spawn binary");
     let _ = std::fs::remove_file(&exe_path);
-    (
+    let result = (
         output.status.code().expect("exit code"),
         String::from_utf8_lossy(&output.stdout).into_owned(),
+    );
+    #[cfg(feature = "llvm")]
+    checked_llvm_agrees(checked, stem, &result);
+    result
+}
+
+/// `compiler::compile_file`, plus — with the `llvm` feature — the same
+/// build through the LLVM backend, run and held to the cranelift
+/// binary's exit code and stdout (AOT-LLVM, `design-docs/AOT_LLVM.md`).
+/// The call sites run the cranelift binary as before; this only adds a
+/// lane beside it. A site that runs the binary with an environment of
+/// its own calls `compiler::compile_file` instead.
+fn compile_file(options: &CompilerOptions) -> Result<(), String> {
+    let built = compiler::compile_file(options);
+    #[cfg(feature = "llvm")]
+    if built.is_ok() && matches!(options.emit, compiler::EmitKind::Executable) {
+        file_llvm_agrees(options);
+    }
+    built
+}
+
+#[cfg(feature = "llvm")]
+fn file_llvm_agrees(options: &CompilerOptions) {
+    let Some(cl_exe) = options.output.clone() else { return };
+    let mut llvm = options.clone();
+    let ll_exe = PathBuf::from(format!("{}_llvm", cl_exe.display()));
+    llvm.output = Some(ll_exe.clone());
+    llvm.codegen = Some(compiler::Codegen::Llvm);
+    compiler::compile_file(&llvm).unwrap_or_else(|e| {
+        panic!("the LLVM backend failed where cranelift built `{}`: {e}", options.input.display())
+    });
+    let run = |p: &PathBuf| {
+        let out = Command::new(p).output().expect("spawn binary");
+        (out.status.code(), String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let (a, b) = (run(&cl_exe), run(&ll_exe));
+    let _ = std::fs::remove_file(&ll_exe);
+    assert_eq!(b, a, "the LLVM backend disagrees with cranelift for `{}`", options.input.display());
+}
+
+/// AOT-LLVM: the same program through the LLVM backend has to answer
+/// what the cranelift one did. A lane inside the AOT lane, so every
+/// consistency test that compiles gains it without saying so.
+#[cfg(feature = "llvm")]
+fn checked_llvm_agrees(checked: &CheckedProgram, stem: &str, cranelift: &(i32, String)) {
+    let exe_path = unique_path(&format!("{stem}_llvm"));
+    let mut options = CompilerOptions::new(PathBuf::from("<checked>"));
+    options.output = Some(exe_path.clone());
+    options.core_modules_dirs = vec![core_modules_dir()];
+    options.link_cache_dir = Some(link_cache_dir_for_tests());
+    options.codegen = Some(compiler::Codegen::Llvm);
+    compiler::compile_checked_program(
+        &checked.program,
+        checked.interner,
+        &checked.contract_msgs,
+        &options,
     )
+    .expect("compile_checked_program (LLVM) failed");
+    let output = Command::new(&exe_path).output().expect("spawn binary (LLVM)");
+    let _ = std::fs::remove_file(&exe_path);
+    let llvm = (
+        output.status.code().expect("exit code (LLVM)"),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+    );
+    assert_eq!(&llvm, cranelift, "the LLVM backend disagrees with cranelift for `{stem}`");
 }
 
 pub(super) fn checked_interpreter_stdout(checked: &CheckedProgram, source: &str) -> String {
@@ -1053,7 +1117,7 @@ pub(super) fn compiled_run_streams_env(
     options.output = Some(exe_path.clone());
     options.core_modules_dirs = vec![core_modules_dir()];
     options.link_cache_dir = Some(link_cache_dir_for_tests());
-    let result = if compile_file(&options).is_ok() {
+    let result = if compiler::compile_file(&options).is_ok() {
         let mut cmd = Command::new(&exe_path);
         for (key, value) in env {
             cmd.env(key, value);

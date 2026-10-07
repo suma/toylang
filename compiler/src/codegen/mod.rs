@@ -95,6 +95,13 @@ pub fn emit_object(
     Ok((bytes, ir_module.link_libs))
 }
 
+/// AOT-LLVM: the runtime's code for a vector type (`toy_print_vec`),
+/// shared so both backends hand it the same number.
+#[cfg(feature = "llvm")]
+pub(crate) fn simd_type_code(v: compiler_ir::VecTy) -> u64 {
+    simd::vec_type_code(v) as u64
+}
+
 /// AOT-LLVM: the object file, made by LLVM from the same IR.
 #[cfg(feature = "llvm")]
 fn emit_llvm_object(

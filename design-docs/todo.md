@@ -3185,8 +3185,8 @@
     で従来どおり)。今の `--release` は契約を外すだけでコード生成は debug と
     同じ cranelift なので、出力の速さの面での「release」はこれが初めて。
     細かいところで決めること:
-    - 最適化レベル (`-O2` 相当か `-O3` か)。`--release` の中で固定するか
-      `--opt-level` を足すか
+    - 最適化レベルは **`-O2` 相当** (2026-10-07 決定。LLVM の
+      `default<O2>` パイプライン)
     - **`llvm` feature 無しでビルドした `toy` / `compiler` で `--release`
       を指定したとき**: cranelift に落として 1 行警告するか、エラーにするか
       (既定ビルドに LLVM を要求しない方針と、「release は LLVM」という約束の

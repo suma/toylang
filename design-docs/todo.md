@@ -3188,9 +3188,14 @@
     - 最適化レベルは **`-O2` 相当** (2026-10-07 決定。LLVM の
       `default<O2>` パイプライン)
     - **`llvm` feature 無しでビルドした `toy` / `compiler` で `--release`
-      を指定したとき**: cranelift に落として 1 行警告するか、エラーにするか
-      (既定ビルドに LLVM を要求しない方針と、「release は LLVM」という約束の
-      どちらを優先するか)
+      を指定したら エラー** (2026-10-07 決定)。黙って cranelift に落とすと
+      「release は LLVM」という約束が環境で変わる。文言は直し方を 2 つ
+      言う: `llvm` feature 付きでビルドし直す、または cranelift で
+      よければ `--release --codegen=cranelift` と明示する (こちらは
+      feature 無しでも通る)。実装時の注意: 今 `--release` を使っている
+      テスト・スクリプト・文書 (`toy/tests/`、`CLAUDE.md` のコマンド例、
+      POC の手順) は、feature 無しのビルドでは落ちるようになるので、
+      `--codegen=cranelift` を足すか feature 有りのときだけ走らせる
     - BUILD-TOOL D6 のスタンプにバックエンドと最適化レベルを入れる
       (変わったら作り直す)
     - `--release` は契約も外すので、LLVM レーンの答え合わせを release

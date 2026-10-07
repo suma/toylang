@@ -48,11 +48,11 @@ LLVM 側が守る約束は cranelift 側と同じ IR の ABI である:
 | **L4** | SIMD、`ParFor` / `TaskSpawn`、残りの命令。consistency harness に LLVM のレーン (feature 有効時のみ)、`example_consistency` |
 | **L5** | `default<O2>`、**`--release` = LLVM の既定と、feature 無しの `--release` のエラーをここで有効にする**、計測 (cranelift `speed` との比較) |
 
-**`--release` の既定を LLVM に切り替えるのは L5 まで待つ。** LLVM が
+**`--release` の既定を LLVM に切り替えたのは L5 (最後)。** LLVM が
 全命令を扱えるようになる前に切り替えると、既存の `--release` ビルド
 (POC の release ビルド、テスト) が「未対応の命令」で落ちる — feature
-無しなら全部エラーになる。それまで `--release` は今までどおり
-cranelift で、契約を外すだけである。
+無しなら全部エラーになる。L4 までの `--release` は従来どおり
+cranelift で、契約を外すだけだった。
 
 L4 までは debug のまま `--codegen=llvm` で答えを突き合わせる。
 `--release` は契約も外すので、release だけで比べると「LLVM の誤り」と

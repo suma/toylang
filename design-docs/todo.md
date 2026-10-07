@@ -3209,8 +3209,22 @@
     `extern "C"` を同じ名前で呼ぶ
   - JIT は cranelift のまま。consistency harness には feature が
     有効なときだけ LLVM のレーンを足す (`--all-backends` も同様)
-  - 最初に決めること: Rust 側のバインディング (`inkwell` か `llvm-sys`
-    直か) と、対応する LLVM のバージョン
+  - **バインディングは `inkwell`、対応する LLVM は 11〜22** (2026-10-07
+    決定)。inkwell の版ごとの対応範囲は 0.8.0 が 11〜21、**0.9.0 が
+    11〜22**、最新の 0.10.0 は 12〜22 (11 を落とした) なので、**inkwell は
+    `=0.9.0` に固定する** (0.10 以降に上げるのは LLVM 11 を外すとき)。
+    実装時に効いてくること:
+    - inkwell は LLVM の版を **cargo feature で 1 つ選ぶ** (`llvm11-0` …
+      `llvm22-1`)。なので `compiler` / `toy` の feature も版ごと
+      (`llvm11` … `llvm22`) にして inkwell の feature へ渡す。`llvm` は
+      「どれか 1 つが有効」を表すだけで、版は選べない
+    - 12 の版の差は codegen 側で吸収する: 型付きポインタ (古い版) と
+      opaque pointer (新しい版) の扱い、`-O2` の掛け方 (新しいパス
+      マネージャの `default<O2>` を使えない古い版では従来の
+      パスマネージャで `-O2` 相当を組む) — どの版から切り替わるかは
+      着手時に inkwell の `cfg` で確かめる
+    - CI / テストでどの版を回すか (全 12 版は重いので、両端の 11 と 22 +
+      手元の版、など)
 * フロントエンドの並列化 (PARALLEL-FRONTEND) — **今は着手しない**。検討と
   実測の記録は [`PARALLEL_FRONTEND.md`](PARALLEL_FRONTEND.md)。stdlib の
   pre-parse (rayon) と AOT codegen は既に並列で、取り分は warm 0.2ms /

@@ -3165,14 +3165,30 @@
   テスト固定のみ実施済み。
 * **AOT のバックエンドに LLVM を採用する (AOT-LLVM)** — 今の AOT は
   cranelift (`compiler/src/codegen/`) で IR → object を作っている。これを
-  LLVM でも作れるようにする。**形は要検討**:
-  (a) AOT コンパイラが cranelift と LLVM の 2 種類のバックエンドを持ち、
-  フラグで選ぶ、(b) AOT コンパイラとは別に LLVM 版のコンパイラを作る。
-  どちらにしても入力は共有 IR (`compiler_ir`) で、lowering より手前は
-  変わらない。決めるときに見ること: JIT は cranelift のまま残るので、
-  (a) なら codegen 層に 2 実装が並ぶ (consistency harness のレーンも 1 本
-  増える)、(b) なら `toylang_rt` とのリンクや `--all-backends` / `toy` の
-  `--backend` にどう載せるか。
+  LLVM でも作れるようにする。
+  **形は決定 (2026-10-07): 1 つの AOT コンパイラに 2 つ目のバックエンドとして
+  足す** (別の LLVM 版コンパイラは作らない)。基準は「実装と保守が
+  しやすく、lowering とランタイムを使い回せる方」で、境界がそれを
+  決めている: `codegen::emit_object` は「`compiler_lower` で IR を作る →
+  `build_object_module` (cranelift) で object のバイト列にする」で、
+  その後のリンク (`driver::link_executable`、`toylang_rt` の staticlib、
+  `TOY_LINK_CACHE_DIR`) は object の出どころを知らない。だから差し替えるのは
+  `build_object_module` の 1 か所で、lowering・テスト driver の差し込み
+  (`install_test_driver`)・リンク・ランタイム・CLI (`CompilerOptions`)・
+  `toy` はそのまま使える。別コンパイラにすると、この全部を複製するか、
+  結局共通部分を切り出して (a) と同じ形にすることになる。
+  - 選び方: `--codegen=cranelift|llvm` (既定 cranelift)。`toy build` /
+    `toy run` / `toy test` にも同じ綴りで通す
+  - LLVM は **cargo feature (`llvm`、既定 off)** の optional dependency に
+    する — 既定のビルドとテストにシステムの LLVM を要求しない
+  - LLVM 側が満たす約束は cranelift 側と同じ IR の ABI: 引数は葉ごと
+    (`flatten_compound_leaf_types`)、compound の戻りは複数値、幅の広い
+    参照 struct はポインタ (`ptr_params`)、ランタイムは `toy_*` の
+    `extern "C"` を同じ名前で呼ぶ
+  - JIT は cranelift のまま。consistency harness には feature が
+    有効なときだけ LLVM のレーンを足す (`--all-backends` も同様)
+  - 最初に決めること: Rust 側のバインディング (`inkwell` か `llvm-sys`
+    直か) と、対応する LLVM のバージョン
 * フロントエンドの並列化 (PARALLEL-FRONTEND) — **今は着手しない**。検討と
   実測の記録は [`PARALLEL_FRONTEND.md`](PARALLEL_FRONTEND.md)。stdlib の
   pre-parse (rayon) と AOT codegen は既に並列で、取り分は warm 0.2ms /

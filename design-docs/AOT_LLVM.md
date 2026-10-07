@@ -120,6 +120,55 @@ POC の 3 コマンドは出力が一致した。確保が多い処理の伸び�
 ビルド時間は 25 倍になるが、それは release の対価で、debug は
 cranelift のまま速い (LLVM の `-O0` は 0.37 s)。
 
+## 2.7 poc/logsearch での実行時間の比較 (2026-10-08)
+
+コンパイル時間は除き、**実行時間だけ**を比べた。同じソース (HEAD
+`c52c7ea0`) から `toy build poc/logsearch --release --codegen=cranelift|llvm`
+で作った 2 つのバイナリ (cranelift `speed` / LLVM `default<O2>`、どちらも
+ホストの CPU 向け、契約は外れる)。機械は Apple M1 Max (10 コア)、macOS 27。
+
+入力は `poc/logsearch/log` の実ログ (562 ファイル / 137 MB、そのうち
+apache2 が 33 MB)。`archive` で作った 12 セグメント / 444,549 レコード /
+25 MB のアーカイブを読み取り系の全コマンドで共有し、書き込み系
+(`archive` / `compact`) は毎回新しいディレクトリ・アーカイブの写しで
+走らせた。各コマンドは 2 つのバイナリを交互に 5 回ずつ走らせた
+**中央値**。出力 (stdout / stderr / 終了コード、所要時間の行と一時
+ディレクトリのパスを除く) は**全コマンドで一致**した。
+
+| コマンド | cranelift | LLVM -O2 | 速さ |
+|---|---:|---:|---:|
+| `scan` (全 562 ファイルの framing) | 150.3 ms | 58.8 ms | 2.56x |
+| `archive` (読む → 索引 → 圧縮 → 書く) | 4,070.9 ms | 2,161.5 ms | 1.88x |
+| `verify` (全セグメントを展開して CRC 照合) | 371.5 ms | 232.1 ms | 1.60x |
+| `query status=404` (索引の完全一致) | 196.2 ms | 106.2 ms | 1.85x |
+| `query path~/wp-` (値の部分一致) | 164.2 ms | 88.2 ms | 1.86x |
+| `query path^/blog/` (値の前方一致) | 127.8 ms | 77.3 ms | 1.65x |
+| `query error` (本文の全走査) | 304.5 ms | 210.5 ms | 1.45x |
+| `query top=status` (分布、語彙だけ読む) | 19.3 ms | 12.9 ms | 1.49x |
+| `query ip=<最多の値> top=path` (traversal) | 25.0 ms | 15.8 ms | 1.58x |
+| `fields path` (索引) | 78.4 ms | 34.9 ms | 2.24x |
+| `fields path ... scan` (全走査) | 393.7 ms | 242.9 ms | 1.62x |
+| `object status=404` | 20.2 ms | 13.8 ms | 1.47x |
+| `compact` (セグメントの併合) | 6,647.7 ms | 3,495.6 ms | 1.90x |
+| サーバ: 60 KB × 600 回の `/v1/ingest` | 0.35 s | 0.17 s | 2.0x |
+
+サーバの行は合成ログ (実在の値を含まない) で 3 回ずつ測ったもの。取り込み中の
+`/v1/stats` の応答時間 (p99 0.7〜2.2 ms、最大 2.1〜6.2 ms) は両者で差が
+見えない — 書き出しは既に背景の task に出ている (CONCURRENCY B、POC)。
+
+**どこで差が出るか**: 伸びが大きいのは toylang で書かれた処理が時間の
+大半を占めるもの (`scan` の行の切り出し、`fields` の索引の読み取り、
+`archive` / `compact` の LSZ 圧縮と索引構築) で 1.9〜2.6x。小さいのは
+時間がランタイム側 (Rust で書かれた `toylang_rt` の memchr / 部分一致検索
+`toy_mem_find_seq` / ファイル I/O) にあるもので、本文の全走査 (`query
+error`) が 1.45x、数十 ms で終わる索引だけの問い合わせが 1.5x 前後。
+ランタイムは両方のバイナリで同じものなので、LLVM が速くできるのは
+toylang の側だけである。
+
+再現: 測定スクリプトはリポジトリに置いていない (コマンド列は上表のとおり)。
+traversal の値は `fields <arc> ip 1` の最多の値を使い、ここには書かない
+(実ログ由来の値であるため — CLAUDE.md の規約)。
+
 ## 3. ビルドの仕方
 
 LLVM 22 は Homebrew の `llvm@22` (keg-only) を使う。`llvm-sys` は

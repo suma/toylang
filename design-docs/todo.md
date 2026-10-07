@@ -3177,8 +3177,25 @@
   (`install_test_driver`)・リンク・ランタイム・CLI (`CompilerOptions`)・
   `toy` はそのまま使える。別コンパイラにすると、この全部を複製するか、
   結局共通部分を切り出して (a) と同じ形にすることになる。
-  - 選び方: `--codegen=cranelift|llvm` (既定 cranelift)。`toy build` /
-    `toy run` / `toy test` にも同じ綴りで通す
+  - 選び方: `--codegen=cranelift|llvm`。`toy build` / `toy run` /
+    `toy test` にも同じ綴りで通す
+  - **`--release` は LLVM の最適化ビルドを使う** (2026-10-07 決定)。
+    既定は「debug = cranelift、`--release` = LLVM (最適化あり)」で、
+    `--codegen` を明示すればそちらが勝つ (`--release --codegen=cranelift`
+    で従来どおり)。今の `--release` は契約を外すだけでコード生成は debug と
+    同じ cranelift なので、出力の速さの面での「release」はこれが初めて。
+    細かいところで決めること:
+    - 最適化レベル (`-O2` 相当か `-O3` か)。`--release` の中で固定するか
+      `--opt-level` を足すか
+    - **`llvm` feature 無しでビルドした `toy` / `compiler` で `--release`
+      を指定したとき**: cranelift に落として 1 行警告するか、エラーにするか
+      (既定ビルドに LLVM を要求しない方針と、「release は LLVM」という約束の
+      どちらを優先するか)
+    - BUILD-TOOL D6 のスタンプにバックエンドと最適化レベルを入れる
+      (変わったら作り直す)
+    - `--release` は契約も外すので、LLVM レーンの答え合わせを release
+      だけでやると「LLVM の誤り」と「契約が外れた違い」が区別できない。
+      consistency では debug のまま `--codegen=llvm` で突き合わせる
   - LLVM は **cargo feature (`llvm`、既定 off)** の optional dependency に
     する — 既定のビルドとテストにシステムの LLVM を要求しない
   - LLVM 側が満たす約束は cranelift 側と同じ IR の ABI: 引数は葉ごと

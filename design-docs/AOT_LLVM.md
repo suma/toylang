@@ -125,7 +125,7 @@ cranelift のまま速い (LLVM の `-O0` は 0.37 s)。
 コンパイル時間は除き、**実行時間だけ**を比べた。同じソース (HEAD
 `c52c7ea0`) から `toy build poc/logsearch --release --codegen=cranelift|llvm`
 で作った 2 つのバイナリ (cranelift `speed` / LLVM `default<O2>`、どちらも
-ホストの CPU 向け、契約は外れる)。機械は Apple M1 Max (10 コア)、macOS 27。
+ホストの CPU 向け、契約は外れる)。機械は Apple M5 Ultra (30 コア)、macOS 27.0.1。
 
 入力は `poc/logsearch/log` の実ログ (562 ファイル / 137 MB、そのうち
 apache2 が 33 MB)。`archive` で作った 12 セグメント / 444,549 レコード /

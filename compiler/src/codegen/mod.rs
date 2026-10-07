@@ -19,7 +19,7 @@
 mod lower_inst;
 // Import / `RuntimeRefs` setup. Adds back to `CodegenSession`.
 mod imports;
-mod diag_pool;
+pub(crate) mod diag_pool;
 mod simd;
 
 use rustc_hash::FxHashMap as HashMap;
@@ -77,6 +77,12 @@ pub fn emit_object(
         prof::count("lower.instructions", insts);
     }
     let codegen_phase = prof::phase("codegen");
+    if options.codegen() == crate::options::Codegen::Llvm {
+        let bytes = emit_llvm_object(&ir_module, interner, options)?;
+        drop(codegen_phase);
+        prof::count("codegen.object_bytes", bytes.len() as u64);
+        return Ok((bytes, ir_module.link_libs));
+    }
     let module = build_object_module(&ir_module, interner, options)?;
     let emit_phase = prof::phase("emit_object");
     let product = module.finish();
@@ -87,6 +93,28 @@ pub fn emit_object(
     drop(codegen_phase);
     prof::count("codegen.object_bytes", bytes.len() as u64);
     Ok((bytes, ir_module.link_libs))
+}
+
+/// AOT-LLVM: the object file, made by LLVM from the same IR.
+#[cfg(feature = "llvm")]
+fn emit_llvm_object(
+    ir_module: &IrModule,
+    interner: &DefaultStringInterner,
+    options: &CompilerOptions,
+) -> Result<Vec<u8>, String> {
+    crate::llvm::emit_object(ir_module, interner, options)
+}
+
+#[cfg(not(feature = "llvm"))]
+fn emit_llvm_object(
+    _ir_module: &IrModule,
+    _interner: &DefaultStringInterner,
+    _options: &CompilerOptions,
+) -> Result<Vec<u8>, String> {
+    Err("`--codegen=llvm` needs a compiler built with the `llvm` feature \
+         (`cargo build --features llvm`, with LLVM 22 installed); \
+         `--codegen=cranelift` works without it"
+        .to_string())
 }
 
 /// COMPILE-PROFILE: the size of one function's IR, terminators included.

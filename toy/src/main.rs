@@ -36,8 +36,8 @@ const USAGE: &str = "\
 toy — build and run toylang programs
 
 usage:
-  toy build [PATH] [--release] [--backend aot|jit] [-o OUT] [--profile=compile] [--heap-check=MODE] [--format=text|json] [-v]
-  toy run   [PATH] [--release] [--backend aot|jit|vm|tree|all] [--heap-check=MODE] [--format=text|json] [-v] [-- ARGS...]
+  toy build [PATH] [--release] [--codegen=cranelift|llvm] [--backend aot|jit] [-o OUT] [--profile=compile] [--heap-check=MODE] [--format=text|json] [-v]
+  toy run   [PATH] [--release] [--codegen=cranelift|llvm] [--backend aot|jit|vm|tree|all] [--heap-check=MODE] [--format=text|json] [-v] [-- ARGS...]
   toy check [PATH] [--backend aot|vm] [--profile=compile] [--format=text|json|short] [-v]
   toy fix   [PATH] [--dry-run] [--format=text|json]
   toy query type|def|refs FILE:LINE:COL... [--in PATH] [--format=text|json]
@@ -60,6 +60,7 @@ shadow a stdlib module of the same name.
 
 options:
   --release            compile contracts out
+  --codegen=BACKEND    cranelift (default) or llvm: what makes the AOT object
   --backend <B>        aot (default for build/run) | jit | vm | tree
                        | all (run: every lane; test: aot and vm, report
                          where they disagree)
@@ -122,6 +123,8 @@ impl Backend {
 struct Args {
     path: PathBuf,
     release: bool,
+    /// AOT-LLVM: `--codegen=cranelift|llvm`, the backend for the AOT lane.
+    codegen: Option<compiler::Codegen>,
     backend: Option<Backend>,
     output: Option<PathBuf>,
     extra_roots: Vec<PathBuf>,
@@ -186,6 +189,7 @@ impl Args {
 
     /// Instrument a build for poison or reuse mode.
     fn instrument(&self, options: &mut CompilerOptions) {
+        options.codegen = self.codegen;
         match self.heap_check {
             Some(HeapMode::Poison) => options.heap_check = true,
             Some(HeapMode::Reuse) => {
@@ -336,6 +340,7 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
     let mut a = Args {
         path: PathBuf::from("."),
         release: false,
+        codegen: None,
         backend: None,
         output: None,
         extra_roots: Vec::new(),
@@ -368,6 +373,12 @@ fn parse_args(argv: &[String], takes_subject: bool) -> Result<Args, String> {
         }
         match arg.as_str() {
             "--release" => a.release = true,
+            s if s.starts_with("--codegen=") => {
+                let v = &s["--codegen=".len()..];
+                a.codegen = Some(compiler::Codegen::parse(v).ok_or_else(|| {
+                    format!("--codegen expects `cranelift` or `llvm`, got `{v}`")
+                })?);
+            }
             "--list" => a.list_only = true,
             "--bless" => a.bless = true,
             "--no-warn-collisions" => a.warn_collisions = false,
@@ -563,10 +574,11 @@ fn cmd_build(args: &Args) -> Result<(), String> {
     args.instrument(&mut options);
     if args.verbose {
         eprintln!(
-            "toy: compiler {} {} {}{}{}{}-o {}",
+            "toy: compiler {} {} {}{}{}{}{}-o {}",
             show_roots(&pkg),
             pkg.entry.display(),
             if args.release { "--release " } else { "" },
+            args.codegen.map(|c| format!("--codegen={} ", c.name())).unwrap_or_default(),
             if args.compile_profile { "--profile=compile " } else { "" },
             args.show_heap_check(),
             show_format(args),
@@ -611,6 +623,8 @@ fn cmd_build(args: &Args) -> Result<(), String> {
 fn build_flags(args: &Args, out: &Path) -> Vec<String> {
     vec![
         format!("release={}", args.release),
+        // AOT-LLVM: the backend changes the binary.
+        format!("codegen={}", args.codegen.map(|c| c.name()).unwrap_or("default")),
         format!("heap-check={}", args.show_heap_check().trim_end()),
         format!("output={}", out.display()),
     ]
@@ -1210,6 +1224,7 @@ fn cmd_test(args: &Args) -> Result<(), String> {
         // reported (`assert_consistent` for toylang programs).
         all_lanes,
         release: args.release,
+        codegen: args.codegen,
         bless: args.bless,
         // `--bless` records golden files, so two tests writing the
         // same path at once would leave whichever won (D5). Recording

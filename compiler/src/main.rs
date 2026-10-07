@@ -131,6 +131,7 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {
     let mut options_heap_poison = false;
     let mut heap_reuse = false;
     let mut heap_quarantine: Option<u64> = None;
+    let mut codegen: Option<compiler::Codegen> = None;
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -141,6 +142,13 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {
             }
             "-v" | "--verbose" => verbose = true,
             "--release" => release = true,
+            // AOT-LLVM: which backend makes the object file.
+            s if s.starts_with("--codegen=") => {
+                let v = &s["--codegen=".len()..];
+                codegen = Some(compiler::Codegen::parse(v).ok_or_else(|| {
+                    format!("--codegen expects `cranelift` or `llvm`, got `{v}`")
+                })?);
+            }
             // TEST-TOOL T1: build an entry that runs the `test`
             // blocks instead of `main`.
             "--test" => test_mode = true,
@@ -230,6 +238,7 @@ fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {
     options.emit = emit;
     options.verbose = verbose;
     options.release = release;
+    options.codegen = codegen;
     options.core_modules_dirs = core_modules_dirs;
     options.test_mode = test_mode;
     options.heap_check = options_heap_poison;
@@ -312,7 +321,7 @@ fn parse_emit(s: &str) -> Result<EmitKind, String> {
 
 fn print_usage() {
     eprintln!(
-        "usage: compiler <input.t> [-o <output>] [--emit exe|obj|ir|clif] [--release] [--format=text|json] [-v]"
+        "usage: compiler <input.t> [-o <output>] [--emit exe|obj|ir|clif] [--release] [--codegen=cranelift|llvm] [--format=text|json] [-v]"
     );
     eprintln!(
         "       compiler <input.t> --all-backends   # run on interpreter / JIT / AOT, report disagreements"

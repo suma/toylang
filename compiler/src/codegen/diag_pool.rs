@@ -32,28 +32,28 @@ use rustc_hash::FxHashMap as HashMap;
 
 /// First byte of a record. Rendered text starts with a letter or a
 /// newline, never with this.
-pub(super) const RECORD_TAG: u8 = 0x02;
+pub(crate) const RECORD_TAG: u8 = 0x02;
 /// What every located diagnostic starts with (`render_stderr_prefix`).
-pub(super) const HEADER: &str = "Runtime error occurred:\nError at ";
+pub(crate) const HEADER: &str = "Runtime error occurred:\nError at ";
 
 #[derive(Default)]
-pub(super) struct DiagPool {
+pub(crate) struct DiagPool {
     bytes: Vec<u8>,
     shared: HashMap<Vec<u8>, u32>,
 }
 
 impl DiagPool {
-    pub(super) fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.bytes.is_empty()
     }
 
-    pub(super) fn into_bytes(self) -> Vec<u8> {
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
         self.bytes
     }
 
     /// A NUL-terminated string, stored once however often it is asked
     /// for. Also how a site whose text does not split is stored.
-    pub(super) fn plain(&mut self, text: &[u8]) -> u32 {
+    pub(crate) fn plain(&mut self, text: &[u8]) -> u32 {
         if let Some(&at) = self.shared.get(text) {
             return at;
         }
@@ -69,7 +69,7 @@ impl DiagPool {
     /// being `frame_suffix` or nothing), otherwise plain. `message` is
     /// the part shared across sites; `None` or empty means the record
     /// has none.
-    pub(super) fn site(
+    pub(crate) fn site(
         &mut self,
         full: &str,
         file: &str,

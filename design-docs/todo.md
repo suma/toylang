@@ -3163,7 +3163,10 @@
   toylang 化) と R4 (f64 整形等) は計測で中止条件に該当 (interpreter
   ~20 倍〜~1000 倍遅延) し、Layer 1 に残すのが確定。R4 の byte 一致
   テスト固定のみ実施済み。
-* **AOT のバックエンドに LLVM を採用する (AOT-LLVM)** — 今の AOT は
+* **AOT のバックエンドに LLVM を採用する (AOT-LLVM)** — **着手済み
+  (2026-10-07)。L0 (`--codegen`、`llvm` feature) と L1 が landing し、
+  example 158 本中 143 本が cranelift と一致。残りの段取りと実装の決定は
+  [`AOT_LLVM.md`](AOT_LLVM.md)**。今の AOT は
   cranelift (`compiler/src/codegen/`) で IR → object を作っている。これを
   LLVM でも作れるようにする。
   **形は決定 (2026-10-07): 1 つの AOT コンパイラに 2 つ目のバックエンドとして

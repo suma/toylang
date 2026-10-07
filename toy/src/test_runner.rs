@@ -69,6 +69,8 @@ pub struct Options {
     /// testing — the bugs a real program hits are backend-specific.
     pub aot: bool,
     pub release: bool,
+    /// AOT-LLVM: the backend the AOT lane builds with.
+    pub codegen: Option<compiler::Codegen>,
     /// TEST-TOOL T5: record the golden files instead of checking
     /// them. Reaches the program as `TOY_BLESS`, which
     /// `testing::assert_golden` reads.
@@ -750,6 +752,7 @@ fn compile_driver(
     let mut options = compiler::options::CompilerOptions::new(plan.path.clone());
     options.output = Some(exe.clone());
     options.release = opts.release;
+    options.codegen = opts.codegen;
     options.core_modules_dirs = pkg.module_roots.clone();
     options.link_cache_dir = Some(pkg.link_cache_dir());
     options.test_mode = true;

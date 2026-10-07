@@ -11,6 +11,10 @@ build = "build.rs"
 name = "toy"
 path = "src/main.rs"
 
+[features]
+# AOT-LLVM: build with the LLVM backend (needs LLVM 22; design-docs/AOT_LLVM.md).
+llvm = ["compiler/llvm"]
+
 [dependencies]
 rustc-hash.workspace = true
 compiler = { path = "../compiler" }

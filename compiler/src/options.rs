@@ -93,9 +93,51 @@ pub struct CompilerOptions {
     /// HEAP-CHECK H3: with `heap_check`, start in reuse mode with this
     /// many bytes of quarantine (`--heap-check=reuse`).
     pub heap_reuse: Option<u64>,
+    /// AOT-LLVM: the backend that turns the IR into an object, when one
+    /// was asked for (`--codegen=cranelift|llvm`). `None` takes the
+    /// default, [`CompilerOptions::codegen`].
+    pub codegen: Option<Codegen>,
+}
+
+/// AOT-LLVM: which backend makes the object file. The lowering, the
+/// runtime and the link are the same for both (`design-docs/AOT_LLVM.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Codegen {
+    Cranelift,
+    Llvm,
+}
+
+impl Codegen {
+    /// `cranelift` / `llvm`, as `--codegen=` spells it.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "cranelift" => Some(Codegen::Cranelift),
+            "llvm" => Some(Codegen::Llvm),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Codegen::Cranelift => "cranelift",
+            Codegen::Llvm => "llvm",
+        }
+    }
+
+    /// Whether this build of the compiler can use the LLVM backend.
+    pub fn llvm_available() -> bool {
+        cfg!(feature = "llvm")
+    }
 }
 
 impl CompilerOptions {
+    /// The backend this compile uses. Cranelift unless `--codegen` said
+    /// otherwise: `--release` choosing LLVM waits for the LLVM backend
+    /// to cover the whole IR (AOT_LLVM.md section 2, L5).
+    pub fn codegen(&self) -> Codegen {
+        self.codegen.unwrap_or(Codegen::Cranelift)
+    }
+
     /// Defaults for everything but the input path, which has no
     /// sensible default and so stays a required argument.
     pub fn new(input: PathBuf) -> Self {
@@ -113,6 +155,7 @@ impl CompilerOptions {
             display_name: None,
             heap_check: false,
             heap_reuse: None,
+            codegen: None,
         }
     }
 

@@ -1005,9 +1005,11 @@
 
 - **LLVM-COMPILE-TIME: `--release` のコンパイルが cranelift の ~24 倍** ★ — `poc/logsearch` で
   1.94 s (cranelift 80 ms)。`-O2` 1.09 s + 機械語 0.77 s で、**1 スレッド**で走る
-  (cranelift は関数ごとに全コア)。特定の pass が飛び抜けてはいない。案: `-O2` の後で
-  モジュールを分け、別々の `Context` / `TargetMachine` で object を並列に作る
-  (インライン展開は失わない)。[`AOT_LLVM.md`](AOT_LLVM.md) §2.8
+  (cranelift は関数ごとに全コア)。特定の pass が飛び抜けてはいない。**試作して測った**
+  ([`AOT_LLVM.md`](AOT_LLVM.md) §2.9): (B) `-O2` の後で分けて機械語だけ並列にすると
+  1.4 s で実行時間は不変、(C) `-O2` の前に分けて、小さい関数を分割ごとの internal な写しに
+  すると 0.60 s (8 分割) で実行時間 +0.1%、CPU 1.8 倍、RSS 2.4 倍。pipeline を軽くする案
+  (`O1` / `Os` / codegen の段の opt を下げる) は効かないか実行時間を払う。段取りは B → C
 
 - **RT-ALLOC-TABLE-COST: 常時引く確保表が確保の多いプログラムで効く** ★ — `free` を冪等に
   するための番地 → サイズの表 (`prof_put` / `prof_take`) が `poc/logsearch archive` の 6%

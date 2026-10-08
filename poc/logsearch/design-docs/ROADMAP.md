@@ -121,7 +121,7 @@
    `find` が `keys` / `values` の `Vec<String>` を頭から比べる線形探索
    (`memcmp` / `toy_mem_eq`)。ラベルの値の数に比例して効く。
    `(キー, 値)` で引く表にすれば消える。数字は
-   [`../../../design-docs/AOT_LLVM.md`](../../../design-docs/AOT_LLVM.md) §2.8
+   [`../../../design-docs/LLVM_PERF.md`](../../../design-docs/LLVM_PERF.md) §4
 
 ## 3. 依存関係
 

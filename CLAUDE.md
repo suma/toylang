@@ -33,6 +33,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | Claude Code から toylang を使う口 (スキル・フックは landing 済み、LSP / プラグイン / MCP は未着手) | [`design-docs/CLAUDE_CODE_INTEGRATION.md`](design-docs/CLAUDE_CODE_INTEGRATION.md) |
 | backtrace / 行番号 / ファイル名の設計 | [`design-docs/DEBUG_OBSERVABILITY.md`](design-docs/DEBUG_OBSERVABILITY.md) |
 | **AOT コンパイルのどこが遅いか** (`--profile=compile`) | [`design-docs/COMPILE_PROFILE.md`](design-docs/COMPILE_PROFILE.md) |
+| LLVM バックエンドの性能 (実行時間のプロファイル、`--release` のコンパイル時間と並列化の試作) | [`design-docs/LLVM_PERF.md`](design-docs/LLVM_PERF.md) |
 | `const fn` / コンパイル時実行の設計 | [`design-docs/COMPILE_TIME_EVAL.md`](design-docs/COMPILE_TIME_EVAL.md) |
 | closure が捕捉した束縛をどう掴むかの設計 | [`design-docs/CLOSURE_CAPTURE.md`](design-docs/CLOSURE_CAPTURE.md) |
 | エフェクト格子と 3 検査の関係 | [`design-docs/EFFECT_SYSTEM.md`](design-docs/EFFECT_SYSTEM.md) |

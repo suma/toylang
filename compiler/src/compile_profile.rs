@@ -27,6 +27,8 @@ struct Conditions {
     /// How the compiler binary itself was built. A debug build of the
     /// compiler is several times slower, which swamps everything else.
     compiler_build: &'static str,
+    /// The AOT backend (AOT-LLVM): `cranelift` or `llvm`.
+    backend: &'static str,
     opt_level: &'static str,
     /// Cranelift's IR verifier (`TOYLANG_CRANELIFT_VERIFY`); it moves
     /// codegen time, so two profiles compare only when it matches.
@@ -77,6 +79,7 @@ fn conditions(options: &CompilerOptions) -> Conditions {
         },
         release: options.release,
         compiler_build: if cfg!(debug_assertions) { "debug" } else { "release" },
+        backend: options.codegen().name(),
         opt_level: crate::codegen::cranelift_opt_level(),
         verifier: crate::codegen::cranelift_verifier() == "true",
         ast_cache_dir,
@@ -162,6 +165,7 @@ fn to_json(profile: &Profile, c: &Conditions) -> Value {
         "emit": c.emit,
         "release": c.release,
         "compiler_build": c.compiler_build,
+        "codegen": c.backend,
         "cranelift_opt_level": c.opt_level,
         "cranelift_verifier": c.verifier,
         "ast_cache_dir": c.ast_cache_dir,
@@ -193,6 +197,16 @@ fn to_json(profile: &Profile, c: &Conditions) -> Value {
     })
 }
 
+/// The backend and how hard it optimises: `cranelift opt speed +
+/// verifier`, `llvm -O2`. An LLVM build used to print cranelift's
+/// settings, which it does not read.
+fn backend_label(c: &Conditions) -> String {
+    match c.backend {
+        "llvm" => format!("llvm {}", if c.release { "-O2" } else { "-O0" }),
+        _ => format!("cranelift opt {}{}", c.opt_level, if c.verifier { " + verifier" } else { "" }),
+    }
+}
+
 fn to_text(profile: &Profile, c: &Conditions) -> String {
     use std::fmt::Write;
     let mut out = String::new();
@@ -202,12 +216,11 @@ fn to_text(profile: &Profile, c: &Conditions) -> String {
     };
     let _ = writeln!(
         out,
-        "compile profile: {} (emit {}, contracts {}, cranelift opt {}{}, {} build of the compiler)",
+        "compile profile: {} (emit {}, contracts {}, {}, {} build of the compiler)",
         c.input,
         c.emit,
         if c.release { "off (--release)" } else { "on" },
-        c.opt_level,
-        if c.verifier { " + verifier" } else { "" },
+        backend_label(c),
         c.compiler_build,
     );
     let _ = writeln!(

@@ -14,6 +14,7 @@
 
 - **CONSUMING-SELF-NO-DROP — `self: Self` の method が受け手を drop する** (残りは未実装節)
 - **FIELD-MOVE-DOUBLE-DROP — 所有するフィールドを渡すと根を渡したことにする**
+- **LLVM-FRAME-POINTER — LLVM の関数にフレームポインタを残す (`"frame-pointer"="non-leaf"`)。`--profile=compile` が LLVM の 4 段とバックエンド名を出す**
 - **AOT-LLVM — AOT の 2 つ目のバックエンドとして LLVM (L0〜L5)**
 
 ### 2026-10-06
@@ -1001,6 +1002,18 @@
 - **AOT-LLVM の残り** ★ — LLVM バックエンドは完了 (完了済み節、[`AOT_LLVM.md`](AOT_LLVM.md))。
   残りは運用: LLVM レーンのテストは `--features llvm` のときだけ走る (既定の
   `cargo nextest run` では走らない) ので、定期的に回す場所を決める
+
+- **LLVM-COMPILE-TIME: `--release` のコンパイルが cranelift の ~24 倍** ★ — `poc/logsearch` で
+  1.94 s (cranelift 80 ms)。`-O2` 1.09 s + 機械語 0.77 s で、**1 スレッド**で走る
+  (cranelift は関数ごとに全コア)。特定の pass が飛び抜けてはいない。案: `-O2` の後で
+  モジュールを分け、別々の `Context` / `TargetMachine` で object を並列に作る
+  (インライン展開は失わない)。[`AOT_LLVM.md`](AOT_LLVM.md) §2.8
+
+- **RT-ALLOC-TABLE-COST: 常時引く確保表が確保の多いプログラムで効く** ★ — `free` を冪等に
+  するための番地 → サイズの表 (`prof_put` / `prof_take`) が `poc/logsearch archive` の 6%
+  (確保 1.54M + realloc 2.30M + free 1.50M、~26 ns/回、表がキャッシュに乗らない)。
+  `String::push` の伸長が確保の 1.5 倍の realloc を出しているのも一因。
+  [`AOT_LLVM.md`](AOT_LLVM.md) §2.8
 
 ### リファクタリングの残り
 

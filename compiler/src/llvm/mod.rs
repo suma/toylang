@@ -77,15 +77,34 @@ pub fn emit_object(
     module.set_triple(&triple);
     module.set_data_layout(&machine.get_target_data().get_data_layout());
 
+    let build = frontend::compile_profile::phase("llvm_build");
     let mut g = Gen::new(&context, module, ir_module, interner);
     g.declare_functions()?;
     g.declare_data()?;
     for id in g.bodies.clone() {
         g.define_function(id)?;
     }
-    g.module
-        .verify()
-        .map_err(|e| format!("LLVM: the module does not verify: {}", e.to_string()))?;
+    drop(build);
+    // Keep a frame record in every function that calls, as clang and
+    // rustc do for Apple targets (`-mframe-pointer=non-leaf`). Without
+    // the attribute `-O2` dropped them, and a sampling profiler, which
+    // walks the frame-pointer chain, lost the stack in most samples
+    // (56-97% of Time Profiler samples on `poc/logsearch`; 0% on the
+    // cranelift build).
+    let frame_pointer = context.create_string_attribute("frame-pointer", "non-leaf");
+    let mut next = g.module.get_first_function();
+    while let Some(f) = next {
+        if f.count_basic_blocks() > 0 {
+            f.add_attribute(AttributeLoc::Function, frame_pointer);
+        }
+        next = f.get_next_function();
+    }
+    {
+        let _phase = frontend::compile_profile::phase("llvm_verify");
+        g.module
+            .verify()
+            .map_err(|e| format!("LLVM: the module does not verify: {}", e.to_string()))?;
+    }
     if optimise {
         let _phase = frontend::compile_profile::phase("llvm_O2");
         g.module
@@ -93,6 +112,7 @@ pub fn emit_object(
             .map_err(|e| format!("LLVM: the -O2 pipeline failed: {}", e.to_string()))?;
     }
 
+    let _phase = frontend::compile_profile::phase("llvm_emit");
     let buffer = machine
         .write_to_memory_buffer(&g.module, FileType::Object)
         .map_err(|e| format!("LLVM: object emission failed: {}", e.to_string()))?;

@@ -116,6 +116,12 @@
      その周回で終わるので、writable を待つ応答は書かれない
      (curl も Python も本文を受け取れずに切られる)。停止の手順
      (ARCHITECTURE.md §5) 自体は進み、残りも書き出される
+7. **`LabelDict` を hash にする** (2026-10-08、プロファイルで見つけた)。
+   `archive` / `compact` の 6 割近くが `LabelDict::bump` で、その中身は
+   `find` が `keys` / `values` の `Vec<String>` を頭から比べる線形探索
+   (`memcmp` / `toy_mem_eq`)。ラベルの値の数に比例して効く。
+   `(キー, 値)` で引く表にすれば消える。数字は
+   [`../../../design-docs/AOT_LLVM.md`](../../../design-docs/AOT_LLVM.md) §2.8
 
 ## 3. 依存関係
 

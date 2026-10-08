@@ -156,18 +156,106 @@ apache2 が 33 MB)。`archive` で作った 12 セグメント / 444,549 レコ�
 `/v1/stats` の応答時間 (p99 0.7〜2.2 ms、最大 2.1〜6.2 ms) は両者で差が
 見えない — 書き出しは既に背景の task に出ている (CONCURRENCY B、POC)。
 
-**どこで差が出るか**: 伸びが大きいのは toylang で書かれた処理が時間の
-大半を占めるもの (`scan` の行の切り出し、`fields` の索引の読み取り、
-`archive` / `compact` の LSZ 圧縮と索引構築) で 1.9〜2.6x。小さいのは
-時間がランタイム側 (Rust で書かれた `toylang_rt` の memchr / 部分一致検索
-`toy_mem_find_seq` / ファイル I/O) にあるもので、本文の全走査 (`query
-error`) が 1.45x、数十 ms で終わる索引だけの問い合わせが 1.5x 前後。
-ランタイムは両方のバイナリで同じものなので、LLVM が速くできるのは
-toylang の側だけである。
+**どこで差が出るか**: 伸びが大きいのは `scan` の行の切り出し、`fields` の
+索引の読み取り、`archive` / `compact` の LSZ 圧縮と索引構築で 1.9〜2.6x、
+小さいのは本文の全走査 (`query error`) の 1.45x と、数十 ms で終わる索引だけの
+問い合わせの 1.5x 前後。
+
+> **訂正 (同日)**: 当初ここには「伸びが小さいのは時間がランタイム側
+> (Rust の `toylang_rt`) にあるもの」と書いたが、§2.8 のプロファイルで
+> **誤り**と分かった。`query error` の時間は 98% が toylang の側
+> (`query::search` と LSZ の展開) にあり、ランタイムは 0.2% だった。
+> 最初の推測はフレームポインタが無いせいでスタックの欠けたサンプルを
+> 数えたもので、ランタイム側に偏っていた。伸びの差がどこから来るかは
+> まだ説明できていない。
 
 再現: 測定スクリプトはリポジトリに置いていない (コマンド列は上表のとおり)。
 traversal の値は `fields <arc> ip 1` の最多の値を使い、ここには書かない
 (実ログ由来の値であるため — CLAUDE.md の規約)。
+
+## 2.8 プロファイル (2026-10-08)
+
+§2.7 と同じ機械・同じアーカイブで、(1) LLVM `-O2` で作った `poc/logsearch` の
+実行時間と、(2) それを作るコンパイラ自身のコンパイル時間を測った。サンプラは
+Instruments の Time Profiler (`xctrace record --template 'Time Profiler'`、
+1 ms 間隔)。表を `xctrace export` で XML にし、スクリプトで葉のフレーム (self) と
+スタック上の関数 (inclusive) に集計した。
+
+### フレームポインタ (直したもの)
+
+最初の計測では、LLVM 版の **56〜97% のサンプルにスタックが無かった**
+(`verify` 97%、`scan` 70%、`archive` 57%。cranelift 版は 0%)。サンプラは
+フレームポインタの鎖をたどるが、LLVM の関数にはフレームポインタを残せという
+属性が付いておらず、`-O2` が消していた。clang / rustc が Apple のターゲットで
+付けるのと同じ `"frame-pointer"="non-leaf"` を全関数に付けて、欠けは 0〜8% に
+なった。実行時間の差は雑音の範囲 (−1〜+1%)。
+
+この欠けのせいで、直す前の集計は「toylang の処理 6〜9%、ランタイムと
+システム 90%」と出ていた。欠けたサンプルは捨てられ、スタックを持つ
+ランタイム (Rust) と libSystem の分だけが残っていたためで、**数字の向きが
+逆だった**。
+
+### 実行時間: どこに時間が掛かるか (LLVM `-O2`)
+
+self は葉の関数。LLVM がインライン展開した関数は呼び出し元に含まれる
+(`query::search` の self が大きいのはそのため)。
+
+| コマンド | toylang | ランタイム | システム | 大きいもの |
+|---|---:|---:|---:|---|
+| `archive` | 59% | 17% | 24% | `LabelDict::bump` 58% (inclusive)、うち `memcmp` 22% / `toy_mem_eq`。`prof_put` 6% |
+| `compact` | 58% | 15% | 27% | `LabelDict::bump` 66% (inclusive)。`memcmp` 25% |
+| `scan` | 75% | 6% | 19% | `cmd_scan` 47% (self)、`record::parse_line` 31%、open / read 15% |
+| `verify` | 98% | 0% | 2% | `segfile::expand_all` 68%、`lsz::decode_frame` 20% |
+| `query status=404` | 96% | 2% | 2% | `query::search` 73%、`decode_frame` 13% |
+| `query error` | 98% | 0% | 2% | `query::search` 78%、`decode_frame` 19% |
+| `fields path scan` | 98% | 0% | 1% | `expand_all` 65%、`decode_frame` 14% |
+| `fields path` (索引) | 92% | 2% | 5% | `cmd_fields_indexed` 59%、`load_block` 21% |
+
+読み取り:
+
+- **`archive` / `compact` の 6 割は `LabelDict::bump`**。これは
+  `Vec<String>` 2 本を頭から線形に比べる (`find`) ので、ラベルの値が増えると
+  O(n) で効く。POC の側のアルゴリズムの問題で、バックエンドの問題ではない
+  (hash 化すれば消える)。
+- **ランタイムの確保表 `prof_put` が `archive` の 6%**。`free` を冪等にするため
+  常時引いている番地 → サイズの表で (DROP-GLUE)、`archive` は確保 1.54M 回・
+  realloc 2.30M 回・free 1.50M 回、1 回あたり ~26 ns。hash の偏りではなく、
+  表が大きくてキャッシュに乗らないことが効いている。`String::push` の伸長で
+  realloc が確保の 1.5 倍あるのも効いている。
+- 読み取り系は 9 割以上が toylang の側 (検索ループと LSZ の展開) で、
+  ランタイムはほぼ出てこない。
+
+### コンパイル時間: LLVM は cranelift の約 24 倍
+
+`toy build poc/logsearch --profile=compile` (release の `toy`、3 回とも ±3%):
+
+| | 全体 | codegen | 内訳 |
+|---|---:|---:|---|
+| cranelift (opt speed) | 80 ms | 25 ms | 関数ごとに並列 (user 296 ms) |
+| LLVM `-O0` (debug) | 354 ms | 265 ms | IR 構築 24 / verify 9 / 機械語 222 |
+| LLVM `-O2` (`--release`) | 1,940 ms | 1,890 ms | IR 構築 19 / verify 6 / **`-O2` 1,090** / **機械語 770** |
+
+**codegen は 1 スレッドで走る** (user ≒ wall)。cranelift は関数ごとに全コアで
+並列に作っている。IR を作る段 (`llvm_build`) は 19 ms で、ほぼ全部が LLVM の中。
+`--profile=compile` は 2026-10-08 にこの 4 段 (`llvm_build` / `llvm_verify` /
+`llvm_O2` / `llvm_emit`) を出すようにし、見出しもバックエンドを名乗るようにした
+(以前は LLVM のビルドにも `cranelift opt speed` と出ていた)。
+
+コンパイラを同じサンプラで測ると、`-O2` の 1.09 s の内訳は InstCombine 229 ms、
+IndVarSimplify 122 ms、Inliner 93 ms、GVN 52 ms、SimplifyCFG 44 ms、
+CorrelatedValuePropagation 43 ms、SLPVectorizer 40 ms ほか (1 ms 単位の
+サンプル数、残りは 30 ms 未満の pass が多数)。機械語の 0.77 s は
+SelectionDAG 187 ms、Greedy レジスタ割り当て 130 ms、ループの pass
+(LPPassManager) 95 ms、MachineScheduler 67 ms ほか。特定の pass が飛び抜けて
+いるわけではなく、**pipeline 全体を 1 スレッドで回していることが効いている**。
+
+縮める案 (未着手、todo の LLVM-COMPILE-TIME):
+
+1. **機械語の段を並列にする**。モジュールを関数の組に分けて別々の
+   `Context` / `TargetMachine` で object を作り、リンクで束ねる。`-O2` の後で
+   分ければインライン展開は失わない (0.77 s → コア数で割れる)。
+2. `-O2` 自体も分割できるが、分けた境界をまたぐインライン展開を失う。
+   実行時間と引き換えになるので、分けるなら測ってから。
 
 ## 3. ビルドの仕方
 

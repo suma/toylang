@@ -74,7 +74,10 @@
 //! handed over too: the scope must not drop what it returns
 //! (RETURN-DROP). Handing over one owning
 //! field of a payload that holds several stops the root dropping the
-//! others too (a leak, not a double drop). A callee that only *reads* a
+//! others too (a leak, not a double drop); so does handing over an
+//! owning field read off a binding (`keep.push(w.h)`,
+//! FIELD-MOVE-DOUBLE-DROP). A `self: Self` method owns its receiver
+//! when every call treats it as moved (CONSUMING-SELF-NO-DROP). A callee that only *reads* a
 //! by-value parameter lends it, and the caller keeps the drop
 //! (BY-VALUE-PARAM-NO-DROP, `compute_lend`). So does a callee that
 //! changes only places owning nothing -- a plain field, directly or
@@ -164,6 +167,7 @@ pub fn check_moves(
         binding_types: HashMap::default(),
         probe: None,
         safe_receiver: None,
+        self_owned: None,
         scalar_readers: collect_scalar_readers(program, interner),
     };
     // LEND-FREEING-CALLEE: a name every call resolves to one body.
@@ -215,6 +219,13 @@ pub fn check_moves(
             Some(Stmt::ImplBlock { target_type, .. }) => generic_structs.contains(target_type),
             _ => true,
         };
+        // CONSUMING-SELF-NO-DROP: only an inherent impl's `self: Self`
+        // can be owned by the body. A trait method is also reached
+        // through `&dyn`, where the receiver stays the caller's.
+        let inherent = matches!(
+            program.statement.get_ref(&stmt_ref),
+            Some(Stmt::ImplBlock { trait_name: None, .. })
+        );
         let self_ty = match program.statement.get_ref(&stmt_ref) {
             Some(Stmt::ImplBlock { target_type, target_type_args, .. }) => {
                 Some(TypeDecl::Struct(*target_type, target_type_args.clone().into()))
@@ -236,8 +247,21 @@ pub fn check_moves(
                 m.parameter.first().is_some_and(|(n, _)| interner.resolve(*n) == Some("self"));
             checker.implicit_self =
                 if m.has_self_param && !explicit_self { self_ty.clone() } else { None };
+            // CONSUMING-SELF-NO-DROP: every call of a name all impls
+            // take `self: Self` treats the receiver as moved
+            // (`consumes_receiver`, whether or not it knows the type),
+            // so the body is the one that drops it.
+            checker.self_owned = if explicit_self
+                && inherent
+                && checker.consuming_methods.everywhere.contains(&m.name)
+            {
+                self_ty.clone()
+            } else {
+                None
+            };
             checker.run_function_owning(&m.parameter, m.code, owns, generic && resolvable);
             checker.implicit_self = None;
+            checker.self_owned = None;
         }
     }
     // ELEMENT-BORROW E5, reported here rather than in the walk: a
@@ -648,6 +672,9 @@ struct MoveCheck<'a> {
     /// The receiver of the method call being walked, when that call
     /// only reads a scalar off a probed parameter (`v.size()`).
     safe_receiver: Option<ExprRef>,
+    /// CONSUMING-SELF-NO-DROP: the type of the `self: Self` the method
+    /// being walked owns (see the impl loop in `check_moves`).
+    self_owned: Option<TypeDecl>,
     /// `(type, method)` pairs every impl declares with `&self` /
     /// `&mut self` and a scalar result: a call that cannot hand an
     /// element out.
@@ -729,12 +756,20 @@ impl MoveCheck<'_> {
         let mut candidates: HashMap<DefaultSymbol, (DefaultSymbol, bool)> = HashMap::default();
         let mut index = 0usize;
         for (name, ty) in params {
-            if self.interner.resolve(*name) == Some("self") {
-                continue;
-            }
-            let i = index;
-            index += 1;
-            if !self.is_owning(ty) || is_borrow(ty) || lend.get(i).copied().unwrap_or(true) {
+            let is_self = self.interner.resolve(*name) == Some("self");
+            let ty = match (is_self, &self.self_owned) {
+                (false, _) => ty,
+                (true, Some(owned)) => owned,
+                (true, None) => continue,
+            };
+            let lent = if is_self {
+                false
+            } else {
+                let i = index;
+                index += 1;
+                lend.get(i).copied().unwrap_or(true)
+            };
+            if !self.is_owning(ty) || is_borrow(ty) || lent {
                 continue;
             }
             let base = match ty {
@@ -810,7 +845,19 @@ impl MoveCheck<'_> {
         let mut index = 0usize;
         for (name, ty) in params {
             if self.interner.resolve(*name) == Some("self") {
-                if self.is_owning(ty) {
+                let Some(owned) = self.self_owned.clone() else {
+                    if self.is_owning(ty) {
+                        self.declare(*name, None);
+                    }
+                    continue;
+                };
+                if !self.is_owning(&owned) {
+                    continue;
+                }
+                let dropped_here = (owns && !owned.contains_generic()) || owned_generic.contains(name);
+                if dropped_here {
+                    self.declare_owned_param(*name, body);
+                } else {
                     self.declare(*name, None);
                 }
                 continue;
@@ -826,10 +873,7 @@ impl MoveCheck<'_> {
                 && !lend.get(i).copied().unwrap_or(true))
                 || owned_generic.contains(name);
             if dropped_here {
-                let stand_in = StmtRef(u32::MAX - 1 - self.stand_ins);
-                self.stand_ins += 1;
-                self.drop_flags.param_drops.entry(body).or_default().push((*name, stand_in));
-                self.declare(*name, Some(stand_in));
+                self.declare_owned_param(*name, body);
             } else {
                 self.declare(*name, None);
             }
@@ -847,6 +891,15 @@ impl MoveCheck<'_> {
         }
         self.tail = false;
         self.scopes.clear();
+    }
+
+    /// A by-value parameter the body drops, declared under a stand-in
+    /// `val` (`DropFlags::param_drops`).
+    fn declare_owned_param(&mut self, name: DefaultSymbol, body: StmtRef) {
+        let stand_in = StmtRef(u32::MAX - 1 - self.stand_ins);
+        self.stand_ins += 1;
+        self.drop_flags.param_drops.entry(body).or_default().push((name, stand_in));
+        self.declare(name, Some(stand_in));
     }
 
     /// A new owning binding: an alias when its value is (part of) a
@@ -1697,8 +1750,41 @@ impl MoveCheck<'_> {
                 self.walk_expr(*rhs, Use::Read, conditional);
             }
             Expr::Unary(_, operand) => self.walk_expr(*operand, Use::Read, conditional),
+            // FIELD-MOVE-DOUBLE-DROP: handing over an owning field
+            // (`keep.push(w.h)`, `W { h: o.h }`, a tail `self.out`)
+            // hands over its root. Read, the root kept its drop and the
+            // drop glue freed the field the receiver now owns too.
+            // Like a payload handed out of a match, the root's other
+            // fields then leak rather than drop twice.
             Expr::FieldAccess(obj, _) | Expr::TupleAccess(obj, _) => {
-                self.walk_expr(*obj, Use::Read, conditional)
+                let root = self.aliased_place(expr_ref).filter(|_| {
+                    self.expr_types.get(&expr_ref).is_some_and(|ty| self.is_owning(ty))
+                });
+                let into_binding = |me: &Self, r: DefaultSymbol| {
+                    me.tail_root.is_none_or(|t| me.root_of(r) == t)
+                };
+                match root {
+                    Some(r) if use_kind == Use::Transfer || (tail && use_kind == Use::Read && into_binding(self, r)) => {
+                        self.use_binding(r, expr_ref, Use::Transfer, conditional)
+                    }
+                    _ => {
+                        // CALLEE-DROP-GENERIC: a number read straight off
+                        // a probed parameter (`self.n`) leaves no element
+                        // behind; a `ptr` field might.
+                        let safe = self.probe.is_some()
+                            && matches!(self.program.expression.get_ref(obj), Some(Expr::Identifier(_)))
+                            && self
+                                .expr_types
+                                .get(&expr_ref)
+                                .is_some_and(|ty| is_primitive(ty) && !matches!(ty, TypeDecl::Ptr));
+                        let prev = std::mem::replace(
+                            &mut self.safe_receiver,
+                            if safe { Some(*obj) } else { None },
+                        );
+                        self.walk_expr(*obj, Use::Read, conditional);
+                        self.safe_receiver = prev;
+                    }
+                }
             }
             Expr::Cast(inner, _) | Expr::Try { inner, .. } => {
                 self.walk_expr(*inner, Use::Read, conditional)

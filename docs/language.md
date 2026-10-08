@@ -563,6 +563,14 @@ Which method a call reaches is decided by the receiver's declared type
 not known where the call is checked, the receiver is consumed only if
 every impl of that name takes `self: Self`.
 
+The method then owns `self`, like any by-value parameter: it drops it
+at its end unless it hands it on (returns it, stores it, or hands over
+one of its owning fields — `self.out` above). This holds for an
+inherent `impl` whose method name is `self: Self` in every impl; a
+trait method (which `&dyn` can also reach) and a name some other impl
+declares `&self` still leave the receiver to nobody, so it leaks.
+(Before 2026-10-08 no consuming method dropped its receiver.)
+
 ### Concrete-args impl dispatch
 
 A `(struct, method)` pair may have **multiple impls** with distinct
@@ -6887,6 +6895,13 @@ finishes (`panic`, `return`, `break`, `continue`). The payload stays
 `made`'s to drop until `conn` is handed over. (Before 2026-09-24 the
 owner dropped the value even after an alias was handed over — twice
 in all, which closed a descriptor twice.)
+
+Handing over an **owning field** — `keep.push(w.h)`, `W { h: o.h }`,
+or `w.h` as the function's value — hands over the binding it is read
+from: `w` stops dropping, and reading any part of it afterwards is
+`[E0014]`. Its other owning fields then leak rather than drop twice;
+take them out first if they matter. (Before 2026-10-08 the binding
+kept its drop, and the field's `Drop` ran a second time.)
 
 A by-value argument to a function that only **reads** the parameter —
 reads non-owning fields, calls `&self` methods, passes it on as `&T`,

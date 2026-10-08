@@ -992,6 +992,120 @@ fn main() -> u64 {
     );
 }
 
+/// CONSUMING-SELF-NO-DROP: a `self: Self` method owns its receiver --
+/// the call site already treats it as moved -- so it drops it at its
+/// end unless it hands it on: whole (`renew`, `stash` on one path) or
+/// one owning field (`into_h`). `finish` reads a scalar field and drops
+/// the rest; `count` does the same in a generic impl. Nobody freed the
+/// receiver before, on any lane (`close 1` / `close 5` / `close 7`
+/// never printed).
+#[test]
+fn a_consuming_method_drops_its_receiver() {
+    let src = r#"
+struct H { id: u64 }
+impl Drop for H {
+    fn drop(&mut self) { println("close {self.id}") }
+}
+struct W { h: H, n: u64 }
+impl W {
+    fn finish(self: Self) -> u64 {
+        println("finish {self.n}")
+        self.n
+    }
+    fn into_h(self: Self) -> H { self.h }
+    fn renew(self: Self) -> W { self }
+    fn stash(self: Self, keep: &mut Vec<W>, c: bool) -> u64 {
+        if c {
+            keep.push(self)
+            return 1u64
+        }
+        println("not kept")
+        0u64
+    }
+}
+struct Bx<X> { inner: Vec<X>, n: u64 }
+impl<X> Bx<X> {
+    fn count(self: Self) -> u64 { self.n }
+}
+fn run() -> u64 {
+    val a = W { h: H { id: 1u64 }, n: 10u64 }
+    println(a.finish())
+    val b = W { h: H { id: 2u64 }, n: 20u64 }
+    val h = b.into_h()
+    println("took {h.id}")
+    val c = W { h: H { id: 3u64 }, n: 30u64 }
+    val d = c.renew()
+    println("renewed {d.n}")
+    var keep: Vec<W> = Vec::new()
+    val g = W { h: H { id: 4u64 }, n: 40u64 }
+    println(g.stash(&mut keep, true))
+    val e = W { h: H { id: 5u64 }, n: 50u64 }
+    println(e.stash(&mut keep, false))
+    var v: Vec<H> = Vec::new()
+    v.push(H { id: 7u64 })
+    val x: Bx<H> = Bx { inner: v, n: 1u64 }
+    println(x.count())
+    0u64
+}
+fn main() -> u64 {
+    val before = __builtin_live_bytes()
+    run()
+    println("leak {__builtin_live_bytes() - before}")
+    0u64
+}
+    "#;
+    assert_renders(
+        src,
+        "consuming_self_drop",
+        "finish 10\nclose 1\n10\ntook 2\nrenewed 30\n1\nnot kept\nclose 5\n0\n\
+         close 7\n1\nclose 4\nclose 3\nclose 2\nleak 0\n",
+    );
+}
+
+/// FIELD-MOVE-DOUBLE-DROP: handing an owning field over -- into a
+/// container, a struct literal, or out as the function's value -- hands
+/// over the binding it is read from. The binding kept its drop, and the
+/// drop glue ran the field's `Drop` a second time (`close 6` / `close 7`
+/// / `close 8` each printed twice, on every lane).
+#[test]
+fn handing_over_an_owning_field_hands_over_its_root() {
+    let src = r#"
+struct H { id: u64 }
+impl Drop for H {
+    fn drop(&mut self) { println("close {self.id}") }
+}
+struct W { h: H, n: u64 }
+fn out(w: W) -> H { w.h }
+fn local() -> H {
+    val w = W { h: H { id: 8u64 }, n: 1u64 }
+    w.h
+}
+fn run() -> u64 {
+    var keep: Vec<H> = Vec::new()
+    val w = W { h: H { id: 6u64 }, n: 20u64 }
+    keep.push(w.h)
+    println("pushed")
+    val o = W { h: H { id: 7u64 }, n: 20u64 }
+    val p = W { h: o.h, n: 1u64 }
+    println("built {p.n}")
+    val q = out(W { h: H { id: 9u64 }, n: 1u64 })
+    val r = local()
+    println("out {q.id} {r.id}")
+    0u64
+}
+fn main() -> u64 {
+    run()
+    println("end")
+    0u64
+}
+    "#;
+    assert_renders(
+        src,
+        "field_move_root",
+        "pushed\nbuilt 1\nout 9 8\nclose 8\nclose 9\nclose 7\nclose 6\nend\n",
+    );
+}
+
 /// COMPOUND-BLOCK-DROP-TIMING: a binding made inside a block that
 /// produces a compound value dies with the block when the block's tail
 /// does not mention it -- `t` / `u` in the `if` arms, `w` in the `match`

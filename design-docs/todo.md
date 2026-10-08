@@ -12,6 +12,8 @@
 
 ### 2026-10-08
 
+- **CONSUMING-SELF-NO-DROP — `self: Self` の method が受け手を drop する** (残りは未実装節)
+- **FIELD-MOVE-DOUBLE-DROP — 所有するフィールドを渡すと根を渡したことにする**
 - **AOT-LLVM — AOT の 2 つ目のバックエンドとして LLVM (L0〜L5)**
 
 ### 2026-10-06
@@ -646,6 +648,21 @@
   「どの要素を写し出したか」を型で言えるようになるまで (所有の移動を
   `ptr_read` 側に表す) 残る。
 
+- **CONSUMING-SELF-NO-DROP の残り** ★ — `self: Self` の method が `self` を drop する
+  ようになった (2026-10-08) が、対象は inherent impl で、その名前の method が全部
+  `self: Self` のときだけ。残り: (a) **trait impl** (`&dyn` から呼ばれると受け手が
+  借用なので drop できない — `&dyn` 経由の呼び出しを区別すれば足りる)、(b) 同名の
+  method を `&self` で持つ型がある名前 (呼び出し側が型を知らないと移動にしないため)、
+  (c) generic impl で `self` を `var me = self` と別名にしてから要素に触れる形
+  (CALLEE-DROP-GENERIC の probe が断る)。どれも二重解放ではなく漏れ。
+
+- **PARTIAL-MOVE: フィールドを 1 つ渡すと束縛まるごと移動になる** ★ — 所有する
+  フィールドを渡す (`keep.push(w.h)`) と根の `w` を渡したことになり (FIELD-MOVE-DOUBLE-DROP、
+  2026-10-08)、(a) 以後は非所有フィールド `w.n` の読みも `[E0014]`、(b) 残りの所有
+  フィールドは漏れる (`fn first(self: Self) -> String { self.s }` の `self.t`)。Rust の
+  部分移動のように、移ったフィールドを経路で持てば両方消える (drop glue がフィールド
+  単位で飛ばせることが前提)。
+
 - **NEXT-ITEM-ALIAS — iterator の item は別名なのに所有者が付く形がある** —
   `VecIter<T>::next` は要素を浅いコピーで返す (`get` と同じ、ELEMENT-BORROW)。
   for-in / `while val` は腕が必ず `continue` で抜けるので item を drop しないが、
@@ -1196,14 +1213,12 @@
   `Option` は `o.is_some()` と訊くだけで move され、以後の読みが E0014。`&self` にすべき
   (`Result` の同名も確認)。回避は `if val Option::Some(t) = o { .. }`。
 
-- **CONSUMING-SELF-NO-DROP: `self: Self` のメソッドが `self` を解放しない** ★★ —
-  `struct W { v: Vec<u64> }` の `fn take(self: Self) -> u64 { self.v.get(0u64) }` を
-  呼ぶと、`W` の `Vec` が残る (3 レーンとも `live_bytes` 32)。**generic な受け手
-  (`Task<T>` の `join(self: Self)` を `var me = self; me.result.pop()` と書いた形) では
-  IR VM が解放し AOT / JIT が解放せず、レーンで割れる**。CONCURRENCY B2 で踏み、
-  `Task::join` を `&mut self` にして回避した (2026-10-06)。CLAUDE.md の
-  「`self: Self` の method はレシーバを消費する」と食い違う — 消費した側が drop する
-  責任を誰も持っていない。
+- **USER-TYPE-NAMED-T: ユーザの型名 `T` が stdlib の型パラメータ `T` と衝突する** ★ —
+  `struct T<X> { .. }` を宣言すると、無関係な stdlib の本体 (`vec.t` の
+  `val e: T = p.get(i)` など) が `[E0028]` / `[E0014]` で落ちる。stdlib の generic
+  本体の `T` がユーザの struct `T` に解決されている (2026-10-08、
+  CONSUMING-SELF-NO-DROP の再現を書いていて踏んだ)。型パラメータは宣言より
+  優先して解決されるべき。
 
 - **ENUM-CALL-VALUE-COUNT (internal error)** ★ —
   `internal error: enum call returned 19 value(s), expected 15`。

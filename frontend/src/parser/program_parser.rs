@@ -369,6 +369,7 @@ impl<'a> Parser<'a> {
             tests: out.tests,
             transferred_bindings: rustc_hash::FxHashSet::default(),
             drop_flags: Default::default(),
+            independent_calls: Default::default(),
             parallel_loops: std::mem::take(&mut self.parallel_loops),
             spawn_blocks: std::mem::take(&mut self.spawn_blocks),
             spawn_captures: rustc_hash::FxHashMap::default(),

@@ -18,6 +18,7 @@
 - **STDLIB-CHECK-FIXED の一部 — 全体走査 pass の clone と行番号の数え直しを削り、型検査の固定費 8.0 → 6.7 ms** (残りは未実装節)
 - **OWNING-TEMP-DROP — `String::from_str("a").len()` / `mk().n` の一時値をスカラーの読み出しの後で drop する** (残りは未実装節)
 - **OWNING-TEMP-DROP (所有値の読み出し) — `val r = mk().renamed()` / `String::from_str("a").concat(b)` の一時値を文の前に束縛して drop する (compiled レーンの拒否も消えた)**
+- **COMPOUND-BLOCK-DROP-TIMING (呼び出しの中だけで触れる末尾) — `{ val t = mk()  t.renamed() }` の `t` もブロックの終わりで drop、`val r: H = { .. }` のこの形も compiled レーンで通る**
 - **OWNING-TEMP-DROP (引数) — `s.concat(String::from_str("x"))` / `peek(&mk())` / `v.push(mk())` の引数の一時値を文の前に束縛する**
 - **WINDOW-ESCAPE-UNWRAP — `??` / match の腕 / `if val` で `Option` から出した窓も `[E0026]` で止める**
 - **CONSUMING-SELF-NO-DROP (trait impl) — `dyn` で使われない trait の `self: Self` method もレシーバを drop する**
@@ -647,9 +648,11 @@
 
 - **COMPOUND-BLOCK-DROP-TIMING の残り: 末尾が束縛に触れる形** — compound を
   作るブロックの束縛は、末尾の式がそれに触れない (数値フィールドの読みは
-  除く) ときブロックの終わりで drop するようになった (2026-09-26)。触れる形
-  (`Some(t.clone())` / `match t { .. }` = `?` の desugar / ポインタや
-  compound のフィールドの読み) は、別名の可能性があるので compiled レーンでは
+  除く) ときブロックの終わりで drop するようになった (2026-09-26)。束縛に
+  触れるのがスカラーか新しい所有値を返す呼び出しの中だけ (`t.renamed()` /
+  `Some(t.clone())` / `u.name.len()`) の形も同じ (2026-10-11、
+  `File::independent_calls`)。残る形 (`match t { .. }` = `?` の desugar /
+  ポインタや compound のフィールドの読み / 要素の読み出し) は、別名の可能性があるので compiled レーンでは
   従来どおり外側のスコープの終わりまで生き、tree-walker と順序が割れうる。
   直すなら「ブロックの末尾から外へ出る束縛」を move_check が移動として扱う。
 

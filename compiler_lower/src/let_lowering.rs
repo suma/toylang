@@ -354,6 +354,18 @@ impl<'a> FunctionLower<'a> {
             {
                 return self.lower_let_struct_composite(name, annotation, rhs_ref, source);
             }
+            // Detection cannot see a tail that reads a binding the block
+            // itself makes (`{ val t = mk()  t.renamed() }` -- `t` is
+            // not bound yet); the checker has unified the tail with the
+            // annotation, so that names the struct, as for an enum above.
+            if let Some(base) = self.annotation_struct_base(annotation) {
+                return self.lower_let_struct_composite(
+                    name,
+                    annotation,
+                    rhs_ref,
+                    crate::compound_storage::ShapeSource::Base(base),
+                );
+            }
             if let Some(crate::compound_storage::BranchShape::Produces(shape)) =
                 self.detect_tuple_result(rhs_ref)
             {
@@ -1274,6 +1286,16 @@ impl<'a> FunctionLower<'a> {
             Some(sym)
         } else {
             None
+        }
+    }
+
+    /// As `annotation_enum_base`, for a struct.
+    pub(super) fn annotation_struct_base(&self, annotation: Option<&TypeDecl>) -> Option<DefaultSymbol> {
+        match annotation? {
+            TypeDecl::Struct(sym, _) | TypeDecl::Identifier(sym) if self.struct_defs.contains_key(sym) => {
+                Some(*sym)
+            }
+            _ => None,
         }
     }
 

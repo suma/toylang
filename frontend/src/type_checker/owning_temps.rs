@@ -52,6 +52,7 @@ pub fn bind_owning_temporaries(
     if analysis.drop_implementing_types().is_empty() {
         return;
     }
+    record_independent_calls(program, interner, expr_types, &analysis);
     // Decided over the original pool first: the rewrite adds nodes,
     // and none of them is a candidate.
     //
@@ -319,6 +320,32 @@ fn is_quiet(program: &File, expr: &ExprRef) -> bool {
         }
         _ => false,
     }
+}
+
+/// Fill `File::independent_calls`: every call whose result is a scalar
+/// or a fresh owning value, so it cannot hold a part of its receiver or
+/// its arguments.
+fn record_independent_calls(
+    program: &mut File,
+    interner: &DefaultStringInterner,
+    expr_types: &HashMap<ExprRef, TypeDecl>,
+    analysis: &DropAnalysis,
+) {
+    let mut calls = rustc_hash::FxHashSet::default();
+    for index in 0..program.expression.len() {
+        let call = ExprRef(index as u32);
+        if !matches!(
+            program.expression.get_ref(&call),
+            Some(Expr::Call(..) | Expr::MethodCall(..) | Expr::AssociatedFunctionCall(..))
+        ) {
+            continue;
+        }
+        let Some(ty) = expr_types.get(&call) else { continue };
+        if is_scalar(ty) || (produces_fresh_value(program, interner, &call) && analysis.contains_drop(ty)) {
+            calls.insert(call);
+        }
+    }
+    program.independent_calls = calls;
 }
 
 /// The receiver an access reads: a method call's, or a field / element

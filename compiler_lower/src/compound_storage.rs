@@ -655,7 +655,7 @@ impl<'a> FunctionLower<'a> {
     /// holds a shape the name walk does not know, nothing is dropped
     /// early.
     fn drop_block_bindings_untouched_by(&mut self, tail: &ExprRef, start: usize) -> Result<(), String> {
-        let Some((mut names, reads)) = mentioned_names(self.program, tail) else {
+        let Some((mut names, reads)) = mentioned_names(self.program, tail, &self.program.independent_calls) else {
             return Ok(());
         };
         // `keep.n` with `n` a number copies the value into the target,
@@ -1745,13 +1745,30 @@ impl<'a> FunctionLower<'a> {
 /// when it holds a shape this walk does not know (a closure, a `?` /
 /// `??` / struct update not yet desugared), which the caller reads as
 /// "may mention anything".
+///
+/// A name mentioned only inside a call in `independent` (one whose
+/// value shares nothing with its receiver or arguments: `t.renamed()`,
+/// `t.len()`) is not counted -- the walk still descends, so an unknown
+/// shape there still answers `None`.
 fn mentioned_names(
     program: &frontend::ast::File,
     expr: &ExprRef,
+    independent: &rustc_hash::FxHashSet<ExprRef>,
 ) -> Option<(HashSet<DefaultSymbol>, Vec<(DefaultSymbol, DefaultSymbol)>)> {
     type Reads = Vec<(DefaultSymbol, DefaultSymbol)>;
-    fn walk(program: &frontend::ast::File, e: &ExprRef, out: &mut HashSet<DefaultSymbol>, reads: &mut Reads) -> Option<()> {
-        match program.expression.get_ref(e)? {
+    struct Walker<'a> {
+        program: &'a frontend::ast::File,
+        independent: &'a rustc_hash::FxHashSet<ExprRef>,
+    }
+    fn walk(w: &Walker, e: &ExprRef, out: &mut HashSet<DefaultSymbol>, reads: &mut Reads) -> Option<()> {
+        if w.independent.contains(e) {
+            let (mut ignored, mut ignored_reads) = (HashSet::default(), Vec::new());
+            return walk_inner(w, e, &mut ignored, &mut ignored_reads);
+        }
+        walk_inner(w, e, out, reads)
+    }
+    fn walk_inner(w: &Walker, e: &ExprRef, out: &mut HashSet<DefaultSymbol>, reads: &mut Reads) -> Option<()> {
+        match w.program.expression.get_ref(e)? {
             Expr::Identifier(s) => {
                 out.insert(*s);
             }
@@ -1773,31 +1790,31 @@ fn mentioned_names(
             | Expr::String(_)
             | Expr::QualifiedIdentifier(_) => {}
             Expr::Assign(a, b) | Expr::Binary(_, a, b) | Expr::Range(a, b) | Expr::With(a, b) => {
-                walk(program, a, out, reads)?;
-                walk(program, b, out, reads)?;
+                walk(w, a, out, reads)?;
+                walk(w, b, out, reads)?;
             }
             // A field read straight off a binding is recorded apart:
             // the caller can tell a value copied out (a number) from a
             // part that stays shared (a pointer, a compound).
-            Expr::FieldAccess(a, field) => match program.expression.get_ref(a)? {
+            Expr::FieldAccess(a, field) => match w.program.expression.get_ref(a)? {
                 Expr::Identifier(s) => reads.push((*s, *field)),
-                _ => walk(program, a, out, reads)?,
+                _ => walk(w, a, out, reads)?,
             },
             Expr::Unary(_, a) | Expr::Cast(a, _) | Expr::TupleAccess(a, _) => {
-                walk(program, a, out, reads)?
+                walk(w, a, out, reads)?
             }
             Expr::IfElifElse(c, t, elifs, f) => {
-                walk(program, c, out, reads)?;
-                walk(program, t, out, reads)?;
+                walk(w, c, out, reads)?;
+                walk(w, t, out, reads)?;
                 for (c, b) in elifs {
-                    walk(program, c, out, reads)?;
-                    walk(program, b, out, reads)?;
+                    walk(w, c, out, reads)?;
+                    walk(w, b, out, reads)?;
                 }
-                walk(program, f, out, reads)?;
+                walk(w, f, out, reads)?;
             }
             Expr::Block(stmts) => {
                 for st in stmts {
-                    walk_stmt(program, st, out, reads)?;
+                    walk_stmt(w, st, out, reads)?;
                 }
             }
             Expr::ExprList(items)
@@ -1806,77 +1823,78 @@ fn mentioned_names(
             | Expr::BuiltinCall(_, items)
             | Expr::AssociatedFunctionCall(_, _, items) => {
                 for i in items {
-                    walk(program, i, out, reads)?;
+                    walk(w, i, out, reads)?;
                 }
             }
-            Expr::Call(_, args) => walk(program, args, out, reads)?,
+            Expr::Call(_, args) => walk(w, args, out, reads)?,
             Expr::MethodCall(r, _, items) | Expr::BuiltinMethodCall(r, _, items) => {
-                walk(program, r, out, reads)?;
+                walk(w, r, out, reads)?;
                 for i in items {
-                    walk(program, i, out, reads)?;
+                    walk(w, i, out, reads)?;
                 }
             }
             Expr::StructLiteral(_, fields) => {
                 for (_, v) in fields {
-                    walk(program, v, out, reads)?;
+                    walk(w, v, out, reads)?;
                 }
             }
             Expr::DictLiteral(entries) => {
                 for (k, v) in entries {
-                    walk(program, k, out, reads)?;
-                    walk(program, v, out, reads)?;
+                    walk(w, k, out, reads)?;
+                    walk(w, v, out, reads)?;
                 }
             }
             Expr::SliceAccess(obj, info) => {
-                walk(program, obj, out, reads)?;
+                walk(w, obj, out, reads)?;
                 for part in [info.start, info.end].into_iter().flatten() {
-                    walk(program, &part, out, reads)?;
+                    walk(w, &part, out, reads)?;
                 }
             }
             Expr::SliceAssign(obj, a, b, v) => {
-                walk(program, obj, out, reads)?;
+                walk(w, obj, out, reads)?;
                 for part in [a, b].into_iter().flatten() {
-                    walk(program, part, out, reads)?;
+                    walk(w, part, out, reads)?;
                 }
-                walk(program, v, out, reads)?;
+                walk(w, v, out, reads)?;
             }
             Expr::Match(scrutinee, arms) => {
-                walk(program, scrutinee, out, reads)?;
+                walk(w, scrutinee, out, reads)?;
                 for arm in arms {
                     if let Some(g) = arm.guard {
-                        walk(program, &g, out, reads)?;
+                        walk(w, &g, out, reads)?;
                     }
-                    walk(program, &arm.body, out, reads)?;
+                    walk(w, &arm.body, out, reads)?;
                 }
             }
             _ => return None,
         }
         Some(())
     }
-    fn walk_stmt(program: &frontend::ast::File, st: &frontend::ast::StmtRef, out: &mut HashSet<DefaultSymbol>, reads: &mut Reads) -> Option<()> {
-        match program.statement.get_ref(st)? {
-            Stmt::Expression(e) | Stmt::Val(_, _, e) => walk(program, e, out, reads)?,
+    fn walk_stmt(w: &Walker, st: &frontend::ast::StmtRef, out: &mut HashSet<DefaultSymbol>, reads: &mut Reads) -> Option<()> {
+        match w.program.statement.get_ref(st)? {
+            Stmt::Expression(e) | Stmt::Val(_, _, e) => walk(w, e, out, reads)?,
             Stmt::Var(_, _, e) | Stmt::Return(e) => {
                 if let Some(e) = e {
-                    walk(program, e, out, reads)?;
+                    walk(w, e, out, reads)?;
                 }
             }
             Stmt::Break(_) | Stmt::Continue(_) => {}
             Stmt::For(_, _, a, b, body) => {
-                walk(program, a, out, reads)?;
-                walk(program, b, out, reads)?;
-                walk(program, body, out, reads)?;
+                walk(w, a, out, reads)?;
+                walk(w, b, out, reads)?;
+                walk(w, body, out, reads)?;
             }
             Stmt::While(_, c, body) => {
-                walk(program, c, out, reads)?;
-                walk(program, body, out, reads)?;
+                walk(w, c, out, reads)?;
+                walk(w, body, out, reads)?;
             }
             _ => return None,
         }
         Some(())
     }
+    let w = Walker { program, independent };
     let mut out = HashSet::default();
     let mut reads = Vec::new();
-    walk(program, expr, &mut out, &mut reads)?;
+    walk(&w, expr, &mut out, &mut reads)?;
     Some((out, reads))
 }

@@ -126,6 +126,13 @@ pub struct File {
     /// where each path does it. Filled by `check_moves` like
     /// `transferred_bindings`.
     pub drop_flags: DropFlags,
+    /// COMPOUND-BLOCK-DROP-TIMING: calls whose value shares nothing with
+    /// their receiver or arguments -- a scalar, or a fresh owning value
+    /// (not an element read). A block's tail that names a binding only
+    /// inside one of these cannot be handing that binding out. Filled
+    /// by `bind_owning_temporaries`, which has the checked types the
+    /// lowering does not.
+    pub independent_calls: rustc_hash::FxHashSet<ExprRef>,
     /// CONCURRENCY A1: the `for` statements written `parallel for`.
     ///
     /// A parallel loop *is* a `Stmt::For` — the modifier says the

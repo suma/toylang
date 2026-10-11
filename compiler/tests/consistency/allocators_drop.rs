@@ -1210,6 +1210,52 @@ fn main() -> u64 {
     );
 }
 
+/// COMPOUND-BLOCK-DROP-TIMING, the tail that names a binding only to
+/// call something on it: `t.renamed()` makes a fresh value and
+/// `u.name.len()` a number, neither of which can be part of `t` / `u`,
+/// so both still die with the block. The compiled lanes kept every
+/// binding the tail mentioned to the end of the enclosing scope, so
+/// `drop 1` / `drop 2` / `drop 3` printed after `after q` there.
+/// (`val r: H = { .. }` with such a tail also used to be refused by the
+/// compiled lanes: detection could not see `t` before it was bound.)
+#[test]
+fn a_tail_that_only_calls_on_a_binding_drops_it_with_the_block() {
+    let src = r#"
+struct H { n: u64, name: String }
+impl Drop for H { fn drop(&mut self) { println("drop {self.n}") } }
+impl H {
+    fn renamed(&self) -> H { H { n: self.n + 100u64, name: String::from_str("r") } }
+}
+struct P { a: u64, b: u64 }
+fn mk(n: u64) -> H { H { n: n, name: String::from_str("h") } }
+fn main() -> u64 {
+    val r: H = {
+        val t = mk(1u64)
+        t.renamed()
+    }
+    println("after r {r.n}")
+    val p: P = {
+        val u = mk(2u64)
+        P { a: u.name.len(), b: u.n }
+    }
+    println("after p {p.a}")
+    val q: H = if p.a > 0u64 {
+        val w = mk(3u64)
+        w.renamed()
+    } else {
+        mk(9u64)
+    }
+    println("after q {q.n}")
+    0u64
+}
+    "#;
+    assert_renders(
+        src,
+        "compound_block_tail_calls",
+        "drop 1\nafter r 101\ndrop 2\nafter p 1\ndrop 3\nafter q 103\ndrop 103\ndrop 101\n",
+    );
+}
+
 // MATCH-TEMP-EXIT-LEAK: a `match` over a call used to leave its payload
 // with no owner but the arm, whose drop ran only when the arm fell off
 // its end. The parser now binds the call to a `val` first, so the

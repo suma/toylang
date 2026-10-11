@@ -123,27 +123,35 @@ pub fn bind_owning_temporaries(
     hoist_owning_receivers(program, interner, expr_types, &analysis);
 }
 
-/// A binding whose initializer reads through a fresh owning call and
-/// produces an owning value of its own -- `val r = mk().renamed()`,
-/// `val s = String::from_str("a").concat(b)` -- gets the call bound
-/// by a statement of its own in front of it:
+/// A statement that reads through, or passes, a fresh owning call
+/// gets the call bound by a statement of its own in front of it:
 ///
 /// ```text
-/// val r = mk().renamed()   =>   val __temp_N: H = mk()
-///                                val r = __temp_N.renamed()
+/// val r = mk().renamed()      =>   val __temp_0: H = mk()
+///                                  val r = __temp_0.renamed()
+/// s.push_str(String::from_str("x"))
+///                             =>   val __temp_1: String = String::from_str("x")
+///                                  s.push_str(__temp_1)
 /// ```
 ///
 /// The temporary then drops with the enclosing block, like any other
-/// binding there. Wrapping the read in a block of its own, as the
-/// scalar case does, would make that block compound with a tail that
-/// touches the binding, whose drop the compiled lanes defer
-/// (COMPOUND-BLOCK-DROP-TIMING). Only the whole initializer is
-/// hoisted: the call is the first thing it evaluates, so nothing runs
-/// in a different order.
+/// binding there -- or moves, when the callee takes it: the move check
+/// sees an ordinary binding passed. Wrapping the read in a block of its
+/// own, as the scalar case does, would make that block compound with a
+/// tail that touches the binding, whose drop the compiled lanes defer
+/// (COMPOUND-BLOCK-DROP-TIMING).
 ///
-/// The result must own something itself. A window, a reference, a
-/// `str` or a `ptr` may point into the temporary, and the temporary
-/// used to outlive everything; it would now be freed under them.
+/// Nothing may run in a different order, so the call must be the first
+/// thing the statement evaluates that is not *quiet* (a name, a
+/// literal, a field of one): the root of the whole initializer, or an
+/// argument of the call that is the whole statement, with only quiet
+/// operands before it. A statement that is a block's tail is left
+/// alone, since the block's value would then touch the binding.
+///
+/// A read-through must produce an owning value itself. A window, a
+/// reference, a `str` or a `ptr` may point into the temporary, and the
+/// temporary used to outlive everything; it would now be freed under
+/// them.
 fn hoist_owning_receivers(
     program: &mut File,
     interner: &mut DefaultStringInterner,
@@ -154,39 +162,51 @@ fn hoist_owning_receivers(
     for index in 0..program.expression.len() {
         let block = ExprRef(index as u32);
         let Some(Expr::Block(stmts)) = program.expression.get_ref(&block) else { continue };
+        let last = stmts.len().saturating_sub(1);
         // Most blocks hoist nothing; only those that do pay for a copy.
-        if !stmts
-            .iter()
-            .any(|s| hoistable_initializer(program, interner, expr_types, analysis, *s).is_some())
-        {
+        if !stmts.iter().enumerate().any(|(i, s)| {
+            hoist_target(program, interner, expr_types, analysis, *s, i == last).is_some()
+        }) {
             continue;
         }
         let mut stmts = stmts.clone();
         let mut changed = false;
         let mut i = 0;
         while i < stmts.len() {
-            let Some(rhs) = hoistable_initializer(program, interner, expr_types, analysis, stmts[i])
+            let tail = i + 1 == stmts.len();
+            let Some(hoist) = hoist_target(program, interner, expr_types, analysis, stmts[i], tail)
             else {
-                i += 1;
-                continue;
-            };
-            let Some((root, holder, _)) = chain_root(program, rhs) else {
-                i += 1;
-                continue;
-            };
-            let Some(root_ty) = expr_types.get(&root).cloned() else {
                 i += 1;
                 continue;
             };
             let name = interner.get_or_intern(format!("{TEMP_NAME}_{counter}"));
             counter += 1;
-            let root_at = program.location_pool.get_expr_location(&root).copied();
-            let ident = add_expr(program, Expr::Identifier(name), root_at);
-            let Some(holder_expr) = program.expression.get(&holder) else { break };
-            let Some(rerooted) = with_receiver(holder_expr, ident) else { break };
-            program.expression.update(&holder, rerooted);
-            expr_types.insert(ident, root_ty.clone());
-            let bind = add_stmt(program, Stmt::Val(name, Some(root_ty), root), root_at);
+            let bind = match hoist {
+                Hoist::Receiver { root, holder } => {
+                    let Some(root_ty) = expr_types.get(&root).cloned() else { break };
+                    let root_at = program.location_pool.get_expr_location(&root).copied();
+                    let ident = add_expr(program, Expr::Identifier(name), root_at);
+                    let Some(holder_expr) = program.expression.get(&holder) else { break };
+                    let Some(rerooted) = with_receiver(holder_expr, ident) else { break };
+                    program.expression.update(&holder, rerooted);
+                    expr_types.insert(ident, root_ty.clone());
+                    add_stmt(program, Stmt::Val(name, Some(root_ty), root), root_at)
+                }
+                Hoist::Argument(arg, ty) => {
+                    // The call moves to a new node and its own ref
+                    // becomes the name, so whatever held the argument
+                    // -- an argument list, a `&` -- now holds the name.
+                    let Some(call) = program.expression.get(&arg) else { break };
+                    let at = program.location_pool.get_expr_location(&arg).copied();
+                    let moved = add_expr(program, call, at);
+                    program.expression.update(&arg, Expr::Identifier(name));
+                    if let Some(path) = program.call_paths.remove(&arg) {
+                        program.call_paths.insert(moved, path);
+                    }
+                    expr_types.insert(moved, ty.clone());
+                    add_stmt(program, Stmt::Val(name, Some(ty), moved), at)
+                }
+            };
             // Not advanced: the new statement may hoist a call of its
             // own (`mk().renamed().renamed()`).
             stmts.insert(i, bind);
@@ -198,26 +218,107 @@ fn hoist_owning_receivers(
     }
 }
 
-/// The initializer of a `val` / `var` that reads through a fresh owning
-/// call into an owning result.
-fn hoistable_initializer(
+/// What a statement binds in front of itself.
+enum Hoist {
+    /// The fresh call at the root of a read-through, and the step that
+    /// reads it.
+    Receiver { root: ExprRef, holder: ExprRef },
+    /// A fresh call passed as an argument (possibly under `&`), and its
+    /// type.
+    Argument(ExprRef, TypeDecl),
+}
+
+/// The first call `stmt` should bind in front of itself, if any.
+fn hoist_target(
     program: &File,
     interner: &DefaultStringInterner,
     expr_types: &HashMap<ExprRef, TypeDecl>,
     analysis: &DropAnalysis,
     stmt: StmtRef,
-) -> Option<ExprRef> {
-    let rhs = match program.statement.get_ref(&stmt)? {
-        Stmt::Val(_, _, rhs) | Stmt::Var(_, _, Some(rhs)) => *rhs,
+    tail: bool,
+) -> Option<Hoist> {
+    let fresh_owner = |e: &ExprRef| {
+        produces_fresh_value(program, interner, e)
+            && expr_types.get(e).is_some_and(|t| analysis.contains_drop(t))
+    };
+    let (rhs, initializer) = match program.statement.get_ref(&stmt)? {
+        Stmt::Val(_, _, rhs) | Stmt::Var(_, _, Some(rhs)) => (*rhs, true),
+        Stmt::Expression(e) if !tail => (*e, false),
         _ => return None,
     };
-    let (root, _, _) = chain_root(program, rhs)?;
-    if !produces_fresh_value(program, interner, &root) {
-        return None;
+    if initializer
+        && let Some((root, holder, _)) = chain_root(program, rhs)
+        && fresh_owner(&root)
+        && expr_types.get(&rhs).is_some_and(|t| analysis.contains_drop(t))
+    {
+        return Some(Hoist::Receiver { root, holder });
     }
-    let root_ty = expr_types.get(&root)?;
-    let result_ty = expr_types.get(&rhs)?;
-    (analysis.contains_drop(root_ty) && analysis.contains_drop(result_ty)).then_some(rhs)
+    let args: &[ExprRef] = match program.expression.get_ref(&rhs)? {
+        Expr::MethodCall(receiver, _, args) => {
+            if !is_quiet(program, receiver) {
+                return None;
+            }
+            args
+        }
+        Expr::AssociatedFunctionCall(_, _, args) => args,
+        Expr::Call(_, list) => match program.expression.get_ref(list)? {
+            Expr::ExprList(args) => args,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    for arg in args {
+        // The operand of a `&` has no recorded type of its own; the
+        // borrow's type names it.
+        let (call, ty) = match program.expression.get_ref(arg)? {
+            Expr::Unary(crate::ast::UnaryOp::Borrow | crate::ast::UnaryOp::BorrowMut, inner) => {
+                match expr_types.get(arg) {
+                    Some(TypeDecl::Ref { inner: ty, .. }) => (*inner, Some((**ty).clone())),
+                    _ => (*inner, None),
+                }
+            }
+            _ => (*arg, expr_types.get(arg).cloned()),
+        };
+        if let Some(ty) = ty
+            && produces_fresh_value(program, interner, &call)
+            && analysis.contains_drop(&ty)
+        {
+            return Some(Hoist::Argument(call, ty));
+        }
+        if !is_quiet(program, arg) {
+            return None;
+        }
+    }
+    None
+}
+
+/// An operand whose evaluation runs nothing: a name, a literal, a field
+/// of one, a borrow of one.
+fn is_quiet(program: &File, expr: &ExprRef) -> bool {
+    match program.expression.get_ref(expr) {
+        Some(
+            Expr::Identifier(_)
+            | Expr::True
+            | Expr::False
+            | Expr::Int64(_)
+            | Expr::UInt64(_)
+            | Expr::Int8(_)
+            | Expr::Int16(_)
+            | Expr::Int32(_)
+            | Expr::UInt8(_)
+            | Expr::UInt16(_)
+            | Expr::UInt32(_)
+            | Expr::CharLiteral(_)
+            | Expr::Float64(_)
+            | Expr::Float32(_)
+            | Expr::Number(_)
+            | Expr::String(_),
+        ) => true,
+        Some(Expr::FieldAccess(inner, _) | Expr::TupleAccess(inner, _) | Expr::Unary(_, inner)) => {
+            is_quiet(program, inner)
+        }
+        _ => false,
+    }
 }
 
 /// The receiver an access reads: a method call's, or a field / element

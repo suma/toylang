@@ -18,6 +18,7 @@
 - **STDLIB-CHECK-FIXED の一部 — 全体走査 pass の clone と行番号の数え直しを削り、型検査の固定費 8.0 → 6.7 ms** (残りは未実装節)
 - **OWNING-TEMP-DROP — `String::from_str("a").len()` / `mk().n` の一時値をスカラーの読み出しの後で drop する** (残りは未実装節)
 - **OWNING-TEMP-DROP (所有値の読み出し) — `val r = mk().renamed()` / `String::from_str("a").concat(b)` の一時値を文の前に束縛して drop する (compiled レーンの拒否も消えた)**
+- **OWNING-TEMP-DROP (引数) — `s.concat(String::from_str("x"))` / `peek(&mk())` / `v.push(mk())` の引数の一時値を文の前に束縛する**
 - **WINDOW-ESCAPE-UNWRAP — `??` / match の腕 / `if val` で `Option` から出した窓も `[E0026]` で止める**
 - **CONSUMING-SELF-NO-DROP (trait impl) — `dyn` で使われない trait の `self: Self` method もレシーバを drop する**
 - **NEXT-ITEM-ALIAS — `val m = it.next()` / `match it.next()` / for-in の item に所有者を付けない (二重解放と tree-walker のずれを解消)**
@@ -795,14 +796,16 @@
   結果へのメソッド (`mk().twin().get()`)、要素代入の右辺。演算子 overload の
   let-rhs 以外 (OP-OVERLOAD-CHAIN) も同根
 
-- **OWNING-TEMP-DROP の残り: スカラーでも所有値でもない読み出し / 入れ子の位置** ★ —
-  スカラーの読み出しは直後に、`val r = mk().renamed()` のように初期化子全体が
-  所有値を返す読み出しは文の前に `val __temp_N` を出してブロックの終わりで
-  drop する (2026-10-11、`type_checker/owning_temps.rs`)。残りは (a) 初期化子の
-  一部に埋まった所有値の読み出し (`take(mk().renamed())`、`f(x) + ..`) — 前に
-  出すと評価順が変わるので、出せるのは最初に評価される位置だけ、(b) 非所有の
-  compound を読む形 (`mk().inner`) — 中にポインタが無いと分かれば drop できる、
-  (c) 引数に置いた一時値 (`concat(String::from_str("x"))` / `take_ref(&mk())`)
+- **OWNING-TEMP-DROP の残り: 最初に評価されない位置 / 非所有の compound** ★ —
+  スカラーの読み出しは直後に、初期化子全体が所有値を返す読み出し
+  (`val r = mk().renamed()`) と、文全体の呼び出しに渡す引数
+  (`s.concat(String::from_str("x"))` / `peek(&mk())`) は文の前に `val __temp_N` を
+  出してブロックの終わりで drop する (2026-10-11、`type_checker/owning_temps.rs`)。
+  残りは (a) 前に評価される式がある位置 (`both(note(1), &mk())`、
+  `take(mk().renamed())`、`println(..)` の中、ブロックの末尾) — 前に出すと評価順が
+  変わる。式の途中で束縛を作れる形 (ブロックの値が compound でも drop が揃う) が
+  要る、(b) 非所有の compound を読む形 (`mk().inner`) — 中にポインタが無いと
+  分かれば drop できる
 
 - **CONST-ARRAY の残り: struct / tuple の表の渡し方** — 2026-09-25 に
   struct / tuple 要素の表が compiled レーンで読めるようになった

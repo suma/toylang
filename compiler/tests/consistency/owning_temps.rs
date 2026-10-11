@@ -125,3 +125,56 @@ fn a_temporary_under_an_owning_result_drops_with_the_block() {
         "bound 101\nt 202\ndrop 103\ndrop 3\nabr\ndrop 202\ndrop 102\ndrop 2\ndrop 101\ndrop 1\n304 0\n",
     );
 }
+
+/// A fresh owning call passed as an argument is bound in front of the
+/// statement, so a callee that only lends it (`&H`, a by-value
+/// parameter it reads, `concat(&String)`) leaves it to the caller's
+/// block, and one that keeps it (`push`) takes it as a move. Before,
+/// a lent temporary had no owner and leaked on every lane. An argument
+/// behind something that runs first (`note(..)`) stays where it is, so
+/// the order of effects never changes.
+#[test]
+fn a_temporary_passed_as_an_argument_drops_with_the_block() {
+    let src = r#"
+        struct H { n: u64 }
+        impl Drop for H { fn drop(&mut self) { println("drop {self.n}") } }
+        fn mk(n: u64) -> H {
+            println("mk {n}")
+            H { n: n }
+        }
+        fn note(n: u64) -> u64 {
+            println("note {n}")
+            n
+        }
+        fn peek(h: &H) -> u64 { h.n }
+        fn look(h: H) -> u64 { h.n }
+        fn both(a: u64, h: &H) -> u64 { a + h.n }
+        fn work() -> u64 {
+            val s = String::from_str("ab")
+            val c = s.concat(String::from_str("cd"))
+            println(c)
+            val a = peek(&mk(1u64))
+            val b = look(mk(2u64))
+            var v: Vec<H> = Vec::new()
+            v.push(mk(3u64))
+            for i in 4u64..6u64 {
+                v.push(mk(i))
+            }
+            val d = both(note(9u64), &mk(6u64))
+            println("work {a} {b} {d} {v.size()}")
+            a + b
+        }
+        fn main() -> u64 {
+            val before = __builtin_live_bytes()
+            val n = work()
+            println("{n} {__builtin_live_bytes() - before}")
+            n
+        }
+    "#;
+    assert_renders(
+        src,
+        "owning_temps_argument",
+        "abcd\nmk 1\nmk 2\nmk 3\nmk 4\nmk 5\nnote 9\nmk 6\nwork 1 2 15 3\n\
+         drop 3\ndrop 4\ndrop 5\ndrop 2\ndrop 1\n3 0\n",
+    );
+}

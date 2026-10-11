@@ -7069,9 +7069,27 @@ val r = mk().renamed()     # becomes   val __temp_0 = mk()
 ```
 
 (Wrapping it in a block of its own, as the scalar case does, would
-give a compound block whose drops the compiled lanes defer.) Only the
-whole initializer is rewritten, since the call is then the first thing
-it evaluates; the same read nested deeper still leaks.
+give a compound block whose drops the compiled lanes defer.)
+
+A call passed as an **argument** is bound the same way when the call
+it is passed to is the whole statement — `s.concat(String::from_str("x"))`,
+`peek(&mk())`, `v.push(mk())`:
+
+```rust
+val a = peek(&mk())        # becomes   val __temp_1 = mk()
+                           #           val a = peek(&__temp_1)
+```
+
+after which the usual rules decide: a callee that lends the argument
+(`&T`, or a by-value parameter it only reads) leaves the temporary to
+the enclosing block, and one that keeps it (`push`) takes it as a move.
+
+Either rewrite happens only where the call is the first thing the
+statement evaluates — the receiver and the arguments before it must be
+names, literals or fields of one — so no effect changes order, and not
+in a statement that is its block's value. Elsewhere (`take(mk().renamed())`,
+`both(note(1), &mk())`, `println(mk().renamed())`) the temporary still
+leaks.
 
 #### Lending an element (`borrow`)
 

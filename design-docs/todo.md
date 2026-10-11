@@ -13,6 +13,7 @@
 ### 2026-10-11
 
 - **RUNTIME-REFS-LAZY — ランタイム関数の import を呼ぶ分だけに。宣言は `codegen/runtime_syms.rs` の表 1 つ**
+- **COMPOUND-CALL-EXPR-POS (関数の結果) — compound を返す呼び出しを関数の末尾と `return` に置ける** (残りは未実装節)
 
 ### 2026-10-08
 
@@ -798,14 +799,11 @@
 > interpreter (tree-walker / IR VM) では動くが、compiled レーン (AOT / JIT) が断るか
 > 遅い形。interpreter 側 JIT の silent fallback もここ。
 
-- **COMPOUND-CALL-EXPR-POS: compiled レーンは compound を返す呼び出しを式の位置に置けない** ★★ —
-  `String::from_str(..)` / `parse::to_u64(..)` / `mk()` のような compound (struct /
-  tuple / enum) を返す呼び出しは、`val x = f()` の右辺以外 (関数の末尾、ブロックの末尾、
-  引数、`match` の scrutinee) に置くと compiled レーンが「compound-returning ... in
-  expression position; bind the result with `val`」で断る (interpreter は通す)。
-  `fn mk() -> String { String::from_str("x") }` すら書けない。POC と spawn で最も多く
-  当たった制限 (2026-10-06〜07)。spawn の本文だけは切り出しが末尾を `val` に束縛して
-  回避している。演算子 overload の let-rhs 以外 (OP-OVERLOAD-CHAIN) も同根
+- **COMPOUND-CALL-EXPR-POS の残り: 関数の結果以外の式の位置** ★ — 関数の末尾 /
+  `return` / 引数 / `if`・`match` の腕 / scrutinee は通る (2026-10-11)。残りは
+  レシーバ (`mk().x`、`v.get(i).len()`)、`println` の引数、演算の被演算子・条件、
+  要素代入の右辺で、compiled レーンは「bind the result with `val`」で断る。
+  演算子 overload の let-rhs 以外 (OP-OVERLOAD-CHAIN) も同根
 
 - **CONST-ARRAY の残り: struct / tuple の表の渡し方** — 2026-09-25 に
   struct / tuple 要素の表が compiled レーンで読めるようになった

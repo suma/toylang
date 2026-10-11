@@ -7118,14 +7118,18 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   setting — see "Operational guidance" above.)
 - **Compound-returning calls in expression position** — a compound
   never travels as one SSA value, so a call producing one needs
-  locals to write its leaves into. Three positions have those:
+  locals to write its leaves into. Four positions have those:
 
   - an **argument** — `take(mk(3i64))`, `take(o.twin())`,
     `take(P::origin())`, `count(Vec::new())`, for a struct, a tuple
     or an enum alike, in any of the three call shapes;
   - an enum's **payload** — `Option::Some(mk(2i64))`;
   - a **`match` / `if val` / `while val` scrutinee** — the parser
-    binds the call to a `val` first (see [`match`](#match)).
+    binds the call to a `val` first (see [`match`](#match));
+  - a **function's result** — the body's tail (also behind a block's
+    tail or in an `if` / `match` arm) and `return` —
+    `fn mk() -> String { String::from_str("x") }`,
+    `return pair(a)`.
 
   An enum-producing position (an `if` or `match` arm, a block tail, an
   enum payload) also takes an **associated function that returns that
@@ -7133,10 +7137,10 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   the arm, without a `val` in between.
 
   Enum *constructions* (`take(Color::Red)`, `take(Option::None)`) are
-  unrestricted in argument position too. Everywhere else — a tail
-  expression, an operand, a condition, the right-hand side of an
-  element assignment — the call still has to be bound with `val`
-  first.
+  unrestricted in argument position too. Everywhere else — an
+  operand, a condition, a receiver (`mk().x`, `v.get(i).len()`), a
+  `println` argument, the right-hand side of an element assignment —
+  the call still has to be bound with `val` first.
 - **Trait limitations** — no trait inheritance; no associated
   types. Generic trait declarations (`trait Foo<T>`), default
   method bodies, multiple bounds (`<T: A + B>`) and `dyn Trait`

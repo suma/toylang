@@ -235,10 +235,23 @@ impl<'a> FunctionLower<'a> {
                         self.terminate_return(values);
                         return Ok(None);
                     }
-                    return Err(
-                        "explicit `return` of a tuple value must be a bare identifier or tuple literal in the compiler MVP"
-                            .to_string(),
-                    );
+                    // Anything else (a call, an `if` / `match`) is
+                    // threaded into fresh storage, as the implicit
+                    // return does.
+                    let Type::Tuple(tuple_id) = ret_ty else { unreachable!() };
+                    let elements = self.allocate_tuple_elements(tuple_id)?;
+                    self.lower_into_tuple_elements(er, &elements)?;
+                    let leaves = flatten_tuple_element_locals(&elements);
+                    let mut values = Vec::with_capacity(leaves.len());
+                    for (local, ty) in leaves {
+                        let v = self
+                            .emit(InstKind::LoadLocal(local), Some(ty))
+                            .expect("LoadLocal returns a value");
+                        values.push(v);
+                    }
+                    self.emit_ensures_checks(&values)?;
+                    self.terminate_return(values);
+                    return Ok(None);
                 }
                 // Struct returns: the rhs must be a bare identifier
                 // referring to a struct binding; expand into per-field
@@ -250,24 +263,28 @@ impl<'a> FunctionLower<'a> {
                         .expression
                         .get(er)
                         .ok_or_else(|| "return rhs missing".to_string())?;
-                    let sym = match rhs_expr {
-                        Expr::Identifier(s) => s,
+                    // A binding returns its own fields; anything else
+                    // (a call, a literal, an `if` / `match`) is
+                    // threaded into fresh fields, as the implicit
+                    // return does.
+                    let fields = match rhs_expr {
+                        Expr::Identifier(sym) => match self.bindings.get(&sym).cloned() {
+                            Some(Binding::Struct { struct_id: bn, fields })
+                                if bn == ret_struct_id =>
+                            {
+                                fields
+                            }
+                            _ => {
+                                return Err(format!(
+                                    "`{}` is not a struct binding of the expected return type",
+                                    self.interner.resolve(sym).unwrap_or("?")
+                                ));
+                            }
+                        },
                         _ => {
-                            return Err(
-                                "explicit `return` of a struct value must be a bare identifier in the compiler MVP"
-                                    .to_string(),
-                            );
-                        }
-                    };
-                    let fields = match self.bindings.get(&sym).cloned() {
-                        Some(Binding::Struct { struct_id: bn, fields }) if bn == ret_struct_id => {
+                            let fields = self.allocate_struct_fields(ret_struct_id);
+                            self.lower_into_struct_fields(er, ret_struct_id, &fields)?;
                             fields
-                        }
-                        _ => {
-                            return Err(format!(
-                                "`{}` is not a struct binding of the expected return type",
-                                self.interner.resolve(sym).unwrap_or("?")
-                            ));
                         }
                     };
                     let leaves = flatten_struct_locals(&fields);

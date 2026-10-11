@@ -2678,11 +2678,13 @@ impl<'a> FunctionLower<'a> {
         // taking any other one returned a zero-filled struct — no
         // diagnostic, wrong answer, and identical on all three
         // backends because they share this lowering. A non-composite
-        // tail (a literal, a binding, a call) still goes through
-        // `lower_expr`: those set the channel to storage that is
-        // genuinely written on the path that reaches the return, and
-        // routing them through a pre-allocated target would only add a
-        // copy.
+        // tail (a literal, a binding) still goes through `lower_expr`:
+        // those set the channel to storage that is genuinely written on
+        // the path that reaches the return, and routing them through a
+        // pre-allocated target would only add a copy. A call is the
+        // exception (COMPOUND-CALL-EXPR-POS): `lower_expr` refuses a
+        // compound-returning call, while the target path stores its
+        // leaves the way `val x = f()` does.
         if let Some(frontend::type_decl::TypeDecl::Range(element)) = &func.return_type
             && let Some(ty) = self.lower_scalar_with_subst(element)
         {
@@ -2696,7 +2698,7 @@ impl<'a> FunctionLower<'a> {
             self.lower_into_enum_storage(&body_expr, &storage)?;
             None
         } else if let Type::Struct(struct_id) = ret_ty
-            && self.tail_is_composite(&body_expr)
+            && (self.tail_is_composite(&body_expr) || self.tail_is_call(&body_expr))
         {
             let fields = self.allocate_struct_fields(struct_id);
             self.lower_into_struct_fields(&body_expr, struct_id, &fields)?;
@@ -2704,7 +2706,7 @@ impl<'a> FunctionLower<'a> {
             None
         } else if let Type::Tuple(tuple_id) = ret_ty
             && self.range_return.is_none()
-            && self.tail_is_composite(&body_expr)
+            && (self.tail_is_composite(&body_expr) || self.tail_is_call(&body_expr))
         {
             let elements = self.allocate_tuple_elements(tuple_id)?;
             self.lower_into_tuple_elements(&body_expr, &elements)?;
@@ -2736,6 +2738,26 @@ impl<'a> FunctionLower<'a> {
             Some(frontend::ast::Expr::Block(stmts)) => match stmts.last() {
                 Some(last) => match self.stmt_at(last) {
                     Some(Stmt::Expression(e)) => self.tail_is_composite(e),
+                    _ => false,
+                },
+                None => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// Whether an expression's value is a call's result, possibly
+    /// behind a block's tail.
+    pub(super) fn tail_is_call(&self, expr_ref: &ExprRef) -> bool {
+        match self.expr_at(expr_ref) {
+            Some(
+                frontend::ast::Expr::Call(..)
+                | frontend::ast::Expr::MethodCall(..)
+                | frontend::ast::Expr::AssociatedFunctionCall(..),
+            ) => true,
+            Some(frontend::ast::Expr::Block(stmts)) => match stmts.last() {
+                Some(last) => match self.stmt_at(last) {
+                    Some(Stmt::Expression(e)) => self.tail_is_call(e),
                     _ => false,
                 },
                 None => false,

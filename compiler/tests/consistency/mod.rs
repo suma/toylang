@@ -68,6 +68,7 @@ mod assignment_unit;
 mod enum_arg_position;
 mod char_literal_generic_arg;
 mod compound_arg_call;
+mod compound_call_tail;
 mod narrow_for_range;
 mod enum_assoc_fn_producer;
 mod return_type_instantiates;

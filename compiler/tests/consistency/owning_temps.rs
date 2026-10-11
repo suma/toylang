@@ -226,3 +226,38 @@ fn a_temporary_deeper_in_a_statement_drops_with_the_block() {
         "abcd\ncond\ntook 102\ndrop 5\nearly 6\nwindow 1\ndrop 102\ndrop 2\ndrop 1\n108\n",
     );
 }
+
+/// A read of a non-owning compound off a temporary (`mk(1u64).inner`)
+/// drops the temporary too, when the compound holds only scalars all the
+/// way down: the value read cannot point into what is freed. Before,
+/// `close 1` / `close 3` never printed. `name` (a `String`) is not such a
+/// value, and a struct holding a pointer would not be either.
+#[test]
+fn a_temporary_under_a_plain_compound_read_drops() {
+    let src = r#"
+        struct H { id: u64 }
+        impl Drop for H { fn drop(&mut self) { println("close {self.id}") } }
+        struct In { x: u64, y: u64 }
+        struct Pair { a: In, b: (u64, bool) }
+        struct P { h: H, inner: In, pair: Pair, name: String }
+        fn mk(n: u64) -> P {
+            P { h: H { id: n }, inner: In { x: n, y: n + 1u64 }, pair: Pair { a: In { x: 1u64, y: 2u64 }, b: (n, true) }, name: String::from_str("p") }
+        }
+        fn sum(i: In) -> u64 { i.x + i.y }
+        fn main() -> u64 {
+            val i = mk(1u64).inner
+            println("inner {i.x} {i.y}")
+            val s = sum(mk(2u64).inner)
+            println("sum {s}")
+            val q = mk(3u64).pair
+            println("pair {q.a.x} {q.b.0}")
+            println("end")
+            0u64
+        }
+    "#;
+    assert_renders(
+        src,
+        "owning_temps_plain_compound",
+        "inner 1 2\nsum 5\npair 1 3\nend\nclose 3\nclose 2\nclose 1\n",
+    );
+}

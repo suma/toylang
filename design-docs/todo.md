@@ -18,6 +18,7 @@
 - **STDLIB-CHECK-FIXED の一部 — 全体走査 pass の clone と行番号の数え直しを削り、型検査の固定費 8.0 → 6.7 ms** (残りは未実装節)
 - **OWNING-TEMP-DROP — `String::from_str("a").len()` / `mk().n` の一時値をスカラーの読み出しの後で drop する** (残りは未実装節)
 - **OWNING-TEMP-DROP (所有値の読み出し) — `val r = mk().renamed()` / `String::from_str("a").concat(b)` の一時値を文の前に束縛して drop する (compiled レーンの拒否も消えた)**
+- **OWNING-TEMP-DROP (スカラーだけの compound) — `val i = mk().inner` の一時値も drop する**
 - **PARTIAL-MOVE — 所有フィールドを 1 つ渡しても束縛の残りのフィールドは読めて、その場で drop する (`val` / 引数 / 消費する method の `self`)**
 - **CONSUMING-SELF-NO-DROP (同名の `&self` がある名前) — 全呼び出しのレシーバの型が分かる名前なら `self: Self` の method がレシーバを drop する**
 - **CONSUME-THROUGH-BORROW — `&T` 引数 / `&self` の `self` / `&dyn` / generic `&T` / 要素の読み出しに `self: Self` の method を呼ぶと二重 drop していたのを `[E0027]` で拒否。trait impl は `dyn` で使われていてもレシーバを drop する**
@@ -804,14 +805,14 @@
   結果へのメソッド (`mk().twin().get()`)、要素代入の右辺。演算子 overload の
   let-rhs 以外 (OP-OVERLOAD-CHAIN) も同根
 
-- **OWNING-TEMP-DROP の残り: 条件つきの位置 / 窓 / 非所有の compound** ★ —
+- **OWNING-TEMP-DROP の残り: 条件つきの位置 / 窓 / ポインタを含む compound** ★ —
   一時値は文の前に `val __temp_N` を出して (前に評価されるスカラーも順に束縛して)
   ブロックの終わりで drop する (2026-10-11、`type_checker/owning_temps.rs`)。
   残りは (a) 分岐の中・`&&` の右 (`if c { take(&mk()) }` の `take(..)` は分岐の
   ブロックの文なので対象だが、式の値として分岐する形)、(b) 一時値を指す窓・
   ポインタを文の外へ持ち出す形 (`val w = first(&mk())`) — 束縛の寿命を窓に
-  揃える仕組みが要る、(c) 非所有の compound を読む形 (`mk().inner`) — 中に
-  ポインタが無いと分かれば drop できる
+  揃える仕組みが要る、(c) ポインタを含む非所有の compound を読む形 (スカラー
+  だけの compound は 2026-10-12 に対応)、generic な struct と enum の読み出し
 
 - **CONST-ARRAY の残り: struct / tuple の表の渡し方** — 2026-09-25 に
   struct / tuple 要素の表が compiled レーンで読めるようになった

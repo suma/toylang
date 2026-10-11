@@ -33,7 +33,7 @@
 //!   tree-walker drops at the block's end (COMPOUND-BLOCK-DROP-TIMING).
 
 use rustc_hash::FxHashMap as HashMap;
-use string_interner::DefaultStringInterner;
+use string_interner::{DefaultStringInterner, DefaultSymbol};
 
 use crate::ast::{Expr, ExprRef, File, Stmt, StmtRef, UnaryOp};
 use crate::type_checker::contains_drop::DropAnalysis;
@@ -160,18 +160,19 @@ fn hoist_owning_receivers(
     analysis: &DropAnalysis,
 ) {
     let mut counter = 0usize;
+    let plain = plain_structs(program);
     for index in 0..program.expression.len() {
         let block = ExprRef(index as u32);
         let Some(Expr::Block(stmts)) = program.expression.get_ref(&block) else { continue };
         // Most blocks hoist nothing; only those that do pay for a copy.
-        let finder = Finder { program, interner, expr_types, analysis };
+        let finder = Finder { program, interner, expr_types, analysis, plain: &plain };
         if !stmts.iter().any(|s| finder.plan(*s).is_some()) {
             continue;
         }
         let mut stmts = stmts.clone();
         let mut i = 0;
         while i < stmts.len() {
-            let finder = Finder { program, interner, expr_types, analysis };
+            let finder = Finder { program, interner, expr_types, analysis, plain: &plain };
             let Some(plan) = finder.plan(stmts[i]) else {
                 i += 1;
                 continue;
@@ -220,6 +221,7 @@ struct Finder<'a> {
     interner: &'a DefaultStringInterner,
     expr_types: &'a HashMap<ExprRef, TypeDecl>,
     analysis: &'a DropAnalysis,
+    plain: &'a rustc_hash::FxHashSet<DefaultSymbol>,
 }
 
 impl Finder<'_> {
@@ -242,10 +244,15 @@ impl Finder<'_> {
         self.expr_types.get(e)
     }
 
-    /// A value of `e` cannot point into anything: a scalar, or a fresh
-    /// owning value.
+    /// A value of `e` cannot point into anything: a scalar, a compound
+    /// of scalars only (`mk().inner` with `inner: P { x: u64, .. }`), or
+    /// a fresh owning value.
     fn seals(&self, e: &ExprRef) -> bool {
-        self.ty(e).is_some_and(is_scalar) || self.program.independent_calls.contains(e)
+        self.ty(e).is_some_and(|t| self.pointer_free(t)) || self.program.independent_calls.contains(e)
+    }
+
+    fn pointer_free(&self, ty: &TypeDecl) -> bool {
+        plain_type(ty, self.plain)
     }
 
     fn fresh_owner(&self, e: &ExprRef) -> Option<TypeDecl> {
@@ -339,7 +346,7 @@ impl Finder<'_> {
                 }
             }
             Expr::FieldAccess(inner, _) | Expr::TupleAccess(inner, _) => {
-                let inner_sealed = sealed || self.ty(e).is_some_and(is_scalar);
+                let inner_sealed = sealed || self.ty(e).is_some_and(|t| self.pointer_free(t));
                 self.operand(inner, inner_sealed)
             }
             Expr::Cast(inner, _) | Expr::Unary(_, inner) => {
@@ -397,6 +404,43 @@ impl Finder<'_> {
             self.program.expression.get_ref(e),
             Some(Expr::MethodCall(_, m, _)) if self.interner.resolve(*m).is_some_and(reads_a_kept_element)
         )
+    }
+}
+
+/// Non-generic structs whose fields are, all the way down, scalars or
+/// such structs and tuples of them: a value of one cannot point into
+/// anything.
+fn plain_structs(program: &File) -> rustc_hash::FxHashSet<DefaultSymbol> {
+    let mut decls: HashMap<DefaultSymbol, Vec<TypeDecl>> = HashMap::default();
+    for i in 0..program.statement.len() {
+        if let Some(Stmt::StructDecl { name, generic_params, fields, .. }) =
+            program.statement.get_ref(&StmtRef(i as u32))
+            && generic_params.is_empty()
+        {
+            decls.insert(*name, fields.iter().map(|f| f.type_decl.clone()).collect());
+        }
+    }
+    // Grown to a fixed point: a struct is plain once all its fields are.
+    let mut plain = rustc_hash::FxHashSet::default();
+    loop {
+        let before = plain.len();
+        for (name, fields) in &decls {
+            if !plain.contains(name) && fields.iter().all(|t| plain_type(t, &plain)) {
+                plain.insert(*name);
+            }
+        }
+        if plain.len() == before {
+            return plain;
+        }
+    }
+}
+
+fn plain_type(ty: &TypeDecl, plain: &rustc_hash::FxHashSet<DefaultSymbol>) -> bool {
+    match ty {
+        TypeDecl::Struct(name, args) | TypeDecl::Enum(name, args) if args.is_empty() => plain.contains(name),
+        TypeDecl::Identifier(name) => plain.contains(name),
+        TypeDecl::Tuple(items) => items.iter().all(|t| plain_type(t, plain)),
+        other => is_scalar(other),
     }
 }
 

@@ -7071,10 +7071,11 @@ Two kinds of temporary are left alone, and **leak** — bind them with
   element the container still owns (the reason for `[E0028]`), and
   `borrow` a reference. Dropping those would free the container's
   buffer.
-- one whose read is neither a scalar nor an owning value: a `ptr`,
-  `str`, reference or window (`Span`, `Column`) may point into the
-  temporary, and a non-owning compound (`mk().inner`) is not covered
-  yet. An owning field taken out (`mk().name`) moves the temporary.
+- one whose read may point into it: a `ptr`, `str`, reference or
+  window (`Span`, `Column`), or a compound holding one. A compound of
+  scalars only, all the way down (`mk().inner` with `inner: P { x: u64,
+  y: u64 }`), cannot, so that temporary is dropped like the others. An
+  owning field taken out (`mk().name`) moves the temporary.
 
 When the read produces an owning value of its own and is the whole
 initializer of a `val` / `var` — `val r = mk().renamed()`,

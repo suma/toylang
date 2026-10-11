@@ -88,3 +88,40 @@ fn a_dropped_temporary_frees_its_buffer() {
     "#;
     assert_renders(src, "owning_temps_frees", "6 4 0\n");
 }
+
+/// A read whose result owns something of its own: the call is bound by
+/// a statement in front, and drops with the enclosing block. Before,
+/// the compiled lanes refused `mk().renamed()` and the temporary leaked
+/// on the tree-walker.
+#[test]
+fn a_temporary_under_an_owning_result_drops_with_the_block() {
+    let src = format!(
+        r#"{OWNER}
+        impl H {{
+            fn renamed(&self) -> H {{ H {{ n: self.n + 100u64, name: String::from_str("r") }} }}
+        }}
+        fn work() -> u64 {{
+            val r = mk(1u64).renamed()
+            println("bound {{r.n}}")
+            var t = mk(2u64).renamed().renamed()
+            println("t {{t.n}}")
+            val k = mk(3u64).renamed().name.len()
+            val tail = String::from_str("r")
+            val c = String::from_str("ab").concat(tail)
+            println(c)
+            r.n + t.n + k
+        }}
+        fn main() -> u64 {{
+            val before = __builtin_live_bytes()
+            val n = work()
+            println("{{n}} {{__builtin_live_bytes() - before}}")
+            n
+        }}
+    "#
+    );
+    assert_renders(
+        &src,
+        "owning_temps_owning_result",
+        "bound 101\nt 202\ndrop 103\ndrop 3\nabr\ndrop 202\ndrop 102\ndrop 2\ndrop 101\ndrop 1\n304 0\n",
+    );
+}

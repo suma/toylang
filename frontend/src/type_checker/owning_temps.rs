@@ -93,9 +93,6 @@ pub fn bind_owning_temporaries(
         }
         sites.push((access, holder, root, root_ty.clone()));
     }
-    if sites.is_empty() {
-        return;
-    }
     // Pool order, so the nodes the rewrite adds come out the same on
     // every run.
     sites.sort_by_key(|(access, ..)| access.0);
@@ -123,6 +120,104 @@ pub fn bind_owning_temporaries(
             expr_types.insert(new_access, ty);
         }
     }
+    hoist_owning_receivers(program, interner, expr_types, &analysis);
+}
+
+/// A binding whose initializer reads through a fresh owning call and
+/// produces an owning value of its own -- `val r = mk().renamed()`,
+/// `val s = String::from_str("a").concat(b)` -- gets the call bound
+/// by a statement of its own in front of it:
+///
+/// ```text
+/// val r = mk().renamed()   =>   val __temp_N: H = mk()
+///                                val r = __temp_N.renamed()
+/// ```
+///
+/// The temporary then drops with the enclosing block, like any other
+/// binding there. Wrapping the read in a block of its own, as the
+/// scalar case does, would make that block compound with a tail that
+/// touches the binding, whose drop the compiled lanes defer
+/// (COMPOUND-BLOCK-DROP-TIMING). Only the whole initializer is
+/// hoisted: the call is the first thing it evaluates, so nothing runs
+/// in a different order.
+///
+/// The result must own something itself. A window, a reference, a
+/// `str` or a `ptr` may point into the temporary, and the temporary
+/// used to outlive everything; it would now be freed under them.
+fn hoist_owning_receivers(
+    program: &mut File,
+    interner: &mut DefaultStringInterner,
+    expr_types: &mut HashMap<ExprRef, TypeDecl>,
+    analysis: &DropAnalysis,
+) {
+    let mut counter = 0usize;
+    for index in 0..program.expression.len() {
+        let block = ExprRef(index as u32);
+        let Some(Expr::Block(stmts)) = program.expression.get_ref(&block) else { continue };
+        // Most blocks hoist nothing; only those that do pay for a copy.
+        if !stmts
+            .iter()
+            .any(|s| hoistable_initializer(program, interner, expr_types, analysis, *s).is_some())
+        {
+            continue;
+        }
+        let mut stmts = stmts.clone();
+        let mut changed = false;
+        let mut i = 0;
+        while i < stmts.len() {
+            let Some(rhs) = hoistable_initializer(program, interner, expr_types, analysis, stmts[i])
+            else {
+                i += 1;
+                continue;
+            };
+            let Some((root, holder, _)) = chain_root(program, rhs) else {
+                i += 1;
+                continue;
+            };
+            let Some(root_ty) = expr_types.get(&root).cloned() else {
+                i += 1;
+                continue;
+            };
+            let name = interner.get_or_intern(format!("{TEMP_NAME}_{counter}"));
+            counter += 1;
+            let root_at = program.location_pool.get_expr_location(&root).copied();
+            let ident = add_expr(program, Expr::Identifier(name), root_at);
+            let Some(holder_expr) = program.expression.get(&holder) else { break };
+            let Some(rerooted) = with_receiver(holder_expr, ident) else { break };
+            program.expression.update(&holder, rerooted);
+            expr_types.insert(ident, root_ty.clone());
+            let bind = add_stmt(program, Stmt::Val(name, Some(root_ty), root), root_at);
+            // Not advanced: the new statement may hoist a call of its
+            // own (`mk().renamed().renamed()`).
+            stmts.insert(i, bind);
+            changed = true;
+        }
+        if changed {
+            program.expression.update(&block, Expr::Block(stmts));
+        }
+    }
+}
+
+/// The initializer of a `val` / `var` that reads through a fresh owning
+/// call into an owning result.
+fn hoistable_initializer(
+    program: &File,
+    interner: &DefaultStringInterner,
+    expr_types: &HashMap<ExprRef, TypeDecl>,
+    analysis: &DropAnalysis,
+    stmt: StmtRef,
+) -> Option<ExprRef> {
+    let rhs = match program.statement.get_ref(&stmt)? {
+        Stmt::Val(_, _, rhs) | Stmt::Var(_, _, Some(rhs)) => *rhs,
+        _ => return None,
+    };
+    let (root, _, _) = chain_root(program, rhs)?;
+    if !produces_fresh_value(program, interner, &root) {
+        return None;
+    }
+    let root_ty = expr_types.get(&root)?;
+    let result_ty = expr_types.get(&rhs)?;
+    (analysis.contains_drop(root_ty) && analysis.contains_drop(result_ty)).then_some(rhs)
 }
 
 /// The receiver an access reads: a method call's, or a field / element

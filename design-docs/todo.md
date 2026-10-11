@@ -17,6 +17,7 @@
 - **COMPOUND-CALL-EXPR-POS (読み出しの根) — `mk().n` / `triple(1).2` / `mk().get()` / `v.get(i).len()` がどの位置でも compiled レーンで動く**
 - **STDLIB-CHECK-FIXED の一部 — 全体走査 pass の clone と行番号の数え直しを削り、型検査の固定費 8.0 → 6.7 ms** (残りは未実装節)
 - **OWNING-TEMP-DROP — `String::from_str("a").len()` / `mk().n` の一時値をスカラーの読み出しの後で drop する** (残りは未実装節)
+- **OWNING-TEMP-DROP (所有値の読み出し) — `val r = mk().renamed()` / `String::from_str("a").concat(b)` の一時値を文の前に束縛して drop する (compiled レーンの拒否も消えた)**
 - **NEXT-ITEM-ALIAS — `val m = it.next()` / `match it.next()` / for-in の item に所有者を付けない (二重解放と tree-walker のずれを解消)**
 
 ### 2026-10-08
@@ -798,15 +799,14 @@
   結果へのメソッド (`mk().twin().get()`)、要素代入の右辺。演算子 overload の
   let-rhs 以外 (OP-OVERLOAD-CHAIN) も同根
 
-- **OWNING-TEMP-DROP の残り: スカラー以外を読む一時値は漏れる** ★ — 一時値を
-  スカラーの読み出し (`.len()` / `.n` / 条件 / `()` の method) の後で drop する
-  ようにした (2026-10-11、`type_checker/owning_temps.rs`)。残りは (a) method が
-  所有型を返す形 (`String::from_str("a").concat(b)`) — 書き換えると右辺が compound
-  の block になり、compiled レーンはその束縛の drop を外のスコープまで遅らせる
-  (COMPOUND-BLOCK-DROP-TIMING) ので順序が tree-walker と割れる。文の前に
-  `val __temp_N` を出す形なら揃う、(b) 非所有の compound を読む形
-  (`mk().inner`、`take(mk().inner)`) — 中にポインタが無いと分かれば drop できる、
-  (c) 引数に置いた一時値 (`take_ref(&mk())`)
+- **OWNING-TEMP-DROP の残り: スカラーでも所有値でもない読み出し / 入れ子の位置** ★ —
+  スカラーの読み出しは直後に、`val r = mk().renamed()` のように初期化子全体が
+  所有値を返す読み出しは文の前に `val __temp_N` を出してブロックの終わりで
+  drop する (2026-10-11、`type_checker/owning_temps.rs`)。残りは (a) 初期化子の
+  一部に埋まった所有値の読み出し (`take(mk().renamed())`、`f(x) + ..`) — 前に
+  出すと評価順が変わるので、出せるのは最初に評価される位置だけ、(b) 非所有の
+  compound を読む形 (`mk().inner`) — 中にポインタが無いと分かれば drop できる、
+  (c) 引数に置いた一時値 (`concat(String::from_str("x"))` / `take_ref(&mk())`)
 
 - **CONST-ARRAY の残り: struct / tuple の表の渡し方** — 2026-09-25 に
   struct / tuple 要素の表が compiled レーンで読めるようになった

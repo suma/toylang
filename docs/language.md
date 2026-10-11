@@ -7046,10 +7046,26 @@ Two kinds of temporary are left alone, and **leak** — bind them with
   element the container still owns (the reason for `[E0028]`), and
   `borrow` a reference. Dropping those would free the container's
   buffer.
-- one whose read is not a scalar: a `ptr`, `str`, reference or
-  window (`Span`, `Column`) may point into the temporary, an owning
-  field taken out (`mk().name`) moves it, and a method's owning result
-  (`String::from_str("a").concat(b)`) is not covered yet.
+- one whose read is neither a scalar nor an owning value: a `ptr`,
+  `str`, reference or window (`Span`, `Column`) may point into the
+  temporary, and a non-owning compound (`mk().inner`) is not covered
+  yet. An owning field taken out (`mk().name`) moves the temporary.
+
+When the read produces an owning value of its own and is the whole
+initializer of a `val` / `var` — `val r = mk().renamed()`,
+`val s = String::from_str("a").concat(b)` — the call is bound by a
+statement of its own in front instead, and the temporary **drops at
+the end of the enclosing block** with the other bindings there:
+
+```rust
+val r = mk().renamed()     # becomes   val __temp_0 = mk()
+                           #           val r = __temp_0.renamed()
+```
+
+(Wrapping it in a block of its own, as the scalar case does, would
+give a compound block whose drops the compiled lanes defer.) Only the
+whole initializer is rewritten, since the call is then the first thing
+it evaluates; the same read nested deeper still leaks.
 
 #### Lending an element (`borrow`)
 

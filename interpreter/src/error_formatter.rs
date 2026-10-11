@@ -252,10 +252,6 @@ impl<'a> ErrorFormatter<'a> {
         )
     }
 
-    pub fn format_simple_error(&self, error_msg: &str) -> String {
-        format!("Error: {error_msg}")
-    }
-
     /// Display multiple parse errors with unified formatting
     pub fn display_parse_errors(&self, errors: &[ParserError]) {
         if errors.is_empty() {
@@ -308,18 +304,6 @@ impl<'a> ErrorFormatter<'a> {
         let clean_error = error.strip_prefix("Runtime Error: ").unwrap_or(error);
         let formatted_error = self.format_runtime_error(clean_error, None);
         eprintln!("{}{}", ErrorType::Runtime.prefix(), formatted_error);
-    }
-
-    /// Generic method to display any collection of errors with unified formatting
-    pub fn display_errors<T: std::fmt::Display>(&self, error_type: ErrorType, errors: &[T]) {
-        if errors.is_empty() {
-            return;
-        }
-
-        eprintln!("{}", error_type.header());
-        for error in errors {
-            eprintln!("{}{}", error_type.prefix(), error);
-        }
     }
 
 }

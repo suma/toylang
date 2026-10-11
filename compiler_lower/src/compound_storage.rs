@@ -1394,41 +1394,6 @@ impl<'a> FunctionLower<'a> {
         }
     }
 
-    /// Common store: write the variant tag and (optionally) evaluate
-    /// + store the payload args into the target's per-variant slots.
-    ///
-    /// (deprecated — kept temporarily during the refactor)
-    #[allow(dead_code)]
-    pub(super) fn write_enum_into_target(
-        &mut self,
-        variant_idx: usize,
-        args: &[ExprRef],
-        tag_local: LocalId,
-        payload_locals: &[Vec<(LocalId, Type)>],
-    ) -> Result<(), String> {
-        let tag_v = self
-            .emit(
-                InstKind::Const(Const::U64(variant_idx as u64)),
-                Some(Type::U64),
-            )
-            .expect("Const returns a value");
-        self.emit(
-            InstKind::StoreLocal {
-                dst: tag_local,
-                src: tag_v,
-            },
-            None,
-        );
-        for (i, arg_ref) in args.iter().enumerate() {
-            let v = self
-                .lower_expr(arg_ref)?
-                .ok_or_else(|| format!("enum payload arg #{i} produced no value"))?;
-            let (dst, _) = payload_locals[variant_idx][i];
-            self.emit(InstKind::StoreLocal { dst, src: v }, None);
-        }
-        Ok(())
-    }
-
     /// Copy every local backing a source enum binding into the
     /// target's matching slot. Recurses through nested enum payloads
     /// so a `val a = b` between two `Option<Option<T>>` bindings

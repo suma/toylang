@@ -654,14 +654,6 @@ pub fn memory_profile_layouts() -> Vec<interpreter::heap::AllocatorLayoutReport>
         .collect()
 }
 
-/// Program arguments for the JIT's `argc()` / `arg(i)`. The JIT runs
-/// in-process inside the compiler, whose own argv is not the
-/// program's — the harness sets this explicitly (default: empty,
-/// matching a compiled binary launched with no arguments).
-pub fn set_jit_program_args(args: Vec<String>) {
-    toylang_rt::set_program_args(args.into_iter().map(String::into_bytes).collect());
-}
-
 // ---------------------------------------------------------------------------
 // FFI_PLAN P1-MVP-C: `-l`-style library resolution for the JIT.
 // ---------------------------------------------------------------------------

@@ -221,7 +221,6 @@ impl TupleElementBinding {
     /// Convenience accessor for sites that have already verified the
     /// element is scalar (mostly the boundary / print fast paths).
     /// Returns `None` for compound shapes so the caller can detour.
-    #[allow(dead_code)]
     pub(super) fn scalar(&self) -> Option<(LocalId, Type)> {
         match &self.shape {
             TupleElementShape::Scalar { local, ty } => Some((*local, *ty)),
@@ -235,7 +234,6 @@ impl TupleElementBinding {
 /// inner struct / tuple sub-binding.
 #[derive(Debug, Clone)]
 pub(super) enum FieldChainResult {
-    #[allow(dead_code)]
     Scalar { local: LocalId, ty: Type },
     /// Inner struct sub-binding — `struct_id` carries the
     /// monomorphised struct shape so callers can dispatch
@@ -295,9 +293,7 @@ pub(super) enum FieldShape {
     /// list `Binding::Tuple` uses, so a chain access like
     /// `outer.inner.0` walks struct → tuple element via the existing
     /// field-chain helpers.
-    #[allow(dead_code)]
     Tuple {
-        tuple_id: TupleId,
         elements: Vec<TupleElementBinding>,
     },
     /// JIT-enum-1: enum-typed struct field. Holds a full

@@ -15,7 +15,6 @@
 //! `dyn Trait` dispatch) lives in the IR, which is all this crate
 //! sees.
 
-mod call;
 mod dispatch;
 pub mod eligibility;
 pub mod frame;
@@ -661,7 +660,6 @@ impl<'a> Vm<'a> {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn module(&self) -> &Module {
         self.module
     }

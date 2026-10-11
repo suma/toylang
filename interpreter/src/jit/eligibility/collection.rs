@@ -238,7 +238,6 @@ pub(super) fn collect_enum_layouts(program: &File) -> HashMap<DefaultSymbol, Enu
                 out.insert(
                     name,
                     EnumLayout {
-                        base_name: name,
                         variants: variant_names,
                         variant_payloads,
                         variant_has_payload,

@@ -522,30 +522,9 @@ fn borrow_shape(params: &[TypeDecl]) -> Vec<bool> {
     params.iter().map(is_borrow).collect()
 }
 
+/// Whether a binding of this type names a borrow rather than a value.
 fn is_borrow(ty: &TypeDecl) -> bool {
     matches!(ty, TypeDecl::Ref { .. })
-}
-
-/// Every name a pattern binds, at any depth.
-fn pattern_names(pattern: &Pattern, out: &mut Vec<DefaultSymbol>) {
-    match pattern {
-        Pattern::Name(n) => out.push(*n),
-        Pattern::Binding(n, inner) => {
-            out.push(*n);
-            pattern_names(inner, out);
-        }
-        Pattern::EnumVariant(_, _, subs) | Pattern::Tuple(subs) => {
-            for p in subs {
-                pattern_names(p, out);
-            }
-        }
-        Pattern::Struct(_, fields, _) => {
-            for (_, p) in fields {
-                pattern_names(p, out);
-            }
-        }
-        Pattern::Literal(_) | Pattern::Range(_, _) | Pattern::Wildcard => {}
-    }
 }
 
 /// Every struct declaration's generic parameters and field types.
@@ -1027,9 +1006,7 @@ impl MoveCheck<'_> {
         let Some(name) = self.tail_identifier(arm.body) else {
             return false;
         };
-        let mut names = Vec::new();
-        pattern_names(&arm.pattern, &mut names);
-        names.contains(&name)
+        arm.pattern.bound_names().contains(&name)
     }
 
     /// `e`, or the last expression of a block ending in `e`, when that is
@@ -1150,7 +1127,7 @@ impl MoveCheck<'_> {
         let Some(want) = annotation else {
             return;
         };
-        if Self::is_borrow(want) || matches!(want, TypeDecl::Unknown | TypeDecl::Hole) {
+        if is_borrow(want) || matches!(want, TypeDecl::Unknown | TypeDecl::Hole) {
             return;
         }
         let Some(rhs_ty) = self.expr_types.get(&rhs).cloned() else {
@@ -1206,7 +1183,7 @@ impl MoveCheck<'_> {
         let Some(ty) = self.binding_type(annotation, rhs) else {
             return;
         };
-        if Self::is_borrow(&ty) || !self.is_owning(&ty) {
+        if is_borrow(&ty) || !self.is_owning(&ty) {
             return;
         }
         let Some(Expr::MethodCall(receiver, method, _)) = self.program.expression.get_ref(&rhs) else {
@@ -1301,11 +1278,6 @@ impl MoveCheck<'_> {
             Applicability::MachineApplicable,
             edits,
         ))
-    }
-
-    /// Whether this binding names a borrow rather than a value.
-    fn is_borrow(ty: &TypeDecl) -> bool {
-        matches!(ty, TypeDecl::Ref { .. })
     }
 
     /// The declared or inferred type of a `val` / `var` initializer.
@@ -1439,32 +1411,18 @@ impl MoveCheck<'_> {
         match stmt {
             // `var` may be declared without an initializer; `val`
             // always has one.
-            Stmt::Val(name, annotation, rhs) => {
+            Stmt::Val(name, annotation, rhs) | Stmt::Var(name, annotation, Some(rhs)) => {
                 self.walk_initializer(*rhs, conditional);
                 self.note_binding_type(*name, annotation, *rhs);
                 self.check_copy_out_of_borrow(*name, annotation, *rhs);
                 self.check_owning_element_copy(stmt_ref, *name, annotation, *rhs);
                 if let Some(ty) = self.binding_type(annotation, *rhs) {
-                    if Self::is_borrow(&ty) {
+                    if is_borrow(&ty) {
                         // ELEMENT-BORROW E2: a binding that names a
                         // borrow owns nothing, so the backends must
                         // not drop it. `transferred` is exactly that
                         // instruction, and it already reaches every
                         // lane.
-                        self.transferred.insert(stmt_ref);
-                        self.borrows.insert(*name);
-                    } else if self.is_owning(&ty) {
-                        self.declare_owning(*name, stmt_ref, *rhs);
-                    }
-                }
-            }
-            Stmt::Var(name, annotation, Some(rhs)) => {
-                self.walk_initializer(*rhs, conditional);
-                self.note_binding_type(*name, annotation, *rhs);
-                self.check_copy_out_of_borrow(*name, annotation, *rhs);
-                self.check_owning_element_copy(stmt_ref, *name, annotation, *rhs);
-                if let Some(ty) = self.binding_type(annotation, *rhs) {
-                    if Self::is_borrow(&ty) {
                         self.transferred.insert(stmt_ref);
                         self.borrows.insert(*name);
                     } else if self.is_owning(&ty) {
@@ -1592,9 +1550,7 @@ impl MoveCheck<'_> {
                     self.enter_scope();
                     let mut consuming = false;
                     if let Some(root) = place_root {
-                        let mut names = Vec::new();
-                        pattern_names(&arm.pattern, &mut names);
-                        for n in names {
+                        for n in arm.pattern.bound_names() {
                             self.declare_alias(n, None, root);
                         }
                         if self.arm_consumes(*scrutinee, &arm.pattern) {

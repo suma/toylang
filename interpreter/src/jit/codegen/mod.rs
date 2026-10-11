@@ -184,7 +184,6 @@ pub fn translate_function<M: Module>(
         call_targets,
         struct_layouts,
         loop_stack: Vec::new(),
-        return_ty: sig.ret.clone(),
         terminated: false,
         with_depth: 0,
     };
@@ -660,7 +659,6 @@ struct State<'a, 'b> {
     /// Used when constructing the eligibility-side `enum_locals` view
     /// for codegen-time type lookups.
     enum_local_types: &'a mut HashMap<DefaultSymbol, DefaultSymbol>,
-    #[allow(dead_code)]
     func_signatures: &'a HashMap<MonoKey, FuncSignature>,
     func_refs: &'a HashMap<MonoKey, FuncRef>,
     helper_refs: &'a HashMap<HelperKind, FuncRef>,
@@ -670,8 +668,6 @@ struct State<'a, 'b> {
     /// Layout for every JIT-compatible struct in the program.
     struct_layouts: &'a HashMap<DefaultSymbol, StructLayout>,
     loop_stack: Vec<LoopFrame>,
-    #[allow(dead_code)]
-    return_ty: ParamTy,
     /// Tracks whether the current cranelift block has had a terminator
     /// emitted. We can't query the builder directly because the relevant
     /// helper is private.

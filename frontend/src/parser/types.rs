@@ -542,27 +542,4 @@ impl<'a> Parser<'a> {
         }
         Ok(type_args)
     }
-
-    /// Skip tokens until matching '>' is found (for generic argument parsing)
-    #[allow(dead_code)]
-    pub(super) fn skip_until_matching_gt(&mut self) {
-        let mut depth = 1;
-        self.next(); // Skip the initial '<'
-
-        while let Some(token) = self.peek() {
-            match token {
-                Kind::LT => depth += 1,
-                Kind::GT => {
-                    depth -= 1;
-                    if depth == 0 {
-                        self.next(); // Consume the matching '>'
-                        break;
-                    }
-                }
-                Kind::EOF => break,
-                _ => {}
-            }
-            self.next();
-        }
-    }
 }

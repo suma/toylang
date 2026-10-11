@@ -937,12 +937,6 @@ pub fn set_sink(f: Option<SinkFn>) {
     thread_state().sink = f.unwrap_or(default_sink);
 }
 
-/// Replace the calling thread's error-output sink. `None` restores
-/// the libc-`write` default (fd 2) used by AOT binaries.
-pub fn set_err_sink(f: Option<SinkFn>) {
-    thread_state().err_sink = f.unwrap_or(default_err_sink);
-}
-
 /// Emit program output through the current sink — the error sink
 /// while `toy_print_stream(1)` is in effect (RUNTIME-LIB P0-A).
 fn emit(bytes: &[u8]) {

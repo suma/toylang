@@ -631,14 +631,6 @@ impl Module {
         None // ambiguous
     }
 
-    /// Returns true when at least one entry exists for `name`,
-    /// regardless of qualifier. Used by call-site dispatchers that
-    /// want a quick "is there any function by this name" probe
-    /// before computing args.
-    pub fn has_function(&self, name: DefaultSymbol) -> bool {
-        self.function_index.contains_key(&name)
-    }
-
     pub fn function_mut(&mut self, id: FuncId) -> &mut Function {
         &mut self.functions[id.0 as usize]
     }
@@ -1382,12 +1374,6 @@ pub struct Block {
     /// `None` while the block is being built; set to `Some` exactly once
     /// when the block is closed. The lowering pass enforces that.
     pub terminator: Option<Terminator>,
-}
-
-impl Block {
-    pub fn is_terminated(&self) -> bool {
-        self.terminator.is_some()
-    }
 }
 
 /// Subset of types the AOT compiler can lower today. Everything else is

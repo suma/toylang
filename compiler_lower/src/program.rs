@@ -1188,7 +1188,6 @@ fn declare_methods(
                 impl_func_id,
                 struct_leaves: struct_leaves.clone(),
                 user_param_tys,
-                ret_ty,
                 self_is_mut,
                 trait_sym: *trait_sym,
                 target_type: *target_type,

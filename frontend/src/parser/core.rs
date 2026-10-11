@@ -479,7 +479,6 @@ impl<'a> Parser<'a> {
         self.token_provider.peek()
     }
 
-    #[allow(dead_code)]
     pub fn peek_n(&mut self, pos: usize) -> Option<&Kind> {
         self.token_provider.peek_at(pos)
     }

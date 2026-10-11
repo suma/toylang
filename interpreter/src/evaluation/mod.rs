@@ -338,7 +338,6 @@ pub struct EvaluationContext<'a> {
 /// mutations the body made via field access (`s.field = ...`)
 /// are visible inside the synthesized `drop(&mut self)` body.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(super) struct DropEntry {
     pub(super) name: DefaultSymbol,
     pub(super) value: RcObject,
@@ -618,13 +617,6 @@ impl<'a> EvaluationContext<'a> {
         None // ambiguous
     }
 
-    /// Override the contract mode after construction. Tests use this to
-    /// exercise specific modes deterministically without process-level
-    /// env mutation.
-    pub fn set_contract_mode(&mut self, mode: ContractMode) {
-        self.contract_mode = mode;
-    }
-
     /// Cap how many loop iterations this context will execute
     /// (CHECK-NONTERMINATION). `None` removes the cap, which is what
     /// every path except `--check` wants.
@@ -648,10 +640,6 @@ impl<'a> EvaluationContext<'a> {
             return Err(InterpreterError::StepBudgetExceeded { steps: max });
         }
         Ok(())
-    }
-
-    pub fn register_enum(&mut self, name: DefaultSymbol, entry: EnumRegistryEntry) {
-        Rc::make_mut(&mut self.enum_definitions).insert(name, entry);
     }
 
     // -------------------------------------------------------------
@@ -905,35 +893,6 @@ impl<'a> EvaluationContext<'a> {
         entry: StructRegistryEntry,
     ) {
         Rc::make_mut(&mut self.struct_definitions).insert(name, entry);
-    }
-
-    /// Register an impl-block method. CONCRETE-IMPL Phase 2:
-    /// `target_type_args` distinguishes multiple impls of the same
-    /// `(struct, method)` pair under different concrete type args;
-    /// pass an empty Vec for inherent / generic-parameterised impls.
-    pub fn register_method(
-        &mut self,
-        struct_name: DefaultSymbol,
-        method_name: DefaultSymbol,
-        target_type_args: Vec<TypeDecl>,
-        method: Rc<MethodFunction>,
-    ) {
-        let specs = Rc::make_mut(&mut self.method_registry)
-            .entry(struct_name)
-            .or_default()
-            .entry(method_name)
-            .or_default();
-        // Replace an existing spec with the same target_type_args
-        // (later registration wins for the same exact args; this
-        // matches the legacy single-entry HashMap semantics).
-        if let Some(existing) = specs
-            .iter_mut()
-            .find(|s| s.target_type_args == target_type_args)
-        {
-            existing.method = method;
-        } else {
-            specs.push(MethodSpec { target_type_args, method });
-        }
     }
 
     /// Resolve a method by struct + method name + receiver's concrete

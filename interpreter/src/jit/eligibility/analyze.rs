@@ -13,7 +13,7 @@ use super::extern_dispatch::{
     install_concat_sym, install_enum_layouts, install_extern_dispatch,
     install_primitive_target_symbols,
 };
-use super::layout::{EnumLayout, StructLayout};
+use super::layout::StructLayout;
 use super::resolver::callable_signature;
 use super::scalar::{ScalarTy, StructLocalInfo};
 use super::signature::{FuncSignature, MonoKey, MonoTarget, MonomorphSource};
@@ -34,15 +34,6 @@ pub struct EligibleSet {
     /// Layout of every struct type the JIT understands. Built in a
     /// pre-pass over top-level `Stmt::StructDecl` declarations.
     pub struct_layouts: HashMap<DefaultSymbol, StructLayout>,
-    /// Layout of every enum type the JIT understands. Phase JE-1
-    /// only fills this for non-generic, unit-only enums (no payload
-    /// variants); anything else is silently omitted and references to
-    /// it stay on the interpreter fallback path. Currently only
-    /// consulted via the `ENUM_LAYOUTS` thread-local from
-    /// `check_expr`'s skip diagnostic; JE-1b will read it directly
-    /// for codegen.
-    #[allow(dead_code)]
-    pub enum_layouts: HashMap<DefaultSymbol, EnumLayout>,
 }
 
 /// Per-callsite monomorphization record. `call_expr` identifies the
@@ -313,7 +304,6 @@ pub fn analyze(
         signatures,
         call_targets,
         struct_layouts,
-        enum_layouts,
     })
 }
 

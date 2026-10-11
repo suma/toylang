@@ -98,10 +98,6 @@ impl StructLayout {
 ///   - JE-4: enum-typed function parameters / returns (cranelift
 ///     boundary expansion).
 ///
-/// `base_name` / `variants` / `variant_tag` are read from JE-1b
-/// onward; the `#[allow(dead_code)]` keeps the build clean while
-/// only the diagnostic in `enum_layout_for` consumes the layout.
-///
 /// Phase JE-2a: `payload_ty` carries the (uniform) scalar type
 /// shared by every tuple variant's single payload slot. `None`
 /// means the enum has no payload across any variant (unit-only,
@@ -118,9 +114,7 @@ impl StructLayout {
 /// per monomorph. For non-generic enums it stays `Some(scalar)`
 /// or `None` exactly as JE-2a.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct EnumLayout {
-    pub base_name: DefaultSymbol,
     /// Variant names in declaration order. Index = tag value.
     pub variants: Vec<DefaultSymbol>,
     /// Phase JE-4: per-variant payload representation. `None` for
@@ -141,24 +135,11 @@ pub struct EnumLayout {
 }
 
 impl EnumLayout {
-    #[allow(dead_code)]
     pub fn variant_tag(&self, name: DefaultSymbol) -> Option<u64> {
         self.variants
             .iter()
             .position(|n| *n == name)
             .map(|i| i as u64)
-    }
-
-    /// Number of cranelift slots the enum value occupies. `1` for
-    /// unit-only (just the tag); `2` when any variant carries a
-    /// payload (tag + payload).
-    #[allow(dead_code)]
-    pub fn slot_count(&self) -> usize {
-        if self.variant_payloads.iter().any(|v| v.is_some()) {
-            2
-        } else {
-            1
-        }
     }
 
     /// Phase JE-3/JE-4: convenience for non-generic enums whose

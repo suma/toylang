@@ -163,10 +163,6 @@ impl Environment {
         self.current_module = module_path;
     }
 
-    pub fn get_current_module(&self) -> Option<&Vec<DefaultSymbol>> {
-        self.current_module.as_ref()
-    }
-
     pub fn get_module(&self, module_path: &[DefaultSymbol]) -> Option<&ModuleEnvironment> {
         self.modules.get(module_path)
     }
@@ -184,13 +180,4 @@ impl Environment {
         }
     }
 
-    /// Set variable in a specific module
-    pub fn set_module_variable(&mut self, module_path: &[DefaultSymbol], name: DefaultSymbol, value: VariableValue) -> Result<(), InterpreterError> {
-        if let Some(module) = self.get_module_mut(module_path) {
-            module.variables.insert(name, value);
-            Ok(())
-        } else {
-            Err(InterpreterError::InternalError(format!("Module {:?} not found", module_path)))
-        }
-    }
 }

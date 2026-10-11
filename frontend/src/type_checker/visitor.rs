@@ -3,7 +3,6 @@ use std::rc::Rc;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 use crate::ast::*;
 use crate::type_decl::*;
-use crate::module_resolver::ModuleResolver;
 use crate::visitor::ProgramVisitor;
 use crate::type_checker::{
     AcceptableStmt, BuiltinFunctionSignature, CoreReferences, TypeCheckContext, TypeCheckError,
@@ -239,36 +238,9 @@ impl<'a> TypeCheckerVisitor<'a> {
         let call_paths = program.call_paths.clone();
         let spawn_blocks = program.spawn_blocks.keys().copied().collect();
 
-        let mut visitor = Self {
-            core: CoreReferences::from_program(program, string_interner),
-            call_paths,
-            spawn_blocks,
-            spawn_captures: HashMap::default(),
-            current_call_path: None,
-            context: TypeCheckContext::new(),
-            type_inference: TypeInferenceState::new(),
-            function_checking: FunctionCheckingState::new(),
-            optimization: PerformanceOptimization::new(),
-            errors: Vec::new(),
-            recovery_enabled: false,
-            source_code: None,
-            current_package: None,
-            imported_modules: HashMap::default(),
-            builtin_methods: Self::create_builtin_method_registry(),
-            builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
-            display_types: None,
-            current_fn_return_type: None,
-            tuple_struct_rewrites: TupleStructRewrites::default(),
-            pattern_rewrites: PatternRewrites::default(),
-            loop_values: HashMap::default(),
-            enum_casts: HashMap::default(),
-            enum_comparisons: HashMap::default(),
-            enum_struct_literals: HashMap::default(),
-            null_coalesce_lhs_types: HashMap::default(),
-            try_nodes: None,
-            transformed_exprs: HashMap::default(),
-            pending_number_holes: Vec::new(),
-        };
+        let mut visitor = Self::from_core(CoreReferences::from_program(program, string_interner));
+        visitor.call_paths = call_paths;
+        visitor.spawn_blocks = spawn_blocks;
 
         // Process package and imports immediately
         if let Some(ref package_decl) = package_decl {
@@ -332,8 +304,13 @@ impl<'a> TypeCheckerVisitor<'a> {
 
     // Keep the old API for backward compatibility
     pub fn new(stmt_pool: &'a mut StmtPool, expr_pool: &'a mut ExprPool, string_interner: &'a DefaultStringInterner, location_pool: &'a LocationPool) -> Self {
+        Self::from_core(CoreReferences::new(stmt_pool, expr_pool, string_interner, location_pool))
+    }
+
+    /// A checker over `core` with every piece of per-run state empty.
+    fn from_core(core: CoreReferences<'a>) -> Self {
         Self {
-            core: CoreReferences::new(stmt_pool, expr_pool, string_interner, location_pool),
+            core,
             call_paths: HashMap::default(),
             spawn_blocks: rustc_hash::FxHashSet::default(),
             spawn_captures: HashMap::default(),
@@ -543,46 +520,6 @@ impl<'a> TypeCheckerVisitor<'a> {
         // so the catalogue is generated rather than restated six times.
         .chain(frontend_mem_stat_signatures())
         .collect()
-    }
-
-    /// Create a TypeCheckerVisitor with module resolver for import handling
-    pub fn with_module_resolver(
-        stmt_pool: &'a mut StmtPool,
-        expr_pool: &'a mut ExprPool,
-        string_interner: &'a DefaultStringInterner,
-        location_pool: &'a LocationPool,
-        module_resolver: &'a mut ModuleResolver,
-    ) -> Self {
-        Self {
-            core: CoreReferences::with_module_resolver(stmt_pool, expr_pool, string_interner, location_pool, module_resolver),
-            call_paths: HashMap::default(),
-            spawn_blocks: rustc_hash::FxHashSet::default(),
-            spawn_captures: HashMap::default(),
-            current_call_path: None,
-            context: TypeCheckContext::new(),
-            type_inference: TypeInferenceState::new(),
-            function_checking: FunctionCheckingState::new(),
-            optimization: PerformanceOptimization::new(),
-            errors: Vec::new(),
-            recovery_enabled: false,
-            source_code: None,
-            current_package: None,
-            imported_modules: HashMap::default(),
-            builtin_methods: Self::create_builtin_method_registry(),
-            builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
-            display_types: None,
-            current_fn_return_type: None,
-            tuple_struct_rewrites: TupleStructRewrites::default(),
-            pattern_rewrites: PatternRewrites::default(),
-            loop_values: HashMap::default(),
-            enum_casts: HashMap::default(),
-            enum_comparisons: HashMap::default(),
-            enum_struct_literals: HashMap::default(),
-            null_coalesce_lhs_types: HashMap::default(),
-            try_nodes: None,
-            transformed_exprs: HashMap::default(),
-            pending_number_holes: Vec::new(),
-        }
     }
 
     pub fn with_source_code(mut self, source: &'a str) -> Self {
@@ -1444,7 +1381,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Type-check a single contract predicate. Reused by both `requires`
     /// and `ensures`; the `kind` label feeds the error message so users
     /// see exactly which contract failed to type.
-    fn check_contract_clause(
+    pub(super) fn check_contract_clause(
         &mut self,
         cond: &ExprRef,
         kind: &str,

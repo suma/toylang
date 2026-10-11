@@ -179,34 +179,25 @@ impl ScalarTy {
     }
 }
 
-/// Phase JE-3: enum payload's representational shape. Non-generic
-/// enums resolve to `None` (unit-only) or `Some(Concrete(ty))`.
-/// Generic enums use `Some(Generic(param))` so each instantiation
-/// can supply a concrete `ty`.
+/// Phase JE-3: enum payload's representational shape. A payload of a
+/// non-generic enum is `Concrete(ty)`; a generic one is
+/// `Generic(param)` so each instantiation can supply a concrete `ty`.
+/// Unit variants carry no `PayloadRepr` at all.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
 pub enum PayloadRepr {
-    None,
     Concrete(ScalarTy),
     Generic(DefaultSymbol),
 }
 
 impl PayloadRepr {
     /// Resolve to a concrete `ScalarTy` given the per-monomorph
-    /// substitution map. Returns `None` for the `None` variant
-    /// (unit-only enums) or when a generic param is missing from
-    /// `subst`.
+    /// substitution map. Returns `None` when a generic param is
+    /// missing from `subst`.
     pub fn resolve(&self, subst: &HashMap<DefaultSymbol, ScalarTy>) -> Option<ScalarTy> {
         match self {
-            PayloadRepr::None => None,
             PayloadRepr::Concrete(t) => Some(*t),
             PayloadRepr::Generic(p) => subst.get(p).copied(),
         }
-    }
-
-    #[allow(dead_code)]
-    pub fn is_some(&self) -> bool {
-        !matches!(self, PayloadRepr::None)
     }
 }
 

@@ -268,7 +268,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         // Phase 4: Check if this might be a module qualified name
         // (math.add). Variable bindings (including the DbC `result`
-        // keyword that `impl_block::check_method_contract_clause`
+        // keyword that `impl_block.rs`
         // injects) take precedence — without that check, an
         // auto-loaded `core/std/result.t` registers `result` as a
         // module alias and `ensures result.n == ...` would resolve

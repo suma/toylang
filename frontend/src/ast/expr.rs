@@ -204,6 +204,32 @@ pub enum Pattern {
     Wildcard, // _
 }
 
+impl Pattern {
+    /// Every name the pattern binds, at any depth, outermost first
+    /// (`n @ Some(x)` gives `[n, x]`).
+    pub fn bound_names(&self) -> Vec<DefaultSymbol> {
+        fn walk(p: &Pattern, out: &mut Vec<DefaultSymbol>) {
+            match p {
+                Pattern::Name(n) => out.push(*n),
+                Pattern::Binding(n, inner) => {
+                    out.push(*n);
+                    walk(inner, out);
+                }
+                Pattern::EnumVariant(_, _, subs) | Pattern::Tuple(subs) => {
+                    subs.iter().for_each(|sp| walk(sp, out));
+                }
+                Pattern::Struct(_, fields, _) => {
+                    fields.iter().for_each(|(_, sp)| walk(sp, out));
+                }
+                Pattern::Literal(_) | Pattern::Range(_, _) | Pattern::Wildcard => {}
+            }
+        }
+        let mut out = Vec::new();
+        walk(self, &mut out);
+        out
+    }
+}
+
 /// One arm of a `match` expression. The optional `guard` is a boolean
 /// expression evaluated **after** the pattern matches and the pattern's
 /// bindings are in scope; an arm with a `false` guard is skipped, so

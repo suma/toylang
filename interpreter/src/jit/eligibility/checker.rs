@@ -1015,7 +1015,6 @@ impl<'a> Checker<'a> {
                         }
                         arg_ty
                     }
-                    PayloadRepr::None => return None,
                 };
                 Some(EnumLocalInfo::new(enum_name, Some(payload_ty)))
             }

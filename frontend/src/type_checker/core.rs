@@ -1,6 +1,5 @@
 use string_interner::DefaultStringInterner;
 use crate::ast::*;
-use crate::module_resolver::ModuleResolver;
 
 #[derive(Debug)]
 pub struct CoreReferences<'a> {
@@ -13,7 +12,6 @@ pub struct CoreReferences<'a> {
     pub expr_pool: &'a mut ExprPool,
     pub string_interner: &'a DefaultStringInterner,
     pub location_pool: &'a LocationPool,
-    pub module_resolver: Option<&'a mut ModuleResolver>,
 }
 
 impl<'a> CoreReferences<'a> {
@@ -28,7 +26,6 @@ impl<'a> CoreReferences<'a> {
             expr_pool,
             string_interner,
             location_pool,
-            module_resolver: None,
         }
     }
 
@@ -38,23 +35,6 @@ impl<'a> CoreReferences<'a> {
             expr_pool: &mut program.expression,
             string_interner,
             location_pool: &program.location_pool,
-            module_resolver: None,
-        }
-    }
-
-    pub fn with_module_resolver(
-        stmt_pool: &'a mut StmtPool,
-        expr_pool: &'a mut ExprPool,
-        string_interner: &'a DefaultStringInterner,
-        location_pool: &'a LocationPool,
-        module_resolver: &'a mut ModuleResolver,
-    ) -> Self {
-        Self {
-            stmt_pool,
-            expr_pool,
-            string_interner,
-            location_pool,
-            module_resolver: Some(module_resolver),
         }
     }
 }

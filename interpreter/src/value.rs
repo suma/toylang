@@ -81,7 +81,6 @@ impl Value {
     pub fn const_string(sym: DefaultSymbol) -> Self { Value::ConstString(sym) }
     pub fn pointer(addr: usize) -> Self { Value::Pointer(addr) }
     pub fn unit() -> Self { Value::Unit }
-    pub fn null_of(td: TypeDecl) -> Self { Value::Null(td) }
     pub fn null_unknown() -> Self { Value::Null(TypeDecl::Unknown) }
 
     /// Wrap an existing heap-shaped `Object` in a `Value`. The caller
@@ -188,10 +187,6 @@ impl Value {
             Value::Heap(rc) => matches!(&*rc.borrow(), Object::Null(_)),
             _ => false,
         }
-    }
-
-    pub fn is_unit(&self) -> bool {
-        matches!(self, Value::Unit)
     }
 
     /// True for primitive variants — useful for callers that want a

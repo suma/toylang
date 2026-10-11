@@ -660,7 +660,6 @@ pub(crate) struct DynMutWriteback {
 /// `FunctionLower::compute_leaf_layout`), so the thunk reads
 /// the bytes the coercion-site `PtrWrite`s wrote.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(crate) struct PendingThunkBody {
     pub(crate) thunk_func_id: FuncId,
     pub(crate) impl_func_id: FuncId,
@@ -673,7 +672,6 @@ pub(crate) struct PendingThunkBody {
     /// the prepended `data_ptr`). The thunk's IR signature is
     /// `(U64, ...user_param_tys) -> ret_ty`.
     pub(crate) user_param_tys: Vec<Type>,
-    pub(crate) ret_ty: Type,
     /// A5-P2-MVP-C: when `true`, the trait method declared
     /// `&mut self`, so the underlying impl's cranelift signature
     /// has trailing writeback returns (one per struct leaf). The
@@ -1099,7 +1097,7 @@ impl<'a> FunctionLower<'a> {
                 self.walk_closure_for_captures(scrut, bound, out, seen);
                 for arm in arms {
                     let mut arm_bound = bound.clone();
-                    Self::pattern_bound_names(&arm.pattern, &mut arm_bound);
+                    arm_bound.extend(arm.pattern.bound_names());
                     if let Some(g) = arm.guard {
                         self.walk_closure_for_captures(&g, &mut arm_bound, out, seen);
                     }
@@ -1185,35 +1183,6 @@ impl<'a> FunctionLower<'a> {
             | Stmt::EnumDecl { .. }
             | Stmt::TraitDecl { .. }
             | Stmt::TypeAlias { .. } => {}
-        }
-    }
-
-    fn pattern_bound_names(
-        pat: &frontend::ast::Pattern,
-        bound: &mut rustc_hash::FxHashSet<DefaultSymbol>,
-    ) {
-        use frontend::ast::Pattern;
-        match pat {
-            Pattern::Name(s) => {
-                bound.insert(*s);
-            }
-            Pattern::EnumVariant(_, _, subs) | Pattern::Tuple(subs) => {
-                for sp in subs {
-                    Self::pattern_bound_names(sp, bound);
-                }
-            }
-            Pattern::Struct(_, fields, _) => {
-                for (_, sp) in fields {
-                    Self::pattern_bound_names(sp, bound);
-                }
-            }
-            // PATTERN-EXTEND: `n @ pat` binds `n` on top of whatever
-            // `pat` binds.
-            Pattern::Binding(s, inner) => {
-                bound.insert(*s);
-                Self::pattern_bound_names(inner, bound);
-            }
-            Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range(_, _) => {}
         }
     }
 

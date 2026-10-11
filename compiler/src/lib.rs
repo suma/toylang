@@ -27,7 +27,6 @@
 //! (see `design-docs/todo.md` #183).
 
 pub mod all_backends;
-pub mod cache;
 pub mod codegen;
 pub mod compile_profile;
 pub mod driver;

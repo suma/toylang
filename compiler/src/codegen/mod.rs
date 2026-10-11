@@ -352,16 +352,8 @@ pub(crate) struct CodegenSession<M: Module> {
     /// `0..functions.len()`). `None` for a function `declare_all` left
     /// out as unreachable.
     fn_ids: Vec<Option<cranelift_module::FuncId>>,
-    /// Imported libc symbols used to lower `panic` / `assert`. Populated
-    /// once at session-start; declaring them unconditionally is harmless
-    /// even when no panic site is reached, and keeps the codegen path
-    /// branch-free.
-    libc_puts: cranelift_module::FuncId,
-    libc_exit: cranelift_module::FuncId,
     // #121 Phase A: libc heap helpers for the global-allocator path.
     libc_malloc: cranelift_module::FuncId,
-    libc_realloc: cranelift_module::FuncId,
-    libc_free: cranelift_module::FuncId,
     libc_memcpy: cranelift_module::FuncId,
     /// libc `memmove` / `memset` — `__builtin_mem_move` and
     /// `__builtin_mem_set` (MEMORY-ACCESS M0). Until then both
@@ -722,19 +714,9 @@ impl<M: Module> CodegenSession<M> {
         use types::{F32, F64, I16, I32, I64, I8};
         let mut imp = SymbolImporter::new(&mut module);
 
-        // libc, declared up front. `puts` is universally available on
-        // any platform whose system C compiler is also our linker
-        // driver and gives us a one-call way to print the panic
-        // message + newline; `exit` terminates the process so the
-        // panic terminator cleanly maps onto a CFG exit. `size_t` is
-        // i64-sized on every supported host, so the heap trio takes
-        // I64 throughout (#121 Phase A: `__builtin_heap_alloc` →
-        // `malloc`, `_realloc` → `realloc`, `_free` → `free`).
-        let libc_puts = imp.declare("puts", &[abi(I64)], &[abi(I32)])?;
-        let libc_exit = imp.declare("exit", &[abi(I32)], &[])?;
+        // libc, declared up front. `size_t` is i64-sized on every
+        // supported host, so `malloc` takes I64 (#121 Phase A).
         let libc_malloc = imp.declare("malloc", &[abi(I64)], &[abi(I64)])?;
-        let libc_realloc = imp.declare("realloc", &[abi(I64), abi(I64)], &[abi(I64)])?;
-        let libc_free = imp.declare("free", &[abi(I64)], &[])?;
         // `memcpy(dest, src, n) -> dest`. Note the toylang arg order
         // is (src, dest, size), so codegen swaps them at the call
         // site. `memmove` has the same prototype exactly; `memset`
@@ -968,11 +950,7 @@ impl<M: Module> CodegenSession<M> {
         Ok(Self {
             module,
             fn_ids: Vec::new(),
-            libc_puts,
-            libc_exit,
             libc_malloc,
-            libc_realloc,
-            libc_free,
             libc_memcpy,
             libc_memmove,
             libc_memset,
@@ -1655,16 +1633,6 @@ impl<M: Module> CodegenSession<M> {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    fn cranelift_signature(
-        &self,
-        ir_module: &IrModule,
-        params: &[IrType],
-        ret: IrType,
-    ) -> Signature {
-        self.cranelift_signature_with_writeback(ir_module, params, ret, &[])
-    }
-
     /// Stage 1 of `&` references: variant of `cranelift_signature`
     /// that appends extra trailing return slots for `&mut self`
     /// methods. Each entry in `writeback` is a single scalar
@@ -1692,25 +1660,6 @@ impl<M: Module> CodegenSession<M> {
         }
         self.push_return(&mut s, ir_module, func.return_type);
         for w in &func.self_writeback_types {
-            self.push_return(&mut s, ir_module, *w);
-        }
-        s
-    }
-
-    fn cranelift_signature_with_writeback(
-        &self,
-        ir_module: &IrModule,
-        params: &[IrType],
-        ret: IrType,
-        writeback: &[IrType],
-    ) -> Signature {
-        let call_conv = self.module.target_config().default_call_conv;
-        let mut s = Signature::new(call_conv);
-        for p in params {
-            self.push_param(&mut s, ir_module, *p);
-        }
-        self.push_return(&mut s, ir_module, ret);
-        for w in writeback {
             self.push_return(&mut s, ir_module, *w);
         }
         s
@@ -1869,16 +1818,11 @@ impl<M: Module> CodegenSession<M> {
 /// codegen needs while lowering a single function. Built once per
 /// function definition by `CodegenSession::declare_runtime_refs` and
 /// borrowed by `LowerCtx`.
-#[allow(dead_code)]
 struct RuntimeRefs {
-    puts: cranelift_codegen::ir::FuncRef,
     /// RUNTIME-LIB P0-A: `toy_print_stream(stderr)`.
     print_stream: cranelift_codegen::ir::FuncRef,
-    exit: cranelift_codegen::ir::FuncRef,
-    // #121 Phase A: libc malloc/realloc/free FuncRefs.
+    // #121 Phase A: libc malloc FuncRef.
     malloc: cranelift_codegen::ir::FuncRef,
-    realloc: cranelift_codegen::ir::FuncRef,
-    free: cranelift_codegen::ir::FuncRef,
     memcpy: cranelift_codegen::ir::FuncRef,
     memmove: cranelift_codegen::ir::FuncRef,
     memset: cranelift_codegen::ir::FuncRef,

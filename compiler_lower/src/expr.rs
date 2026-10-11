@@ -349,7 +349,7 @@ impl<'a> FunctionLower<'a> {
                 let nested_fields = fields.clone();
                 self.emit_struct_format(*struct_id, &nested_fields)
             }
-            FieldShape::Tuple { tuple_id: _, elements } => {
+            FieldShape::Tuple { elements } => {
                 let nested = elements.clone();
                 self.emit_tuple_format(&nested)
             }

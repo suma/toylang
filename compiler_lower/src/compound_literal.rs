@@ -690,7 +690,7 @@ impl<'a> FunctionLower<'a> {
                     let elements = self
                         .allocate_tuple_elements(tuple_id)
                         .unwrap_or_default();
-                    FieldShape::Tuple { tuple_id, elements }
+                    FieldShape::Tuple { elements }
                 }
                 // JIT-enum-1: an enum field gets the same storage a
                 // whole enum binding does. Without this arm it fell

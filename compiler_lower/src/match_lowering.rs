@@ -788,8 +788,7 @@ impl<'a> FunctionLower<'a> {
                     struct_id: *struct_id,
                     fields: fields.clone(),
                 },
-                TupleElementShape::Tuple { tuple_id, elements } => FieldShape::Tuple {
-                    tuple_id: *tuple_id,
+                TupleElementShape::Tuple { elements, .. } => FieldShape::Tuple {
                     elements: elements.clone(),
                 },
             };
@@ -904,8 +903,7 @@ impl<'a> FunctionLower<'a> {
                     struct_id: *struct_id,
                     fields: fields.clone(),
                 },
-                TupleElementShape::Tuple { tuple_id, elements } => FieldShape::Tuple {
-                    tuple_id: *tuple_id,
+                TupleElementShape::Tuple { elements, .. } => FieldShape::Tuple {
                     elements: elements.clone(),
                 },
             };

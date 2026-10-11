@@ -21,24 +21,9 @@
 
 use std::rc::Rc;
 use frontend::ast::*;
-use frontend::ast::module_interface::ModuleInterface;
 use frontend::source_map::FileId;
 use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultStringInterner, DefaultSymbol, Symbol};
-
-/// Try to load a cached `ModuleInterface` for the given source.
-///
-/// This is a Phase-3 incremental-compilation hook.  When full AST
-/// serialization lands (see `design-docs/INCREMENTAL_COMPILATION.md`),
-/// this function will be extended to return the complete parsed `File`
-/// so that integration can skip parsing altogether for unchanged core
-/// modules.
-pub fn try_load_cached_interface(
-    source: &str,
-    cache_dir: &std::path::Path,
-) -> Option<ModuleInterface> {
-    frontend::cache::load_interface(source, cache_dir)
-}
 
 /// Per-import scratch context. Owns the main / module borrows and the
 /// pool-offset tables that translate IDs across pools.
@@ -1772,33 +1757,6 @@ pub fn collect_top_level_type_names(
         }
     }
     names
-}
-
-/// Parse a stdlib module source just far enough to extract its
-/// top-level type-decl names. Used by `integrate_modules` to build
-/// the union of stdlib type names so the shadow set
-/// (`stdlib_types ∩ user_types`) can be computed before any
-/// integration runs.
-pub fn extract_stdlib_type_names(source: &str) -> Result<Vec<String>, String> {
-    let mut parser = frontend::ParserWithInterner::new(source);
-    let program = parser
-        .parse_program()
-        .map_err(|e| format!("Parse error in module pre-scan: {}", e))?;
-    let interner = parser.get_string_interner();
-    let mut names = Vec::new();
-    for i in 0..program.statement.len() {
-        if let Some(stmt) = program.statement.get(&StmtRef(i as u32)) {
-            match &stmt {
-                Stmt::EnumDecl { name, .. } | Stmt::StructDecl { name, .. } => {
-                    if let Some(s) = interner.resolve(*name) {
-                        names.push(s.to_string());
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    Ok(names)
 }
 
 /// `enforce_namespace = false` is the prelude path: integrated

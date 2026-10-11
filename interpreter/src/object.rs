@@ -365,10 +365,6 @@ impl ObjectKey {
         ObjectKey(rc_obj.borrow().clone())
     }
     
-    pub fn into_object(self) -> Object {
-        self.0
-    }
-    
     pub fn as_object(&self) -> &Object {
         &self.0
     }
@@ -840,10 +836,6 @@ pub fn copy_for_by_value_param(value: &RcObject) -> RcObject {
 }
 
 impl Object {
-    // Helper to create a null object with specific type
-    pub fn null_of_type(type_decl: TypeDecl) -> Object {
-        Object::Null(type_decl)
-    }
     
     // Helper to create a null object with unknown type (for inference)
     pub fn null_unknown() -> Object {
@@ -914,18 +906,6 @@ impl Object {
         matches!(self, Object::Null(_) | Object::Pointer(0))
     }
 
-    pub fn check_not_null(&self) -> Result<(), ObjectError> {
-        if self.is_null() {
-            Err(ObjectError::NullDereference)
-        } else {
-            Ok(())
-        }
-    }
-
-    pub fn is_unit(&self) -> bool {
-        matches!(self, Object::Unit)
-    }
-
     object_unwrap_methods! {
         (unwrap_bool,    try_unwrap_bool,    Object::Bool,        bool,          TypeDecl::Bool,    "bool"),
         (unwrap_int64,   try_unwrap_int64,   Object::Int64,       i64,           TypeDecl::Int64,   "int64"),
@@ -936,10 +916,6 @@ impl Object {
         (unwrap_float32, try_unwrap_float32, Object::Float32,     f32,           TypeDecl::Float32, "float32"),
         (unwrap_pointer, try_unwrap_pointer, Object::Pointer,     usize,         TypeDecl::Ptr,     "pointer"),
         (unwrap_string,  try_unwrap_string,  Object::ConstString, DefaultSymbol, TypeDecl::String,  "ConstString"),
-    }
-
-    pub fn is_null_pointer(&self) -> bool {
-        matches!(self, Object::Pointer(0))
     }
 
     /// Get string value as String regardless of internal representation
@@ -1121,49 +1097,6 @@ impl Object {
         }
     }
 
-    pub fn try_unwrap_array(&self) -> Result<&Vec<RcObject>, ObjectError> {
-        match self {
-            Object::Array(v) => Ok(v.as_ref()),
-            _ => Err(ObjectError::InvalidOperation { 
-                operation: "array_access".to_string(), 
-                object_type: self.get_type() 
-            }),
-        }
-    }
-
-    pub fn get_array_element(&self, index: usize) -> Result<RcObject, ObjectError> {
-        match self {
-            Object::Array(v) => {
-                if index >= v.len() {
-                    Err(ObjectError::IndexOutOfBounds { index, length: v.len() })
-                } else {
-                    Ok(v[index].clone())
-                }
-            }
-            _ => Err(ObjectError::InvalidOperation { 
-                operation: "array_indexing".to_string(), 
-                object_type: self.get_type() 
-            }),
-        }
-    }
-
-    pub fn set_array_element(&mut self, index: usize, value: RcObject) -> Result<(), ObjectError> {
-        match self {
-            Object::Array(v) => {
-                if index >= v.len() {
-                    Err(ObjectError::IndexOutOfBounds { index, length: v.len() })
-                } else {
-                    v[index] = value;
-                    Ok(())
-                }
-            }
-            _ => Err(ObjectError::InvalidOperation { 
-                operation: "array_assignment".to_string(), 
-                object_type: self.get_type() 
-            }),
-        }
-    }
-
     pub fn set(&mut self, other: &RefCell<Object>) -> Result<(), ObjectError> {
         let other_borrowed = other.borrow();
         let self_type = self.get_type();
@@ -1248,48 +1181,6 @@ impl Object {
             _ => Err(ObjectError::TypeMismatch { 
                 expected: self_type, 
                 found: other_type 
-            }),
-        }
-    }
-
-    pub fn get_dict_value(&self, key: &ObjectKey) -> Result<RcObject, ObjectError> {
-        match self {
-            Object::Dict(dict) => {
-                dict.get(key)
-                    .cloned()
-                    .ok_or_else(|| ObjectError::InvalidOperation { 
-                        operation: "dict_key_not_found".to_string(), 
-                        object_type: self.get_type() 
-                    })
-            }
-            _ => Err(ObjectError::InvalidOperation { 
-                operation: "dict_access".to_string(), 
-                object_type: self.get_type() 
-            }),
-        }
-    }
-
-    pub fn set_dict_value(&mut self, key: ObjectKey, value: RcObject) -> Result<(), ObjectError> {
-        match self {
-            Object::Dict(dict) => {
-                dict.insert(key, value);
-                Ok(())
-            }
-            _ => Err(ObjectError::InvalidOperation { 
-                operation: "dict_assignment".to_string(), 
-                object_type: self.get_type() 
-            }),
-        }
-    }
-
-    pub fn remove_dict_value(&mut self, key: &ObjectKey) -> Result<Option<RcObject>, ObjectError> {
-        match self {
-            Object::Dict(dict) => {
-                Ok(dict.remove(key))
-            }
-            _ => Err(ObjectError::InvalidOperation { 
-                operation: "dict_removal".to_string(), 
-                object_type: self.get_type() 
             }),
         }
     }

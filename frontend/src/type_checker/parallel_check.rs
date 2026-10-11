@@ -315,7 +315,7 @@ fn walk_order(
             for arm in &arms {
                 // An arm's pattern binds names for its own body.
                 let mut inner = bound.clone();
-                pattern_names(&arm.pattern, &mut inner);
+                inner.extend(arm.pattern.bound_names());
                 if let Some(g) = arm.guard {
                     walk_order(program, interner, &g, &mut inner, own_level, out);
                 }
@@ -399,33 +399,5 @@ fn assigned_root(program: &File, expr_ref: &ExprRef) -> Option<DefaultSymbol> {
             assigned_root(program, &base)
         }
         _ => None,
-    }
-}
-
-/// Every name a pattern binds.
-fn pattern_names(
-    pattern: &crate::ast::Pattern,
-    bound: &mut rustc_hash::FxHashSet<DefaultSymbol>,
-) {
-    use crate::ast::Pattern;
-    match pattern {
-        Pattern::Name(name) => {
-            bound.insert(*name);
-        }
-        Pattern::Binding(name, inner) => {
-            bound.insert(*name);
-            pattern_names(inner, bound);
-        }
-        Pattern::EnumVariant(_, _, subs) | Pattern::Tuple(subs) => {
-            for sub in subs {
-                pattern_names(sub, bound);
-            }
-        }
-        Pattern::Struct(_, fields, _) => {
-            for (_, sub) in fields {
-                pattern_names(sub, bound);
-            }
-        }
-        Pattern::Literal(_) | Pattern::Range(..) | Pattern::Wildcard => {}
     }
 }

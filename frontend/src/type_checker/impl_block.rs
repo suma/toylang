@@ -163,7 +163,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             // `requires` clauses see only the method's parameters (incl. `self`).
             // Type-check before the body so failures point at the contract.
             for cond in &method.requires {
-                if let Err(e) = self.check_method_contract_clause(cond, "requires") {
+                if let Err(e) = self.check_contract_clause(cond, "requires") {
                     self.context.current_fn_generic_bounds = prev_bounds;
                     self.context.current_fn_generic_params = prev_generic_params;
                     self.context.current_eq_owner = prev_eq_owner;
@@ -213,7 +213,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     return Err(e);
                 }
                 for cond in &method.ensures {
-                    if let Err(e) = self.check_method_contract_clause(cond, "ensures") {
+                    if let Err(e) = self.check_contract_clause(cond, "ensures") {
                         self.context.current_fn_generic_bounds = prev_bounds;
                         self.context.current_fn_generic_params = prev_generic_params;
                         self.context.current_eq_owner = prev_eq_owner;
@@ -260,24 +260,5 @@ impl<'a> TypeCheckerVisitor<'a> {
         
         // Impl block declaration returns Unit
         Ok(TypeDecl::Unit)
-    }
-
-    /// Type-check a single contract predicate inside an impl method. Same
-    /// shape as the free-function helper in visitor.rs but lives here so it
-    /// can be a method on `TypeCheckerVisitor` without crossing modules.
-    fn check_method_contract_clause(
-        &mut self,
-        cond: &ExprRef,
-        kind: &str,
-    ) -> Result<(), TypeCheckError> {
-        let ty = self.check_expr_located(cond)?;
-        if ty != TypeDecl::Bool {
-            let ty_str = self.type_name_for_error(&ty);
-            let err = TypeCheckError::coded(crate::diagnostic::codes::CONTRACT_CLAUSE, 
-                format!("`{kind}` clause must be of type bool, got {ty_str}")
-            );
-            return Err(self.error_with_location(err, cond));
-        }
-        Ok(())
     }
 }

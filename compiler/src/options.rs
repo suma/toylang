@@ -124,10 +124,6 @@ impl Codegen {
         }
     }
 
-    /// Whether this build of the compiler can use the LLVM backend.
-    pub fn llvm_available() -> bool {
-        cfg!(feature = "llvm")
-    }
 }
 
 impl CompilerOptions {

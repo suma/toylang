@@ -158,8 +158,7 @@ fn check_alternatives_bind_alike(
     location: crate::type_checker::SourceLocation,
 ) {
     let names_of = |pat: &crate::ast::Pattern| {
-        let mut names = Vec::new();
-        collect_pattern_names(pat, &mut names);
+        let mut names = pat.bound_names();
         names.sort_unstable();
         names.dedup();
         names
@@ -203,28 +202,6 @@ fn cap_alternatives(
         ),
     ));
     alternatives.truncate(MAX_PATTERN_ALTERNATIVES);
-}
-
-fn collect_pattern_names(pat: &crate::ast::Pattern, out: &mut Vec<DefaultSymbol>) {
-    use crate::ast::Pattern;
-    match pat {
-        Pattern::Name(s) => out.push(*s),
-        Pattern::Binding(s, inner) => {
-            out.push(*s);
-            collect_pattern_names(inner, out);
-        }
-        Pattern::EnumVariant(_, _, subs) | Pattern::Tuple(subs) => {
-            for sp in subs {
-                collect_pattern_names(sp, out);
-            }
-        }
-        Pattern::Struct(_, fields, _) => {
-            for (_, sp) in fields {
-                collect_pattern_names(sp, out);
-            }
-        }
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range(_, _) => {}
-    }
 }
 
 /// One pattern per combination of its slots' alternatives, in slot

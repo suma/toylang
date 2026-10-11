@@ -447,10 +447,7 @@ impl<'ctx, 'a> Gen<'ctx, 'a> {
         if let Some(p) = self.strings.get(bytes) {
             return *p;
         }
-        let mut payload = Vec::with_capacity(bytes.len() + 9);
-        payload.extend_from_slice(bytes);
-        payload.push(0);
-        payload.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+        let payload = crate::codegen::str_blob_payload(bytes);
         let init = self.ctx.const_string(&payload, false);
         let name = format!("toy_str_{}", self.strings.len());
         let g = self.module.add_global(init.get_type(), None, &name);

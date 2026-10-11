@@ -2891,17 +2891,12 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Resolve the enum name. The parser emits `Identifier` for
         // user-named types until the type checker has seen all decls;
         // accept all three shapes the rest of the type-checker uses.
-        let enum_name = match &inner_ty {
-            TypeDecl::Enum(name, _) => *name,
-            TypeDecl::Identifier(name) if self.context.enum_definitions.contains_key(name) => *name,
-            TypeDecl::Struct(name, _) if self.context.enum_definitions.contains_key(name) => *name,
-            _ => {
-                let err = TypeCheckError::coded(crate::diagnostic::codes::TRY_OPERAND, format!(
-                    "`?` requires Result<T, E> or Option<T>, got {}",
-                    self.type_name_for_error(&inner_ty)
-                )).about_types(&[&inner_ty]);
-                return Err(self.error_with_location(err, &inner));
-            }
+        let Some(enum_name) = self.enum_named_by(&inner_ty) else {
+            let err = TypeCheckError::coded(crate::diagnostic::codes::TRY_OPERAND, format!(
+                "`?` requires Result<T, E> or Option<T>, got {}",
+                self.type_name_for_error(&inner_ty)
+            )).about_types(&[&inner_ty]);
+            return Err(self.error_with_location(err, &inner));
         };
         let enum_name_str = stdlib_enum_name(
             self.core
@@ -3264,36 +3259,8 @@ impl<'a> TypeCheckerVisitor<'a> {
             })?
         };
 
-        // Resolve the enum name (same three spellings the rest of the
-        // type checker accepts).
-        let enum_name = match &lhs_ty {
-            TypeDecl::Enum(name, _) => *name,
-            TypeDecl::Identifier(name) if self.context.enum_definitions.contains_key(name) => *name,
-            TypeDecl::Struct(name, _) if self.context.enum_definitions.contains_key(name) => *name,
-            _ => {
-                return Err(TypeCheckError::coded(crate::diagnostic::codes::TRY_OPERAND, format!(
-                    "`??` requires Option<T> or Result<T, E>, got `{}`",
-                    self.type_name_for_error(&lhs_ty)
-                )).about_types(&[&lhs_ty]));
-            }
-        };
-        let enum_name_str = stdlib_enum_name(
-            self.core
-                .string_interner
-                .resolve(enum_name)
-                .unwrap_or("?"),
-        )
-        .to_string();
-        let (success_variant, failure_variant, failure_is_unit) = match enum_name_str.as_str() {
-            "Option" => ("Some", "None", true),
-            "Result" => ("Ok", "Err", false),
-            _ => {
-                return Err(TypeCheckError::coded(crate::diagnostic::codes::TRY_OPERAND, format!(
-                    "`??` requires Option or Result, got enum `{}`",
-                    enum_name_str
-                )));
-            }
-        };
+        let (enum_name, success_variant, failure_variant, failure_is_unit) =
+            self.null_coalesce_variants(&lhs_ty)?;
 
         // The success arm yields the Option/Result's first type arg.
         // An unresolved one (e.g. the lhs is a bare `Option::None`)
@@ -3445,6 +3412,29 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.visit_expr(&nc_ref)
     }
 
+    /// The left operand of `??` must be an `Option` or a `Result`.
+    /// Answers the enum's name, its (success, failure) variant names
+    /// and whether the failure variant is a unit variant.
+    fn null_coalesce_variants(
+        &self,
+        lhs_ty: &TypeDecl,
+    ) -> Result<(DefaultSymbol, &'static str, &'static str, bool), TypeCheckError> {
+        let Some(enum_name) = self.enum_named_by(lhs_ty) else {
+            return Err(TypeCheckError::coded(crate::diagnostic::codes::TRY_OPERAND, format!(
+                "`??` requires Option<T> or Result<T, E>, got `{}`",
+                self.type_name_for_error(lhs_ty)
+            )).about_types(&[lhs_ty]));
+        };
+        let name = stdlib_enum_name(self.core.string_interner.resolve(enum_name).unwrap_or("?"));
+        match name {
+            "Option" => Ok((enum_name, "Some", "None", true)),
+            "Result" => Ok((enum_name, "Ok", "Err", false)),
+            _ => Err(TypeCheckError::coded(crate::diagnostic::codes::TRY_OPERAND, format!(
+                "`??` requires Option or Result, got enum `{name}`"
+            ))),
+        }
+    }
+
     /// `a ?? b` reached through direct `accept_expr` dispatch (binary
     /// / unary operands, conditions, tails — the routes that bypass
     /// `visit_expr`'s intercept). Compute the type without the
@@ -3461,33 +3451,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let lhs_ty = self.visit_expr(lhs)?;
         let rhs_ty = self.visit_expr(rhs)?;
 
-        let enum_name = match &lhs_ty {
-            TypeDecl::Enum(name, _) => *name,
-            TypeDecl::Identifier(name) if self.context.enum_definitions.contains_key(name) => *name,
-            TypeDecl::Struct(name, _) if self.context.enum_definitions.contains_key(name) => *name,
-            _ => {
-                return Err(TypeCheckError::coded(crate::diagnostic::codes::TRY_OPERAND, format!(
-                    "`??` requires Option<T> or Result<T, E>, got `{}`",
-                    self.type_name_for_error(&lhs_ty)
-                )).about_types(&[&lhs_ty]));
-            }
-        };
-        let enum_name_str = stdlib_enum_name(
-            self.core
-                .string_interner
-                .resolve(enum_name)
-                .unwrap_or("?"),
-        )
-        .to_string();
-        match enum_name_str.as_str() {
-            "Option" | "Result" => {}
-            _ => {
-                return Err(TypeCheckError::coded(crate::diagnostic::codes::TRY_OPERAND, format!(
-                    "`??` requires Option or Result, got enum `{}`",
-                    enum_name_str
-                )));
-            }
-        }
+        self.null_coalesce_variants(&lhs_ty)?;
         let mut success_type = match &lhs_ty {
             TypeDecl::Enum(_, args) | TypeDecl::Struct(_, args) if !args.is_empty() => {
                 args[0].clone()

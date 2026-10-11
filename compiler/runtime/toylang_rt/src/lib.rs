@@ -1026,84 +1026,30 @@ fn emit_fmt(args: core::fmt::Arguments<'_>, newline: bool) {
 // text.
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn toy_print_i64(v: i64) {
-    emit_fmt(format_args!("{v}"), false);
+/// `toy_print_<t>` / `toy_println_<t>` for each integer width.
+macro_rules! print_ints {
+    ($($t:ty => $print:ident, $println:ident;)*) => {$(
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $print(v: $t) {
+            emit_fmt(format_args!("{v}"), false);
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $println(v: $t) {
+            emit_fmt(format_args!("{v}"), true);
+        }
+    )*};
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn toy_println_i64(v: i64) {
-    emit_fmt(format_args!("{v}"), true);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn toy_print_u64(v: u64) {
-    emit_fmt(format_args!("{v}"), false);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn toy_println_u64(v: u64) {
-    emit_fmt(format_args!("{v}"), true);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn toy_print_i8(v: i8) {
-    emit_fmt(format_args!("{v}"), false);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn toy_println_i8(v: i8) {
-    emit_fmt(format_args!("{v}"), true);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn toy_print_u8(v: u8) {
-    emit_fmt(format_args!("{v}"), false);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn toy_println_u8(v: u8) {
-    emit_fmt(format_args!("{v}"), true);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn toy_print_i16(v: i16) {
-    emit_fmt(format_args!("{v}"), false);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn toy_println_i16(v: i16) {
-    emit_fmt(format_args!("{v}"), true);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn toy_print_u16(v: u16) {
-    emit_fmt(format_args!("{v}"), false);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn toy_println_u16(v: u16) {
-    emit_fmt(format_args!("{v}"), true);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn toy_print_i32(v: i32) {
-    emit_fmt(format_args!("{v}"), false);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn toy_println_i32(v: i32) {
-    emit_fmt(format_args!("{v}"), true);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn toy_print_u32(v: u32) {
-    emit_fmt(format_args!("{v}"), false);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn toy_println_u32(v: u32) {
-    emit_fmt(format_args!("{v}"), true);
+print_ints! {
+    i64 => toy_print_i64, toy_println_i64;
+    u64 => toy_print_u64, toy_println_u64;
+    i8 => toy_print_i8, toy_println_i8;
+    u8 => toy_print_u8, toy_println_u8;
+    i16 => toy_print_i16, toy_println_i16;
+    u16 => toy_print_u16, toy_println_u16;
+    i32 => toy_print_i32, toy_println_i32;
+    u32 => toy_print_u32, toy_println_u32;
 }
 
 #[unsafe(no_mangle)]
@@ -1116,24 +1062,31 @@ pub extern "C" fn toy_println_bool(v: u8) {
     emit_fmt(format_args!("{}", if v != 0 { "true" } else { "false" }), true);
 }
 
-/// The canonical f64 display (RUNTIME_PORT.md 論点4): Rust `Display`,
-/// with the interpreter's trailing `.0` for integral values.
-#[unsafe(no_mangle)]
-pub extern "C" fn toy_print_f64(v: f64) {
-    if v.is_finite() && v % 1.0 == 0.0 {
-        emit_fmt(format_args!("{v:.1}"), false);
-    } else {
-        emit_fmt(format_args!("{v}"), false);
+/// The canonical float display (RUNTIME_PORT.md 論点4): Rust `Display`,
+/// with the interpreter's trailing `.0` for integral values. For `f32`
+/// that is the f32's own shortest round-trip text, not the promoted
+/// f64's.
+struct FloatDisplay<T>(T);
+
+impl<T: core::fmt::Display + Copy + Into<f64>> core::fmt::Display for FloatDisplay<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let x: f64 = self.0.into();
+        if x.is_finite() && x % 1.0 == 0.0 {
+            write!(f, "{:.1}", self.0)
+        } else {
+            write!(f, "{}", self.0)
+        }
     }
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn toy_print_f64(v: f64) {
+    emit_fmt(format_args!("{}", FloatDisplay(v)), false);
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn toy_println_f64(v: f64) {
-    if v.is_finite() && v % 1.0 == 0.0 {
-        emit_fmt(format_args!("{v:.1}"), true);
-    } else {
-        emit_fmt(format_args!("{v}"), true);
-    }
+    emit_fmt(format_args!("{}", FloatDisplay(v)), true);
 }
 
 /// Print a str value.
@@ -3196,11 +3149,7 @@ pub extern "C" fn toy_to_string_u64(v: u64) -> *const u8 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn toy_to_string_f64(v: f64) -> *const u8 {
-    if v.is_finite() && v % 1.0 == 0.0 {
-        to_string_fmt(format_args!("{v:.1}"))
-    } else {
-        to_string_fmt(format_args!("{v}"))
-    }
+    to_string_fmt(format_args!("{}", FloatDisplay(v)))
 }
 
 // SIMD-F32: single-precision print / to_string. Rust's `{}` on `f32`
@@ -3209,29 +3158,17 @@ pub extern "C" fn toy_to_string_f64(v: f64) -> *const u8 {
 // "always a decimal point" convention applied to integral values.
 #[unsafe(no_mangle)]
 pub extern "C" fn toy_print_f32(v: f32) {
-    if v.is_finite() && v % 1.0 == 0.0 {
-        emit_fmt(format_args!("{v:.1}"), false);
-    } else {
-        emit_fmt(format_args!("{v}"), false);
-    }
+    emit_fmt(format_args!("{}", FloatDisplay(v)), false);
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn toy_println_f32(v: f32) {
-    if v.is_finite() && v % 1.0 == 0.0 {
-        emit_fmt(format_args!("{v:.1}"), true);
-    } else {
-        emit_fmt(format_args!("{v}"), true);
-    }
+    emit_fmt(format_args!("{}", FloatDisplay(v)), true);
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn toy_to_string_f32(v: f32) -> *const u8 {
-    if v.is_finite() && v % 1.0 == 0.0 {
-        to_string_fmt(format_args!("{v:.1}"))
-    } else {
-        to_string_fmt(format_args!("{v}"))
-    }
+    to_string_fmt(format_args!("{}", FloatDisplay(v)))
 }
 
 // -----------------------------------------------------------------
@@ -3270,20 +3207,8 @@ fn vec_to_string(bytes: *const u8, code: u64) -> String {
     }
     // Integral floats keep a trailing `.0`, the same rule
     // `toy_print_f64` applies to a scalar.
-    let f64_lane = |v: f64| {
-        if v.is_finite() && v % 1.0 == 0.0 {
-            format!("{v:.1}")
-        } else {
-            format!("{v}")
-        }
-    };
-    let f32_lane = |v: f32| {
-        if v.is_finite() && v % 1.0 == 0.0 {
-            format!("{v:.1}")
-        } else {
-            format!("{v}")
-        }
-    };
+    let f64_lane = |v: f64| format!("{}", FloatDisplay(v));
+    let f32_lane = |v: f32| format!("{}", FloatDisplay(v));
     match code {
         0 => lanes!("f64x2", f64, 8, 2, f64_lane),
         1 => lanes!("f32x4", f32, 4, 4, f32_lane),
@@ -3434,13 +3359,7 @@ impl Spec {
     fn render_f32(&self, v: f32) -> String {
         let body = match self.precision {
             Some(p) => format!("{v:.*}", p),
-            None => {
-                if v.is_finite() && v % 1.0 == 0.0 {
-                    format!("{v:.1}")
-                } else {
-                    format!("{v}")
-                }
-            }
+            None => format!("{}", FloatDisplay(v)),
         };
         self.pad(&body, true)
     }
@@ -3448,13 +3367,7 @@ impl Spec {
     fn render_f64(&self, v: f64) -> String {
         let body = match self.precision {
             Some(p) => format!("{v:.*}", p),
-            None => {
-                if v.is_finite() && v % 1.0 == 0.0 {
-                    format!("{v:.1}")
-                } else {
-                    format!("{v}")
-                }
-            }
+            None => format!("{}", FloatDisplay(v)),
         };
         self.pad(&body, true)
     }

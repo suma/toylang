@@ -670,200 +670,50 @@ impl<'a> TypeCheckerVisitor<'a> {
         // `(target_symbol, method_name)` lookup the struct path uses
         // works here. T is bound from the enum's type_params and
         // substituted into the return type.
-        if let TypeDecl::Enum(enum_name, type_params) = obj_type {
-            let _method_str = self.core.string_interner.resolve(*method).unwrap_or("?").to_string();
-            if let Some(method_func) =
+        if let TypeDecl::Enum(enum_name, type_params) = obj_type
+            && let Some(method_func) =
                 self.context.get_struct_method(*enum_name, *method, type_params).cloned()
-            {
-                let generic_params = self
-                    .context
-                    .enum_generic_params
-                    .get(enum_name)
-                    .cloned()
-                    .unwrap_or_default();
-                let mut substitutions: HashMap<DefaultSymbol, TypeDecl> =
-                    HashMap::default();
-                for (i, generic_param) in generic_params.iter().enumerate() {
-                    if let Some(concrete_type) = type_params.get(i) {
-                        substitutions.insert(*generic_param, concrete_type.clone());
-                    }
-                }
-                // Method-only generic params: bind from arg types
-                // (skip self at index 0).
-
-                if !method_func.generic_params.is_empty() {
-                    let param_values: rustc_hash::FxHashSet<u32> =
-                        method_func.generic_params.iter()
-                            .map(|p| p.to_usize() as u32)
-                            .collect();
-                    for (i, arg_ref) in args.iter().enumerate() {
-                        let param_idx = i + 1;
-                        if let Some((_, declared_ty)) =
-                            method_func.parameter.get(param_idx)
-                        {
-                            let arg_ty = self.visit_expr(arg_ref)?;
-                            self.collect_substitution(
-                                declared_ty,
-                                &arg_ty,
-                                &param_values,
-                                &mut substitutions,
-                            );
-                        }
-                    }
-                }
-                // Same impl-bound enforcement as the generic-struct
-                // path below (`impl<T: Ord> MyEnum<T>` must reject a
-                // receiver whose payload type has no `Ord` impl).
-                let mut bound_subs = substitutions.clone();
-                bound_subs.extend(self.impl_param_substitutions(
-                    *enum_name,
-                    *method,
-                    type_params,
-                ));
-                let method_name_str = self.resolve_symbol_name(*method);
-                self.check_generic_bounds(
-                    &method_func.generic_params,
-                    &method_func.generic_bounds,
-                    &bound_subs,
-                    "Method",
-                    &method_name_str,
-                )?;
-                // COLLECTIONS C0(a): see the note in `generics.rs` —
-                // a `==` inside the method's body is answered by the
-                // type arguments this call resolved to.
-                self.note_generic_instantiation(crate::type_checker::context::EqInstantiation {
-                    owner: crate::type_checker::context::EqOwner::Method(*enum_name, *method),
-                    substitutions: bound_subs.iter().map(|(k, v)| (*k, v.clone())).collect(),
-                    owner_kind: "Method",
-                    owner_name: method_name_str.clone(),
-                    location: args.first().and_then(|a| self.get_expr_location(a)),
-                });
-                let method_return_type = method_func
-                    .return_type
-                    .clone()
-                    .unwrap_or(TypeDecl::Unit);
-                let resolved = match method_return_type {
-                    TypeDecl::Self_ => {
-                        TypeDecl::Enum(*enum_name, type_params.clone())
-                    }
-                    TypeDecl::Generic(p) => substitutions
-                        .get(&p)
-                        .cloned()
-                        .unwrap_or(TypeDecl::Generic(p)),
-                    ref other => other.substitute_generics(&substitutions),
-                };
-                // SELF-IN-TYPE-ARG: a `Self` nested in a type argument
-                // survives the arms above; the `Self_` arm has already
-                // produced a concrete type, so this is a no-op there.
-                let resolved =
-                    resolved.substitute_self(&TypeDecl::Enum(*enum_name, type_params.clone()));
-                return Ok(resolved);
-            }
+        {
+            let generic_params = self
+                .context
+                .enum_generic_params
+                .get(enum_name)
+                .cloned()
+                .unwrap_or_default();
+            // `self: Self` occupies parameter slot 0.
+            return self.generic_receiver_call_type(
+                &method_func,
+                *method,
+                TypeDecl::Enum(*enum_name, type_params.clone()),
+                &generic_params,
+                args,
+                1,
+            );
         }
 
         // Check if this is a user-defined method for a struct
         if let TypeDecl::Struct(struct_name, type_params) = obj_type {
-            // Check if this is a generic struct with type parameters
-            
             if !type_params.is_empty() {
-                // Handle generic struct method call
-                let method_func_opt = self.context.get_struct_method(*struct_name, *method, type_params).cloned();
-                
-                
-                if let Some(method_func) = method_func_opt {
-                    // Create substitution map from generic parameters to concrete types
-                    let generic_params = self.context.get_struct_generic_params(*struct_name).cloned();
-                    
-                    
-                    let generic_params = generic_params.unwrap_or_default();
-                    let mut substitutions = HashMap::default();
-                    for (i, generic_param) in generic_params.iter().enumerate() {
-                        if let Some(concrete_type) = type_params.get(i) {
-                            substitutions.insert(*generic_param, concrete_type.clone());
-                        }
-                    }
-
-                    // STDLIB-ITER-ADAPT: bind method-only generic params
-                    // (`fn map<U>(&self, f: fn (T) -> U) -> MapIter<T, U>`)
-                    // from the call argument types, same as the enum and
-                    // non-generic-struct paths below. Without this the
-                    // return type keeps `Generic(U)` unresolved and the
-                    // caller sees a generic-typed value.
-                    // Note: `&self` / `&mut self` receivers are not part
-                    // of `method_func.parameter`, so the argument index
-                    // maps straight onto the parameter index (unlike the
-                    // enum path where `self: Self` occupies slot 0).
-                    if !method_func.generic_params.is_empty() {
-                        let param_values: rustc_hash::FxHashSet<u32> =
-                            method_func.generic_params.iter()
-                                .map(|p| p.to_usize() as u32)
-                                .collect();
-                        for (i, arg_ref) in args.iter().enumerate() {
-                            if let Some((_, declared_ty)) =
-                                method_func.parameter.get(i)
-                            {
-                                let arg_ty = self.visit_expr(arg_ref)?;
-                                self.collect_substitution(
-                                    declared_ty,
-                                    &arg_ty,
-                                    &param_values,
-                                    &mut substitutions,
-                                );
-                            }
-                        }
-                    }
-
-                    // STDLIB-ORD: enforce the bounds the winning impl
-                    // block declared (`impl<T: Ord> Vec<T>` rejects a
-                    // `Vec<NonOrd>` receiver here). The parser merges
-                    // impl-level bounds into every method it contains,
-                    // so `method_func.generic_bounds` already carries
-                    // them; only the parameter *names* can differ from
-                    // the struct's, which `impl_param_substitutions`
-                    // reconciles. Without this the call type-checks and
-                    // dispatch fails much later — at run time in the
-                    // interpreter, at AOT-compile time natively.
-                    let mut bound_subs = substitutions.clone();
-                    bound_subs.extend(self.impl_param_substitutions(
-                        *struct_name,
+                // Generic struct method call.
+                if let Some(method_func) =
+                    self.context.get_struct_method(*struct_name, *method, type_params).cloned()
+                {
+                    let generic_params = self
+                        .context
+                        .get_struct_generic_params(*struct_name)
+                        .cloned()
+                        .unwrap_or_default();
+                    // `&self` / `&mut self` receivers are not part of
+                    // `method_func.parameter`, so the argument index maps
+                    // straight onto the parameter index.
+                    return self.generic_receiver_call_type(
+                        &method_func,
                         *method,
-                        type_params,
-                    ));
-                    let method_name_str = self.resolve_symbol_name(*method);
-                    self.check_generic_bounds(
-                        &method_func.generic_params,
-                        &method_func.generic_bounds,
-                        &bound_subs,
-                        "Method",
-                        &method_name_str,
-                    )?;
-                    // COLLECTIONS C0(a): as above — record what this
-                    // call instantiated the method with.
-                    self.note_generic_instantiation(crate::type_checker::context::EqInstantiation {
-                        owner: crate::type_checker::context::EqOwner::Method(*struct_name, *method),
-                        substitutions: bound_subs.iter().map(|(k, v)| (*k, v.clone())).collect(),
-                        owner_kind: "Method",
-                        owner_name: method_name_str.clone(),
-                        location: args.first().and_then(|a| self.get_expr_location(a)),
-                    });
-
-                    // Apply substitutions to method return type
-                    let method_return_type = method_func.return_type.as_ref().unwrap_or(&TypeDecl::Unit);
-                    
-                    let resolved_return_type = match method_return_type {
-                        TypeDecl::Self_ => TypeDecl::Struct(*struct_name, type_params.clone()),
-                        TypeDecl::Generic(param) => {
-                            
-                            substitutions.get(param).cloned().unwrap_or(TypeDecl::Generic(*param))
-                        },
-                        other => other.substitute_generics(&substitutions)
-                    };
-                    // SELF-IN-TYPE-ARG (see the enum path above).
-                    let resolved_return_type = resolved_return_type
-                        .substitute_self(&TypeDecl::Struct(*struct_name, type_params.clone()));
-                    
-                    
-                    return Ok(resolved_return_type);
+                        TypeDecl::Struct(*struct_name, type_params.clone()),
+                        &generic_params,
+                        args,
+                        0,
+                    );
                 }
                 // No matching method on this generic struct: fall
                 // through to the field-call / array / builtin arms
@@ -1507,6 +1357,77 @@ impl<'a> TypeCheckerVisitor<'a> {
             other => other.substitute_self(&self_ty),
         };
         Ok(return_ty)
+    }
+
+    /// The type of a call to `method_func` on a receiver of the generic
+    /// type `self_ty` (`Enum` / `Struct` with its type arguments), whose
+    /// declaration names `generic_params`. Argument `i` lines up with
+    /// parameter `i + arg_offset`.
+    ///
+    /// Binds the receiver's type arguments, then method-only generics
+    /// from the argument types (STDLIB-ITER-ADAPT: `fn map<U>(&self,
+    /// f: fn (T) -> U) -> MapIter<T, U>` would otherwise return an
+    /// unresolved `Generic(U)`). Enforces the bounds the winning impl
+    /// block declared (STDLIB-ORD: `impl<T: Ord> Vec<T>` rejects a
+    /// `Vec<NonOrd>` receiver here — the parser merges impl-level bounds
+    /// into every method, and `impl_param_substitutions` reconciles
+    /// parameter names that differ from the type's; without this the
+    /// call type-checks and dispatch fails much later). Records the
+    /// instantiation for COLLECTIONS C0(a), since a `==` inside the body
+    /// is answered by the type arguments this call resolved to.
+    fn generic_receiver_call_type(
+        &mut self,
+        method_func: &MethodFunction,
+        method: DefaultSymbol,
+        self_ty: TypeDecl,
+        generic_params: &[DefaultSymbol],
+        args: &[ExprRef],
+        arg_offset: usize,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        let (owner, type_params) = match &self_ty {
+            TypeDecl::Enum(name, params) | TypeDecl::Struct(name, params) => (*name, params.clone()),
+            _ => unreachable!("generic_receiver_call_type on a non-generic receiver"),
+        };
+        let mut substitutions: HashMap<DefaultSymbol, TypeDecl> = HashMap::default();
+        for (generic_param, concrete_type) in generic_params.iter().zip(type_params.iter()) {
+            substitutions.insert(*generic_param, concrete_type.clone());
+        }
+        if !method_func.generic_params.is_empty() {
+            let param_values: rustc_hash::FxHashSet<u32> =
+                method_func.generic_params.iter().map(|p| p.to_usize() as u32).collect();
+            for (i, arg_ref) in args.iter().enumerate() {
+                if let Some((_, declared_ty)) = method_func.parameter.get(i + arg_offset) {
+                    let arg_ty = self.visit_expr(arg_ref)?;
+                    self.collect_substitution(declared_ty, &arg_ty, &param_values, &mut substitutions);
+                }
+            }
+        }
+        let mut bound_subs = substitutions.clone();
+        bound_subs.extend(self.impl_param_substitutions(owner, method, &type_params));
+        let method_name_str = self.resolve_symbol_name(method);
+        self.check_generic_bounds(
+            &method_func.generic_params,
+            &method_func.generic_bounds,
+            &bound_subs,
+            "Method",
+            &method_name_str,
+        )?;
+        self.note_generic_instantiation(crate::type_checker::context::EqInstantiation {
+            owner: crate::type_checker::context::EqOwner::Method(owner, method),
+            substitutions: bound_subs.iter().map(|(k, v)| (*k, v.clone())).collect(),
+            owner_kind: "Method",
+            owner_name: method_name_str,
+            location: args.first().and_then(|a| self.get_expr_location(a)),
+        });
+        let resolved = match method_func.return_type.as_ref().unwrap_or(&TypeDecl::Unit) {
+            TypeDecl::Self_ => self_ty.clone(),
+            TypeDecl::Generic(p) => substitutions.get(p).cloned().unwrap_or(TypeDecl::Generic(*p)),
+            other => other.substitute_generics(&substitutions),
+        };
+        // SELF-IN-TYPE-ARG: a `Self` nested in a type argument survives
+        // the arms above; the `Self_` arm has already produced a concrete
+        // type, so this is a no-op there.
+        Ok(resolved.substitute_self(&self_ty))
     }
 }
 

@@ -1312,27 +1312,14 @@ impl<M: Module> CodegenSession<M> {
         if self.raw_print_strings.contains_key(&bytes) {
             return Ok(());
         }
-        let mut payload = Vec::with_capacity(bytes.len() + 1 + 8);
-        payload.extend_from_slice(&bytes);
-        payload.push(0);
-        payload.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
         let name = format!("toy_print_raw_{}", self.raw_print_strings.len());
-        let data_id = self
-            .module
-            .declare_data(&name, CLinkage::Local, false, false)
-            .map_err(|e| format!("declare data {name}: {e}"))?;
-        let mut desc = DataDescription::new();
-        desc.define(payload.into_boxed_slice());
-        self.module
-            .define_data(data_id, &desc)
-            .map_err(|e| format!("define data {name}: {e}"))?;
+        let data_id = self.define_rodata(&name, str_blob_payload(&bytes))?;
         self.raw_print_strings.insert(bytes, data_id);
         Ok(())
     }
 
     /// Reserve a `.rodata` entry for a single print/println string-literal
-    /// symbol. Bytes are exactly the user's literal plus a trailing NUL;
-    /// the runtime helper handles the newline based on which entry point
+    /// symbol, laid out as [`str_blob_payload`]; the runtime helper handles the newline based on which entry point
     /// was called (`toy_print_str` vs `toy_println_str`).
     fn declare_print_string(
         &mut self,
@@ -1343,37 +1330,8 @@ impl<M: Module> CodegenSession<M> {
             return Ok(());
         }
         let msg = interner.resolve(sym).unwrap_or("");
-        // Per-literal `.rodata` layout for `str` values:
-        //
-        //   [N bytes (UTF-8)] [1 byte NUL] [u64 len (8 bytes, LE)]
-        //
-        // The runtime str value is the address of the **len field**
-        // at the end of the layout. From there:
-        //   - `__builtin_str_len(s)` → `load.i64(s, 0)`
-        //   - `__builtin_str_to_ptr(s)` → `s - 1 - len`
-        //     (`-1` for the NUL byte, `-len` for the bytes)
-        //   - `Print { value, value_ty: Str }` hands the helper the
-        //     str value itself; `toy_print_str` reads the len and
-        //     walks back to the bytes.
-        //
-        // The trailing NUL is preserved so legacy C interop that
-        // wants a cstring (e.g. `puts` callers) still works against
-        // the byte_ptr we hand back from `as_ptr()`.
-        let bytes_len = msg.len();
-        let mut bytes = Vec::with_capacity(bytes_len + 1 + 8);
-        bytes.extend_from_slice(msg.as_bytes());
-        bytes.push(0);
-        bytes.extend_from_slice(&(bytes_len as u64).to_le_bytes());
         let name = format!("toy_print_str_{}", sym.to_usize());
-        let data_id = self
-            .module
-            .declare_data(&name, CLinkage::Local, false, false)
-            .map_err(|e| format!("declare data {name}: {e}"))?;
-        let mut desc = DataDescription::new();
-        desc.define(bytes.into_boxed_slice());
-        self.module
-            .define_data(data_id, &desc)
-            .map_err(|e| format!("define data {name}: {e}"))?;
+        let data_id = self.define_rodata(&name, str_blob_payload(msg.as_bytes()))?;
         self.print_strings.insert(sym, data_id);
         Ok(())
     }
@@ -1390,30 +1348,12 @@ impl<M: Module> CodegenSession<M> {
         if self.const_str_bytes.contains_key(payload) {
             return Ok(());
         }
-        let bytes_len = payload.len();
-        let mut bytes = Vec::with_capacity(bytes_len + 1 + 8);
-        bytes.extend_from_slice(payload);
-        bytes.push(0);
-        bytes.extend_from_slice(&(bytes_len as u64).to_le_bytes());
         let name = format!("toy_const_str_bytes_{}", self.const_str_bytes.len());
-        let data_id = self
-            .module
-            .declare_data(&name, CLinkage::Local, false, false)
-            .map_err(|e| format!("declare data {name}: {e}"))?;
-        let mut desc = DataDescription::new();
-        desc.define(bytes.into_boxed_slice());
-        self.module
-            .define_data(data_id, &desc)
-            .map_err(|e| format!("define data {name}: {e}"))?;
+        let data_id = self.define_rodata(&name, str_blob_payload(payload))?;
         self.const_str_bytes.insert(payload.to_vec(), data_id);
         Ok(())
     }
 
-    /// Reserve a `.rodata` entry for a single panic-message symbol. The
-    /// stored bytes are exactly what `puts` should print: the literal
-    /// `"panic: "` prefix (matching the interpreter's output format),
-    /// the user-supplied message, and a trailing NUL. `puts` adds the
-    /// final newline at run-time.
     /// One blob per file that contains an allocation site.
     ///
     /// Keyed by name rather than by site: a file with a hundred
@@ -1528,15 +1468,7 @@ impl<M: Module> CodegenSession<M> {
             return Ok(());
         }
         let bytes = std::mem::take(&mut self.diag_pool).into_bytes();
-        let data_id = self
-            .module
-            .declare_data("toy_diag_pool", CLinkage::Local, false /* writable */, false /* tls */)
-            .map_err(|e| format!("declare data toy_diag_pool: {e}"))?;
-        let mut desc = DataDescription::new();
-        desc.define(bytes.into_boxed_slice());
-        self.module
-            .define_data(data_id, &desc)
-            .map_err(|e| format!("define data toy_diag_pool: {e}"))?;
+        let data_id = self.define_rodata("toy_diag_pool", bytes)?;
         self.diag_pool_id = Some(data_id);
         Ok(())
     }
@@ -1544,6 +1476,11 @@ impl<M: Module> CodegenSession<M> {
     /// Define one NUL-terminated `.rodata` blob under `name`.
     fn declare_blob(&mut self, name: &str, mut bytes: Vec<u8>) -> Result<DataId, String> {
         bytes.push(0);
+        self.define_rodata(name, bytes)
+    }
+
+    /// Declare and define a local, read-only data object.
+    fn define_rodata(&mut self, name: &str, bytes: Vec<u8>) -> Result<DataId, String> {
         let data_id = self
             .module
             .declare_data(name, CLinkage::Local, false /* writable */, false /* tls */)
@@ -1933,6 +1870,28 @@ fn ir_to_cranelift_ty(t: IrType) -> Option<types::Type> {
 /// Scalars yield one entry; struct / tuple types yield one entry
 /// per leaf scalar element, recursing through nested compound
 /// fields. Unit yields nothing (no cranelift slot).
+/// The `.rodata` layout of every `str` value, in both backends:
+///
+///   [N bytes (UTF-8)] [1 byte NUL] [u64 len (8 bytes, LE)]
+///
+/// The runtime str value is the address of the **len field** at the
+/// end. From there:
+///   - `__builtin_str_len(s)` → `load.i64(s, 0)`
+///   - `__builtin_str_to_ptr(s)` → `s - 1 - len`
+///     (`-1` for the NUL byte, `-len` for the bytes)
+///   - `Print { value, value_ty: Str }` hands the helper the str value
+///     itself; `toy_print_str` reads the len and walks back to the bytes.
+///
+/// The NUL keeps the bytes a valid C string for interop through the
+/// pointer `as_ptr()` hands back.
+pub(crate) fn str_blob_payload(bytes: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(bytes.len() + 1 + 8);
+    payload.extend_from_slice(bytes);
+    payload.push(0);
+    payload.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+    payload
+}
+
 pub(super) fn flatten_struct_to_cranelift_tys(ir_module: &IrModule, t: IrType) -> Vec<types::Type> {
     // An enum lays out as [tag, variant0_payload..., variant1_payload...]
     // in declaration order. The same flattening drives both signature

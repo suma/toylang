@@ -2196,6 +2196,29 @@ impl<'a> FunctionLower<'a> {
         if !self.ir_contains_drop(crate::ir::Type::Struct(struct_id)) {
             return;
         }
+        // PARTIAL-MOVE: the binding handed some owning fields over, and
+        // drops each of the others on its own. Pushed last-first so the
+        // scope, which drops in reverse, frees them in declaration
+        // order, as the whole struct's glue would.
+        if let Some(stmt) = self.current_let_stmt
+            && let Some(moved) = self.program.partial_moves.get(&stmt)
+        {
+            let moved: Vec<&str> = moved.iter().filter_map(|m| self.interner.resolve(*m)).collect();
+            let def = self.module.struct_def(struct_id).clone();
+            let mut targets = Vec::new();
+            for (fb, (_, ty)) in fields.iter().zip(def.fields.iter()) {
+                let leaves = bindings::flatten_struct_locals(std::slice::from_ref(fb));
+                if moved.contains(&fb.name.as_str()) {
+                    self.mark_not_owned(&leaves);
+                } else if self.ir_contains_drop(*ty) {
+                    targets.push(DropTarget { ty: *ty, field_locals: leaves, flag: None });
+                }
+            }
+            if let Some(scope) = self.drop_scopes.last_mut() {
+                scope.extend(targets.into_iter().rev());
+            }
+            return;
+        }
         let leaves = bindings::flatten_struct_locals(fields);
         let start = self.drop_scope_len();
         if let Some(scope) = self.drop_scopes.last_mut() {

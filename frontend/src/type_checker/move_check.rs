@@ -114,6 +114,10 @@ pub struct MoveAnalysis {
     pub transferred: HashSet<StmtRef>,
     /// MOVE-CONDITIONAL: bindings handed over on some paths only.
     pub drop_flags: DropFlags,
+    /// PARTIAL-MOVE: bindings that handed over some of their owning
+    /// fields, by declaration, with those fields. The backends drop
+    /// only the rest.
+    pub partial_moves: HashMap<StmtRef, Vec<DefaultSymbol>>,
 }
 
 /// Analyse ownership transfer across every function body.
@@ -132,6 +136,7 @@ pub fn check_moves(
             errors: Vec::new(),
             transferred: HashSet::default(),
             drop_flags: DropFlags::default(),
+            partial_moves: HashMap::default(),
         };
     }
     let signatures = Signatures::collect(program, interner);
@@ -165,6 +170,9 @@ pub fn check_moves(
         implicit_self: None,
         ref_params: HashSet::default(),
         owning_implementors: HashSet::default(),
+        partial: HashMap::default(),
+        partial_moves: HashMap::default(),
+        field_read: None,
         consuming_methods: collect_consuming_methods(program, interner),
         binding_types: HashMap::default(),
         probe: None,
@@ -304,6 +312,7 @@ pub fn check_moves(
         errors,
         transferred: checker.transferred,
         drop_flags: checker.drop_flags,
+        partial_moves: checker.partial_moves,
     }
 }
 
@@ -701,6 +710,17 @@ struct MoveCheck<'a> {
     /// walked, the binding `t`. A tail naming (part of) `t` hands that
     /// value into `x`; a tail naming anything else stays a read.
     tail_root: Option<DefaultSymbol>,
+    /// PARTIAL-MOVE: bindings some of whose owning fields were handed
+    /// over, with their declaration, the fields, and where the first
+    /// went. The binding drops the rest; reading a moved field, or the
+    /// whole binding, is a use after move.
+    partial: HashMap<DefaultSymbol, (StmtRef, Vec<DefaultSymbol>, SourceLocation)>,
+    /// The output form of `partial`, by declaration.
+    partial_moves: HashMap<StmtRef, Vec<DefaultSymbol>>,
+    /// While the binding under `obj.field` is walked as a plain read:
+    /// `(obj, field)`, so a partially moved binding allows it when the
+    /// field is still there.
+    field_read: Option<(ExprRef, DefaultSymbol)>,
     /// Traits some owning type implements: a consuming method called
     /// through `&dyn` one of them may drop what the caller owns.
     owning_implementors: HashSet<DefaultSymbol>,
@@ -841,6 +861,7 @@ impl MoveCheck<'_> {
         self.borrows.clear();
         self.binding_types.clear();
         self.ref_params.clear();
+        self.partial.clear();
         for (name, ty) in params {
             if let TypeDecl::Struct(t, _) | TypeDecl::Enum(t, _) | TypeDecl::Identifier(t) = ty {
                 self.binding_types.insert(*name, *t);
@@ -977,6 +998,7 @@ impl MoveCheck<'_> {
         // A fresh binding shadows whatever the name meant before,
         // including a transferred one.
         self.moved.remove(&name);
+        self.partial.remove(&name);
         if let Some(scope) = self.scopes.last_mut() {
             scope.push(Owned { name, depth, decl, root: None });
         }
@@ -1145,6 +1167,7 @@ impl MoveCheck<'_> {
         if let Some(scope) = self.scopes.pop() {
             for owned in scope {
                 self.moved.remove(&owned.name);
+                self.partial.remove(&owned.name);
             }
         }
     }
@@ -1390,6 +1413,55 @@ impl MoveCheck<'_> {
             Some(t) => self.consuming_methods.by_type.get(&(t, method)).copied().unwrap_or(false),
             None => self.consuming_methods.everywhere.contains(&method),
         }
+    }
+
+    /// PARTIAL-MOVE: hand over `obj.field` without handing over `obj`,
+    /// when that is safe to model: `obj` is a `val` or a parameter (no
+    /// reassignment can bring the field back), owns what it names (no
+    /// alias of it, nor an alias itself), is a struct without an `impl
+    /// Drop` of its own (whose `drop` would read the field), and the
+    /// hand-over is unconditional. Then the binding keeps dropping its
+    /// other fields. `false` leaves the hand-over to `use_binding`,
+    /// which moves the whole binding.
+    fn try_partial_move(&mut self, at: ExprRef, obj: ExprRef, field: DefaultSymbol, conditional: bool) -> bool {
+        if self.probe.is_some() || self.closure_level > 0 {
+            return false;
+        }
+        let Some(Expr::Identifier(name)) = self.program.expression.get_ref(&obj) else {
+            return false;
+        };
+        let name = *name;
+        let Some(owned) = self.lookup(name) else { return false };
+        let (Some(decl), None, depth) = (owned.decl, owned.root, owned.depth) else {
+            return false;
+        };
+        if matches!(self.program.statement.get_ref(&decl), Some(Stmt::Var(..)))
+            || (conditional && depth <= self.conditional_boundary())
+            || self.moved.contains_key(&name)
+            || self.drop_flags.bindings.contains(&decl)
+            || self.scopes.iter().flatten().any(|o| o.root == Some(name))
+        {
+            return false;
+        }
+        let Some(TypeDecl::Struct(type_name, _)) = self.expr_types.get(&obj) else { return false };
+        if self.drop_analysis.drop_implementing_types().contains(type_name) {
+            return false;
+        }
+        let loc = self.location(at).unwrap_or_else(|| SourceLocation::new(0, 0, 0, 0));
+        let entry = self.partial.entry(name).or_insert((decl, Vec::new(), loc));
+        if entry.1.contains(&field) {
+            // Handed over twice: report it like any use after move.
+            let first = entry.2;
+            let mut error = TypeCheckError::use_after_move(self.name_of(name), first.line);
+            if let Some(l) = self.location(at) {
+                error = error.with_location(l);
+            }
+            self.errors.push(error.with_related(first, "a field moved here"));
+            return true;
+        }
+        entry.1.push(field);
+        self.partial_moves.insert(decl, entry.1.clone());
+        true
     }
 
     /// CONSUME-THROUGH-BORROW: a consuming method owns its receiver and
@@ -1848,6 +1920,10 @@ impl MoveCheck<'_> {
             // Like a payload handed out of a match, the root's other
             // fields then leak rather than drop twice.
             Expr::FieldAccess(obj, _) | Expr::TupleAccess(obj, _) => {
+                let field = match expr {
+                    Expr::FieldAccess(_, f) => Some(*f),
+                    _ => None,
+                };
                 let root = self.aliased_place(expr_ref).filter(|_| {
                     self.expr_types.get(&expr_ref).is_some_and(|ty| self.is_owning(ty))
                 });
@@ -1856,6 +1932,13 @@ impl MoveCheck<'_> {
                 };
                 match root {
                     Some(r) if use_kind == Use::Transfer || (tail && use_kind == Use::Read && into_binding(self, r)) => {
+                        // PARTIAL-MOVE: a field of a binding that may
+                        // lose just that field.
+                        if let Some(f) = field
+                            && self.try_partial_move(expr_ref, *obj, f, conditional)
+                        {
+                            return;
+                        }
                         self.use_binding(r, expr_ref, Use::Transfer, conditional)
                     }
                     _ => {
@@ -1872,7 +1955,9 @@ impl MoveCheck<'_> {
                             &mut self.safe_receiver,
                             if safe { Some(*obj) } else { None },
                         );
+                        let prev_field = std::mem::replace(&mut self.field_read, field.map(|f| (*obj, f)));
                         self.walk_expr(*obj, Use::Read, conditional);
+                        self.field_read = prev_field;
                         self.safe_receiver = prev;
                     }
                 }
@@ -1998,6 +2083,20 @@ impl MoveCheck<'_> {
             && self.safe_receiver != Some(expr_ref)
         {
             *ok = false;
+        }
+        // PARTIAL-MOVE: what is left of the binding is its unmoved
+        // fields; anything else is a use after move.
+        if let Some((_, fields, at)) = self.partial.get(&name) {
+            let field_left = matches!(self.field_read, Some((obj, f)) if obj == expr_ref && !fields.contains(&f));
+            if !field_left {
+                let mut error = TypeCheckError::use_after_move(self.name_of(name), at.line);
+                if let Some(loc) = self.location(expr_ref) {
+                    error = error.with_location(loc);
+                }
+                error = error.with_related(*at, "a field moved here");
+                self.errors.push(error);
+            }
+            return;
         }
         let Some(owned) = self.lookup(name) else {
             return;

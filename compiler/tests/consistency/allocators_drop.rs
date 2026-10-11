@@ -1202,6 +1202,47 @@ fn main() -> u64 {
     );
 }
 
+/// PARTIAL-MOVE: handing over one owning field (`keep.push(w.b)`,
+/// `self.a` as a consuming method's value) hands over that field only.
+/// The binding keeps its other fields -- `w.n` and `w.a.id` still read --
+/// and drops each of them, in declaration order, where it would have
+/// dropped the whole. Before, the whole binding moved: `close 10` /
+/// `close 12` / `close 21` / `close 22` / `close 31` never printed.
+#[test]
+fn handing_over_one_field_keeps_the_others() {
+    let src = r#"
+struct H { id: u64 }
+impl Drop for H { fn drop(&mut self) { println("close {self.id}") } }
+struct W { a: H, n: u64, b: H, c: H }
+impl W {
+    fn first(self: Self) -> H { self.a }
+}
+fn mk(base: u64) -> W { W { a: H { id: base }, n: base, b: H { id: base + 1u64 }, c: H { id: base + 2u64 } } }
+fn main() -> u64 {
+    var keep: Vec<H> = Vec::new()
+    val w = mk(10u64)
+    keep.push(w.b)
+    println("n {w.n} a {w.a.id}")
+    val f = mk(20u64).first()
+    println("first {f.id}")
+    {
+        val v = mk(30u64)
+        keep.push(v.a)
+        keep.push(v.c)
+        println("inner {v.n}")
+    }
+    println("kept {keep.size()}")
+    0u64
+}
+    "#;
+    assert_renders(
+        src,
+        "partial_move",
+        "n 10 a 10\nclose 21\nclose 22\nfirst 20\ninner 30\nclose 31\nkept 3\n\
+         close 20\nclose 10\nclose 12\nclose 11\nclose 30\nclose 32\n",
+    );
+}
+
 /// COMPOUND-BLOCK-DROP-TIMING: a binding made inside a block that
 /// produces a compound value dies with the block when the block's tail
 /// does not mention it -- `t` / `u` in the `if` arms, `w` in the `match`

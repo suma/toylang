@@ -133,6 +133,12 @@ pub struct File {
     /// by `bind_owning_temporaries`, which has the checked types the
     /// lowering does not.
     pub independent_calls: rustc_hash::FxHashSet<ExprRef>,
+    /// PARTIAL-MOVE: bindings (by `val` / stand-in declaration) that
+    /// handed over some of their owning fields, with those fields'
+    /// names. Filled by `check_moves`; a backend drops the other
+    /// owning fields of such a binding one by one, instead of the
+    /// whole value.
+    pub partial_moves: rustc_hash::FxHashMap<StmtRef, Vec<DefaultSymbol>>,
     /// CONCURRENCY A1: the `for` statements written `parallel for`.
     ///
     /// A parallel loop *is* a `Stmt::For` — the modifier says the

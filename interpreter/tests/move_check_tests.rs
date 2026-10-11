@@ -811,3 +811,25 @@ fn main() -> i64 {
         7
     );
 }
+
+/// PARTIAL-MOVE: after one owning field is handed over, the binding is
+/// what is left of it. That field again, or the binding as a whole, is
+/// a use after move; the other fields still read (see
+/// `handing_over_one_field_keeps_the_others` in the consistency suite).
+#[test]
+fn a_partially_moved_binding_refuses_the_moved_field_and_the_whole() {
+    let prelude = r#"
+struct H { id: u64 }
+impl Drop for H { fn drop(&mut self) { println("close {self.id}") } }
+struct W { a: H, b: H, n: u64 }
+fn take(w: W) -> u64 { w.n }
+"#;
+    for body in [
+        "fn main() -> u64 {\n    var keep: Vec<H> = Vec::new()\n    val w = W { a: H { id: 1u64 }, b: H { id: 2u64 }, n: 3u64 }\n    keep.push(w.a)\n    keep.push(w.a)\n    w.n\n}",
+        "fn main() -> u64 {\n    var keep: Vec<H> = Vec::new()\n    val w = W { a: H { id: 1u64 }, b: H { id: 2u64 }, n: 3u64 }\n    keep.push(w.a)\n    take(w)\n}",
+    ] {
+        let found: Vec<Diagnostic> =
+            diagnose(&format!("{prelude}{body}")).into_iter().filter(|d| d.code == "E0014").collect();
+        assert_eq!(found.len(), 1, "expected one E0014 for:\n{body}\n{found:?}");
+    }
+}

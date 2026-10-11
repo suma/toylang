@@ -6915,11 +6915,21 @@ owner dropped the value even after an alias was handed over — twice
 in all, which closed a descriptor twice.)
 
 Handing over an **owning field** — `keep.push(w.h)`, `W { h: o.h }`,
-or `w.h` as the function's value — hands over the binding it is read
-from: `w` stops dropping, and reading any part of it afterwards is
-`[E0014]`. Its other owning fields then leak rather than drop twice;
-take them out first if they matter. (Before 2026-10-08 the binding
-kept its drop, and the field's `Drop` ran a second time.)
+or `w.h` as the function's value — is a **partial move**: `w` keeps
+its other fields and drops each of them (in declaration order) where
+it would have dropped the whole. Reading those other fields is fine
+(`w.n`, `w.t.len()`); reading `w.h` again, or `w` as a whole (passing
+it, calling a method on it), is `[E0014]`. That holds when `w` is a
+`val` or a parameter (including a consuming method's `self`: `fn
+first(self: Self) -> String { self.s }` drops `self.t`), its struct
+has no `impl Drop` of its own, nothing aliases it, and the field is
+handed over unconditionally. Otherwise — a `var`, a struct with its
+own `drop`, a hand-over inside a branch — the whole binding moves as
+before: `w` stops dropping, reading any part of it is `[E0014]`, and
+its other owning fields leak rather than drop twice. (Before
+2026-10-08 the binding kept its drop, and the field's `Drop` ran a
+second time; before 2026-10-12 every field hand-over moved the whole
+binding.)
 
 A by-value argument to a function that only **reads** the parameter —
 reads non-owning fields, calls `&self` methods, passes it on as `&T`,

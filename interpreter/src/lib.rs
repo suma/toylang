@@ -1156,6 +1156,7 @@ fn check_typing_collecting(
     // registration can skip a binding that no longer owns its value.
     program.transferred_bindings = analysis.transferred;
     program.drop_flags = analysis.drop_flags;
+    program.partial_moves = analysis.partial_moves.into_iter().collect();
     fn_errors.append(&mut analysis.errors);
     fn_errors.sort_by_key(|e| {
         e.location
@@ -1323,6 +1324,7 @@ pub struct SharedRunData<'a> {
         Rc<HashMap<DefaultSymbol, crate::evaluation::StructRegistryEntry>>,
     pub(crate) transferred_bindings: Rc<HashSet<StmtRef>>,
     pub(crate) drop_flags: Rc<frontend::ast::DropFlags>,
+    pub(crate) partial_moves: Rc<rustc_hash::FxHashMap<StmtRef, Vec<DefaultSymbol>>>,
 }
 
 impl<'a> SharedRunData<'a> {
@@ -1421,6 +1423,7 @@ impl<'a> SharedRunData<'a> {
             struct_definitions: Rc::new(struct_definitions),
             transferred_bindings: Rc::new(program.transferred_bindings.clone()),
             drop_flags: Rc::new(program.drop_flags.clone()),
+            partial_moves: Rc::new(program.partial_moves.clone()),
         })
     }
 }

@@ -294,6 +294,9 @@ pub struct EvaluationContext<'a> {
     /// leaves. The tree-walker needs no flag: taking the binding's entry
     /// out of `drop_scopes` on the path that hands it over is the flag.
     pub(crate) drop_flags: std::rc::Rc<frontend::ast::DropFlags>,
+    /// PARTIAL-MOVE: bindings that handed over some owning fields
+    /// (`File::partial_moves`); their entry drops only the others.
+    pub(crate) partial_moves: std::rc::Rc<rustc_hash::FxHashMap<frontend::ast::StmtRef, Vec<DefaultSymbol>>>,
     /// LEND-FREEING-CALLEE: the parameters the body about to run owns,
     /// registered by the body's own block when it opens its scope.
     pub(crate) pending_param_drops: Vec<(DefaultSymbol, frontend::ast::StmtRef)>,
@@ -483,6 +486,7 @@ impl<'a> EvaluationContext<'a> {
             drop_trait_structs: Rc::new(rustc_hash::FxHashSet::default()),
             transferred_bindings: Rc::new(rustc_hash::FxHashSet::default()),
             drop_flags: Rc::new(frontend::ast::DropFlags::default()),
+            partial_moves: Rc::new(rustc_hash::FxHashMap::default()),
             pending_param_drops: Vec::new(),
             match_scrutinee_is_place: Vec::new(),
             drop_scopes: vec![Vec::new()],
@@ -519,6 +523,7 @@ impl<'a> EvaluationContext<'a> {
         ctx.drop_trait_structs = shared.drop_trait_structs.clone();
         ctx.transferred_bindings = shared.transferred_bindings.clone();
         ctx.drop_flags = shared.drop_flags.clone();
+        ctx.partial_moves = shared.partial_moves.clone();
         ctx
     }
 
@@ -951,9 +956,14 @@ impl<'a> EvaluationContext<'a> {
             if !entry.armed {
                 continue;
             }
-            if escaping
-                .as_ref()
-                .is_some_and(|kept| Self::value_holds(&entry.value, kept))
+            // PARTIAL-MOVE: a binding that handed fields over drops only
+            // the rest, so the value leaving in one of those fields
+            // (`self.a` as the tail) is already spared.
+            let partial = entry.decl.is_some_and(|d| self.partial_moves.contains_key(&d));
+            if !partial
+                && escaping
+                    .as_ref()
+                    .is_some_and(|kept| Self::value_holds(&entry.value, kept))
             {
                 continue;
             }
@@ -1182,6 +1192,31 @@ impl<'a> EvaluationContext<'a> {
     /// two bindings (aliasing, a `get()` copy, a shared boxed
     /// node) is freed once and later visits are no-ops.
     pub(super) fn glue_drop(&mut self, entry: &DropEntry) -> Result<(), InterpreterError> {
+        // PARTIAL-MOVE: a binding that handed some owning fields over
+        // drops each of the others; the moved ones belong to whoever
+        // took them. (Its type has no `drop` of its own to run.)
+        if let Some(moved) = entry.decl.and_then(|d| self.partial_moves.get(&d)).cloned() {
+            // In declaration order, as the compiled lanes' glue walks them.
+            let rest: Vec<(DefaultSymbol, RcObject)> = match &*entry.value.borrow() {
+                Object::Struct { type_name, fields, .. } => {
+                    let order: Vec<DefaultSymbol> = self
+                        .struct_definitions
+                        .get(type_name)
+                        .map(|d| d.fields.iter().map(|(n, _)| *n).collect())
+                        .unwrap_or_else(|| fields.keys().copied().collect());
+                    order
+                        .into_iter()
+                        .filter(|name| !moved.contains(name))
+                        .filter_map(|name| fields.get(&name).map(|v| (name, v.clone())))
+                        .collect()
+                }
+                _ => Vec::new(),
+            };
+            for (name, value) in rest {
+                self.glue_drop(&DropEntry { name, value, decl: None, armed: true })?;
+            }
+            return Ok(());
+        }
         enum Phase {
             Contents,
             UserDrop,

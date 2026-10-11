@@ -18,6 +18,7 @@
 - **STDLIB-CHECK-FIXED の一部 — 全体走査 pass の clone と行番号の数え直しを削り、型検査の固定費 8.0 → 6.7 ms** (残りは未実装節)
 - **OWNING-TEMP-DROP — `String::from_str("a").len()` / `mk().n` の一時値をスカラーの読み出しの後で drop する** (残りは未実装節)
 - **OWNING-TEMP-DROP (所有値の読み出し) — `val r = mk().renamed()` / `String::from_str("a").concat(b)` の一時値を文の前に束縛して drop する (compiled レーンの拒否も消えた)**
+- **PARTIAL-MOVE — 所有フィールドを 1 つ渡しても束縛の残りのフィールドは読めて、その場で drop する (`val` / 引数 / 消費する method の `self`)**
 - **CONSUMING-SELF-NO-DROP (同名の `&self` がある名前) — 全呼び出しのレシーバの型が分かる名前なら `self: Self` の method がレシーバを drop する**
 - **CONSUME-THROUGH-BORROW — `&T` 引数 / `&self` の `self` / `&dyn` / generic `&T` / 要素の読み出しに `self: Self` の method を呼ぶと二重 drop していたのを `[E0027]` で拒否。trait impl は `dyn` で使われていてもレシーバを drop する**
 - **OWNING-TEMP-DROP (式の途中) — `take(mk().renamed())` / `println(s.concat(..))` / `if peek(&mk())` / `return` / 前にスカラーを評価する引数も束縛する。値が窓として文の外へ出る形は対象外 (aec212f0 の穴を塞いだ)**
@@ -677,12 +678,13 @@
   分かる呼び出しだけなら 2026-10-12 に対応)、(c) generic impl で `self` を `var me = self` と別名にしてから要素に触れる形
   (CALLEE-DROP-GENERIC の probe が断る)。どれも二重解放ではなく漏れ。
 
-- **PARTIAL-MOVE: フィールドを 1 つ渡すと束縛まるごと移動になる** ★ — 所有する
-  フィールドを渡す (`keep.push(w.h)`) と根の `w` を渡したことになり (FIELD-MOVE-DOUBLE-DROP、
-  2026-10-08)、(a) 以後は非所有フィールド `w.n` の読みも `[E0014]`、(b) 残りの所有
-  フィールドは漏れる (`fn first(self: Self) -> String { self.s }` の `self.t`)。Rust の
-  部分移動のように、移ったフィールドを経路で持てば両方消える (drop glue がフィールド
-  単位で飛ばせることが前提)。
+- **PARTIAL-MOVE の残り** ★ — `val` / 引数 (消費する method の `self` を含む) の
+  所有フィールドを無条件に渡すと、そのフィールドだけが移り残りはその場で drop
+  する (2026-10-12)。残りは (a) `var` (丸ごとの代入 `w = ..` が旧値を drop するので、
+  移ったフィールドを経路で持つ必要がある)、(b) 自前の `impl Drop` を持つ struct
+  (Rust と同じく部分移動を禁止するか、今の丸ごと移動のままか)、(c) 分岐の中の
+  フィールド移動 (drop flag をフィールド単位に)、(d) 入れ子 (`w.a.b`) と tuple
+  (`t.0`)、(e) 別名のある束縛。どれも従来どおり束縛まるごとの移動で、漏れる側
 
 - **UNIT-STRUCT-FIELD: struct のフィールドに `()` を書けない** ★ —
   `struct S { u: () }` が `[E0004] Unsupported operation 'field type in

@@ -69,7 +69,7 @@ fn check_const_paths(
     let mut errors = Vec::new();
     for i in 0..program.expression.len() {
         let expr_ref = ExprRef(i as u32);
-        let Some(Expr::QualifiedIdentifier(path)) = program.expression.get(&expr_ref) else {
+        let Some(Expr::QualifiedIdentifier(path)) = program.expression.get_ref(&expr_ref) else {
             continue;
         };
         if path.len() < 2 {

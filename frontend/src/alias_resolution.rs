@@ -72,6 +72,11 @@ fn collect_aliases(program: &File) -> AliasMap {
 fn rewrite_program(program: &mut File, aliases: &AliasMap) {
     // Functions (Vec<Rc<Function>>): clone-on-modify via Rc::make_mut.
     for f in program.function.iter_mut() {
+        // `Rc::make_mut` copies a shared function; skip the ones with
+        // nothing to rewrite.
+        if !signature_mentions_alias(aliases, f) {
+            continue;
+        }
         let func = Rc::make_mut(f);
         for (_, ty) in func.parameter.iter_mut() {
             *ty = resolve_in_type(aliases, ty);
@@ -93,6 +98,11 @@ fn rewrite_program(program: &mut File, aliases: &AliasMap) {
     let n = program.statement.len();
     for i in 0..n {
         let stmt_ref = StmtRef(i as u32);
+        // Rebuilding every statement (and deep-copying its types) was
+        // most of the pass; only the ones naming an alias change.
+        if !program.statement.get_ref(&stmt_ref).is_some_and(|s| stmt_mentions_alias(aliases, s)) {
+            continue;
+        }
         let Some(stmt) = program.statement.get(&stmt_ref) else { continue };
         let new_stmt = match stmt {
             Stmt::Val(name, Some(ty), e) => Stmt::Val(name, Some(resolve_in_type(aliases, &ty)), e),
@@ -181,6 +191,14 @@ fn rewrite_program(program: &mut File, aliases: &AliasMap) {
     let m = program.expression.len();
     for i in 0..m {
         let expr_ref = ExprRef(i as u32);
+        let wanted = match program.expression.get_ref(&expr_ref) {
+            Some(Expr::Cast(_, ty)) => mentions_alias(aliases, ty),
+            Some(Expr::AssociatedFunctionCall(struct_sym, ..)) => aliases.contains_key(struct_sym),
+            _ => false,
+        };
+        if !wanted {
+            continue;
+        }
         let Some(expr) = program.expression.get(&expr_ref) else { continue };
         match expr {
             Expr::Cast(target, ty) => {
@@ -209,6 +227,62 @@ fn rewrite_program(program: &mut File, aliases: &AliasMap) {
             }
             _ => {}
         }
+    }
+}
+
+/// Whether `resolve_in_type` could change `ty`: it names an alias
+/// somewhere it looks. A superset is fine (the rewrite is then a
+/// no-op); missing one is not.
+fn mentions_alias(aliases: &AliasMap, ty: &TypeDecl) -> bool {
+    match ty {
+        TypeDecl::Identifier(name) => aliases.contains_key(name),
+        TypeDecl::Struct(name, args) => {
+            aliases.contains_key(name) || args.iter().any(|a| mentions_alias(aliases, a))
+        }
+        TypeDecl::Enum(_, args) => args.iter().any(|a| mentions_alias(aliases, a)),
+        TypeDecl::Array(elems, ..) | TypeDecl::Tuple(elems) => {
+            elems.iter().any(|e| mentions_alias(aliases, e))
+        }
+        TypeDecl::Dict(k, v) => mentions_alias(aliases, k) || mentions_alias(aliases, v),
+        TypeDecl::Range(inner) | TypeDecl::Ref { inner, .. } => mentions_alias(aliases, inner),
+        _ => false,
+    }
+}
+
+fn signature_mentions_alias(aliases: &AliasMap, f: &crate::ast::Function) -> bool {
+    f.parameter.iter().any(|(_, ty)| mentions_alias(aliases, ty))
+        || f.return_type.as_ref().is_some_and(|t| mentions_alias(aliases, t))
+        || f.generic_bounds.values().any(|t| mentions_alias(aliases, t))
+}
+
+/// The statement shapes `rewrite_program` rewrites, asked without
+/// copying them.
+fn stmt_mentions_alias(aliases: &AliasMap, stmt: &Stmt) -> bool {
+    let named = |ty: &TypeDecl| mentions_alias(aliases, ty);
+    match stmt {
+        Stmt::Val(_, Some(ty), _) | Stmt::Var(_, Some(ty), _) => named(ty),
+        Stmt::StructDecl { generic_bounds, fields, .. } => {
+            generic_bounds.values().any(named) || fields.iter().any(|f| named(&f.type_decl))
+        }
+        Stmt::EnumDecl { variants, .. } => {
+            variants.iter().any(|v| v.payload_types.iter().any(named))
+        }
+        Stmt::ImplBlock { target_type_args, trait_type_args, methods, .. } => {
+            target_type_args.iter().any(named)
+                || trait_type_args.iter().any(named)
+                || methods.iter().any(|m| {
+                    m.parameter.iter().any(|(_, ty)| named(ty))
+                        || m.return_type.as_ref().is_some_and(named)
+                        || m.generic_bounds.values().any(named)
+                })
+        }
+        Stmt::TraitDecl { methods, .. } => methods.iter().any(|m| {
+            m.parameter.iter().any(|(_, ty)| named(ty))
+                || m.return_type.as_ref().is_some_and(named)
+                || m.generic_bounds.values().any(named)
+        }),
+        Stmt::TypeAlias { target, .. } => named(target),
+        _ => false,
     }
 }
 

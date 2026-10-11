@@ -64,10 +64,11 @@ pub fn check_contract_purity(
     }
     for index in 0..program.statement.len() {
         let stmt_ref = StmtRef(index as u32);
-        if let Some(Stmt::ImplBlock { target_type, methods, .. }) = program.statement.get(&stmt_ref)
+        if let Some(Stmt::ImplBlock { target_type, methods, .. }) =
+            program.statement.get_ref(&stmt_ref)
         {
-            let owner = interner.resolve(target_type).unwrap_or("?");
-            for method in &methods {
+            let owner = interner.resolve(*target_type).unwrap_or("?");
+            for method in methods {
                 let name = format!("{owner}::{}", interner.resolve(method.name).unwrap_or("?"));
                 collect(&mut roots, &name, "requires", &method.requires);
                 collect(&mut roots, &name, "ensures", &method.ensures);

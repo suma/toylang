@@ -14,6 +14,7 @@
 
 - **RUNTIME-REFS-LAZY — ランタイム関数の import を呼ぶ分だけに。宣言は `codegen/runtime_syms.rs` の表 1 つ**
 - **COMPOUND-CALL-EXPR-POS (関数の結果) — compound を返す呼び出しを関数の末尾と `return` に置ける** (残りは未実装節)
+- **STDLIB-CHECK-FIXED の一部 — 全体走査 pass の clone と行番号の数え直しを削り、型検査の固定費 8.0 → 6.7 ms** (残りは未実装節)
 
 ### 2026-10-08
 
@@ -914,7 +915,10 @@
   経由せず `ld` を直接呼ぶ / lld、ランタイムの `.rt.a` を毎リンク一時ファイルに
   書き出すのをやめる、`compiler` CLI でもリンクキャッシュを既定 on に。
 
-- **STDLIB-CHECK-FIXED: stdlib の型検査 ~11 ms を毎回払う** ★★ — post_checks が
+- **STDLIB-CHECK-FIXED: stdlib の型検査 ~6.7 ms を毎回払う** ★★ — 2026-10-11 に
+  全体を走査する小さな pass の無駄 (節点の clone、宣言ごとの行番号計算) を削って
+  8.0 → 6.7 ms (`toy check` の空パッケージ、release)。残りの大半は impl block の
+  method 本体の検査そのもの (~16%)、moves (~7%)、module の統合 (~7%)。post_checks が
   stdlib 本体について出す事実 (lend 表・エフェクト等) を stdlib のハッシュで
   再利用する軽い版と、PARALLEL_FRONTEND.md §5c のスナップショットに型検査の
   状態まで含める本命。後者は型検査器が AST を書き換えるので大仕事。

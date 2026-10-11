@@ -59,27 +59,40 @@ pub fn check_duplicate_definitions(
     program: &File,
     interner: &DefaultStringInterner,
 ) -> DuplicateDefinitions {
-    // (namespace, file, name) -> the first declaration's location.
-    let mut first: HashMap<(Namespace, FileId, DefaultSymbol), SourceLocation> = HashMap::default();
+    // (namespace, file, name) -> where the first declaration starts.
+    // Positions are worked out only for a duplicate: the line / column
+    // of every declaration in the stdlib is a lot of text to scan for
+    // a pass that almost always finds nothing.
+    let mut first: HashMap<(Namespace, FileId, DefaultSymbol), usize> = HashMap::default();
     let mut out = DuplicateDefinitions { errors: Vec::new(), skipped_decls: HashSet::default() };
 
     let mut see = |ns: Namespace,
                    name: DefaultSymbol,
-                   at: Option<SourceLocation>,
+                   file: FileId,
+                   from: usize,
                    out: &mut DuplicateDefinitions|
      -> bool {
-        let Some(at) = at else { return false };
-        match first.get(&(ns, at.file, name)) {
+        // A file with no text here has no position to report.
+        if !program.source_map.source(file).is_some_and(|text| from <= text.len()) {
+            return false;
+        }
+        match first.get(&(ns, file, name)) {
             None => {
-                first.insert((ns, at.file, name), at);
+                first.insert((ns, file, name), from);
                 false
             }
-            Some(earlier) => {
+            Some(&earlier_from) => {
+                let (Some(at), Some(earlier)) = (
+                    name_location(program, file, from, name, interner),
+                    name_location(program, file, earlier_from, name, interner),
+                ) else {
+                    return false;
+                };
                 let name_str = interner.resolve(name).unwrap_or("?").to_string();
                 out.errors.push(
                     TypeCheckError::duplicate_definition(ns.noun(), name_str, earlier.line)
                         .with_location(at)
-                        .with_related(*earlier, "first defined here"),
+                        .with_related(earlier, "first defined here"),
                 );
                 true
             }
@@ -92,24 +105,22 @@ pub fn check_duplicate_definitions(
             .get_stmt_location(&func.code)
             .map(|l| l.file)
             .unwrap_or(FileId::ENTRY);
-        let at = name_location(program, file, func.node.start, func.name, interner);
-        see(Namespace::Function, func.name, at, &mut out);
+        see(Namespace::Function, func.name, file, func.node.start, &mut out);
     }
 
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
-        let (ns, name) = match program.statement.get(&stmt_ref) {
+        let (ns, name) = match program.statement.get_ref(&stmt_ref) {
             Some(Stmt::StructDecl { name, .. }) | Some(Stmt::EnumDecl { name, .. }) => {
-                (Namespace::Type, name)
+                (Namespace::Type, *name)
             }
-            Some(Stmt::TraitDecl { name, .. }) => (Namespace::Trait, name),
+            Some(Stmt::TraitDecl { name, .. }) => (Namespace::Trait, *name),
             _ => continue,
         };
         let Some(decl) = program.location_pool.get_stmt_location(&stmt_ref) else {
             continue;
         };
-        let at = name_location(program, decl.file, decl.offset as usize, name, interner);
-        if see(ns, name, at, &mut out) {
+        if see(ns, name, decl.file, decl.offset as usize, &mut out) {
             out.skipped_decls.insert(stmt_ref);
         }
     }
@@ -120,8 +131,7 @@ pub fn check_duplicate_definitions(
             .get_expr_location(&c.value)
             .map(|l| l.file)
             .unwrap_or(FileId::ENTRY);
-        let at = name_location(program, file, c.node.start, c.name, interner);
-        see(Namespace::Const, c.name, at, &mut out);
+        see(Namespace::Const, c.name, file, c.node.start, &mut out);
     }
 
     out

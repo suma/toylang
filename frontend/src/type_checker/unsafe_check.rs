@@ -41,11 +41,10 @@ pub fn check_unsafe_declarations(
         if function.is_unsafe || function.is_extern {
             continue;
         }
-        let name = table.function_name(index);
         let effects = table.of_function(index);
         if let Some((_, witness)) = effects.first(EffectSet::of(&RAW_MEMORY)) {
             let error = TypeCheckError::unsafe_required(
-                name,
+                table.function_name(index),
                 witness.path.first().unwrap_or("a raw builtin").to_string(),
             );
             errors.push(at_declaration(
@@ -61,21 +60,22 @@ pub fn check_unsafe_declarations(
     // Methods: same check, bodies live in impl blocks.
     for index in 0..program.statement.len() {
         let stmt_ref = StmtRef(index as u32);
-        let Some(Stmt::ImplBlock { target_type, methods, .. }) = program.statement.get(&stmt_ref)
+        let Some(Stmt::ImplBlock { target_type, methods, .. }) =
+            program.statement.get_ref(&stmt_ref)
         else {
             continue;
         };
-        for method in &methods {
+        for method in methods {
             if method.is_unsafe {
                 continue;
             }
-            let name = format!(
-                "{}::{}",
-                interner.resolve(target_type).unwrap_or("?"),
-                interner.resolve(method.name).unwrap_or("?")
-            );
             let effects = table.of_body_direct(&method.code);
             if let Some((_, witness)) = effects.first(EffectSet::of(&RAW_MEMORY)) {
+                let name = format!(
+                    "{}::{}",
+                    interner.resolve(*target_type).unwrap_or("?"),
+                    interner.resolve(method.name).unwrap_or("?")
+                );
                 let error = TypeCheckError::unsafe_required(
                     name,
                     witness.path.first().unwrap_or("a raw builtin").to_string(),

@@ -58,17 +58,18 @@ pub fn check_never_allocates(
     // live in `program.function` — they are walked by body.
     for index in 0..program.statement.len() {
         let stmt_ref = StmtRef(index as u32);
-        let Some(Stmt::ImplBlock { target_type, methods, .. }) = program.statement.get(&stmt_ref)
+        let Some(Stmt::ImplBlock { target_type, methods, .. }) =
+            program.statement.get_ref(&stmt_ref)
         else {
             continue;
         };
-        for method in &methods {
+        for method in methods {
             if !method.never_allocates {
                 continue;
             }
             let name = format!(
                 "{}::{}",
-                interner.resolve(target_type).unwrap_or("?"),
+                interner.resolve(*target_type).unwrap_or("?"),
                 interner.resolve(method.name).unwrap_or("?")
             );
             let effects = table.of_body(&method.code);

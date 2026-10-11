@@ -316,7 +316,7 @@ fn evaluate(
         };
         for index in 0..program.expression.len() {
             let expr_ref = ExprRef(index as u32);
-            let Some(Expr::Call(callee, args)) = program.expression.get(&expr_ref) else {
+            let Some(&Expr::Call(callee, args)) = program.expression.get_ref(&expr_ref) else {
                 continue;
             };
             if !const_fns.contains(&callee) || !all_literal_args(program, &args) {
@@ -1025,6 +1025,9 @@ pub fn resolve_array_lengths(
 
     // Functions: parameters, return type, generic bounds.
     for f in function.iter_mut() {
+        if !signature_has_deferred(f) {
+            continue;
+        }
         let func = Rc::make_mut(f);
         for (_, ty) in func.parameter.iter_mut() {
             resolve_size_in_type(ty, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
@@ -1046,6 +1049,11 @@ pub fn resolve_array_lengths(
     let n = statement.len();
     for i in 0..n {
         let stmt_ref = StmtRef(i as u32);
+        // Almost no statement carries a deferred length; rebuilding
+        // every one (and deep-copying its types) was most of the pass.
+        if !statement.get_ref(&stmt_ref).is_some_and(stmt_has_deferred) {
+            continue;
+        }
         let Some(stmt) = statement.get(&stmt_ref) else {
             continue;
         };
@@ -1134,6 +1142,17 @@ pub fn resolve_array_lengths(
     let m = expression.len();
     for i in 0..m {
         let expr_ref = ExprRef(i as u32);
+        let carries_deferred = match expression.get_ref(&expr_ref) {
+            Some(Expr::Cast(_, ty)) => has_deferred(ty),
+            Some(Expr::Closure { params, return_type, .. }) => {
+                params.iter().any(|(_, ty)| has_deferred(ty))
+                    || return_type.as_ref().is_some_and(has_deferred)
+            }
+            _ => false,
+        };
+        if !carries_deferred {
+            continue;
+        }
         let Some(expr) = expression.get(&expr_ref) else {
             continue;
         };
@@ -1157,6 +1176,60 @@ pub fn resolve_array_lengths(
     }
 
     errors
+}
+
+/// Whether `ty` holds an array length still to be computed. Checked
+/// before `resolve_size_in_type`, whose `Rc::make_mut` copies a shared
+/// type even when there is nothing in it to rewrite.
+fn has_deferred(ty: &TypeDecl) -> bool {
+    match ty {
+        TypeDecl::Array(elems, size, _) => {
+            matches!(size, ArraySize::Deferred(_)) || elems.iter().any(has_deferred)
+        }
+        TypeDecl::Struct(_, args) | TypeDecl::Enum(_, args) => args.iter().any(has_deferred),
+        TypeDecl::Tuple(elems) => elems.iter().any(has_deferred),
+        TypeDecl::Dict(k, v) => has_deferred(k) || has_deferred(v),
+        TypeDecl::Range(inner) | TypeDecl::Ref { inner, .. } => has_deferred(inner),
+        TypeDecl::Function(params, ret) => params.iter().any(has_deferred) || has_deferred(ret),
+        _ => false,
+    }
+}
+
+fn signature_has_deferred(f: &Function) -> bool {
+    f.parameter.iter().any(|(_, ty)| has_deferred(ty))
+        || f.return_type.as_ref().is_some_and(has_deferred)
+        || f.generic_bounds.values().any(has_deferred)
+}
+
+/// The statement shapes `resolve_array_lengths` rewrites, asked
+/// without copying them.
+fn stmt_has_deferred(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Val(_, Some(ty), _) | Stmt::Var(_, Some(ty), _) => has_deferred(ty),
+        Stmt::StructDecl { generic_bounds, fields, .. } => {
+            generic_bounds.values().any(has_deferred)
+                || fields.iter().any(|f| has_deferred(&f.type_decl))
+        }
+        Stmt::EnumDecl { variants, .. } => {
+            variants.iter().any(|v| v.payload_types.iter().any(has_deferred))
+        }
+        Stmt::ImplBlock { target_type_args, trait_type_args, methods, .. } => {
+            target_type_args.iter().any(has_deferred)
+                || trait_type_args.iter().any(has_deferred)
+                || methods.iter().any(|m| {
+                    m.parameter.iter().any(|(_, ty)| has_deferred(ty))
+                        || m.return_type.as_ref().is_some_and(has_deferred)
+                        || m.generic_bounds.values().any(has_deferred)
+                })
+        }
+        Stmt::TraitDecl { methods, .. } => methods.iter().any(|m| {
+            m.parameter.iter().any(|(_, ty)| has_deferred(ty))
+                || m.return_type.as_ref().is_some_and(has_deferred)
+                || m.generic_bounds.values().any(has_deferred)
+        }),
+        Stmt::TypeAlias { target, .. } => has_deferred(target),
+        _ => false,
+    }
 }
 
 /// Rewrite one type's `Deferred` array sizes, recursing into its

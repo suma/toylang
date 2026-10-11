@@ -2711,9 +2711,10 @@ impl<'a> TypeCheckerVisitor<'a> {
         let comparisons = std::mem::take(&mut self.enum_comparisons);
         for index in 0..self.core.expr_pool.len() {
             let expr_ref = ExprRef(index as u32);
-            let Some(Expr::Binary(op, lhs, rhs)) = self.core.expr_pool.get(&expr_ref) else {
+            let Some(Expr::Binary(op, lhs, rhs)) = self.core.expr_pool.get_ref(&expr_ref) else {
                 continue;
             };
+            let (op, lhs, rhs) = (op.clone(), *lhs, *rhs);
             let Some(&method) = comparisons.get(&lhs) else {
                 continue;
             };
@@ -2735,9 +2736,10 @@ impl<'a> TypeCheckerVisitor<'a> {
         };
         for index in 0..self.core.expr_pool.len() {
             let expr_ref = ExprRef(index as u32);
-            let Some(Expr::Binary(op, lhs, rhs)) = self.core.expr_pool.get(&expr_ref) else {
+            let Some(Expr::Binary(op, lhs, rhs)) = self.core.expr_pool.get_ref(&expr_ref) else {
                 continue;
             };
+            let (op, lhs, rhs) = (op.clone(), *lhs, *rhs);
             let negate = match op {
                 Operator::LT | Operator::GT => false,
                 Operator::LE | Operator::GE => true,
@@ -3501,7 +3503,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn apply_null_coalesce_rewrites(&mut self) {
         for index in 0..self.core.expr_pool.len() {
             let expr_ref = ExprRef(index as u32);
-            if let Some(Expr::NullCoalesce { lhs, rhs, .. }) = self.core.expr_pool.get(&expr_ref)
+            if let Some(&Expr::NullCoalesce { lhs, rhs, .. }) = self.core.expr_pool.get_ref(&expr_ref)
                 && let Err(e) = self.rewrite_null_coalesce_only(expr_ref, lhs, rhs)
             {
                 self.errors.push(e);

@@ -59,17 +59,17 @@ pub fn check_unused_results(
     let mut warnings = Vec::new();
     for index in 0..program.expression.len() {
         let expr_ref = ExprRef(index as u32);
-        let Some(Expr::Block(stmts)) = program.expression.get(&expr_ref) else {
+        let Some(Expr::Block(stmts)) = program.expression.get_ref(&expr_ref) else {
             continue;
         };
         // The last statement is the block's value, so it is not
         // discarded here.
         let discarded = stmts.len().saturating_sub(1);
         for stmt_ref in stmts.iter().take(discarded) {
-            let Some(Stmt::Expression(inner)) = program.statement.get(stmt_ref) else {
+            let Some(Stmt::Expression(inner)) = program.statement.get_ref(stmt_ref) else {
                 continue;
             };
-            let Some(ty) = expr_types.get(&inner) else {
+            let Some(ty) = expr_types.get(inner) else {
                 continue;
             };
             if !is_must_use(ty, interner) {
@@ -77,9 +77,9 @@ pub fn check_unused_results(
             }
             let error = TypeCheckError::unused_result(
                 ty.spell_with(Some(interner)),
-                describe(program, interner, &inner),
+                describe(program, interner, inner),
             );
-            warnings.push(match program.location_pool.get_expr_location(&inner) {
+            warnings.push(match program.location_pool.get_expr_location(inner) {
                 Some(location) => error.with_location(*location),
                 None => error,
             });

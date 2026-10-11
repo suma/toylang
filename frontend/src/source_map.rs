@@ -69,11 +69,7 @@ impl SourceFile {
     /// call. Lowering asks this once per site it records, and counting
     /// lines from the top each time was quadratic in the file's length.
     pub fn line(&self, line: u32) -> Option<&str> {
-        let starts = self.line_starts.0.get_or_init(|| {
-            std::iter::once(0)
-                .chain(self.source.match_indices('\n').map(|(i, _)| i as u32 + 1))
-                .collect()
-        });
+        let starts = self.line_starts();
         // `0` reads as the first line, as `nth(line.saturating_sub(1))` did.
         let index = (line as usize).saturating_sub(1);
         let start = *starts.get(index)? as usize;
@@ -89,6 +85,23 @@ impl SourceFile {
             // The last line, with no line ending to drop.
             None => Some(&self.source[start..]),
         }
+    }
+
+    /// The 1-based line `offset` sits on and the offset that line
+    /// starts at.
+    fn line_of(&self, offset: usize) -> (u32, usize) {
+        let starts = self.line_starts();
+        // Every start at or before `offset` begins a line up to it.
+        let line = starts.partition_point(|&s| s as usize <= offset);
+        (line as u32, starts[line - 1] as usize)
+    }
+
+    fn line_starts(&self) -> &[u32] {
+        self.line_starts.0.get_or_init(|| {
+            std::iter::once(0)
+                .chain(self.source.match_indices('\n').map(|(i, _)| i as u32 + 1))
+                .collect()
+        })
     }
 }
 
@@ -191,13 +204,14 @@ impl SourceMap {
         offset: usize,
         end: usize,
     ) -> Option<crate::type_checker::SourceLocation> {
-        let source = self.source(file)?;
+        let file_ref = self.get(file)?;
+        let source = file_ref.source.as_str();
         if offset > source.len() {
             return None;
         }
-        let before = &source[..offset];
-        let line = before.bytes().filter(|&b| b == b'\n').count() as u32 + 1;
-        let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
+        // Counting newlines from the top made a pass that locates every
+        // declaration quadratic in the file's length.
+        let (line, line_start) = file_ref.line_of(offset);
         let column = source[line_start..offset].chars().count() as u32 + 1;
         Some(crate::type_checker::SourceLocation::new_in(
             file,
@@ -353,7 +367,27 @@ pub fn brace_pairs(source: &str) -> Vec<(usize, usize)> {
 
 #[cfg(test)]
 mod tests {
-    use super::SourceFile;
+    use super::{SourceFile, SourceMap};
+
+    /// `location` must answer what counting newlines from the top did,
+    /// at every offset including the end and right after a newline.
+    #[test]
+    fn location_matches_counting_from_the_top() {
+        let texts = ["", "a", "a\n", "a\nb", "\n\n", "ab\ncd\r\nef", "é\nü漢\nz"];
+        for text in texts {
+            let map = SourceMap::with_entry("f.t", text);
+            let file = super::FileId::ENTRY;
+            for offset in (0..=text.len()).filter(|&o| text.is_char_boundary(o)) {
+                let before = &text[..offset];
+                let line = before.bytes().filter(|&b| b == b'\n').count() as u32 + 1;
+                let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
+                let column = text[line_start..offset].chars().count() as u32 + 1;
+                let at = map.location(file, offset, offset).expect("in range");
+                assert_eq!((at.line, at.column), (line, column), "{text:?} at {offset}");
+            }
+            assert!(map.location(file, text.len() + 1, text.len() + 1).is_none());
+        }
+    }
 
     /// `line` must answer exactly what `lines().nth(line - 1)` did,
     /// line endings and the missing final line included.

@@ -565,10 +565,13 @@ every impl of that name takes `self: Self`.
 
 The method then owns `self`, like any by-value parameter: it drops it
 at its end unless it hands it on (returns it, stores it, or hands over
-one of its owning fields — `self.out` above). This holds for an
-inherent `impl` whose method name is `self: Self` in every impl; a
-trait method (which `&dyn` can also reach) and a name some other impl
-declares `&self` still leave the receiver to nobody, so it leaks.
+one of its owning fields — `self.out` above). This holds for a method
+whose name is `self: Self` in every impl, in an inherent `impl` or in a
+trait `impl` whose trait the program never names as `dyn` (no `&dyn
+Trait` in any expression, signature or field). Through `&dyn` the
+receiver stays the caller's, so a trait that is used that way, and a
+name some other impl declares `&self`, still leave the receiver to
+nobody, and it leaks.
 (Before 2026-10-08 no consuming method dropped its receiver.)
 
 ### Concrete-args impl dispatch

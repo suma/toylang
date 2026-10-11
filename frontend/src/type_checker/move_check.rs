@@ -197,6 +197,7 @@ pub fn check_moves(
         let generic_owns = !function.generic_params.is_empty() && unique;
         checker.run_function_owning(&function.parameter, function.code, owns, generic_owns);
     }
+    let dyn_traits = dyn_traits(program, expr_types);
     // Impl-block methods, which `program.function` does not contain.
     //
     // Leaving them out did not merely miss diagnostics — it broke
@@ -219,13 +220,15 @@ pub fn check_moves(
             Some(Stmt::ImplBlock { target_type, .. }) => generic_structs.contains(target_type),
             _ => true,
         };
-        // CONSUMING-SELF-NO-DROP: only an inherent impl's `self: Self`
-        // can be owned by the body. A trait method is also reached
-        // through `&dyn`, where the receiver stays the caller's.
-        let inherent = matches!(
-            program.statement.get_ref(&stmt_ref),
-            Some(Stmt::ImplBlock { trait_name: None, .. })
-        );
+        // CONSUMING-SELF-NO-DROP: the body owns a `self: Self` unless
+        // the method may be reached through `&dyn`, where the receiver
+        // stays the caller's -- so a trait impl qualifies only when
+        // nothing in the program names its trait as `dyn`.
+        let inherent = match program.statement.get_ref(&stmt_ref) {
+            Some(Stmt::ImplBlock { trait_name: None, .. }) => true,
+            Some(Stmt::ImplBlock { trait_name: Some(t), .. }) => !dyn_traits.contains(t),
+            _ => false,
+        };
         let self_ty = match program.statement.get_ref(&stmt_ref) {
             Some(Stmt::ImplBlock { target_type, target_type_args, .. }) => {
                 Some(TypeDecl::Struct(*target_type, target_type_args.clone().into()))
@@ -279,6 +282,67 @@ pub fn check_moves(
         transferred: checker.transferred,
         drop_flags: checker.drop_flags,
     }
+}
+
+/// Every trait the program names as `dyn` -- in an expression's type,
+/// a parameter, a return type or a struct field. A `self: Self` method
+/// of any other trait is only ever called on a value the caller hands
+/// over.
+fn dyn_traits(program: &File, expr_types: &HashMap<ExprRef, TypeDecl>) -> HashSet<DefaultSymbol> {
+    fn collect(ty: &TypeDecl, out: &mut HashSet<DefaultSymbol>) {
+        match ty {
+            TypeDecl::Dyn(t) => {
+                out.insert(*t);
+            }
+            TypeDecl::Ref { inner, .. } | TypeDecl::Range(inner) => collect(inner, out),
+            TypeDecl::Array(elems, _, _)
+            | TypeDecl::Tuple(elems)
+            | TypeDecl::Struct(_, elems)
+            | TypeDecl::Enum(_, elems) => elems.iter().for_each(|t| collect(t, out)),
+            TypeDecl::Dict(k, v) => {
+                collect(k, out);
+                collect(v, out);
+            }
+            TypeDecl::Function(params, ret) => {
+                params.iter().for_each(|t| collect(t, out));
+                collect(ret, out);
+            }
+            _ => {}
+        }
+    }
+    let mut out = HashSet::default();
+    for ty in expr_types.values() {
+        collect(ty, &mut out);
+    }
+    fn signature(
+        params: &[(DefaultSymbol, TypeDecl)],
+        ret: &Option<TypeDecl>,
+        out: &mut HashSet<DefaultSymbol>,
+    ) {
+        params.iter().for_each(|(_, t)| collect(t, out));
+        if let Some(r) = ret {
+            collect(r, out);
+        }
+    }
+    for f in &program.function {
+        signature(&f.parameter, &f.return_type, &mut out);
+    }
+    for i in 0..program.statement.len() {
+        match program.statement.get_ref(&StmtRef(i as u32)) {
+            Some(Stmt::ImplBlock { methods, .. }) => {
+                for m in methods {
+                    signature(&m.parameter, &m.return_type, &mut out);
+                }
+            }
+            Some(Stmt::StructDecl { fields, .. }) => {
+                for f in fields {
+                    collect(&f.type_decl, &mut out);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// The set of owning types is computed by `DropAnalysis` (DROP-GLUE):

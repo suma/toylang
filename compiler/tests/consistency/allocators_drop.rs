@@ -1062,6 +1062,52 @@ fn main() -> u64 {
     );
 }
 
+/// CONSUMING-SELF-NO-DROP for a trait impl: a `self: Self` method of a
+/// trait nothing names as `dyn` owns its receiver too, called directly
+/// or through a bound (`via`). A trait that is also used as `&dyn`
+/// keeps the old rule -- through the reference the receiver is the
+/// caller's -- so `done` leaks rather than freeing a borrowed value.
+#[test]
+fn a_consuming_trait_method_drops_its_receiver() {
+    let src = r#"
+struct H { id: u64 }
+impl Drop for H {
+    fn drop(&mut self) { println("close {self.id}") }
+}
+trait Fin { fn finish(self: Self) -> u64 }
+impl Fin for H {
+    fn finish(self: Self) -> u64 { self.id * 10u64 }
+}
+trait Show {
+    fn show(&self) -> u64
+    fn done(self: Self) -> u64
+}
+struct S { h: H }
+impl Show for S {
+    fn show(&self) -> u64 { self.h.id }
+    fn done(self: Self) -> u64 { self.h.id }
+}
+fn via<T: Fin>(x: T) -> u64 { x.finish() }
+fn look(s: &dyn Show) -> u64 { s.show() }
+fn main() -> u64 {
+    val a = H { id: 1u64 }
+    println(a.finish())
+    val b = H { id: 2u64 }
+    println(via(b))
+    val s = S { h: H { id: 3u64 } }
+    println(look(&s))
+    println(s.done())
+    println("end")
+    0u64
+}
+    "#;
+    assert_renders(
+        src,
+        "consuming_trait_self_drop",
+        "close 1\n10\nclose 2\n20\n3\n3\nend\n",
+    );
+}
+
 /// FIELD-MOVE-DOUBLE-DROP: handing an owning field over -- into a
 /// container, a struct literal, or out as the function's value -- hands
 /// over the binding it is read from. The binding kept its drop, and the

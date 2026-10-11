@@ -7084,12 +7084,20 @@ after which the usual rules decide: a callee that lends the argument
 (`&T`, or a by-value parameter it only reads) leaves the temporary to
 the enclosing block, and one that keeps it (`push`) takes it as a move.
 
-Either rewrite happens only where the call is the first thing the
-statement evaluates — the receiver and the arguments before it must be
-names, literals or fields of one — so no effect changes order, and not
-in a statement that is its block's value. Elsewhere (`take(mk().renamed())`,
-`both(note(1), &mk())`, `println(mk().renamed())`) the temporary still
-leaks.
+Nothing runs in a different order: what the statement evaluates before
+the temporary must be a name, a literal or a field of one, or a scalar
+computed on its own, which is then bound in front too, in order
+(`both(note(1), &mk())` binds `note(1)` first). A branch or the right
+of `&&` / `||` stops the search, so a temporary inside one still leaks.
+
+The temporary now dies at the end of the enclosing block, so a value
+made from it must not leave the statement still pointing into it: on
+its way out it has to pass through a call that returns a scalar or a
+fresh owning value, a `print`, or an `if` condition. That covers
+`take(mk().renamed())`, `println(s.concat(String::from_str("x")))`,
+`if peek(&mk()) > 0 { .. }` and `return peek(&mk())`; it leaves out
+`val w = first(&mk())` where `first` returns a window into its
+argument, and that temporary keeps leaking rather than dangling.
 
 #### Lending an element (`borrow`)
 

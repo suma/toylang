@@ -130,9 +130,9 @@ fn a_temporary_under_an_owning_result_drops_with_the_block() {
 /// statement, so a callee that only lends it (`&H`, a by-value
 /// parameter it reads, `concat(&String)`) leaves it to the caller's
 /// block, and one that keeps it (`push`) takes it as a move. Before,
-/// a lent temporary had no owner and leaked on every lane. An argument
-/// behind something that runs first (`note(..)`) stays where it is, so
-/// the order of effects never changes.
+/// a lent temporary had no owner and leaked on every lane. A scalar
+/// argument that runs something first (`note(..)`) is bound ahead of
+/// it, so the order of effects never changes.
 #[test]
 fn a_temporary_passed_as_an_argument_drops_with_the_block() {
     let src = r#"
@@ -175,6 +175,54 @@ fn a_temporary_passed_as_an_argument_drops_with_the_block() {
         src,
         "owning_temps_argument",
         "abcd\nmk 1\nmk 2\nmk 3\nmk 4\nmk 5\nnote 9\nmk 6\nwork 1 2 15 3\n\
-         drop 3\ndrop 4\ndrop 5\ndrop 2\ndrop 1\n3 0\n",
+         drop 6\ndrop 3\ndrop 4\ndrop 5\ndrop 2\ndrop 1\n3 0\n",
+    );
+}
+
+/// Temporaries deeper in a statement: under a `println`, in an `if`
+/// condition, behind a read-through passed on (`take(mk().renamed())`),
+/// in a `return`. `take` only reads its argument, so it lends it and
+/// `mk(2u64).renamed()` drops with the block. A window into a temporary (`first(&mk())`) is not
+/// sealed by anything before it leaves the statement, so that one is
+/// left alone -- freeing it at the block's end would leave the window
+/// pointing at freed memory -- and keeps leaking.
+#[test]
+fn a_temporary_deeper_in_a_statement_drops_with_the_block() {
+    let src = format!(
+        r#"{OWNER}
+        impl H {{
+            fn renamed(&self) -> H {{ H {{ n: self.n + 100u64, name: String::from_str("r") }} }}
+            fn ok(&self) -> bool {{ self.n > 0u64 }}
+        }}
+        fn take(h: H) -> u64 {{ h.n }}
+        fn peek(h: &H) -> u64 {{ h.n }}
+        fn first(h: &H) -> Span<u8> {{ h.name.as_span() ?? panic("empty") }}
+        fn early(c: bool) -> u64 {{
+            if c {{ return peek(&mk(5u64)) + 1u64 }}
+            0u64
+        }}
+        fn work() -> u64 {{
+            val s = String::from_str("ab")
+            println(s.concat(String::from_str("cd")))
+            if peek(&mk(1u64)) > 0u64 {{ println("cond") }}
+            val t = take(mk(2u64).renamed())
+            println("took {{t}}")
+            val e = early(true)
+            println("early {{e}}")
+            val w = first(&mk(9u64))
+            println("window {{w.len()}}")
+            t + e
+        }}
+        fn main() -> u64 {{
+            val n = work()
+            println("{{n}}")
+            n
+        }}
+    "#
+    );
+    assert_renders(
+        &src,
+        "owning_temps_deeper",
+        "abcd\ncond\ntook 102\ndrop 5\nearly 6\nwindow 1\ndrop 102\ndrop 2\ndrop 1\n108\n",
     );
 }

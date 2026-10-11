@@ -948,8 +948,10 @@ fn main() -> u64 {
 /// or reads a scalar off it -- `maybe` keeps the vector on one path and
 /// used to leak it on the other (`close 2` never printed). `peek` names
 /// an element through `borrow`, which a generic body might have copied
-/// out through raw memory, so it stays a non-owner: its argument still
-/// leaks (no `close 3`), which is the safe side of a double free.
+/// out through raw memory, so it stays a non-owner. It only reads its
+/// argument, though, so the call lends it, and since OWNING-TEMP-DROP
+/// binds the temporary `mk(3u64)` in front of the statement, that
+/// binding drops it (`close 3`) -- as `val v = mk(3u64)  peek(v)` did.
 #[test]
 fn a_generic_callee_drops_an_argument_it_only_hands_on() {
     let src = r#"
@@ -988,7 +990,7 @@ fn main() -> u64 {
     assert_renders(
         src,
         "generic_callee_owned_param",
-        "1\nclose 2\n1\nkept 1\n1\nclose 1\nend\n",
+        "1\nclose 2\n1\nkept 1\n1\nclose 3\nclose 1\nend\n",
     );
 }
 

@@ -35,7 +35,7 @@
 use rustc_hash::FxHashMap as HashMap;
 use string_interner::DefaultStringInterner;
 
-use crate::ast::{Expr, ExprRef, File, Stmt, StmtRef};
+use crate::ast::{Expr, ExprRef, File, Stmt, StmtRef, UnaryOp};
 use crate::type_checker::contains_drop::DropAnalysis;
 use crate::type_decl::TypeDecl;
 
@@ -124,8 +124,8 @@ pub fn bind_owning_temporaries(
     hoist_owning_receivers(program, interner, expr_types, &analysis);
 }
 
-/// A statement that reads through, or passes, a fresh owning call
-/// gets the call bound by a statement of its own in front of it:
+/// A fresh owning call a statement reads through or passes on gets
+/// bound by a statement of its own in front of it:
 ///
 /// ```text
 /// val r = mk().renamed()      =>   val __temp_0: H = mk()
@@ -137,22 +137,22 @@ pub fn bind_owning_temporaries(
 ///
 /// The temporary then drops with the enclosing block, like any other
 /// binding there -- or moves, when the callee takes it: the move check
-/// sees an ordinary binding passed. Wrapping the read in a block of its
-/// own, as the scalar case does, would make that block compound with a
-/// tail that touches the binding, whose drop the compiled lanes defer
-/// (COMPOUND-BLOCK-DROP-TIMING).
+/// sees an ordinary binding passed.
 ///
-/// Nothing may run in a different order, so the call must be the first
-/// thing the statement evaluates that is not *quiet* (a name, a
-/// literal, a field of one): the root of the whole initializer, or an
-/// argument of the call that is the whole statement, with only quiet
-/// operands before it. A statement that is a block's tail is left
-/// alone, since the block's value would then touch the binding.
+/// **Order.** Nothing may run in a different order. What the statement
+/// evaluates before the call must be quiet (a name, a literal, a field
+/// of one), or a scalar computed on its own, which is bound in front
+/// too, in order (`both(note(1), &mk())` binds `note(1)` first).
+/// Anything conditional -- a branch, the right of `&&` -- stops the
+/// search.
 ///
-/// A read-through must produce an owning value itself. A window, a
-/// reference, a `str` or a `ptr` may point into the temporary, and the
-/// temporary used to outlive everything; it would now be freed under
-/// them.
+/// **Lifetime.** The temporary now dies at the end of the block, where
+/// before it leaked and so outlived everything. A value derived from it
+/// must therefore be *sealed* before it leaves the statement: it passes
+/// through a call that returns a scalar or a fresh owning value
+/// (`File::independent_calls`), a `print`, or a condition. A window or a
+/// pointer into the temporary (`val s = first(&mk())`) is not, and that
+/// temporary is left alone.
 fn hoist_owning_receivers(
     program: &mut File,
     interner: &mut DefaultStringInterner,
@@ -163,134 +163,241 @@ fn hoist_owning_receivers(
     for index in 0..program.expression.len() {
         let block = ExprRef(index as u32);
         let Some(Expr::Block(stmts)) = program.expression.get_ref(&block) else { continue };
-        let last = stmts.len().saturating_sub(1);
         // Most blocks hoist nothing; only those that do pay for a copy.
-        if !stmts.iter().enumerate().any(|(i, s)| {
-            hoist_target(program, interner, expr_types, analysis, *s, i == last).is_some()
-        }) {
+        let finder = Finder { program, interner, expr_types, analysis };
+        if !stmts.iter().any(|s| finder.plan(*s).is_some()) {
             continue;
         }
         let mut stmts = stmts.clone();
-        let mut changed = false;
         let mut i = 0;
         while i < stmts.len() {
-            let tail = i + 1 == stmts.len();
-            let Some(hoist) = hoist_target(program, interner, expr_types, analysis, stmts[i], tail)
-            else {
+            let finder = Finder { program, interner, expr_types, analysis };
+            let Some(plan) = finder.plan(stmts[i]) else {
                 i += 1;
                 continue;
             };
-            let name = interner.get_or_intern(format!("{TEMP_NAME}_{counter}"));
-            counter += 1;
-            let bind = match hoist {
-                Hoist::Receiver { root, holder } => {
-                    let Some(root_ty) = expr_types.get(&root).cloned() else { break };
-                    let root_at = program.location_pool.get_expr_location(&root).copied();
-                    let ident = add_expr(program, Expr::Identifier(name), root_at);
-                    let Some(holder_expr) = program.expression.get(&holder) else { break };
-                    let Some(rerooted) = with_receiver(holder_expr, ident) else { break };
-                    program.expression.update(&holder, rerooted);
-                    expr_types.insert(ident, root_ty.clone());
-                    add_stmt(program, Stmt::Val(name, Some(root_ty), root), root_at)
+            let mut binds = Vec::with_capacity(plan.len());
+            for (expr, ty) in plan {
+                let name = interner.get_or_intern(format!("{TEMP_NAME}_{counter}"));
+                counter += 1;
+                // The expression moves to a new node and its own ref
+                // becomes the name, so whatever held it -- an argument
+                // list, a `&`, a receiver -- now holds the name.
+                let Some(moved_expr) = program.expression.get(&expr) else { break };
+                let at = program.location_pool.get_expr_location(&expr).copied();
+                let moved = add_expr(program, moved_expr, at);
+                program.expression.update(&expr, Expr::Identifier(name));
+                if let Some(path) = program.call_paths.remove(&expr) {
+                    program.call_paths.insert(moved, path);
                 }
-                Hoist::Argument(arg, ty) => {
-                    // The call moves to a new node and its own ref
-                    // becomes the name, so whatever held the argument
-                    // -- an argument list, a `&` -- now holds the name.
-                    let Some(call) = program.expression.get(&arg) else { break };
-                    let at = program.location_pool.get_expr_location(&arg).copied();
-                    let moved = add_expr(program, call, at);
-                    program.expression.update(&arg, Expr::Identifier(name));
-                    if let Some(path) = program.call_paths.remove(&arg) {
-                        program.call_paths.insert(moved, path);
-                    }
-                    expr_types.insert(moved, ty.clone());
-                    add_stmt(program, Stmt::Val(name, Some(ty), moved), at)
+                if program.independent_calls.remove(&expr) {
+                    program.independent_calls.insert(moved);
                 }
-            };
-            // Not advanced: the new statement may hoist a call of its
-            // own (`mk().renamed().renamed()`).
-            stmts.insert(i, bind);
-            changed = true;
-        }
-        if changed {
-            program.expression.update(&block, Expr::Block(stmts));
-        }
-    }
-}
-
-/// What a statement binds in front of itself.
-enum Hoist {
-    /// The fresh call at the root of a read-through, and the step that
-    /// reads it.
-    Receiver { root: ExprRef, holder: ExprRef },
-    /// A fresh call passed as an argument (possibly under `&`), and its
-    /// type.
-    Argument(ExprRef, TypeDecl),
-}
-
-/// The first call `stmt` should bind in front of itself, if any.
-fn hoist_target(
-    program: &File,
-    interner: &DefaultStringInterner,
-    expr_types: &HashMap<ExprRef, TypeDecl>,
-    analysis: &DropAnalysis,
-    stmt: StmtRef,
-    tail: bool,
-) -> Option<Hoist> {
-    let fresh_owner = |e: &ExprRef| {
-        produces_fresh_value(program, interner, e)
-            && expr_types.get(e).is_some_and(|t| analysis.contains_drop(t))
-    };
-    let (rhs, initializer) = match program.statement.get_ref(&stmt)? {
-        Stmt::Val(_, _, rhs) | Stmt::Var(_, _, Some(rhs)) => (*rhs, true),
-        Stmt::Expression(e) if !tail => (*e, false),
-        _ => return None,
-    };
-    if initializer
-        && let Some((root, holder, _)) = chain_root(program, rhs)
-        && fresh_owner(&root)
-        && expr_types.get(&rhs).is_some_and(|t| analysis.contains_drop(t))
-    {
-        return Some(Hoist::Receiver { root, holder });
-    }
-    let args: &[ExprRef] = match program.expression.get_ref(&rhs)? {
-        Expr::MethodCall(receiver, _, args) => {
-            if !is_quiet(program, receiver) {
-                return None;
+                expr_types.insert(moved, ty.clone());
+                expr_types.insert(expr, ty.clone());
+                binds.push(add_stmt(program, Stmt::Val(name, Some(ty), moved), at));
             }
-            args
+            // Not advanced: a new statement may hoist a call of its own
+            // (`mk().renamed().renamed()`).
+            stmts.splice(i..i, binds);
         }
-        Expr::AssociatedFunctionCall(_, _, args) => args,
-        Expr::Call(_, list) => match program.expression.get_ref(list)? {
-            Expr::ExprList(args) => args,
+        program.expression.update(&block, Expr::Block(stmts));
+    }
+}
+
+/// What a walk over one subexpression found, in evaluation order.
+enum Found {
+    /// It evaluates nothing.
+    Quiet,
+    /// The scalars to bind first, then the temporary.
+    Plan(Vec<(ExprRef, TypeDecl)>),
+    /// It runs something no plan may move ahead of.
+    Effect,
+}
+
+struct Finder<'a> {
+    program: &'a File,
+    interner: &'a DefaultStringInterner,
+    expr_types: &'a HashMap<ExprRef, TypeDecl>,
+    analysis: &'a DropAnalysis,
+}
+
+impl Finder<'_> {
+    /// What `stmt` binds in front of itself, in order.
+    fn plan(&self, stmt: StmtRef) -> Option<Vec<(ExprRef, TypeDecl)>> {
+        let root = match self.program.statement.get_ref(&stmt)? {
+            Stmt::Val(_, _, rhs) | Stmt::Var(_, _, Some(rhs)) => *rhs,
+            Stmt::Expression(e) | Stmt::Return(Some(e)) => *e,
             _ => return None,
-        },
-        _ => return None,
-    };
-    for arg in args {
-        // The operand of a `&` has no recorded type of its own; the
-        // borrow's type names it.
-        let (call, ty) = match program.expression.get_ref(arg)? {
-            Expr::Unary(crate::ast::UnaryOp::Borrow | crate::ast::UnaryOp::BorrowMut, inner) => {
-                match expr_types.get(arg) {
-                    Some(TypeDecl::Ref { inner: ty, .. }) => (*inner, Some((**ty).clone())),
-                    _ => (*inner, None),
-                }
-            }
-            _ => (*arg, expr_types.get(arg).cloned()),
         };
-        if let Some(ty) = ty
-            && produces_fresh_value(program, interner, &call)
-            && analysis.contains_drop(&ty)
-        {
-            return Some(Hoist::Argument(call, ty));
-        }
-        if !is_quiet(program, arg) {
-            return None;
+        // The root is the statement's value, never a temporary itself.
+        let sealed = self.seals(&root);
+        match self.children(&root, sealed) {
+            Found::Plan(plan) => Some(plan),
+            _ => None,
         }
     }
-    None
+
+    fn ty(&self, e: &ExprRef) -> Option<&TypeDecl> {
+        self.expr_types.get(e)
+    }
+
+    /// A value of `e` cannot point into anything: a scalar, or a fresh
+    /// owning value.
+    fn seals(&self, e: &ExprRef) -> bool {
+        self.ty(e).is_some_and(is_scalar) || self.program.independent_calls.contains(e)
+    }
+
+    fn fresh_owner(&self, e: &ExprRef) -> Option<TypeDecl> {
+        let ty = self.ty(e)?;
+        (produces_fresh_value(self.program, self.interner, e) && self.analysis.contains_drop(ty))
+            .then(|| ty.clone())
+    }
+
+    /// `e` as an operand the temporary may be passed through: an
+    /// argument, a receiver, a borrow of one.
+    fn operand(&self, e: &ExprRef, sealed: bool) -> Found {
+        if sealed && let Some(ty) = self.fresh_owner(e) {
+            return Found::Plan(vec![(*e, ty)]);
+        }
+        // `&mk()`: the operand of a `&` has no recorded type of its
+        // own; the borrow's names it.
+        if let Some(Expr::Unary(UnaryOp::Borrow | UnaryOp::BorrowMut, inner)) = self.program.expression.get_ref(e)
+            && sealed
+            && produces_fresh_value(self.program, self.interner, inner)
+            && let Some(TypeDecl::Ref { inner: ty, .. }) = self.ty(e)
+            && self.analysis.contains_drop(ty)
+        {
+            return Found::Plan(vec![(*inner, (**ty).clone())]);
+        }
+        self.walk(e, sealed)
+    }
+
+    /// Operands evaluated left to right. A scalar one that runs
+    /// something is bound ahead of a later temporary, so it still runs
+    /// first.
+    fn sequence(&self, items: &[ExprRef], sealed: bool, as_operands: bool) -> Found {
+        let mut first: Vec<(ExprRef, TypeDecl)> = Vec::new();
+        for item in items {
+            let found = if as_operands { self.operand(item, sealed) } else { self.walk(item, sealed) };
+            match found {
+                Found::Quiet => {}
+                Found::Plan(mut plan) => {
+                    first.append(&mut plan);
+                    return Found::Plan(first);
+                }
+                Found::Effect => match self.ty(item) {
+                    Some(ty) if is_scalar(ty) && *ty != TypeDecl::Unit => first.push((*item, ty.clone())),
+                    _ => return Found::Effect,
+                },
+            }
+        }
+        if first.is_empty() { Found::Quiet } else { Found::Effect }
+    }
+
+    /// The parts of `e` evaluated before `e` itself, then `e`.
+    fn children(&self, e: &ExprRef, sealed: bool) -> Found {
+        let p = self.program;
+        let Some(expr) = p.expression.get_ref(e) else { return Found::Effect };
+        let then_effect = |found: Found| match found {
+            Found::Quiet => Found::Effect,
+            other => other,
+        };
+        match expr {
+            Expr::MethodCall(receiver, _, args) => {
+                // Through a call whose value cannot point anywhere,
+                // whatever went in is sealed.
+                let inner = sealed || self.seals(e);
+                let mut items = vec![*receiver];
+                items.extend(args.iter().copied());
+                // A receiver the call reads an element out of is not a
+                // place a temporary may die: the element is a copy.
+                if self.reads_kept_element(e) {
+                    return then_effect(self.sequence(&items, false, false));
+                }
+                then_effect(self.sequence(&items, inner, true))
+            }
+            Expr::Call(_, list) => {
+                let inner = sealed || self.seals(e);
+                match p.expression.get_ref(list) {
+                    Some(Expr::ExprList(args)) => then_effect(self.sequence(args, inner, true)),
+                    _ => Found::Effect,
+                }
+            }
+            Expr::AssociatedFunctionCall(_, _, args) => {
+                let inner = sealed || self.seals(e);
+                then_effect(self.sequence(args, inner, true))
+            }
+            Expr::BuiltinCall(func, args) => {
+                use crate::ast::BuiltinFunction as B;
+                // A print reads its argument and keeps nothing; any
+                // other builtin may store it (`ptr_write`).
+                if matches!(func, B::Print | B::Println | B::EPrint | B::EPrintln) {
+                    then_effect(self.sequence(args, true, true))
+                } else {
+                    then_effect(self.sequence(args, false, false))
+                }
+            }
+            Expr::FieldAccess(inner, _) | Expr::TupleAccess(inner, _) => {
+                let inner_sealed = sealed || self.ty(e).is_some_and(is_scalar);
+                self.operand(inner, inner_sealed)
+            }
+            Expr::Cast(inner, _) | Expr::Unary(_, inner) => {
+                let inner_sealed = sealed || self.ty(e).is_some_and(is_scalar);
+                self.walk(inner, inner_sealed)
+            }
+            Expr::Binary(op, a, b) => {
+                let inner_sealed = sealed || self.ty(e).is_some_and(is_scalar);
+                if matches!(op, crate::ast::Operator::LogicalAnd | crate::ast::Operator::LogicalOr) {
+                    // The right side runs only sometimes.
+                    return match self.walk(a, inner_sealed) {
+                        Found::Quiet if matches!(self.walk(b, false), Found::Quiet) => Found::Quiet,
+                        Found::Quiet => Found::Effect,
+                        other => other,
+                    };
+                }
+                let found = self.sequence(&[*a, *b], inner_sealed, false);
+                // An operator on anything but scalars is a call.
+                let scalar_operands = [a, b].iter().all(|x| self.ty(x).is_some_and(is_scalar));
+                match found {
+                    Found::Quiet if !scalar_operands => Found::Effect,
+                    other => other,
+                }
+            }
+            Expr::StructLiteral(_, fields) => {
+                let values: Vec<ExprRef> = fields.iter().map(|(_, v)| *v).collect();
+                self.sequence(&values, sealed, false)
+            }
+            Expr::TupleLiteral(items) | Expr::ArrayLiteral(items) => self.sequence(items, sealed, false),
+            // Only the condition runs unconditionally, and a condition
+            // is a `bool`: it seals.
+            Expr::IfElifElse(cond, ..) => then_effect(self.walk(cond, true)),
+            Expr::Match(scrutinee, _) => then_effect(self.walk(scrutinee, false)),
+            _ => {
+                if is_quiet(p, e) {
+                    Found::Quiet
+                } else {
+                    Found::Effect
+                }
+            }
+        }
+    }
+
+    /// `e` where it is not itself a candidate: a quiet leaf, or its
+    /// children.
+    fn walk(&self, e: &ExprRef, sealed: bool) -> Found {
+        if is_quiet(self.program, e) {
+            return Found::Quiet;
+        }
+        self.children(e, sealed)
+    }
+
+    fn reads_kept_element(&self, e: &ExprRef) -> bool {
+        matches!(
+            self.program.expression.get_ref(e),
+            Some(Expr::MethodCall(_, m, _)) if self.interner.resolve(*m).is_some_and(reads_a_kept_element)
+        )
+    }
 }
 
 /// An operand whose evaluation runs nothing: a name, a literal, a field

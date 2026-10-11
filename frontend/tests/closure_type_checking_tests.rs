@@ -307,6 +307,26 @@ fn assigning_to_a_capture_of_an_escaping_closure_is_rejected() {
     );
 }
 
+/// Passing it from inside an index is passing it all the same: the
+/// scan used to skip the `[..]` and leave the closure sharing.
+#[test]
+fn a_closure_passed_inside_an_index_keeps_a_copy() {
+    let err = parse_and_type_check(
+        "fn run(g: fn () -> u64) -> u64 { g() }
+        fn main() -> u64 {
+            var count: u64 = 0u64
+            val bump = fn() -> u64 { count = count + 1u64  0u64 }
+            val a: [u64; 2] = [1u64, 2u64]
+            a[run(bump)]
+        }",
+    )
+    .expect_err("expected a write in a closure passed from an index to be rejected");
+    assert!(
+        err.contains(CAPTURED_ASSIGN) && err.contains("count"),
+        "expected the captured-assign error naming `count`, got: {err}"
+    );
+}
+
 /// Returning it is the other way out of the frame. The literal is not
 /// even bound to a name here, which is enough on its own.
 #[test]

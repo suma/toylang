@@ -76,6 +76,32 @@ fn run(body: &str) -> i64 {
     v
 }
 
+/// A transfer inside an index is still a transfer: the walk used to
+/// stop at the indexed value, so the second `take(c)` went unseen and
+/// the slot was freed twice.
+#[test]
+fn a_move_inside_an_index_is_seen() {
+    let diagnostic = move_diagnostic(
+        "fn take(c: Cell<i64>) -> u64 {
+    var store: Vec<Cell<i64>> = Vec::new()
+    store.push(c)
+    0u64
+}
+fn main() -> i64 {
+    val a: [i64; 2] = [1i64, 2i64]
+    val c: Cell<i64> = Cell::new(7i64)
+    val x: i64 = a[take(c)]
+    take(c)
+    x
+}",
+    );
+    assert!(
+        diagnostic.message.contains("`c` was moved"),
+        "the binding should be named: {}",
+        diagnostic.message
+    );
+}
+
 #[test]
 fn reading_a_value_after_it_was_pushed_into_a_vec_is_rejected() {
     // The motivating case. Without the check, `c` frees the slot at the

@@ -237,8 +237,12 @@ impl<'a> Scan<'a> {
                 }
             }
             Expr::Unary(_, operand) => self.walk_expr(operand),
-            Expr::FieldAccess(obj, _) | Expr::TupleAccess(obj, _) | Expr::SliceAccess(obj, _) => {
-                self.walk_expr(obj)
+            Expr::FieldAccess(obj, _) | Expr::TupleAccess(obj, _) => self.walk_expr(obj),
+            Expr::SliceAccess(obj, info) => {
+                self.walk_expr(obj);
+                for bound in [info.start, info.end].into_iter().flatten() {
+                    self.walk_expr(bound);
+                }
             }
             Expr::Cast(inner, _) | Expr::Try { inner, .. } => self.walk_expr(inner),
             // `a ?? b` — both operands are uses as a value (the

@@ -525,6 +525,18 @@ fn a_parallel_loop_that_depends_on_order_is_refused() {
             "fn main() -> u64 {\n    parallel for i in 0u64..4u64 {\n        if i > 2u64 { return 1u64 }\n    }\n    0u64\n}",
             3,
         ),
+        // An index is code the body runs: the walk used to stop at
+        // the indexed value and miss the write inside `[..]`.
+        (
+            "an accumulator in an index",
+            "fn main() -> u64 {\n    var n = 0u64\n    val a: [u64; 4] = [1u64, 2u64, 3u64, 4u64]\n    parallel for i in 0u64..4u64 {\n        val x = a[{ n = n + 1u64\n            i }]\n    }\n    n\n}",
+            5,
+        ),
+        (
+            "an accumulator in an assignment target's index",
+            "fn main() -> u64 {\n    var n = 0u64\n    var a: [u64; 4] = [1u64, 2u64, 3u64, 4u64]\n    parallel for i in 0u64..4u64 {\n        a[{ n = n + 1u64\n            i }] = i\n    }\n    n\n}",
+            5,
+        ),
     ];
     for (what, src, line) in cases {
         let mut options = interpreter::RunOptions::default();

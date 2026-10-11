@@ -186,7 +186,13 @@ pub(crate) fn child_exprs(expr: &Expr) -> Vec<ExprRef> {
     match expr {
         Expr::Binary(_, a, b) | Expr::Assign(a, b) | Expr::Range(a, b) => vec![*a, *b],
         Expr::Unary(_, a) | Expr::Cast(a, _) | Expr::Try { inner: a, .. } => vec![*a],
-        Expr::FieldAccess(a, _) | Expr::TupleAccess(a, _) | Expr::SliceAccess(a, _) => vec![*a],
+        Expr::FieldAccess(a, _) | Expr::TupleAccess(a, _) => vec![*a],
+        // `a[i]` and `a[s..e]`: the index and both bounds are code too.
+        Expr::SliceAccess(a, info) => {
+            let mut out = vec![*a];
+            out.extend([info.start, info.end].into_iter().flatten());
+            out
+        }
         Expr::NullCoalesce { lhs, rhs, .. } => vec![*lhs, *rhs],
         Expr::ExprList(items) | Expr::TupleLiteral(items) | Expr::ArrayLiteral(items) => {
             items.clone()
@@ -277,6 +283,8 @@ fn walk_order(
     match expr {
         Expr::Assign(lhs, rhs) => {
             walk_order(program, interner, &rhs, bound, own_level, out);
+            // The target's own index (`out[{ n = n + 1; i }] = ..`) runs too.
+            walk_order(program, interner, &lhs, bound, own_level, out);
             if let Some(name) = assigned_root(program, &lhs)
                 && !bound.contains(&name)
             {

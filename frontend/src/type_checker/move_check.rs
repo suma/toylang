@@ -1761,7 +1761,12 @@ impl MoveCheck<'_> {
                     self.walk_expr(*e, Use::Read, conditional);
                 }
             }
-            Expr::SliceAccess(object, _) => self.walk_expr(*object, Use::Read, conditional),
+            Expr::SliceAccess(object, info) => {
+                self.walk_expr(*object, Use::Read, conditional);
+                for bound in [info.start, info.end].into_iter().flatten() {
+                    self.walk_expr(bound, Use::Read, conditional);
+                }
+            }
             Expr::SliceAssign(object, start, end, value) => {
                 self.walk_expr(*object, Use::Read, conditional);
                 for bound in [start, end].into_iter().flatten() {

@@ -2210,7 +2210,7 @@ impl<'a> FunctionLower<'a> {
 
     /// Remember that these locals hold something this scope does not
     /// own, so no `match` arm over them takes a drop target.
-    fn mark_not_owned(&mut self, leaves: &[(crate::ir::LocalId, crate::ir::Type)]) {
+    pub(crate) fn mark_not_owned(&mut self, leaves: &[(crate::ir::LocalId, crate::ir::Type)]) {
         for (local, _) in leaves {
             self.not_owned_locals.insert(*local);
         }

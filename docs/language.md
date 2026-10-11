@@ -4118,10 +4118,13 @@ particular a payload the arms bind is owned by that binding: it is
 dropped once on every way out of the `match` (falling off the arm,
 `return`, `break`, `continue`), and an arm may hand it on
 (`keep.push(v)`, `return v`) under the ownership rules for any
-binding. The exception is a call named `next`: an iterator hands out
-each element of a container as a shallow copy, as `get` does, so its
-item is not given an owner (`for x in v.iter()` never frees `v`'s
-elements).
+binding. The exception is a call named `next` (or `get` / `borrow`):
+an iterator hands out each element of a container as a shallow copy,
+as `get` does, so its item is not given an owner — not by the hidden
+binding, not by an arm, and not by a `val` bound to it either
+(`for x in v.iter()`, `match it.next() { .. }` and `val m = it.next()`
+never free `v`'s elements). See [Lending an
+element](#lending-an-element-borrow).
 
 #### Alternatives, ranges, and `@` bindings
 
@@ -7081,6 +7084,14 @@ escape rule that stops a `Span<T>` from leaving its buffer's frame
 (`[E0026]`) covers it. Changing the container's size while a borrow is
 alive is **not** checked, and the borrow is not guaranteed to mean
 anything afterwards — the same footing `Span<T>` is on.
+
+An iterator's `next` answers the same shallow copy, and has no
+`borrow` to point at, so it is not refused: a binding of its result
+(`val m = it.next()`), a `match` arm over it and a `for` loop's item
+**own nothing** and are never dropped. The rule reads the name, so an
+iterator whose `next` makes a fresh owning value (`map` with a closure
+that builds a `String`) leaks it rather than freeing it — the safe
+side.
 
 `SoaVec<T>` has no `borrow`: its elements are split across columns and
 have no address to lend. An owning element cannot be read back out of

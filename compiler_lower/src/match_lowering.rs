@@ -1088,6 +1088,16 @@ impl<'a> FunctionLower<'a> {
                 None,
             );
             call.reload.apply(self);
+            // NEXT-ITEM-ALIAS: `match it.next() { Some(s) => .. }` reads
+            // an element the container keeps, so no arm may take a
+            // drop target over its payload.
+            if self
+                .interner
+                .resolve(method_sym)
+                .is_some_and(frontend::type_checker::reads_a_kept_element)
+            {
+                self.mark_not_owned(&crate::bindings::flatten_enum_storage_locals(&storage));
+            }
             return Ok(MatchScrutinee::Enum(storage));
         }
         // AOT-MATCH-SCRUTINEE-EXPAND: `match func(...)` where the

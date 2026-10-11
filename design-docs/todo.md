@@ -17,6 +17,7 @@
 - **COMPOUND-CALL-EXPR-POS (読み出しの根) — `mk().n` / `triple(1).2` / `mk().get()` / `v.get(i).len()` がどの位置でも compiled レーンで動く**
 - **STDLIB-CHECK-FIXED の一部 — 全体走査 pass の clone と行番号の数え直しを削り、型検査の固定費 8.0 → 6.7 ms** (残りは未実装節)
 - **OWNING-TEMP-DROP — `String::from_str("a").len()` / `mk().n` の一時値をスカラーの読み出しの後で drop する** (残りは未実装節)
+- **NEXT-ITEM-ALIAS — `val m = it.next()` / `match it.next()` / for-in の item に所有者を付けない (二重解放と tree-walker のずれを解消)**
 
 ### 2026-10-08
 
@@ -671,17 +672,6 @@
   フィールドは漏れる (`fn first(self: Self) -> String { self.s }` の `self.t`)。Rust の
   部分移動のように、移ったフィールドを経路で持てば両方消える (drop glue がフィールド
   単位で飛ばせることが前提)。
-
-- **NEXT-ITEM-ALIAS — iterator の item は別名なのに所有者が付く形がある** —
-  `VecIter<T>::next` は要素を浅いコピーで返す (`get` と同じ、ELEMENT-BORROW)。
-  for-in / `while val` は腕が必ず `continue` で抜けるので item を drop しないが、
-  `val m = it.next()` と束縛する形、腕の末尾まで走る `match it.next() { .. }` は
-  compiled レーンで**コンテナの要素を解放する** (`Vec<String>` で `--heap-check=poison`
-  が止める)。逆に **tree-walker は for-in の item も解放する** (live バイトが減る、
-  compiled レーンと割れる)。E0028 が `get` にしか効かないのと同根で、直すなら
-  `next` の戻りを借用として扱う (`&T` を返す iterator) か、名前で E0028 と同じ扱いにする。
-  MATCH-TEMP-EXIT-LEAK で呼び出しの scrutinee を束縛したとき、`next()` だけはこのため
-  除外した (2026-10-01)。
 
 - **WINDOW-ESCAPE-UNWRAP: `Option` から出した窓の脱出を見逃す** —
   `[E0026]` は `v.as_span()` (`Option<Span<T>>`) をそのまま返すのは

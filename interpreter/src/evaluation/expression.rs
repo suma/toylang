@@ -870,6 +870,12 @@ impl EvaluationContext<'_> {
             | Some(Expr::Unary(frontend::ast::UnaryOp::BorrowMut, inner)) => {
                 self.is_place_expression(&inner)
             }
+            // NEXT-ITEM-ALIAS: `it.next()` / `v.get(i)` answer an
+            // element the container keeps; the payload is its storage.
+            Some(Expr::MethodCall(_, method, _)) => self
+                .string_interner
+                .resolve(method)
+                .is_some_and(frontend::type_checker::reads_a_kept_element),
             _ => false,
         }
     }

@@ -1280,6 +1280,17 @@ impl MoveCheck<'_> {
         ))
     }
 
+    /// Whether `rhs` is a call answering an element its receiver keeps
+    /// (`it.next()`), other than `get`, which `[E0028]` refuses.
+    fn reads_kept_element(&self, rhs: ExprRef) -> bool {
+        let Some(Expr::MethodCall(_, method, _)) = self.program.expression.get_ref(&rhs) else {
+            return false;
+        };
+        self.interner
+            .resolve(*method)
+            .is_some_and(|m| m != "get" && super::reads_a_kept_element(m))
+    }
+
     /// The declared or inferred type of a `val` / `var` initializer.
     fn binding_type(&self, annotation: &Option<TypeDecl>, rhs: ExprRef) -> Option<TypeDecl> {
         if let Some(t) = annotation
@@ -1425,6 +1436,14 @@ impl MoveCheck<'_> {
                         // lane.
                         self.transferred.insert(stmt_ref);
                         self.borrows.insert(*name);
+                    } else if self.is_owning(&ty) && self.reads_kept_element(*rhs) {
+                        // NEXT-ITEM-ALIAS: `val m = it.next()` names an
+                        // element the container still owns (a shallow
+                        // copy, like `get`, which `[E0028]` refuses
+                        // instead -- `next` has no `borrow` to point
+                        // at). The binding owns nothing, so it is not
+                        // dropped and handing it on is no move.
+                        self.transferred.insert(stmt_ref);
                     } else if self.is_owning(&ty) {
                         self.declare_owning(*name, stmt_ref, *rhs);
                     }

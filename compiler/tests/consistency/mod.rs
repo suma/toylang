@@ -91,3 +91,4 @@ mod spawn;
 mod name_resolution;
 mod loop_values;
 mod struct_sugar;
+mod next_item_alias;

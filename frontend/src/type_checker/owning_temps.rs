@@ -168,12 +168,26 @@ fn chain_root(program: &File, access: ExprRef) -> Option<(ExprRef, ExprRef, usiz
 fn produces_fresh_value(program: &File, interner: &DefaultStringInterner, expr: &ExprRef) -> bool {
     match program.expression.get_ref(expr) {
         Some(Expr::Call(..)) | Some(Expr::AssociatedFunctionCall(..)) => true,
-        Some(Expr::MethodCall(_, method, _)) => !matches!(
-            interner.resolve(*method),
-            Some("get" | "next" | "borrow" | "__getitem__")
-        ),
+        Some(Expr::MethodCall(_, method, _)) => {
+            !interner.resolve(*method).is_some_and(reads_a_kept_element)
+        }
         _ => false,
     }
+}
+
+/// A method whose result is an element the receiver keeps owning:
+/// `get` / `next` / `__getitem__` hand back a shallow copy of it,
+/// `borrow` a reference. Nothing that receives one may drop it -- not
+/// a binding (`val m = it.next()`), not a `match` arm over it, not a
+/// temporary -- or the container's own buffer is freed under it.
+///
+/// Read by name, the way `[E0028]` reads `get`: the callee cannot
+/// answer, since a body that copies an element out of raw memory is
+/// spelled the same whether it lends or hands over (`pop`). An
+/// iterator whose `next` makes a fresh value (`map`) therefore leaks
+/// it, which is the safe side.
+pub fn reads_a_kept_element(method: &str) -> bool {
+    matches!(method, "get" | "next" | "borrow" | "__getitem__")
 }
 
 /// A value that cannot point anywhere.

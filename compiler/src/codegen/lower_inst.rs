@@ -24,7 +24,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 self.builder.ins().iconst(types::I64, *id as i64)
             }
             _ => {
-                let call = self.builder.ins().call(self.runtime.alloc_current, &[]);
+                let call = self.call_rt(|r| r.alloc_current, &[]);
                 self.builder.inst_results(call)[0]
             }
         }
@@ -378,12 +378,12 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     UnaryOp::Sqrt => self.builder.ins().sqrt(v),
                     UnaryOp::Floor => self.builder.ins().floor(v),
                     UnaryOp::Ceil => self.builder.ins().ceil(v),
-                    UnaryOp::Sin => self.emit_libm_unary_call(self.runtime.sin, v)?,
-                    UnaryOp::Cos => self.emit_libm_unary_call(self.runtime.cos, v)?,
-                    UnaryOp::Tan => self.emit_libm_unary_call(self.runtime.tan, v)?,
-                    UnaryOp::Log => self.emit_libm_unary_call(self.runtime.log, v)?,
-                    UnaryOp::Log2 => self.emit_libm_unary_call(self.runtime.log2, v)?,
-                    UnaryOp::Exp => self.emit_libm_unary_call(self.runtime.exp, v)?,
+                    UnaryOp::Sin => self.emit_libm_unary_call(|r| r.sin, v)?,
+                    UnaryOp::Cos => self.emit_libm_unary_call(|r| r.cos, v)?,
+                    UnaryOp::Tan => self.emit_libm_unary_call(|r| r.tan, v)?,
+                    UnaryOp::Log => self.emit_libm_unary_call(|r| r.log, v)?,
+                    UnaryOp::Log2 => self.emit_libm_unary_call(|r| r.log2, v)?,
+                    UnaryOp::Exp => self.emit_libm_unary_call(|r| r.exp, v)?,
                 };
                 self.record_result(inst, result);
             }
@@ -534,9 +534,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 let e = self.value(*env);
                 let f = self.value(*from);
                 let u = self.value(*until);
-                self.builder
-                    .ins()
-                    .call(self.runtime.par_for, &[f, u, e, body_addr]);
+                self.call_rt(|r| r.par_for, &[f, u, e, body_addr]);
             }
             InstKind::TaskSpawn { body, env, size } => {
                 // CONCURRENCY B2: the runtime copies the environment
@@ -548,7 +546,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 let body_addr = self.builder.ins().func_addr(types::I64, func_ref);
                 let e = self.value(*env);
                 let n = self.value(*size);
-                let call = self.builder.ins().call(self.runtime.task_spawn, &[body_addr, e, n]);
+                let call = self.call_rt(|r| r.task_spawn, &[body_addr, e, n]);
                 if let Some((vid, _)) = inst.result {
                     let h = self.builder.inst_results(call)[0];
                     self.values.insert(vid.0, h);
@@ -735,7 +733,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 }
                 let env_size_bytes = (1 + captures.len()) as i64 * 8;
                 let size_val = self.builder.ins().iconst(types::I64, env_size_bytes);
-                let alloc_call = self.builder.ins().call(self.runtime.malloc, &[size_val]);
+                let alloc_call = self.call_rt(|r| r.malloc, &[size_val]);
                 let alloc_results = self.builder.inst_results(alloc_call).to_vec();
                 let env_ptr = *alloc_results.first().ok_or_else(|| {
                     "MakeClosure: malloc returned no result".to_string()
@@ -995,7 +993,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
     /// or back at stdout.
     fn set_print_stream(&mut self, on: bool) {
         let flag = self.builder.ins().iconst(cranelift_codegen::ir::types::I8, on as i64);
-        let helper = self.runtime.print_stream;
+        let helper = self.rt(|r| r.print_stream);
         self.builder.ins().call(helper, &[flag]);
     }
 
@@ -1021,31 +1019,31 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     return self.lower_simd_render(inst, v, *vt, Some(*newline));
                 }
                 let (helper, call_value) = match (value_ty, newline) {
-                    (IrType::I64, false) => (self.runtime.print_i64, v),
-                    (IrType::I64, true) => (self.runtime.println_i64, v),
-                    (IrType::U64, false) => (self.runtime.print_u64, v),
-                    (IrType::U64, true) => (self.runtime.println_u64, v),
-                    (IrType::I32, false) => (self.runtime.print_i32, v),
-                    (IrType::I32, true) => (self.runtime.println_i32, v),
-                    (IrType::U32, false) => (self.runtime.print_u32, v),
-                    (IrType::U32, true) => (self.runtime.println_u32, v),
-                    (IrType::I16, false) => (self.runtime.print_i16, v),
-                    (IrType::I16, true) => (self.runtime.println_i16, v),
-                    (IrType::U16, false) => (self.runtime.print_u16, v),
-                    (IrType::U16, true) => (self.runtime.println_u16, v),
-                    (IrType::I8, false) => (self.runtime.print_i8, v),
-                    (IrType::I8, true) => (self.runtime.println_i8, v),
-                    (IrType::U8, false) => (self.runtime.print_u8, v),
-                    (IrType::U8, true) => (self.runtime.println_u8, v),
-                    (IrType::F64, false) => (self.runtime.print_f64, v),
-                    (IrType::F64, true) => (self.runtime.println_f64, v),
+                    (IrType::I64, false) => (self.rt(|r| r.print_i64), v),
+                    (IrType::I64, true) => (self.rt(|r| r.println_i64), v),
+                    (IrType::U64, false) => (self.rt(|r| r.print_u64), v),
+                    (IrType::U64, true) => (self.rt(|r| r.println_u64), v),
+                    (IrType::I32, false) => (self.rt(|r| r.print_i32), v),
+                    (IrType::I32, true) => (self.rt(|r| r.println_i32), v),
+                    (IrType::U32, false) => (self.rt(|r| r.print_u32), v),
+                    (IrType::U32, true) => (self.rt(|r| r.println_u32), v),
+                    (IrType::I16, false) => (self.rt(|r| r.print_i16), v),
+                    (IrType::I16, true) => (self.rt(|r| r.println_i16), v),
+                    (IrType::U16, false) => (self.rt(|r| r.print_u16), v),
+                    (IrType::U16, true) => (self.rt(|r| r.println_u16), v),
+                    (IrType::I8, false) => (self.rt(|r| r.print_i8), v),
+                    (IrType::I8, true) => (self.rt(|r| r.println_i8), v),
+                    (IrType::U8, false) => (self.rt(|r| r.print_u8), v),
+                    (IrType::U8, true) => (self.rt(|r| r.println_u8), v),
+                    (IrType::F64, false) => (self.rt(|r| r.print_f64), v),
+                    (IrType::F64, true) => (self.rt(|r| r.println_f64), v),
                     // SIMD-F32: single-precision helpers take the f32
                     // at its native width and format it with the same
                     // "always a decimal point" convention.
-                    (IrType::F32, false) => (self.runtime.print_f32, v),
-                    (IrType::F32, true) => (self.runtime.println_f32, v),
-                    (IrType::Bool, false) => (self.runtime.print_bool, v),
-                    (IrType::Bool, true) => (self.runtime.println_bool, v),
+                    (IrType::F32, false) => (self.rt(|r| r.print_f32), v),
+                    (IrType::F32, true) => (self.rt(|r| r.println_f32), v),
+                    (IrType::Bool, false) => (self.rt(|r| r.print_bool), v),
+                    (IrType::Bool, true) => (self.rt(|r| r.println_bool), v),
                     (IrType::Str, _) => {
                         // The helpers take the str value as-is and read
                         // its length field, so there is nothing to
@@ -1053,9 +1051,9 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                         // byte_start and let them walk to the NUL,
                         // which truncated any str containing one.)
                         let helper = if *newline {
-                            self.runtime.println_str
+                            self.rt(|r| r.println_str)
                         } else {
-                            self.runtime.print_str
+                            self.rt(|r| r.print_str)
                         };
                         (helper, v)
                     }
@@ -1107,9 +1105,9 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     .ins()
                     .iadd_imm(symbol_addr, (*bytes_len as i64) + 1);
                 let helper = if *newline {
-                    self.runtime.println_str
+                    self.rt(|r| r.println_str)
                 } else {
-                    self.runtime.print_str
+                    self.rt(|r| r.print_str)
                 };
                 self.builder.ins().call(helper, &[addr]);
             }
@@ -1178,9 +1176,9 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     .ins()
                     .iadd_imm(symbol_addr, (text.len() as i64) + 1);
                 let helper = if *newline {
-                    self.runtime.println_str
+                    self.rt(|r| r.println_str)
                 } else {
-                    self.runtime.print_str
+                    self.rt(|r| r.print_str)
                 };
                 self.builder.ins().call(helper, &[addr]);
             }
@@ -1291,8 +1289,8 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     Some(gv) => self.builder.ins().symbol_value(types::I64, *gv),
                     None => self.builder.ins().iconst(types::I64, 0),
                 };
-                let call = self.builder.ins().call(
-                    self.runtime.dispatched_alloc,
+                let call = self.call_rt(
+                    |r| r.dispatched_alloc,
                     &[handle_v, size_v, site_v, file_v],
                 );
                 let result = self.builder.inst_results(call)[0];
@@ -1313,8 +1311,8 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     Some(gv) => self.builder.ins().symbol_value(types::I64, *gv),
                     None => self.builder.ins().iconst(types::I64, 0),
                 };
-                let call = self.builder.ins().call(
-                    self.runtime.dispatched_realloc,
+                let call = self.call_rt(
+                    |r| r.dispatched_realloc,
                     &[handle_v, ptr_v, size_v, site_v, file_v],
                 );
                 let result = self.builder.inst_results(call)[0];
@@ -1334,9 +1332,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     Some(gv) => self.builder.ins().symbol_value(types::I64, *gv),
                     None => self.builder.ins().iconst(types::I64, 0),
                 };
-                self.builder
-                    .ins()
-                    .call(self.runtime.dispatched_free, &[handle_v, ptr_v, site_v, file_v]);
+                self.call_rt(|r| r.dispatched_free, &[handle_v, ptr_v, site_v, file_v]);
             }
             InstKind::HeapCheckFree { ptr, site } => {
                 // HEAP-CHECK H5: stops, with the free's frame, when the
@@ -1348,7 +1344,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     .ok_or_else(|| "missing frame import for a heap check site".to_string())?;
                 let pre = self.diag_addr(pre_gv);
                 let suf = self.diag_addr(suf_gv);
-                self.builder.ins().call(self.runtime.heap_check_free, &[ptr_v, pre, suf]);
+                self.call_rt(|r| r.heap_check_free, &[ptr_v, pre, suf]);
             }
             InstKind::HeapPoison { ptr, size, site } => {
                 // HEAP-CHECK H4: the runtime does nothing outside a heap
@@ -1361,9 +1357,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     Some(gv) => self.builder.ins().symbol_value(types::I64, *gv),
                     None => self.builder.ins().iconst(types::I64, 0),
                 };
-                self.builder
-                    .ins()
-                    .call(self.runtime.heap_poison, &[ptr_v, size_v, site_v, file_v]);
+                self.call_rt(|r| r.heap_poison, &[ptr_v, size_v, site_v, file_v]);
             }
             InstKind::HeapCheck { ptr, offset, len, write, site } => {
                 // HEAP-CHECK H2: the runtime answers at once outside
@@ -1384,9 +1378,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     .ok_or_else(|| "missing frame import for a heap check site".to_string())?;
                 let pre = self.diag_addr(pre_gv);
                 let suf = self.diag_addr(suf_gv);
-                self.builder
-                    .ins()
-                    .call(self.runtime.heap_check, &[addr, len_v, write_v, pre, suf]);
+                self.call_rt(|r| r.heap_check, &[addr, len_v, write_v, pre, suf]);
             }
             InstKind::PtrRead { ptr, offset, elem_ty } => {
                 let cl_ty = ir_to_cranelift_ty(*elem_ty)
@@ -1448,7 +1440,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             InstKind::StrEq { a, b } => {
                 let av = self.value(*a);
                 let bv = self.value(*b);
-                let call = self.builder.ins().call(self.runtime.str_eq, &[av, bv]);
+                let call = self.call_rt(|r| r.str_eq, &[av, bv]);
                 let result = self.builder.inst_results(call)[0];
                 if let Some((vid, _)) = inst.result {
                     self.values.insert(vid.0, result);
@@ -1457,7 +1449,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             InstKind::StrFromBytes { ptr, len } => {
                 let p = self.value(*ptr);
                 let n = self.value(*len);
-                let call = self.builder.ins().call(self.runtime.str_from_bytes, &[p, n]);
+                let call = self.call_rt(|r| r.str_from_bytes, &[p, n]);
                 let result = self.builder.inst_results(call)[0];
                 if let Some((vid, _)) = inst.result {
                     self.values.insert(vid.0, result);
@@ -1470,7 +1462,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 // the concrete heap layout).
                 let av = self.value(*a);
                 let bv = self.value(*b);
-                let call = self.builder.ins().call(self.runtime.str_concat, &[av, bv]);
+                let call = self.call_rt(|r| r.str_concat, &[av, bv]);
                 let result = self.builder.inst_results(call)[0];
                 if let Some((vid, _)) = inst.result {
                     self.values.insert(vid.0, result);
@@ -1479,7 +1471,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             // DEBUG-OBS D5: the runtime walks the shadow stack and
             // builds the str; nothing here is known at compile time.
             InstKind::Backtrace => {
-                let call = self.builder.ins().call(self.runtime.backtrace_str, &[]);
+                let call = self.call_rt(|r| r.backtrace_str, &[]);
                 let result = self.builder.inst_results(call)[0];
                 if let Some((v, _)) = inst.result {
                     self.values.insert(v.0, result);
@@ -1492,18 +1484,18 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 // re-inferring at codegen.
                 let v = self.value(*value);
                 let helper = match value_ty {
-                    IrType::I64 => self.runtime.to_string_i64,
-                    IrType::U64 => self.runtime.to_string_u64,
-                    IrType::F64 => self.runtime.to_string_f64,
-                    IrType::F32 => self.runtime.to_string_f32,
-                    IrType::Bool => self.runtime.to_string_bool,
-                    IrType::Str => self.runtime.to_string_str,
-                    IrType::I8 => self.runtime.to_string_i8,
-                    IrType::U8 => self.runtime.to_string_u8,
-                    IrType::I16 => self.runtime.to_string_i16,
-                    IrType::U16 => self.runtime.to_string_u16,
-                    IrType::I32 => self.runtime.to_string_i32,
-                    IrType::U32 => self.runtime.to_string_u32,
+                    IrType::I64 => self.rt(|r| r.to_string_i64),
+                    IrType::U64 => self.rt(|r| r.to_string_u64),
+                    IrType::F64 => self.rt(|r| r.to_string_f64),
+                    IrType::F32 => self.rt(|r| r.to_string_f32),
+                    IrType::Bool => self.rt(|r| r.to_string_bool),
+                    IrType::Str => self.rt(|r| r.to_string_str),
+                    IrType::I8 => self.rt(|r| r.to_string_i8),
+                    IrType::U8 => self.rt(|r| r.to_string_u8),
+                    IrType::I16 => self.rt(|r| r.to_string_i16),
+                    IrType::U16 => self.rt(|r| r.to_string_u16),
+                    IrType::I32 => self.rt(|r| r.to_string_i32),
+                    IrType::U32 => self.rt(|r| r.to_string_u32),
                     IrType::Unit => {
                         return Err(
                             "internal error: __builtin_to_string of Unit reached codegen \
@@ -1552,7 +1544,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                             self.builder.ins().sextend(types::I64, v)
                         };
                         let bits_v = self.builder.ins().iconst(types::I64, bits);
-                        (self.runtime.format_i64, vec![widened, spec_v, bits_v])
+                        (self.rt(|r| r.format_i64), vec![widened, spec_v, bits_v])
                     }
                     IrType::U64 | IrType::U32 | IrType::U16 | IrType::U8 => {
                         let bits = match value_ty {
@@ -1567,15 +1559,15 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                             self.builder.ins().uextend(types::I64, v)
                         };
                         let bits_v = self.builder.ins().iconst(types::I64, bits);
-                        (self.runtime.format_u64, vec![widened, spec_v, bits_v])
+                        (self.rt(|r| r.format_u64), vec![widened, spec_v, bits_v])
                     }
-                    IrType::F64 => (self.runtime.format_f64, vec![v, spec_v]),
+                    IrType::F64 => (self.rt(|r| r.format_f64), vec![v, spec_v]),
                     // STDLIB-NUMERIC N5: its own helper, not a promotion
                     // through f64 -- `0.1f32` prints `0.1` at single
                     // precision and `0.10000000149011612` promoted.
-                    IrType::F32 => (self.runtime.format_f32, vec![v, spec_v]),
-                    IrType::Bool => (self.runtime.format_bool, vec![v, spec_v]),
-                    IrType::Str => (self.runtime.format_str, vec![v, spec_v]),
+                    IrType::F32 => (self.rt(|r| r.format_f32), vec![v, spec_v]),
+                    IrType::Bool => (self.rt(|r| r.format_bool), vec![v, spec_v]),
+                    IrType::Str => (self.rt(|r| r.format_str), vec![v, spec_v]),
                     IrType::Unit | IrType::Struct(_) | IrType::Tuple(_) | IrType::Enum(_)
                     // SIMD: a format spec's knobs (width / precision /
                     // radix) have no single meaning across lanes, so a
@@ -1612,9 +1604,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 let src_v = self.value(*src);
                 let dest_v = self.value(*dest);
                 let size_v = self.value(*size);
-                self.builder
-                    .ins()
-                    .call(self.runtime.memcpy, &[dest_v, src_v, size_v]);
+                self.call_rt(|r| r.memcpy, &[dest_v, src_v, size_v]);
             }
             InstKind::MemMove { src, dest, size } => {
                 // Same (src, dest, size) -> (dest, src, n) swap as
@@ -1622,9 +1612,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 let src_v = self.value(*src);
                 let dest_v = self.value(*dest);
                 let size_v = self.value(*size);
-                self.builder
-                    .ins()
-                    .call(self.runtime.memmove, &[dest_v, src_v, size_v]);
+                self.call_rt(|r| r.memmove, &[dest_v, src_v, size_v]);
             }
             InstKind::MemSet { dest, byte, size } => {
                 // libc memset takes the fill value as an `int`, so the
@@ -1641,15 +1629,13 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 } else {
                     self.builder.ins().ireduce(types::I32, byte_v)
                 };
-                self.builder
-                    .ins()
-                    .call(self.runtime.memset, &[dest_v, byte_i32, size_v]);
+                self.call_rt(|r| r.memset, &[dest_v, byte_i32, size_v]);
             }
             InstKind::MemEq { a, b, size } => {
                 let a_v = self.value(*a);
                 let b_v = self.value(*b);
                 let size_v = self.value(*size);
-                let call = self.builder.ins().call(self.runtime.mem_eq, &[a_v, b_v, size_v]);
+                let call = self.call_rt(|r| r.mem_eq, &[a_v, b_v, size_v]);
                 let result = self.builder.inst_results(call)[0];
                 if let Some((vid, _)) = inst.result {
                     self.values.insert(vid.0, result);
@@ -1667,7 +1653,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 } else {
                     self.builder.ins().ireduce(types::I8, b)
                 };
-                let call = self.builder.ins().call(self.runtime.mem_find, &[p, n, b8]);
+                let call = self.call_rt(|r| r.mem_find, &[p, n, b8]);
                 let result = self.builder.inst_results(call)[0];
                 if let Some((vid, _)) = inst.result {
                     self.values.insert(vid.0, result);
@@ -1678,10 +1664,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 let hn = self.value(*hay_len);
                 let n = self.value(*needle);
                 let nn = self.value(*needle_len);
-                let call = self
-                    .builder
-                    .ins()
-                    .call(self.runtime.mem_find_seq, &[h, hn, n, nn]);
+                let call = self.call_rt(|r| r.mem_find_seq, &[h, hn, n, nn]);
                 let result = self.builder.inst_results(call)[0];
                 if let Some((vid, _)) = inst.result {
                     self.values.insert(vid.0, result);
@@ -1694,13 +1677,13 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             // value (sentinel 0 when the stack is empty).
             InstKind::AllocPush { handle } => {
                 let handle_v = self.value(*handle);
-                self.builder.ins().call(self.runtime.alloc_push, &[handle_v]);
+                self.call_rt(|r| r.alloc_push, &[handle_v]);
             }
             InstKind::AllocPop => {
-                self.builder.ins().call(self.runtime.alloc_pop, &[]);
+                self.call_rt(|r| r.alloc_pop, &[]);
             }
             InstKind::AllocCurrent => {
-                let call = self.builder.ins().call(self.runtime.alloc_current, &[]);
+                let call = self.call_rt(|r| r.alloc_current, &[]);
                 let result = self.builder.inst_results(call)[0];
                 if let Some((vid, _)) = inst.result {
                     self.values.insert(vid.0, result);
@@ -1722,14 +1705,14 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             // and a place to get them out of step.
             InstKind::MemStat { stat } => {
                 let which = self.builder.ins().iconst(types::I64, *stat as i64);
-                let call = self.builder.ins().call(self.runtime.prof_stat, &[which]);
+                let call = self.call_rt(|r| r.prof_stat, &[which]);
                 let value = self.builder.inst_results(call)[0];
                 if let Some((vid, _)) = inst.result {
                     self.values.insert(vid.0, value);
                 }
             }
             InstKind::MemStatEnable => {
-                self.builder.ins().call(self.runtime.prof_force_counting, &[]);
+                self.call_rt(|r| r.prof_force_counting, &[]);
             }
             InstKind::RecordAllocatorLayout { name, managed, live, free_blocks, largest } => {
                 let name_v = self.value(*name);
@@ -1737,8 +1720,8 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 let live_v = self.value(*live);
                 let free_blocks_v = self.value(*free_blocks);
                 let largest_v = self.value(*largest);
-                self.builder.ins().call(
-                    self.runtime.record_allocator_layout,
+                self.call_rt(
+                    |r| r.record_allocator_layout,
                     &[name_v, managed_v, live_v, free_blocks_v, largest_v],
                 );
             }

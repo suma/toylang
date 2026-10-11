@@ -17,8 +17,9 @@
 // `mod.rs`. Adds the function back to `LowerCtx` via an
 // `impl<'a, 'b> super::LowerCtx<'a, 'b>` block.
 mod lower_inst;
-// Import / `RuntimeRefs` setup. Adds back to `CodegenSession`.
+// Import setup. Adds back to `CodegenSession`.
 mod imports;
+mod runtime_syms;
 pub(crate) mod diag_pool;
 mod simd;
 
@@ -33,7 +34,7 @@ use cranelift_codegen::Context;
 use cranelift_module::{DataDescription, DataId, Linkage as CLinkage, Module, ModuleReloc};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
-use self::imports::{abi, sext, uext, SymbolImporter};
+use self::imports::SymbolImporter;
 use frontend::ast::File;
 use string_interner::{DefaultStringInterner, DefaultSymbol, Symbol};
 
@@ -319,153 +320,8 @@ pub(crate) struct CodegenSession<M: Module> {
     /// `0..functions.len()`). `None` for a function `declare_all` left
     /// out as unreachable.
     fn_ids: Vec<Option<cranelift_module::FuncId>>,
-    // #121 Phase A: libc heap helpers for the global-allocator path.
-    libc_malloc: cranelift_module::FuncId,
-    libc_memcpy: cranelift_module::FuncId,
-    /// libc `memmove` / `memset` — `__builtin_mem_move` and
-    /// `__builtin_mem_set` (MEMORY-ACCESS M0). Until then both
-    /// builtins existed only in the tree-walker.
-    libc_memmove: cranelift_module::FuncId,
-    libc_memset: cranelift_module::FuncId,
-    /// MEMORY-ACCESS M3: the range questions, answered by
-    /// `toylang_rt` rather than libc so every lane runs one
-    /// definition.
-    rt_mem_eq: cranelift_module::FuncId,
-    rt_mem_find: cranelift_module::FuncId,
-    rt_mem_find_seq: cranelift_module::FuncId,
-    /// CONCURRENCY A2-b-2: `toy_par_for(from, until, env, body)` —
-    /// splits the range over threads and joins. The outlined body's
-    /// address is passed as a plain pointer.
-    rt_par_for: cranelift_module::FuncId,
-    /// CONCURRENCY B2: `toy_task_spawn(body, env, size) -> handle` —
-    /// copies the environment and starts the trampoline on a thread.
-    rt_task_spawn: cranelift_module::FuncId,
-    /// libm `double pow(double, double)` — used by `BinOp::Pow`.
-    libm_pow: cranelift_module::FuncId,
-    /// libm transcendentals — `double sin(double)` etc. Used by the
-    /// matching `UnaryOp::{Sin, Cos, Tan, Log, Log2, Exp}` cases.
-    /// `floor` / `ceil` use cranelift's native instructions instead.
-    libm_sin: cranelift_module::FuncId,
-    libm_cos: cranelift_module::FuncId,
-    libm_tan: cranelift_module::FuncId,
-    libm_log: cranelift_module::FuncId,
-    libm_log2: cranelift_module::FuncId,
-    libm_exp: cranelift_module::FuncId,
-    /// Helpers shipped in the `toylang_rt` crate. The driver
-    /// builds it as a staticlib and links it next to the toylang object;
-    /// these FuncIds are how codegen reaches them.
-    rt_print_i64: cranelift_module::FuncId,
-    rt_print_stream: cranelift_module::FuncId,
-    rt_println_i64: cranelift_module::FuncId,
-    rt_print_u64: cranelift_module::FuncId,
-    rt_println_u64: cranelift_module::FuncId,
-    rt_print_bool: cranelift_module::FuncId,
-    rt_println_bool: cranelift_module::FuncId,
-    rt_print_str: cranelift_module::FuncId,
-    rt_println_str: cranelift_module::FuncId,
-    rt_print_f64: cranelift_module::FuncId,
-    rt_println_f64: cranelift_module::FuncId,
-    rt_print_f32: cranelift_module::FuncId,
-    rt_print_vec: cranelift_module::FuncId,
-    rt_println_f32: cranelift_module::FuncId,
-    // NUM-W-AOT-pack Phase 2: dedicated narrow-int helpers. The
-    // AOT path now calls these directly instead of widening the
-    // value with sextend/uextend and routing through
-    // `rt_print_{i,u}64`. Output is byte-identical (the wide
-    // helpers print the same digits via `%lld` / `%llu` of an
-    // already-extended value); the win is that the codegen call
-    // site names the actual width and one cranelift extension
-    // instruction per print site is no longer emitted.
-    rt_print_i8: cranelift_module::FuncId,
-    rt_println_i8: cranelift_module::FuncId,
-    rt_print_u8: cranelift_module::FuncId,
-    rt_println_u8: cranelift_module::FuncId,
-    rt_print_i16: cranelift_module::FuncId,
-    rt_println_i16: cranelift_module::FuncId,
-    rt_print_u16: cranelift_module::FuncId,
-    rt_println_u16: cranelift_module::FuncId,
-    rt_print_i32: cranelift_module::FuncId,
-    rt_println_i32: cranelift_module::FuncId,
-    rt_print_u32: cranelift_module::FuncId,
-    rt_println_u32: cranelift_module::FuncId,
-    // Active-allocator stack helpers.
-    rt_alloc_push: cranelift_module::FuncId,
-    rt_alloc_pop: cranelift_module::FuncId,
-    rt_alloc_current: cranelift_module::FuncId,
-    // Dispatched alloc / realloc / free that consult the active
-    // allocator handle (sentinel 0 = libc direct path).
-    rt_dispatched_alloc: cranelift_module::FuncId,
-    rt_dispatched_realloc: cranelift_module::FuncId,
-    rt_dispatched_free: cranelift_module::FuncId,
-    // MEMORY_PROFILING M4: read one allocation counter / turn counting
-    // on for the run.
-    rt_str_eq: cranelift_module::FuncId,
-    rt_str_from_bytes: cranelift_module::FuncId,
-    rt_prof_stat: cranelift_module::FuncId,
-    rt_panic_alloc_budget: cranelift_module::FuncId,
-    /// HEAP-CHECK H2: `toy_heap_check(addr, len, write, prefix, suffix)`
-    /// and the entry's `toy_heap_check_poison_start()`.
-    rt_heap_check: cranelift_module::FuncId,
-    rt_heap_check_start_mode: cranelift_module::FuncId,
-    /// HEAP-CHECK H4: `toy_heap_poison(ptr, size, site, file)`.
-    rt_heap_poison: cranelift_module::FuncId,
-    /// HEAP-CHECK H5: `toy_heap_check_free(ptr, prefix, suffix)`.
-    rt_heap_check_free: cranelift_module::FuncId,
-    /// DEBUG-OBS D3: `toy_panic_at(text)` — write a pre-rendered
-    /// diagnostic to stderr and exit.
-    rt_panic_at: cranelift_module::FuncId,
-    /// DEBUG-OBS D5: `toy_backtrace_str() -> str`.
-    rt_backtrace_str: cranelift_module::FuncId,
-    /// CONCURRENCY A2: `toy_shadow_ctx()` — this thread's shadow
-    /// stack (`{ u64 depth, [*const ToyFrameInfo; CAP] }`). Called
-    /// once per activation from the prologue; the pair used to be
-    /// two globals, which two threads could not share.
-    rt_shadow_ctx: cranelift_module::FuncId,
-    /// DEBUG-OBS D6: `toy_panic_recursion()` — report a runaway
-    /// recursion and exit.
-    rt_panic_recursion: cranelift_module::FuncId,
-    /// `toy_panic_values(kind, a, b, prefix, suffix)` — a trap whose
-    /// operands are part of the message.
-    rt_panic_values: cranelift_module::FuncId,
-    /// `toy_panic_dynamic(msg, prefix, suffix)` — a panic whose text
-    /// the program built.
-    rt_panic_dynamic: cranelift_module::FuncId,
-    rt_prof_force_counting: cranelift_module::FuncId,
-    // MEMORY_PROFILING M3 residual: register an allocator's layout for
-    // the report. `(name: str-ptr, managed, live, free_blocks, largest)`
-    // all passed as u64; the C runtime reads the name via the
-    // `[bytes][NUL][u64 len]` str layout.
-    rt_record_allocator_layout: cranelift_module::FuncId,
-    // STR-INTERP-AOT: string interpolation runtime helpers.
-    // `concat` and the `to_string` family produce heap-allocated
-    // str values following the toylang str layout
-    // `[bytes][NUL][u64 len LE]`. The result pointer points at the
-    // u64 len field so it's pointer-uniform with `.rodata` strs.
-    rt_str_concat: cranelift_module::FuncId,
-    rt_to_string_i64: cranelift_module::FuncId,
-    rt_to_string_u64: cranelift_module::FuncId,
-    rt_to_string_f64: cranelift_module::FuncId,
-    rt_to_string_f32: cranelift_module::FuncId,
-    rt_to_string_vec: cranelift_module::FuncId,
-    rt_to_string_bool: cranelift_module::FuncId,
-    rt_to_string_str: cranelift_module::FuncId,
-    rt_to_string_i8: cranelift_module::FuncId,
-    rt_to_string_u8: cranelift_module::FuncId,
-    rt_to_string_i16: cranelift_module::FuncId,
-    rt_to_string_u16: cranelift_module::FuncId,
-    rt_to_string_i32: cranelift_module::FuncId,
-    rt_to_string_u32: cranelift_module::FuncId,
-    // STR-INTERP-FMT: `__builtin_format`. Five helpers cover every
-    // primitive — narrow ints are extended to i64/u64 at the call
-    // site and pass their own width as `bits`, so the runtime can
-    // render the two's-complement pattern a non-decimal radix wants.
-    rt_format_i64: cranelift_module::FuncId,
-    rt_format_u64: cranelift_module::FuncId,
-    rt_format_f64: cranelift_module::FuncId,
-    /// STDLIB-NUMERIC N5.
-    rt_format_f32: cranelift_module::FuncId,
-    rt_format_bool: cranelift_module::FuncId,
-    rt_format_str: cranelift_module::FuncId,
+    /// Every libc / libm / `toylang_rt` symbol generated code calls.
+    runtime: runtime_syms::RuntimeIds,
     /// `panic`-message symbol → data id of `.rodata` blob holding
     /// `"panic: <msg>\0"`. Layout differs from print strings.
     /// DEBUG-OBS D3: keyed by `(message, site)`, not by message alone.
@@ -678,329 +534,12 @@ pub(crate) fn make_object_module() -> Result<ObjectModule, String> {
 
 impl<M: Module> CodegenSession<M> {
     pub(crate) fn new(mut module: M) -> Result<Self, String> {
-        use types::{F32, F64, I16, I32, I64, I8};
-        let mut imp = SymbolImporter::new(&mut module);
-
-        // libc, declared up front. `size_t` is i64-sized on every
-        // supported host, so `malloc` takes I64 (#121 Phase A).
-        let libc_malloc = imp.declare("malloc", &[abi(I64)], &[abi(I64)])?;
-        // `memcpy(dest, src, n) -> dest`. Note the toylang arg order
-        // is (src, dest, size), so codegen swaps them at the call
-        // site. `memmove` has the same prototype exactly; `memset`
-        // takes the fill value as an `int` and uses its low byte.
-        let mem3 = [abi(I64), abi(I64), abi(I64)];
-        let libc_memcpy = imp.declare("memcpy", &mem3, &[abi(I64)])?;
-        let libc_memmove = imp.declare("memmove", &mem3, &[abi(I64)])?;
-        let libc_memset =
-            imp.declare("memset", &[abi(I64), abi(I32), abi(I64)], &[abi(I64)])?;
-
-        // MEMORY-ACCESS M3: the range questions live in `toylang_rt`,
-        // not libc -- `memmem` is not portable, and one definition per
-        // operation is what keeps the four lanes agreeing.
-        let rt_mem_eq = imp.declare("toy_mem_eq", &mem3, &[uext(I8)])?;
-        let rt_mem_find =
-            imp.declare("toy_mem_find", &[abi(I64), abi(I64), uext(I8)], &[abi(I64)])?;
-        let rt_mem_find_seq = imp.declare(
-            "toy_mem_find_seq",
-            &[abi(I64), abi(I64), abi(I64), abi(I64)],
-            &[abi(I64)],
-        )?;
-        // CONCURRENCY A2-b-2: `parallel for`. Four pointer-sized
-        // arguments (`from`, `until`, `env`, `body`) and no result —
-        // it returns when every chunk is done.
-        let rt_par_for = imp.declare(
-            "toy_par_for",
-            &[abi(I64), abi(I64), abi(I64), abi(I64)],
-            &[],
-        )?;
-        let rt_task_spawn = imp.declare(
-            "toy_task_spawn",
-            &[abi(I64), abi(I64), abi(I64)],
-            &[abi(I64)],
-        )?;
-
-        // (`libc_strlen` was used by an earlier draft of
-        // `__builtin_str_len`; the str runtime value now points at
-        // the stored u64 len field directly, so codegen reads it
-        // with a single `load.i64(s, 0)` and no libc helper is
-        // needed.)
-
-        // libm. `pow` backs `BinOp::Pow`; the rest are the
-        // `(double) -> double` family behind `UnaryOp::{Sin, Cos,
-        // Tan, Log, Log2, Exp}` (`floor` / `ceil` use cranelift's
-        // native instructions instead). Each call goes through
-        // cranelift's module-level FuncRef; the linker resolves them
-        // against libm.
-        let libm_pow = imp.declare("pow", &[abi(F64), abi(F64)], &[abi(F64)])?;
-        let f64_unary = ([abi(F64)], [abi(F64)]);
-        let libm_sin = imp.declare("sin", &f64_unary.0, &f64_unary.1)?;
-        let libm_cos = imp.declare("cos", &f64_unary.0, &f64_unary.1)?;
-        let libm_tan = imp.declare("tan", &f64_unary.0, &f64_unary.1)?;
-        let libm_log = imp.declare("log", &f64_unary.0, &f64_unary.1)?;
-        let libm_log2 = imp.declare("log2", &f64_unary.0, &f64_unary.1)?;
-        let libm_exp = imp.declare("exp", &f64_unary.0, &f64_unary.1)?;
-
-        // The `toy_*` runtime helpers. Each print takes a single value
-        // matching its C prototype; bool is `uint8_t` on the C side,
-        // mapped to cranelift `I8`, and a str is a pointer (= I64).
-        let rt_print_i64 = imp.declare("toy_print_i64", &[abi(I64)], &[])?;
-        let rt_println_i64 = imp.declare("toy_println_i64", &[abi(I64)], &[])?;
-        let rt_print_u64 = imp.declare("toy_print_u64", &[abi(I64)], &[])?;
-        let rt_println_u64 = imp.declare("toy_println_u64", &[abi(I64)], &[])?;
-        let rt_print_bool = imp.declare("toy_print_bool", &[abi(I8)], &[])?;
-        let rt_println_bool = imp.declare("toy_println_bool", &[abi(I8)], &[])?;
-        // RUNTIME-LIB P0-A: the stream selector. The print helpers
-        // themselves are not duplicated for stderr — a print
-        // instruction marked `stderr` is bracketed by two calls to
-        // this, which flips the runtime's per-thread stream. That
-        // keeps one helper per (type, newline) pair instead of two,
-        // and costs the stdout path nothing.
-        let rt_print_stream = imp.declare("toy_print_stream", &[abi(I8)], &[])?;
-        let rt_print_str = imp.declare("toy_print_str", &[abi(I64)], &[])?;
-        let rt_println_str = imp.declare("toy_println_str", &[abi(I64)], &[])?;
-        let rt_print_f64 = imp.declare("toy_print_f64", &[abi(F64)], &[])?;
-        let rt_println_f64 = imp.declare("toy_println_f64", &[abi(F64)], &[])?;
-        // SIMD-F32: single-precision print helpers take the f32 at its
-        // native cranelift width (a promoted f64 argument would change
-        // the rendered digits).
-        let rt_print_f32 = imp.declare("toy_print_f32", &[abi(F32)], &[])?;
-        // SIMD: the vector renderers take a pointer to the 16-byte
-        // image plus a type code, so one helper covers every lane
-        // type and no vector crosses the C ABI by value.
-        let rt_print_vec =
-            imp.declare("toy_print_vec", &[abi(I64), abi(I64), abi(I8)], &[])?;
-        let rt_println_f32 = imp.declare("toy_println_f32", &[abi(F32)], &[])?;
-
-        // NUM-W-AOT-pack Phase 2: narrow-int print helpers. Each takes
-        // its native cranelift width so the codegen call site doesn't
-        // extend the value first; the `sext` / `uext` markers are what
-        // satisfy the platform C ABI (see `imports::abi`).
-        let rt_print_i8 = imp.declare("toy_print_i8", &[sext(I8)], &[])?;
-        let rt_println_i8 = imp.declare("toy_println_i8", &[sext(I8)], &[])?;
-        let rt_print_u8 = imp.declare("toy_print_u8", &[uext(I8)], &[])?;
-        let rt_println_u8 = imp.declare("toy_println_u8", &[uext(I8)], &[])?;
-        let rt_print_i16 = imp.declare("toy_print_i16", &[sext(I16)], &[])?;
-        let rt_println_i16 = imp.declare("toy_println_i16", &[sext(I16)], &[])?;
-        let rt_print_u16 = imp.declare("toy_print_u16", &[uext(I16)], &[])?;
-        let rt_println_u16 = imp.declare("toy_println_u16", &[uext(I16)], &[])?;
-        let rt_print_i32 = imp.declare("toy_print_i32", &[sext(I32)], &[])?;
-        let rt_println_i32 = imp.declare("toy_println_i32", &[sext(I32)], &[])?;
-        let rt_print_u32 = imp.declare("toy_print_u32", &[uext(I32)], &[])?;
-        let rt_println_u32 = imp.declare("toy_println_u32", &[uext(I32)], &[])?;
-
-        // #121 Phase B-min: active-allocator stack helpers. The stack
-        // lives in the `toylang_rt` crate as a 64-deep fixed buffer
-        // of u64 handles. Default allocator handle is the sentinel
-        // 0 (which the heap path already routes to libc malloc).
-        let rt_alloc_push = imp.declare("toy_alloc_push", &[abi(I64)], &[])?;
-        let rt_alloc_pop = imp.declare("toy_alloc_pop", &[], &[])?;
-        let rt_alloc_current = imp.declare("toy_alloc_current", &[], &[abi(I64)])?;
-
-        // Dispatched alloc / realloc / free, all `(handle: u64, ...)`.
-        // `site` is MEMORY_PROFILING M2's packed source position and
-        // `file` the `.rodata` name of the site's file (DEBUG-OBS D2),
-        // null when the site has none; both are ignored unless
-        // profiling is enabled. On realloc the pair is used only when
-        // `ptr` is null — a resize keeps the site its block already
-        // had, and the null form is an allocation.
-        let rt_dispatched_alloc = imp.declare(
-            "toy_dispatched_alloc",
-            &[abi(I64), abi(I64), abi(I64), abi(I64)],
-            &[abi(I64)],
-        )?;
-        let rt_dispatched_realloc = imp.declare(
-            "toy_dispatched_realloc",
-            &[abi(I64), abi(I64), abi(I64), abi(I64), abi(I64)],
-            &[abi(I64)],
-        )?;
-        // HEAP-CHECK H0: the free's own site and file, like the alloc's.
-        let rt_dispatched_free = imp.declare(
-            "toy_dispatched_free",
-            &[abi(I64), abi(I64), abi(I64), abi(I64)],
-            &[],
-        )?;
-
-        // MEMORY_PROFILING M4. `toy_prof_stat(which) -> u64` reads one
-        // counter, selected by `MemStat::code`; `toy_prof_force_counting()`
-        // makes the runtime keep counting even when no report was asked
-        // for, and is emitted at the top of `main` only when the program
-        // reads a counter.
-        let rt_prof_stat = imp.declare("toy_prof_stat", &[abi(I64)], &[abi(I64)])?;
-        let rt_prof_force_counting = imp.declare("toy_prof_force_counting", &[], &[])?;
-
-        // ALLOC-CONTRACT-SUGAR. `toy_panic_alloc_budget(stat, entry,
-        // current, limit, prefix, suffix)` prints the same sentence the
-        // interpreter prints for a violated allocation budget and exits.
-        // It takes the raw readings rather than a formatted string
-        // because `Terminator::Panic` can only carry a static one, which
-        // is the whole reason this path exists. DEBUG-OBS D3 added the
-        // two frame halves: the readings are formatted between a static
-        // prefix and suffix so the result sits inside the same
-        // `Error at file:line:col` frame every other diagnostic uses.
-        let rt_panic_alloc_budget =
-            imp.declare("toy_panic_alloc_budget", &[abi(I64); 6], &[])?;
-        // HEAP-CHECK H2: the access check an instrumented build puts in
-        // front of every raw access, with the same frame halves a
-        // budget violation writes around its sentence.
-        let rt_heap_check = imp.declare("toy_heap_check", &[abi(I64); 5], &[])?;
-        let rt_heap_check_start_mode =
-            imp.declare("toy_heap_check_start_mode", &[abi(I64), abi(I64)], &[])?;
-        let rt_heap_poison = imp.declare("toy_heap_poison", &[abi(I64); 4], &[])?;
-        let rt_heap_check_free = imp.declare("toy_heap_check_free", &[abi(I64); 3], &[])?;
-        // DEBUG-OBS D3. `toy_panic_at(text)` writes an already-rendered
-        // diagnostic to stderr and exits. The whole text is static, so
-        // the helper takes one pointer and does no formatting.
-        let rt_panic_at = imp.declare("toy_panic_at", &[abi(I64)], &[])?;
-        // DEBUG-OBS D5. `toy_backtrace_str()` returns a toylang `str`
-        // built from the shadow stack. D6 reports a runaway recursion.
-        let rt_backtrace_str = imp.declare("toy_backtrace_str", &[], &[abi(I64)])?;
-        let rt_panic_recursion = imp.declare("toy_panic_recursion", &[], &[])?;
-        let rt_shadow_ctx = imp.declare("toy_shadow_ctx", &[], &[abi(I64)])?;
-        // A value-carrying trap: kind, the two operands, and the two
-        // static halves of the frame around the message. `panic_dynamic`
-        // is the same for a message the program built.
-        let rt_panic_values = imp.declare("toy_panic_values", &[abi(I64); 5], &[])?;
-        let rt_panic_dynamic = imp.declare("toy_panic_dynamic", &[abi(I64); 3], &[])?;
-
-        // MEMORY_PROFILING M3 residual. `toy_record_allocator_layout`
-        // takes the str name as an i64 pointer (the `[bytes][NUL][u64
-        // len]` layout, NUL-terminated so C can read it as `const char*`)
-        // plus the four layout numbers, and records nothing but the
-        // report entry.
-        let rt_record_allocator_layout =
-            imp.declare("toy_record_allocator_layout", &[abi(I64); 5], &[])?;
-
-        // STR-INTERP-AOT: str runtime helpers. A str is one pointer, so
-        // `eq` takes two and answers a bool; `from_bytes(p, len)` and
-        // `concat` return one. Each `to_string_*` takes its native
-        // scalar width and returns a str pointer, the narrow variants
-        // riding the same sext / uext convention as the print helpers.
-        let rt_str_eq = imp.declare("toy_str_eq", &[abi(I64), abi(I64)], &[abi(I8)])?;
-        let rt_str_from_bytes =
-            imp.declare("toy_str_from_bytes", &[abi(I64), abi(I64)], &[abi(I64)])?;
-        let rt_str_concat =
-            imp.declare("toy_str_concat", &[abi(I64), abi(I64)], &[abi(I64)])?;
-        let rt_to_string_i64 = imp.declare("toy_to_string_i64", &[abi(I64)], &[abi(I64)])?;
-        let rt_to_string_u64 = imp.declare("toy_to_string_u64", &[abi(I64)], &[abi(I64)])?;
-        let rt_to_string_str = imp.declare("toy_to_string_str", &[abi(I64)], &[abi(I64)])?;
-        let rt_to_string_f64 = imp.declare("toy_to_string_f64", &[abi(F64)], &[abi(I64)])?;
-        // SIMD-F32: to_string takes the f32 at its native width.
-        let rt_to_string_f32 = imp.declare("toy_to_string_f32", &[abi(F32)], &[abi(I64)])?;
-        let rt_to_string_vec =
-            imp.declare("toy_to_string_vec", &[abi(I64), abi(I64)], &[abi(I64)])?;
-        let rt_to_string_bool = imp.declare("toy_to_string_bool", &[uext(I8)], &[abi(I64)])?;
-        let rt_to_string_i8 = imp.declare("toy_to_string_i8", &[sext(I8)], &[abi(I64)])?;
-        let rt_to_string_u8 = imp.declare("toy_to_string_u8", &[uext(I8)], &[abi(I64)])?;
-        let rt_to_string_i16 = imp.declare("toy_to_string_i16", &[sext(I16)], &[abi(I64)])?;
-        let rt_to_string_u16 = imp.declare("toy_to_string_u16", &[uext(I16)], &[abi(I64)])?;
-        let rt_to_string_i32 = imp.declare("toy_to_string_i32", &[sext(I32)], &[abi(I64)])?;
-        let rt_to_string_u32 = imp.declare("toy_to_string_u32", &[uext(I32)], &[abi(I64)])?;
-
-        // STR-INTERP-FMT: `__builtin_format`. The int form takes the
-        // value, its width in bits, and the packed spec; the others
-        // take the value and the spec.
-        let format_int = [abi(I64), abi(I64), abi(I64)];
-        let rt_format_i64 = imp.declare("toy_format_i64", &format_int, &[abi(I64)])?;
-        let rt_format_u64 = imp.declare("toy_format_u64", &format_int, &[abi(I64)])?;
-        let rt_format_f64 =
-            imp.declare("toy_format_f64", &[abi(F64), abi(I64)], &[abi(I64)])?;
-        // STDLIB-NUMERIC N5: the f32 twin. Single precision all the
-        // way through -- promoting to f64 first prints a different
-        // number.
-        let rt_format_f32 =
-            imp.declare("toy_format_f32", &[abi(F32), abi(I64)], &[abi(I64)])?;
-        let rt_format_bool =
-            imp.declare("toy_format_bool", &[uext(I8), abi(I64)], &[abi(I64)])?;
-        let rt_format_str =
-            imp.declare("toy_format_str", &[abi(I64), abi(I64)], &[abi(I64)])?;
+        let runtime = runtime_syms::RuntimeIds::declare(&mut SymbolImporter::new(&mut module))?;
 
         Ok(Self {
             module,
             fn_ids: Vec::new(),
-            libc_malloc,
-            libc_memcpy,
-            libc_memmove,
-            libc_memset,
-            rt_mem_eq,
-            rt_mem_find,
-            rt_mem_find_seq,
-            rt_par_for,
-            rt_task_spawn,
-            libm_pow,
-            libm_sin,
-            libm_cos,
-            libm_tan,
-            libm_log,
-            libm_log2,
-            libm_exp,
-            rt_print_i64,
-            rt_print_stream,
-            rt_println_i64,
-            rt_print_u64,
-            rt_println_u64,
-            rt_print_bool,
-            rt_println_bool,
-            rt_print_str,
-            rt_println_str,
-            rt_print_f64,
-            rt_println_f64,
-            rt_print_f32,
-            rt_print_vec,
-            rt_println_f32,
-            rt_print_i8,
-            rt_println_i8,
-            rt_print_u8,
-            rt_println_u8,
-            rt_print_i16,
-            rt_println_i16,
-            rt_print_u16,
-            rt_println_u16,
-            rt_print_i32,
-            rt_println_i32,
-            rt_print_u32,
-            rt_println_u32,
-            rt_alloc_push,
-            rt_alloc_pop,
-            rt_alloc_current,
-            rt_dispatched_alloc,
-            rt_dispatched_realloc,
-            rt_dispatched_free,
-            rt_str_eq,
-            rt_str_from_bytes,
-            rt_prof_stat,
-            rt_panic_alloc_budget,
-            rt_heap_check,
-            rt_heap_check_start_mode,
-            rt_heap_poison,
-            rt_heap_check_free,
-            rt_panic_at,
-            rt_backtrace_str,
-            rt_panic_recursion,
-            rt_shadow_ctx,
-            rt_panic_values,
-            rt_panic_dynamic,
-            rt_prof_force_counting,
-            rt_record_allocator_layout,
-            rt_str_concat,
-            rt_to_string_i64,
-            rt_to_string_u64,
-            rt_to_string_f64,
-            rt_to_string_f32,
-            rt_to_string_vec,
-            rt_to_string_bool,
-            rt_to_string_str,
-            rt_to_string_i8,
-            rt_to_string_u8,
-            rt_to_string_i16,
-            rt_to_string_u16,
-            rt_to_string_i32,
-            rt_to_string_u32,
-            rt_format_i64,
-            rt_format_u64,
-            rt_format_f64,
-            rt_format_f32,
-            rt_format_bool,
-            rt_format_str,
+            runtime,
             panic_strings: HashMap::default(),
             frame_strings: HashMap::default(),
             diag_pool: diag_pool::DiagPool::default(),
@@ -1582,20 +1121,7 @@ impl<M: Module> CodegenSession<M> {
         func_id: cranelift_module::FuncId,
         func: &mut cranelift_codegen::ir::Function,
     ) -> cranelift_codegen::ir::FuncRef {
-        let (sig, colocated) = self.fn_decls[func_id.as_u32() as usize].as_ref().unwrap();
-        let signature = func.import_signature(sig.clone());
-        let user_name_ref = func.declare_imported_user_function(
-            cranelift_codegen::ir::UserExternalName {
-                namespace: 0,
-                index: func_id.as_u32(),
-            },
-        );
-        func.import_function(cranelift_codegen::ir::ExtFuncData {
-            name: cranelift_codegen::ir::ExternalName::user(user_name_ref),
-            signature,
-            colocated: *colocated,
-            patchable: false,
-        })
+        import_function(&self.fn_decls, func_id, func)
     }
 
     /// Read-only variant of `Module::declare_data_in_func`.
@@ -1659,7 +1185,6 @@ impl<M: Module> CodegenSession<M> {
             self.declare_const_str_bytes_imports(ir_module, func_id, &mut ctx.func);
         let vtable_imports =
             self.declare_vtable_imports(ir_module, func_id, &mut ctx.func);
-        let runtime_refs = self.declare_runtime_refs(&mut ctx.func);
         let mut builder_ctx = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
         let result = {
@@ -1676,7 +1201,8 @@ impl<M: Module> CodegenSession<M> {
                 &raw_print_imports,
                 &const_str_bytes_imports,
                 &vtable_imports,
-                &runtime_refs,
+                &self.runtime,
+                &self.fn_decls,
             );
             ctxt.lower()
         };
@@ -1708,104 +1234,28 @@ impl<M: Module> CodegenSession<M> {
         Ok(format!("{}", ctx.func.display()))
     }
 
-    // imports + RuntimeRefs setup live in `super::imports`.
+    // Import setup lives in `super::imports`.
 }
 
-/// Pre-declared cranelift FuncRefs for the libc and runtime helpers
-/// codegen needs while lowering a single function. Built once per
-/// function definition by `CodegenSession::declare_runtime_refs` and
-/// borrowed by `LowerCtx`.
-struct RuntimeRefs {
-    /// RUNTIME-LIB P0-A: `toy_print_stream(stderr)`.
-    print_stream: cranelift_codegen::ir::FuncRef,
-    // #121 Phase A: libc malloc FuncRef.
-    malloc: cranelift_codegen::ir::FuncRef,
-    memcpy: cranelift_codegen::ir::FuncRef,
-    memmove: cranelift_codegen::ir::FuncRef,
-    memset: cranelift_codegen::ir::FuncRef,
-    mem_eq: cranelift_codegen::ir::FuncRef,
-    mem_find: cranelift_codegen::ir::FuncRef,
-    mem_find_seq: cranelift_codegen::ir::FuncRef,
-    par_for: cranelift_codegen::ir::FuncRef,
-    task_spawn: cranelift_codegen::ir::FuncRef,
-    print_i64: cranelift_codegen::ir::FuncRef,
-    println_i64: cranelift_codegen::ir::FuncRef,
-    print_u64: cranelift_codegen::ir::FuncRef,
-    println_u64: cranelift_codegen::ir::FuncRef,
-    print_bool: cranelift_codegen::ir::FuncRef,
-    println_bool: cranelift_codegen::ir::FuncRef,
-    print_str: cranelift_codegen::ir::FuncRef,
-    println_str: cranelift_codegen::ir::FuncRef,
-    print_f64: cranelift_codegen::ir::FuncRef,
-    println_f64: cranelift_codegen::ir::FuncRef,
-    print_f32: cranelift_codegen::ir::FuncRef,
-    /// SIMD: `toy_print_vec(bytes, code, newline)`.
-    print_vec: cranelift_codegen::ir::FuncRef,
-    println_f32: cranelift_codegen::ir::FuncRef,
-    // NUM-W-AOT-pack Phase 2: dedicated narrow-int print helpers.
-    print_i8: cranelift_codegen::ir::FuncRef,
-    println_i8: cranelift_codegen::ir::FuncRef,
-    print_u8: cranelift_codegen::ir::FuncRef,
-    println_u8: cranelift_codegen::ir::FuncRef,
-    print_i16: cranelift_codegen::ir::FuncRef,
-    println_i16: cranelift_codegen::ir::FuncRef,
-    print_u16: cranelift_codegen::ir::FuncRef,
-    println_u16: cranelift_codegen::ir::FuncRef,
-    print_i32: cranelift_codegen::ir::FuncRef,
-    println_i32: cranelift_codegen::ir::FuncRef,
-    print_u32: cranelift_codegen::ir::FuncRef,
-    println_u32: cranelift_codegen::ir::FuncRef,
-    // Active-allocator stack FuncRefs.
-    alloc_push: cranelift_codegen::ir::FuncRef,
-    alloc_pop: cranelift_codegen::ir::FuncRef,
-    alloc_current: cranelift_codegen::ir::FuncRef,
-    dispatched_alloc: cranelift_codegen::ir::FuncRef,
-    dispatched_realloc: cranelift_codegen::ir::FuncRef,
-    dispatched_free: cranelift_codegen::ir::FuncRef,
-    str_eq: cranelift_codegen::ir::FuncRef,
-    str_from_bytes: cranelift_codegen::ir::FuncRef,
-    prof_stat: cranelift_codegen::ir::FuncRef,
-    panic_alloc_budget: cranelift_codegen::ir::FuncRef,
-    heap_check: cranelift_codegen::ir::FuncRef,
-    heap_check_start_mode: cranelift_codegen::ir::FuncRef,
-    heap_poison: cranelift_codegen::ir::FuncRef,
-    heap_check_free: cranelift_codegen::ir::FuncRef,
-    panic_at: cranelift_codegen::ir::FuncRef,
-    backtrace_str: cranelift_codegen::ir::FuncRef,
-    panic_recursion: cranelift_codegen::ir::FuncRef,
-    panic_values: cranelift_codegen::ir::FuncRef,
-    panic_dynamic: cranelift_codegen::ir::FuncRef,
-    prof_force_counting: cranelift_codegen::ir::FuncRef,
-    record_allocator_layout: cranelift_codegen::ir::FuncRef,
-    pow: cranelift_codegen::ir::FuncRef,
-    sin: cranelift_codegen::ir::FuncRef,
-    cos: cranelift_codegen::ir::FuncRef,
-    tan: cranelift_codegen::ir::FuncRef,
-    log: cranelift_codegen::ir::FuncRef,
-    log2: cranelift_codegen::ir::FuncRef,
-    exp: cranelift_codegen::ir::FuncRef,
-    // STR-INTERP-AOT: str runtime helpers.
-    str_concat: cranelift_codegen::ir::FuncRef,
-    to_string_i64: cranelift_codegen::ir::FuncRef,
-    to_string_u64: cranelift_codegen::ir::FuncRef,
-    to_string_f64: cranelift_codegen::ir::FuncRef,
-    to_string_f32: cranelift_codegen::ir::FuncRef,
-    /// SIMD: `toy_to_string_vec(bytes, code)`.
-    to_string_vec: cranelift_codegen::ir::FuncRef,
-    to_string_bool: cranelift_codegen::ir::FuncRef,
-    to_string_str: cranelift_codegen::ir::FuncRef,
-    to_string_i8: cranelift_codegen::ir::FuncRef,
-    to_string_u8: cranelift_codegen::ir::FuncRef,
-    to_string_i16: cranelift_codegen::ir::FuncRef,
-    to_string_u16: cranelift_codegen::ir::FuncRef,
-    to_string_i32: cranelift_codegen::ir::FuncRef,
-    to_string_u32: cranelift_codegen::ir::FuncRef,
-    format_i64: cranelift_codegen::ir::FuncRef,
-    format_u64: cranelift_codegen::ir::FuncRef,
-    format_f64: cranelift_codegen::ir::FuncRef,
-    format_f32: cranelift_codegen::ir::FuncRef,
-    format_bool: cranelift_codegen::ir::FuncRef,
-    format_str: cranelift_codegen::ir::FuncRef,
+/// Import a declared function into `func`, from the declaration table
+/// `declare_all` snapshots (`fn_decls[id]` = signature, colocated).
+fn import_function(
+    fn_decls: &[Option<(Signature, bool)>],
+    func_id: cranelift_module::FuncId,
+    func: &mut cranelift_codegen::ir::Function,
+) -> cranelift_codegen::ir::FuncRef {
+    let (sig, colocated) = fn_decls[func_id.as_u32() as usize].as_ref().unwrap();
+    let signature = func.import_signature(sig.clone());
+    let user_name_ref = func.declare_imported_user_function(cranelift_codegen::ir::UserExternalName {
+        namespace: 0,
+        index: func_id.as_u32(),
+    });
+    func.import_function(cranelift_codegen::ir::ExtFuncData {
+        name: cranelift_codegen::ir::ExternalName::user(user_name_ref),
+        signature,
+        colocated: *colocated,
+        patchable: false,
+    })
 }
 
 /// REF-Stage-2: byte size of a scalar IR type for stack-slot
@@ -1912,6 +1362,9 @@ pub(super) fn flatten_struct_to_cranelift_tys(ir_module: &IrModule, t: IrType) -
 // where we still seal in the right order via explicit reasoning.
 // ---------------------------------------------------------------------------
 
+/// Names one field of `RuntimeIds`: `|r| r.print_i64`.
+type RuntimeSymbol = fn(&runtime_syms::RuntimeIds) -> cranelift_module::FuncId;
+
 struct LowerCtx<'a, 'b> {
     builder: &'a mut FunctionBuilder<'b>,
     ir_module: &'a IrModule,
@@ -1952,7 +1405,11 @@ struct LowerCtx<'a, 'b> {
     /// arm reads this map to materialise the runtime address via
     /// `symbol_value`.
     vtable_imports: &'a HashMap<(DefaultSymbol, DefaultSymbol), cranelift_codegen::ir::GlobalValue>,
-    runtime: &'a RuntimeRefs,
+    /// Runtime symbols, imported into this function on first use
+    /// (`rt`); `runtime_refs` holds the ones already imported.
+    runtime: &'a runtime_syms::RuntimeIds,
+    fn_decls: &'a [Option<(Signature, bool)>],
+    runtime_refs: HashMap<u32, cranelift_codegen::ir::FuncRef>,
     block_map: HashMap<u32, Block>,
     locals: HashMap<u32, Variable>,
     values: HashMap<u32, Value>,
@@ -1993,7 +1450,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
         base: cranelift_codegen::ir::Value,
         exp: cranelift_codegen::ir::Value,
     ) -> Result<cranelift_codegen::ir::Value, String> {
-        let call = self.builder.ins().call(self.runtime.pow, &[base, exp]);
+        let call = self.call_rt(|r| r.pow, &[base, exp]);
         let results = self.builder.inst_results(call);
         if results.is_empty() {
             return Err("libm pow call produced no result".into());
@@ -2002,15 +1459,37 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
     }
 
     /// Emit a `libm (double) -> double` call (`sin` / `cos` /
-    /// `tan` / `log` / `log2` / `exp`). The caller picks the right
-    /// FuncRef from `RuntimeRefs`; this helper just wraps the
-    /// `inst_results` shuffle that every f64-unary libm call needs.
+    /// `tan` / `log` / `log2` / `exp`). The caller picks the symbol;
+    /// this helper just wraps the `inst_results` shuffle that every
+    /// f64-unary libm call needs.
+    /// This function's reference to a runtime symbol, imported the
+    /// first time the body calls it.
+    fn rt(&mut self, pick: RuntimeSymbol) -> cranelift_codegen::ir::FuncRef {
+        let id = pick(self.runtime);
+        if let Some(&func_ref) = self.runtime_refs.get(&id.as_u32()) {
+            return func_ref;
+        }
+        let func_ref = import_function(self.fn_decls, id, self.builder.func);
+        self.runtime_refs.insert(id.as_u32(), func_ref);
+        func_ref
+    }
+
+    /// Call a runtime symbol (see `rt`).
+    fn call_rt(
+        &mut self,
+        pick: RuntimeSymbol,
+        args: &[cranelift_codegen::ir::Value],
+    ) -> cranelift_codegen::ir::Inst {
+        let func_ref = self.rt(pick);
+        self.builder.ins().call(func_ref, args)
+    }
+
     fn emit_libm_unary_call(
         &mut self,
-        target: cranelift_codegen::ir::FuncRef,
+        target: RuntimeSymbol,
         operand: cranelift_codegen::ir::Value,
     ) -> Result<cranelift_codegen::ir::Value, String> {
-        let call = self.builder.ins().call(target, &[operand]);
+        let call = self.call_rt(target, &[operand]);
         let results = self.builder.inst_results(call);
         if results.is_empty() {
             return Err("libm unary call produced no result".into());
@@ -2037,7 +1516,8 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
         raw_print_imports: &'a HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue>,
         const_str_bytes_imports: &'a HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue>,
         vtable_imports: &'a HashMap<(DefaultSymbol, DefaultSymbol), cranelift_codegen::ir::GlobalValue>,
-        runtime: &'a RuntimeRefs,
+        runtime: &'a runtime_syms::RuntimeIds,
+        fn_decls: &'a [Option<(Signature, bool)>],
     ) -> Self {
         Self {
             builder,
@@ -2054,6 +1534,8 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             const_str_bytes_imports,
             vtable_imports,
             runtime,
+            fn_decls,
+            runtime_refs: HashMap::default(),
             block_map: HashMap::default(),
             locals: HashMap::default(),
             values: HashMap::default(),
@@ -2205,7 +1687,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             };
             let mode_v = self.builder.ins().iconst(types::I64, mode);
             let q_v = self.builder.ins().iconst(types::I64, quarantine as i64);
-            self.builder.ins().call(self.runtime.heap_check_start_mode, &[mode_v, q_v]);
+            self.call_rt(|r| r.heap_check_start_mode, &[mode_v, q_v]);
         }
 
         // 2c. DEBUG-OBS D4: the shadow-stack prologue.
@@ -2267,7 +1749,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     let cont = self.builder.create_block();
                     self.builder.ins().brif(over, fail, &[], cont, &[]);
                     self.builder.switch_to_block(fail);
-                    self.builder.ins().call(self.runtime.panic_recursion, &[]);
+                    self.call_rt(|r| r.panic_recursion, &[]);
                     self.builder
                         .ins()
                         .trap(cranelift_codegen::ir::TrapCode::user(1).expect("non-zero"));
@@ -2349,9 +1831,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     .ok_or_else(|| "missing frame import for a dynamic panic".to_string())?;
                 let pre = self.diag_addr(pre_gv);
                 let suf = self.diag_addr(suf_gv);
-                self.builder
-                    .ins()
-                    .call(self.runtime.panic_dynamic, &[msg, pre, suf]);
+                self.call_rt(|r| r.panic_dynamic, &[msg, pre, suf]);
                 self.builder
                     .ins()
                     .trap(cranelift_codegen::ir::TrapCode::user(1).expect("non-zero"));
@@ -2366,9 +1846,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     .ok_or_else(|| "missing frame import for a value trap".to_string())?;
                 let pre = self.diag_addr(pre_gv);
                 let suf = self.diag_addr(suf_gv);
-                self.builder
-                    .ins()
-                    .call(self.runtime.panic_values, &[kind_v, a_v, b_v, pre, suf]);
+                self.call_rt(|r| r.panic_values, &[kind_v, a_v, b_v, pre, suf]);
                 self.builder
                     .ins()
                     .trap(cranelift_codegen::ir::TrapCode::user(1).expect("non-zero"));
@@ -2391,8 +1869,8 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     .ok_or_else(|| "missing frame import for a budget site".to_string())?;
                 let pre = self.diag_addr(pre_gv);
                 let suf = self.diag_addr(suf_gv);
-                self.builder.ins().call(
-                    self.runtime.panic_alloc_budget,
+                self.call_rt(
+                    |r| r.panic_alloc_budget,
                     &[which, entry_v, current_v, limit_v, pre, suf],
                 );
                 self.builder
@@ -2417,7 +1895,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     .get(&key)
                     .ok_or_else(|| format!("missing panic import for #{}", message.to_usize()))?;
                 let addr = self.diag_addr(gv);
-                self.builder.ins().call(self.runtime.panic_at, &[addr]);
+                self.call_rt(|r| r.panic_at, &[addr]);
                 self.builder
                     .ins()
                     .trap(cranelift_codegen::ir::TrapCode::user(1).unwrap());

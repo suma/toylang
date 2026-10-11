@@ -10,6 +10,10 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-10-11
+
+- **RUNTIME-REFS-LAZY — ランタイム関数の import を呼ぶ分だけに。宣言は `codegen/runtime_syms.rs` の表 1 つ**
+
 ### 2026-10-08
 
 - **CONSUMING-SELF-NO-DROP — `self: Self` の method が受け手を drop する** (残りは未実装節)
@@ -916,10 +920,6 @@
   stdlib 本体について出す事実 (lend 表・エフェクト等) を stdlib のハッシュで
   再利用する軽い版と、PARALLEL_FRONTEND.md §5c のスナップショットに型検査の
   状態まで含める本命。後者は型検査器が AST を書き換えるので大仕事。
-
-- **RUNTIME-REFS-LAZY: ランタイム関数 ~90 個の import を全関数に入れている** ★ —
-  `declare_runtime_refs`。関数の import を呼ぶ分だけにしたのと同じ形 (各 signature
-  に ABI 計算が走る)。使う命令から引くか遅延宣言に。未測定。
 
 - **LEND-WORKLIST: 読むだけ判定の固定点を worklist に** ★ — 今は変化が無くなる
   まで全本体を歩き直す (logsearch で 4 周)。変化した関数の呼び出し元だけ再訪する。

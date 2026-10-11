@@ -386,15 +386,10 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
         match newline {
             Some(nl) => {
                 let nl_v = self.builder.ins().iconst(types::I8, i64::from(nl));
-                self.builder
-                    .ins()
-                    .call(self.runtime.print_vec, &[addr, code, nl_v]);
+                self.call_rt(|r| r.print_vec, &[addr, code, nl_v]);
             }
             None => {
-                let call = self
-                    .builder
-                    .ins()
-                    .call(self.runtime.to_string_vec, &[addr, code]);
+                let call = self.call_rt(|r| r.to_string_vec, &[addr, code]);
                 let out = self.builder.inst_results(call)[0];
                 self.record_result(inst, out);
             }

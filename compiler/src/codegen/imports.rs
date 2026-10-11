@@ -1,5 +1,5 @@
 //! Cranelift import declarations: libm symbols, panic/print
-//! string-data globals, and `RuntimeRefs` setup. Lives in a
+//! and string-data globals. Lives in a
 //! sibling module so `mod.rs` can focus on the entry-point
 //! driver and signature shape. Functions are added back to
 //! `CodegenSession` via an `impl<M: Module> super::CodegenSession<M>`
@@ -12,7 +12,7 @@ use string_interner::DefaultSymbol;
 
 use crate::ir::{FuncId, InstKind, Module as IrModule, Terminator};
 
-use super::{ShadowImports, CodegenSession, RuntimeRefs};
+use super::{ShadowImports, CodegenSession};
 
 impl<M: Module> CodegenSession<M> {
     pub(super) fn declare_imports(
@@ -175,7 +175,7 @@ impl<M: Module> CodegenSession<M> {
             .entry_frame_blob
             .map(|data| self.declare_data_in_func_readonly(data, func));
         Some(ShadowImports {
-            ctx: self.declare_func_in_func_readonly(self.rt_shadow_ctx, func),
+            ctx: self.declare_func_in_func_readonly(self.runtime.shadow_ctx, func),
             entry,
             frames,
         })
@@ -347,110 +347,6 @@ impl<M: Module> CodegenSession<M> {
             }
         }
         imports
-    }
-
-    /// Bundle every helper FuncRef in one struct so the LowerCtx
-    /// constructor doesn't need a long parameter list.
-    pub(super) fn declare_runtime_refs(
-        &self,
-        func: &mut cranelift_codegen::ir::Function,
-    ) -> RuntimeRefs {
-        RuntimeRefs {
-            print_stream: self.declare_func_in_func_readonly(self.rt_print_stream, func),
-            malloc: self.declare_func_in_func_readonly(self.libc_malloc, func),
-            memcpy: self.declare_func_in_func_readonly(self.libc_memcpy, func),
-            memmove: self.declare_func_in_func_readonly(self.libc_memmove, func),
-            memset: self.declare_func_in_func_readonly(self.libc_memset, func),
-            mem_eq: self.declare_func_in_func_readonly(self.rt_mem_eq, func),
-            mem_find: self.declare_func_in_func_readonly(self.rt_mem_find, func),
-            mem_find_seq: self.declare_func_in_func_readonly(self.rt_mem_find_seq, func),
-            par_for: self.declare_func_in_func_readonly(self.rt_par_for, func),
-            task_spawn: self.declare_func_in_func_readonly(self.rt_task_spawn, func),
-            print_i64: self.declare_func_in_func_readonly(self.rt_print_i64, func),
-            println_i64: self.declare_func_in_func_readonly(self.rt_println_i64, func),
-            print_u64: self.declare_func_in_func_readonly(self.rt_print_u64, func),
-            println_u64: self.declare_func_in_func_readonly(self.rt_println_u64, func),
-            print_bool: self.declare_func_in_func_readonly(self.rt_print_bool, func),
-            println_bool: self.declare_func_in_func_readonly(self.rt_println_bool, func),
-            print_str: self.declare_func_in_func_readonly(self.rt_print_str, func),
-            println_str: self.declare_func_in_func_readonly(self.rt_println_str, func),
-            print_f64: self.declare_func_in_func_readonly(self.rt_print_f64, func),
-            println_f64: self.declare_func_in_func_readonly(self.rt_println_f64, func),
-            print_f32: self.declare_func_in_func_readonly(self.rt_print_f32, func),
-            print_vec: self.declare_func_in_func_readonly(self.rt_print_vec, func),
-            println_f32: self.declare_func_in_func_readonly(self.rt_println_f32, func),
-            print_i8: self.declare_func_in_func_readonly(self.rt_print_i8, func),
-            println_i8: self.declare_func_in_func_readonly(self.rt_println_i8, func),
-            print_u8: self.declare_func_in_func_readonly(self.rt_print_u8, func),
-            println_u8: self.declare_func_in_func_readonly(self.rt_println_u8, func),
-            print_i16: self.declare_func_in_func_readonly(self.rt_print_i16, func),
-            println_i16: self.declare_func_in_func_readonly(self.rt_println_i16, func),
-            print_u16: self.declare_func_in_func_readonly(self.rt_print_u16, func),
-            println_u16: self.declare_func_in_func_readonly(self.rt_println_u16, func),
-            print_i32: self.declare_func_in_func_readonly(self.rt_print_i32, func),
-            println_i32: self.declare_func_in_func_readonly(self.rt_println_i32, func),
-            print_u32: self.declare_func_in_func_readonly(self.rt_print_u32, func),
-            println_u32: self.declare_func_in_func_readonly(self.rt_println_u32, func),
-            alloc_push: self.declare_func_in_func_readonly(self.rt_alloc_push, func),
-            alloc_pop: self.declare_func_in_func_readonly(self.rt_alloc_pop, func),
-            alloc_current: self.declare_func_in_func_readonly(self.rt_alloc_current, func),
-            dispatched_alloc: self
-                .declare_func_in_func_readonly(self.rt_dispatched_alloc, func),
-            dispatched_realloc: self
-                .declare_func_in_func_readonly(self.rt_dispatched_realloc, func),
-            dispatched_free: self
-                .declare_func_in_func_readonly(self.rt_dispatched_free, func),
-            str_eq: self.declare_func_in_func_readonly(self.rt_str_eq, func),
-            str_from_bytes: self
-                .declare_func_in_func_readonly(self.rt_str_from_bytes, func),
-            prof_stat: self.declare_func_in_func_readonly(self.rt_prof_stat, func),
-            panic_alloc_budget: self
-                .declare_func_in_func_readonly(self.rt_panic_alloc_budget, func),
-            heap_check: self.declare_func_in_func_readonly(self.rt_heap_check, func),
-            heap_poison: self.declare_func_in_func_readonly(self.rt_heap_poison, func),
-            heap_check_free: self.declare_func_in_func_readonly(self.rt_heap_check_free, func),
-            heap_check_start_mode: self
-                .declare_func_in_func_readonly(self.rt_heap_check_start_mode, func),
-            panic_at: self.declare_func_in_func_readonly(self.rt_panic_at, func),
-            backtrace_str: self
-                .declare_func_in_func_readonly(self.rt_backtrace_str, func),
-            panic_recursion: self
-                .declare_func_in_func_readonly(self.rt_panic_recursion, func),
-            panic_values: self.declare_func_in_func_readonly(self.rt_panic_values, func),
-            panic_dynamic: self
-                .declare_func_in_func_readonly(self.rt_panic_dynamic, func),
-            prof_force_counting: self
-                .declare_func_in_func_readonly(self.rt_prof_force_counting, func),
-            record_allocator_layout: self
-                .declare_func_in_func_readonly(self.rt_record_allocator_layout, func),
-            pow: self.declare_func_in_func_readonly(self.libm_pow, func),
-            sin: self.declare_func_in_func_readonly(self.libm_sin, func),
-            cos: self.declare_func_in_func_readonly(self.libm_cos, func),
-            tan: self.declare_func_in_func_readonly(self.libm_tan, func),
-            log: self.declare_func_in_func_readonly(self.libm_log, func),
-            log2: self.declare_func_in_func_readonly(self.libm_log2, func),
-            exp: self.declare_func_in_func_readonly(self.libm_exp, func),
-            str_concat: self.declare_func_in_func_readonly(self.rt_str_concat, func),
-            to_string_i64: self.declare_func_in_func_readonly(self.rt_to_string_i64, func),
-            to_string_u64: self.declare_func_in_func_readonly(self.rt_to_string_u64, func),
-            to_string_f64: self.declare_func_in_func_readonly(self.rt_to_string_f64, func),
-            to_string_f32: self.declare_func_in_func_readonly(self.rt_to_string_f32, func),
-            to_string_vec: self.declare_func_in_func_readonly(self.rt_to_string_vec, func),
-            to_string_bool: self.declare_func_in_func_readonly(self.rt_to_string_bool, func),
-            to_string_str: self.declare_func_in_func_readonly(self.rt_to_string_str, func),
-            to_string_i8: self.declare_func_in_func_readonly(self.rt_to_string_i8, func),
-            to_string_u8: self.declare_func_in_func_readonly(self.rt_to_string_u8, func),
-            to_string_i16: self.declare_func_in_func_readonly(self.rt_to_string_i16, func),
-            to_string_u16: self.declare_func_in_func_readonly(self.rt_to_string_u16, func),
-            to_string_i32: self.declare_func_in_func_readonly(self.rt_to_string_i32, func),
-            to_string_u32: self.declare_func_in_func_readonly(self.rt_to_string_u32, func),
-            format_i64: self.declare_func_in_func_readonly(self.rt_format_i64, func),
-            format_u64: self.declare_func_in_func_readonly(self.rt_format_u64, func),
-            format_f64: self.declare_func_in_func_readonly(self.rt_format_f64, func),
-            format_f32: self.declare_func_in_func_readonly(self.rt_format_f32, func),
-            format_bool: self.declare_func_in_func_readonly(self.rt_format_bool, func),
-            format_str: self.declare_func_in_func_readonly(self.rt_format_str, func),
-        }
     }
 }
 

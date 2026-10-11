@@ -463,6 +463,12 @@ struct FunctionLower<'a> {
     /// non-struct-producing expression is lowered, so it always
     /// reflects the most recent candidate.
     pending_struct_value: Option<Vec<FieldBinding>>,
+    /// COMPOUND-CALL-EXPR-POS: a call at the root of a field / element
+    /// chain or method receiver (`mk().x`, `v.get(i).len()`), already
+    /// lowered into fresh storage for the one access being lowered.
+    /// `resolve_field_chain` and friends answer from here, then the
+    /// entry is removed -- each visit of the expression calls again.
+    materialised_roots: HashMap<ExprRef, bindings::FieldChainResult>,
     /// Sibling channel for tuple-returning function bodies whose tail
     /// expression is a tuple literal or tuple-bound identifier. Used
     /// only by `emit_implicit_return` for `Type::Tuple` returns.
@@ -1879,6 +1885,18 @@ impl<'a> FunctionLower<'a> {
     /// active — that means the lowering pass tried to emit code after a
     /// terminator without entering a fresh block first, which is a
     /// program logic error in this file.
+    /// The type the instruction that produced `value` gave it, from
+    /// this function's blocks.
+    fn emitted_value_type(&self, value: ValueId) -> Option<Type> {
+        self.module
+            .function(self.func_id)
+            .blocks
+            .iter()
+            .rev()
+            .flat_map(|blk| blk.instructions.iter().rev())
+            .find_map(|inst| inst.result.filter(|(v, _)| *v == value).map(|(_, ty)| ty))
+    }
+
     fn emit(&mut self, kind: InstKind, result_ty: Option<Type>) -> Option<ValueId> {
         let cur = self
             .current_block

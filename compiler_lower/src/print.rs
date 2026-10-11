@@ -477,21 +477,35 @@ impl<'a> FunctionLower<'a> {
                 _ => {}
             }
         }
-        let value_ty = self.value_scalar(&args[0]).ok_or_else(|| {
+        let not_scalar = || {
             let kw = if newline { "println" } else { "print" };
             format!(
                 "{kw} accepts only scalar values (i64 / u64 / bool / f64), \
                  string literals, or identifiers referring to struct / tuple bindings \
                  in this compiler MVP"
             )
-        })?;
+        };
+        let known_ty = self.value_scalar(&args[0]);
+        if matches!(known_ty, Some(Type::Unit)) {
+            let kw = if newline { "println" } else { "print" };
+            return Err(format!("{kw} cannot print a Unit value"));
+        }
+        // COMPOUND-CALL-EXPR-POS: a read through a call (`mk().n`) has
+        // no binding for `value_scalar` to consult; lower it and take
+        // the type the producing instruction gave the value.
+        let v = match (self.lower_expr(&args[0]), known_ty) {
+            (Ok(Some(v)), _) => v,
+            (Ok(None) | Err(_), None) => return Err(not_scalar()),
+            (Err(e), Some(_)) => return Err(e),
+            (Ok(None), Some(_)) => return Err("print argument produced no value".to_string()),
+        };
+        let value_ty = known_ty
+            .or_else(|| self.emitted_value_type(v))
+            .ok_or_else(not_scalar)?;
         if matches!(value_ty, Type::Unit) {
             let kw = if newline { "println" } else { "print" };
             return Err(format!("{kw} cannot print a Unit value"));
         }
-        let v = self
-            .lower_expr(&args[0])?
-            .ok_or_else(|| "print argument produced no value".to_string())?;
         self.emit(
             InstKind::Print {
                 value: v,

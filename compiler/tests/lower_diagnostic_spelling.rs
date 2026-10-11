@@ -101,11 +101,14 @@ fn cases() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
             vec!["cannot lower a range"],
         ),
         (
+            // `mk().get()` compiles now (COMPOUND-CALL-EXPR-POS); a
+            // receiver that is a method call on a call still does not.
             "a method call on something that is not a binding",
             r#"struct P { x: i64 }
-               impl P { fn get(&self) -> i64 { self.x } }
+               impl P { fn get(&self) -> i64 { self.x }
+                        fn twin(&self) -> P { P { x: self.x } } }
                fn mk() -> P { P { x: 1i64 } }
-               fn main() -> i64 { mk().get() }"#,
+               fn main() -> i64 { mk().twin().get() }"#,
             vec!["method call"],
         ),
     ]

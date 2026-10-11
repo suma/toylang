@@ -852,6 +852,9 @@ impl<'a> FunctionLower<'a> {
         &self,
         obj: &ExprRef,
     ) -> Result<Vec<TupleElementBinding>, String> {
+        if let Some(FieldChainResult::Tuple { elements }) = self.materialised_roots.get(obj) {
+            return Ok(elements.clone());
+        }
         let obj_expr = self
             .program
             .expression
@@ -887,6 +890,17 @@ impl<'a> FunctionLower<'a> {
     }
 
     pub(super) fn lower_tuple_access(
+        &mut self,
+        obj: &ExprRef,
+        index: usize,
+    ) -> Result<Option<ValueId>, String> {
+        let root = self.materialise_chain_root(obj)?;
+        let out = self.lower_tuple_access_inner(obj, index);
+        self.forget_chain_root(root);
+        out
+    }
+
+    fn lower_tuple_access_inner(
         &mut self,
         obj: &ExprRef,
         index: usize,
@@ -961,11 +975,16 @@ impl<'a> FunctionLower<'a> {
                     }
                 }
             }
-            _ => {
-                return Err(
-                    "compiler MVP only supports tuple access on a bare identifier, a struct field-access chain, or a nested tuple element".to_string(),
-                );
-            }
+            // COMPOUND-CALL-EXPR-POS: `mk().0`, lowered by
+            // `materialise_chain_root`.
+            _ => match self.materialised_roots.get(obj) {
+                Some(FieldChainResult::Tuple { elements }) => elements.clone(),
+                _ => {
+                    return Err(
+                        "compiler MVP only supports tuple access on a bare identifier, a struct field-access chain, or a nested tuple element".to_string(),
+                    );
+                }
+            },
         };
         let elem = elements.iter().find(|e| e.index == index).ok_or_else(|| {
             format!("tuple has no element at index {index}")

@@ -664,6 +664,31 @@ impl<'a> FunctionLower<'a> {
                 _ => None,
             });
         }
+        // COMPOUND-CALL-EXPR-POS: a chain rooted at a call
+        // (`val i = mk().inner`, `val n = mk().n`). The call runs here,
+        // once, so a scalar leaf is read here too rather than left to
+        // the scalar path, which would lower the call a second time.
+        if let Some(root) = self.materialise_chain_root(rhs_ref)? {
+            let chain = self.resolve_field_chain(rhs_ref);
+            self.forget_chain_root(Some(root));
+            let binding = match chain? {
+                FieldChainResult::Struct { struct_id, fields } => {
+                    Binding::Struct { struct_id, fields }
+                }
+                FieldChainResult::Tuple { elements } => Binding::Tuple { elements },
+                FieldChainResult::Enum(storage) => Binding::Enum(storage),
+                FieldChainResult::Scalar { local: leaf, ty } => {
+                    let v = self
+                        .emit(InstKind::LoadLocal(leaf), Some(ty))
+                        .expect("LoadLocal returns a value");
+                    let local = self.module.function_mut(self.func_id).add_local(ty);
+                    self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
+                    Binding::Scalar { local, ty }
+                }
+            };
+            self.bindings.insert(name, binding);
+            return Ok(Some(None));
+        }
         // DATA-ORIENTED: a field / tuple chain rooted at an array
         // element (`val b = ps[i].y`) names a *scalar leaf*, not a
         // compound — `resolve_field_chain` would reject the
@@ -727,7 +752,12 @@ impl<'a> FunctionLower<'a> {
         // better answer than a failure when the rhs cannot say what it
         // produced -- a generic call whose type argument only the
         // annotation names, for instance.
+        // COMPOUND-CALL-EXPR-POS: a read through a call (`mk().n`,
+        // `v.get(i).len()`) has no binding for `value_scalar` to look
+        // at once the access is lowered; the instruction that produced
+        // the value still says what it is.
         let scalar = scalar
+            .or_else(|| self.emitted_value_type(v))
             .or(hint)
             .ok_or_else(|| "could not infer scalar type for val/var rhs".to_string())?;
         let local = self.module.function_mut(self.func_id).add_local(scalar);

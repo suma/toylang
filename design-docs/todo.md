@@ -14,6 +14,7 @@
 
 - **RUNTIME-REFS-LAZY — ランタイム関数の import を呼ぶ分だけに。宣言は `codegen/runtime_syms.rs` の表 1 つ**
 - **COMPOUND-CALL-EXPR-POS (関数の結果) — compound を返す呼び出しを関数の末尾と `return` に置ける** (残りは未実装節)
+- **COMPOUND-CALL-EXPR-POS (読み出しの根) — `mk().n` / `triple(1).2` / `mk().get()` / `v.get(i).len()` がどの位置でも compiled レーンで動く**
 - **STDLIB-CHECK-FIXED の一部 — 全体走査 pass の clone と行番号の数え直しを削り、型検査の固定費 8.0 → 6.7 ms** (残りは未実装節)
 
 ### 2026-10-08
@@ -800,11 +801,13 @@
 > interpreter (tree-walker / IR VM) では動くが、compiled レーン (AOT / JIT) が断るか
 > 遅い形。interpreter 側 JIT の silent fallback もここ。
 
-- **COMPOUND-CALL-EXPR-POS の残り: 関数の結果以外の式の位置** ★ — 関数の末尾 /
-  `return` / 引数 / `if`・`match` の腕 / scrutinee は通る (2026-10-11)。残りは
-  レシーバ (`mk().x`、`v.get(i).len()`)、`println` の引数、演算の被演算子・条件、
-  要素代入の右辺で、compiled レーンは「bind the result with `val`」で断る。
-  演算子 overload の let-rhs 以外 (OP-OVERLOAD-CHAIN) も同根
+- **COMPOUND-CALL-EXPR-POS の残り** ★ — 関数の結果 / 引数 / 腕 / scrutinee / 読み出しの根
+  (`mk().n`、`v.get(i).len()`) は通る (2026-10-11)。残りは compound そのものを
+  被演算子・条件に置く形 (`mk() == p`)、`println(mk())`、呼び出しへのメソッドの
+  結果へのメソッド (`mk().twin().get()`)、要素代入の右辺。所有型の一時値
+  (`String::from_str("a").len()` の `String`) は全レーンで解放されない —
+  tree-walker も解放しないので揃えてある。演算子 overload の let-rhs 以外
+  (OP-OVERLOAD-CHAIN) も同根
 
 - **CONST-ARRAY の残り: struct / tuple の表の渡し方** — 2026-09-25 に
   struct / tuple 要素の表が compiled レーンで読めるようになった

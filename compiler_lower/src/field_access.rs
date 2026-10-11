@@ -166,7 +166,103 @@ impl<'a> FunctionLower<'a> {
         }
     }
 
+    /// The expression a field / element chain starts from: `mk()` in
+    /// `mk().a.0`.
+    fn chain_root(&self, mut expr: ExprRef) -> ExprRef {
+        loop {
+            match self.expr_at(&expr) {
+                Some(Expr::FieldAccess(inner, _)) | Some(Expr::TupleAccess(inner, _)) => {
+                    expr = *inner
+                }
+                _ => return expr,
+            }
+        }
+    }
+
+    /// COMPOUND-CALL-EXPR-POS: when the chain under `obj` starts at a
+    /// call returning a struct or tuple, lower the call into fresh
+    /// storage and record it in `materialised_roots` so the chain
+    /// resolves through it. Returns the root to forget afterwards.
+    ///
+    /// The storage registers no drop: the tree-walker oracle does not
+    /// drop a temporary either, so an owning one is leaked the same way
+    /// on every lane rather than freed on some.
+    pub(super) fn materialise_chain_root(
+        &mut self,
+        obj: &ExprRef,
+    ) -> Result<Option<ExprRef>, String> {
+        let root = self.chain_root(*obj);
+        if self.materialised_roots.contains_key(&root) {
+            return Ok(None);
+        }
+        let Some(result) = self.materialise_compound_call(&root)? else {
+            return Ok(None);
+        };
+        self.materialised_roots.insert(root, result);
+        Ok(Some(root))
+    }
+
+    pub(super) fn forget_chain_root(&mut self, root: Option<ExprRef>) {
+        if let Some(root) = root {
+            self.materialised_roots.remove(&root);
+        }
+    }
+
+    /// Lower a struct- or tuple-returning call into fresh storage.
+    /// `Ok(None)` for anything else -- a scalar or enum result, or a
+    /// call whose target cannot be named before lowering it -- so the
+    /// caller's own diagnostics stand.
+    fn materialise_compound_call(
+        &mut self,
+        expr: &ExprRef,
+    ) -> Result<Option<FieldChainResult>, String> {
+        let target = match self.expr_at(expr) {
+            Some(Expr::Call(fn_name, _)) => self.lookup_fn_here(None, *fn_name),
+            Some(Expr::AssociatedFunctionCall(struct_name, fn_name, args))
+                if self.struct_defs.contains_key(struct_name) =>
+            {
+                let (struct_name, fn_name, args) = (*struct_name, *fn_name, args.clone());
+                let Ok(struct_id) = self.resolve_struct_instance(struct_name, None) else {
+                    return Ok(None);
+                };
+                self.resolve_struct_method_func_id(struct_name, fn_name, struct_id, &args)?
+            }
+            Some(Expr::MethodCall(recv, method, args)) => {
+                let (recv, method, args) = (*recv, *method, args.clone());
+                self.resolve_method_target(&recv, method, &args)?.map(|(id, _)| id)
+            }
+            _ => None,
+        };
+        let Some(target) = target else {
+            return Ok(None);
+        };
+        match self.module.function(target).return_type {
+            Type::Struct(struct_id) => {
+                let fields = self.allocate_struct_fields(struct_id);
+                self.store_struct_value_into_fields(struct_id, &fields, expr)?;
+                Ok(Some(FieldChainResult::Struct { struct_id, fields }))
+            }
+            Type::Tuple(tuple_id) => {
+                let elements = self.allocate_tuple_elements(tuple_id)?;
+                self.store_tuple_value_into_elements(&elements, expr)?;
+                Ok(Some(FieldChainResult::Tuple { elements }))
+            }
+            _ => Ok(None),
+        }
+    }
+
     pub(super) fn lower_field_access(
+        &mut self,
+        obj: &ExprRef,
+        field: DefaultSymbol,
+    ) -> Result<Option<ValueId>, String> {
+        let root = self.materialise_chain_root(obj)?;
+        let out = self.lower_field_access_inner(obj, field);
+        self.forget_chain_root(root);
+        out
+    }
+
+    fn lower_field_access_inner(
         &mut self,
         obj: &ExprRef,
         field: DefaultSymbol,
@@ -259,6 +355,9 @@ impl<'a> FunctionLower<'a> {
     /// `FieldBinding` list of a struct sub-binding. Pure / immutable
     /// — used by both reads and writes.
     pub(super) fn resolve_field_chain(&self, expr_ref: &ExprRef) -> Result<FieldChainResult, String> {
+        if let Some(result) = self.materialised_roots.get(expr_ref) {
+            return Ok(result.clone());
+        }
         let expr = self
             .program
             .expression

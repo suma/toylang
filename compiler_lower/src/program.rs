@@ -1941,6 +1941,7 @@ impl<'a> FunctionLower<'a> {
             next_value: 0,
             block_consts: HashMap::default(),
             pending_struct_value: None,
+            materialised_roots: HashMap::default(),
             pending_tuple_value: None,
             range_return: None,
             pending_enum_value: None,

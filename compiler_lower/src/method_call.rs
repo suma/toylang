@@ -802,6 +802,18 @@ impl<'a> FunctionLower<'a> {
         method: DefaultSymbol,
         args: &Vec<ExprRef>,
     ) -> Result<Option<ValueId>, String> {
+        let root = self.materialise_chain_root(obj)?;
+        let out = self.lower_method_call_inner(obj, method, args);
+        self.forget_chain_root(root);
+        out
+    }
+
+    fn lower_method_call_inner(
+        &mut self,
+        obj: &ExprRef,
+        method: DefaultSymbol,
+        args: &Vec<ExprRef>,
+    ) -> Result<Option<ValueId>, String> {
         // Closures Phase 8: field-call dispatch. When the
         // receiver is a struct-bound identifier and the
         // requested name matches a field whose declared type is
@@ -1182,6 +1194,13 @@ impl<'a> FunctionLower<'a> {
     ///     can call `self.vec.size()` instead of reading
     ///     `self.vec.len` directly.
     fn resolve_method_receiver_binding(&mut self, obj: &ExprRef) -> Result<Binding, String> {
+        // COMPOUND-CALL-EXPR-POS: a call receiver lowered by
+        // `materialise_chain_root`.
+        if let Some(super::bindings::FieldChainResult::Struct { struct_id, fields }) =
+            self.materialised_roots.get(obj)
+        {
+            return Ok(Binding::Struct { struct_id: *struct_id, fields: fields.clone() });
+        }
         let obj_expr = self
             .program
             .expression
@@ -1758,6 +1777,7 @@ impl<'a> FunctionLower<'a> {
             }
             _ => unreachable!("receiver shape already validated"),
         }
+        let mut materialised: Vec<ExprRef> = Vec::new();
         for (arg_idx, a) in args.iter().enumerate() {
             // CONST-ARRAY: an array argument is its address.
             if param_tys.get(1 + arg_idx) == Some(&Type::U64)
@@ -1791,6 +1811,15 @@ impl<'a> FunctionLower<'a> {
                 }
                 _ => *a,
             };
+            // COMPOUND-CALL-EXPR-POS: a field of a call's result
+            // (`take(mk().inner)`). Lowered here, once; the expansion
+            // below and `lower_expr` both read it from the record.
+            if matches!(
+                self.expr_at(&arg_expr_ref),
+                Some(Expr::FieldAccess(..) | Expr::TupleAccess(..))
+            ) {
+                materialised.extend(self.materialise_chain_root(&arg_expr_ref)?);
+            }
             if let Some(arg_binding) = self.compound_arg_binding(&arg_expr_ref) {
                 if let Binding::Struct { fields, .. } = arg_binding.clone() {
                     let leaves = flatten_struct_locals(&fields);
@@ -1868,6 +1897,9 @@ impl<'a> FunctionLower<'a> {
                 .lower_expr(&arg_expr_ref)?
                 .ok_or_else(|| "method argument produced no value".to_string())?;
             values.push(v);
+        }
+        for root in materialised {
+            self.forget_chain_root(Some(root));
         }
         arg_reloads.insert(0, reload);
         Ok((values, arg_reloads))

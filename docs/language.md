@@ -7118,7 +7118,7 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   setting — see "Operational guidance" above.)
 - **Compound-returning calls in expression position** — a compound
   never travels as one SSA value, so a call producing one needs
-  locals to write its leaves into. Four positions have those:
+  locals to write its leaves into. These positions have those:
 
   - an **argument** — `take(mk(3i64))`, `take(o.twin())`,
     `take(P::origin())`, `count(Vec::new())`, for a struct, a tuple
@@ -7129,7 +7129,13 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   - a **function's result** — the body's tail (also behind a block's
     tail or in an `if` / `match` arm) and `return` —
     `fn mk() -> String { String::from_str("x") }`,
-    `return pair(a)`.
+    `return pair(a)`;
+  - the **root of a field / element read or a method receiver**, in
+    any position — `mk().n`, `mk().inner.x`, `triple(1).2`,
+    `mk().get()`, `String::from_str("ab").len()`, `v.get(i).len()`,
+    `take(mk().inner)`, `println(mk().n)`. The call runs once. A
+    temporary that owns something (`impl Drop`) is not dropped, on any
+    lane — bind it with `val` when it should be.
 
   An enum-producing position (an `if` or `match` arm, a block tail, an
   enum payload) also takes an **associated function that returns that
@@ -7137,10 +7143,11 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   the arm, without a `val` in between.
 
   Enum *constructions* (`take(Color::Red)`, `take(Option::None)`) are
-  unrestricted in argument position too. Everywhere else — an
-  operand, a condition, a receiver (`mk().x`, `v.get(i).len()`), a
-  `println` argument, the right-hand side of an element assignment —
-  the call still has to be bound with `val` first.
+  unrestricted in argument position too. Everywhere else — a call
+  whole as an operand or condition (`mk() == p`), a `println` of the
+  compound itself (`println(mk())`), a receiver that is a method call
+  on a call (`mk().twin().get()`), the right-hand side of an element
+  assignment — the call still has to be bound with `val` first.
 - **Trait limitations** — no trait inheritance; no associated
   types. Generic trait declarations (`trait Foo<T>`), default
   method bodies, multiple bounds (`<T: A + B>`) and `dyn Trait`

@@ -1627,6 +1627,7 @@ impl<'a> FunctionLower<'a> {
         // had to be copied into a slot; the caller reads them back
         // after emitting the call.
         let mut ptr_arg_reloads: Vec<ReceiverReload> = Vec::new();
+        let mut materialised: Vec<ExprRef> = Vec::new();
         for (arg_idx, a) in items.iter().enumerate() {
             // CONST-ARRAY: an array argument to a `&[T; N]` parameter
             // is its address.
@@ -1830,6 +1831,15 @@ impl<'a> FunctionLower<'a> {
                 values.push(ptr);
                 continue;
             }
+            // COMPOUND-CALL-EXPR-POS: a field of a call's result
+            // (`take(mk().inner)`). Lowered here, once; the expansion
+            // below and `lower_expr` both read it from the record.
+            if matches!(
+                self.expr_at(&arg_expr_ref),
+                Some(Expr::FieldAccess(..) | Expr::TupleAccess(..))
+            ) {
+                materialised.extend(self.materialise_chain_root(&arg_expr_ref)?);
+            }
             // Struct-typed identifier argument: expand into per-field
             // values in declaration order. Anything else flows through
             // `lower_expr`.
@@ -1916,6 +1926,9 @@ impl<'a> FunctionLower<'a> {
                 .lower_expr(&arg_expr_ref)?
                 .ok_or_else(|| "call argument produced no value".to_string())?;
             values.push(v);
+        }
+        for root in materialised {
+            self.forget_chain_root(Some(root));
         }
         Ok((values, ptr_arg_reloads))
     }

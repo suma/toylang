@@ -574,9 +574,7 @@ impl<'a> FunctionLower<'a> {
             let slots = storage.payloads[idx].clone();
             if idx + 1 < n_variants {
                 let next = self.fresh_block();
-                let want = self
-                    .emit(InstKind::Const(Const::U64(idx as u64)), Some(Type::U64))
-                    .expect("Const returns a value");
+                let want = self.emit_u64(idx as u64);
                 let cond = self
                     .emit(
                         InstKind::BinOp {
@@ -1194,28 +1192,8 @@ impl<'a> FunctionLower<'a> {
         variant_name: DefaultSymbol,
         args: &[ExprRef],
     ) -> Result<Option<Vec<ValueId>>, String> {
-        let enum_def = self.module.enum_def(enum_id).clone();
-        let variant_idx = enum_def
-            .variants
-            .iter()
-            .position(|v| v.name == variant_name)
-            .ok_or_else(|| {
-                format!(
-                    "unknown enum variant `{}::{}`",
-                    self.interner.resolve(enum_name).unwrap_or("?"),
-                    self.interner.resolve(variant_name).unwrap_or("?"),
-                )
-            })?;
-        let expected = enum_def.variants[variant_idx].payload_types.len();
-        if args.len() != expected {
-            return Err(format!(
-                "enum variant `{}::{}` expects {} payload value(s), got {}",
-                self.interner.resolve(enum_name).unwrap_or("?"),
-                self.interner.resolve(variant_name).unwrap_or("?"),
-                expected,
-                args.len(),
-            ));
-        }
+        let variant_idx =
+            self.checked_variant_index(enum_id, enum_name, variant_name, Some(args.len()))?;
         let storage = self.allocate_enum_storage(enum_id);
         self.write_variant_into_storage(&storage, variant_idx, args)?;
         Ok(Some(self.load_enum_locals(&storage)))
@@ -1536,9 +1514,7 @@ impl<'a> FunctionLower<'a> {
                     .ok_or_else(|| "array literal element produced no value".to_string())?;
                 self.emit_array_leaf_store(&storage, 1, i, 0, v, element_ty);
             }
-            let zero = self
-                .emit(InstKind::Const(Const::U64(0)), Some(Type::U64))
-                .expect("Const returns a value");
+            let zero = self.emit_u64(0);
             return Ok(self.emit(
                 InstKind::ArrayElemAddr { slot: storage.scalar_slot(), index: zero, elem_ty: element_ty },
                 Some(Type::U64),
@@ -1552,9 +1528,7 @@ impl<'a> FunctionLower<'a> {
                 Ok(self.emit(InstKind::LoadLocal(ptr), Some(Type::U64)))
             }
             Some(Binding::Array { element_ty, storage, .. }) if element_ty.is_scalar() => {
-                let zero = self
-                    .emit(InstKind::Const(Const::U64(0)), Some(Type::U64))
-                    .expect("Const returns a value");
+                let zero = self.emit_u64(0);
                 Ok(self.emit(
                     InstKind::ArrayElemAddr { slot: storage.scalar_slot(), index: zero, elem_ty: element_ty },
                     Some(Type::U64),
@@ -1738,8 +1712,7 @@ impl<'a> FunctionLower<'a> {
                     .map(|f| super::bindings::flatten_struct_locals(f))
                     .unwrap_or_default();
                 let data_ptr = if struct_leaves.is_empty() {
-                    self.emit(InstKind::Const(Const::U64(0)), Some(Type::U64))
-                        .expect("Const returns a value")
+                    self.emit_u64(0)
                 } else {
                     let struct_id = struct_id.expect("struct_leaves nonempty implies binding");
                     let total_bytes = self
@@ -1786,12 +1759,7 @@ impl<'a> FunctionLower<'a> {
                         let leaf_val = self
                             .emit(InstKind::LoadLocal(*local), Some(*leaf_ty))
                             .expect("LoadLocal returns a value");
-                        let off_v = self
-                            .emit(
-                                InstKind::Const(Const::U64(running_offset)),
-                                Some(Type::U64),
-                            )
-                            .expect("Const returns a value");
+                        let off_v = self.emit_u64(running_offset);
                         self.emit(
                             InstKind::PtrWrite {
                                 ptr: slot_addr,
@@ -3268,12 +3236,7 @@ impl<'a> FunctionLower<'a> {
                 let len = self
                     .emit(InstKind::StrLen { value: v }, Some(Type::U64))
                     .expect("StrLen returns a value");
-                let one = self
-                    .emit(
-                        InstKind::Const(crate::ir::Const::U64(1)),
-                        Some(Type::U64),
-                    )
-                    .expect("Const returns a value");
+                let one = self.emit_u64(1);
                 let nul_offset = self
                     .emit(
                         InstKind::BinOp {

@@ -113,9 +113,7 @@ impl FunctionLower<'_> {
         if elem_size == 1 {
             return count;
         }
-        let size = self
-            .emit(InstKind::Const(Const::U64(elem_size)), Some(Type::U64))
-            .expect("Const returns a value");
+        let size = self.emit_u64(elem_size);
         self.emit(InstKind::BinOp { op: BinOp::Mul, lhs: count, rhs: size }, Some(Type::U64))
             .expect("imul returns a value")
     }

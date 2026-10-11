@@ -34,7 +34,7 @@ use super::bindings::{
     Binding, FieldChainResult, TupleElementBinding,
 };
 use super::FunctionLower;
-use crate::ir::{Const, EnumId, InstKind, LocalId, StructId, Type, ValueId};
+use crate::ir::{EnumId, InstKind, LocalId, StructId, Type, ValueId};
 
 impl<'a> FunctionLower<'a> {
     /// Centralised val/var-with-rhs handling. Picks the binding shape
@@ -2050,28 +2050,8 @@ impl<'a> FunctionLower<'a> {
         path: &[DefaultSymbol],
     ) -> Result<Option<ValueId>, String> {
         let enum_id = self.resolve_enum_instance(path[0], annotation)?;
-        let enum_def = self.module.enum_def(enum_id).clone();
-        let variant_idx = enum_def
-            .variants
-            .iter()
-            .position(|v| v.name == path[1])
-            .ok_or_else(|| {
-                format!(
-                    "unknown enum variant `{}::{}`",
-                    self.interner.resolve(path[0]).unwrap_or("?"),
-                    self.interner.resolve(path[1]).unwrap_or("?"),
-                )
-            })?;
-        if !enum_def.variants[variant_idx].payload_types.is_empty() {
-            return Err(format!(
-                "enum variant `{}::{}` is a tuple variant; supply its arguments \
-                 via `{}::{}(...)`",
-                self.interner.resolve(path[0]).unwrap_or("?"),
-                self.interner.resolve(path[1]).unwrap_or("?"),
-                self.interner.resolve(path[0]).unwrap_or("?"),
-                self.interner.resolve(path[1]).unwrap_or("?"),
-            ));
-        }
+        let variant_idx =
+            self.checked_variant_index(enum_id, path[0], path[1], None)?;
         self.bind_enum(name, enum_id, variant_idx, &[])?;
         Ok(None)
     }
@@ -2092,28 +2072,8 @@ impl<'a> FunctionLower<'a> {
             &args,
             annotation,
         )?;
-        let enum_def = self.module.enum_def(enum_id).clone();
-        let variant_idx = enum_def
-            .variants
-            .iter()
-            .position(|v| v.name == variant_name)
-            .ok_or_else(|| {
-                format!(
-                    "unknown enum variant `{}::{}`",
-                    self.interner.resolve(enum_name).unwrap_or("?"),
-                    self.interner.resolve(variant_name).unwrap_or("?"),
-                )
-            })?;
-        let expected = enum_def.variants[variant_idx].payload_types.len();
-        if args.len() != expected {
-            return Err(format!(
-                "enum variant `{}::{}` expects {} payload value(s), got {}",
-                self.interner.resolve(enum_name).unwrap_or("?"),
-                self.interner.resolve(variant_name).unwrap_or("?"),
-                expected,
-                args.len(),
-            ));
-        }
+        let variant_idx =
+            self.checked_variant_index(enum_id, enum_name, variant_name, Some(args.len()))?;
         self.bind_enum(name, enum_id, variant_idx, &args)?;
         Ok(None)
     }
@@ -2390,12 +2350,7 @@ impl<'a> FunctionLower<'a> {
                     }
                     ArrayStorage::Columns(cols) => (cols[j], i),
                 };
-                let src_idx_v = self
-                    .emit(
-                        InstKind::Const(Const::U64(src_idx as u64)),
-                        Some(Type::U64),
-                    )
-                    .expect("Const returns");
+                let src_idx_v = self.emit_u64(src_idx as u64);
                 let v = self
                     .emit(
                         InstKind::ArrayLoad {
@@ -2406,12 +2361,7 @@ impl<'a> FunctionLower<'a> {
                         Some(leaf_ty),
                     )
                     .expect("ArrayLoad returns");
-                let dst_idx_v = self
-                    .emit(
-                        InstKind::Const(Const::U64(dst_idx as u64)),
-                        Some(Type::U64),
-                    )
-                    .expect("Const returns");
+                let dst_idx_v = self.emit_u64(dst_idx as u64);
                 self.emit(
                     InstKind::ArrayStore {
                         slot: dst_slot,

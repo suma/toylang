@@ -1336,12 +1336,7 @@ impl<'a> FunctionLower<'a> {
             for ((offset, leaf_ty), dest_local) in
                 wb.struct_leaves.iter().zip(wb.dest_locals.iter())
             {
-                let off_v = self
-                    .emit(
-                        InstKind::Const(crate::ir::Const::U64(*offset)),
-                        Some(Type::U64),
-                    )
-                    .ok_or_else(|| "dyn-mut writeback: Const(offset) returned no value".to_string())?;
+                let off_v = self.emit_u64(*offset);
                 let leaf_v = self
                     .emit(
                         InstKind::PtrRead {
@@ -1381,12 +1376,7 @@ impl<'a> FunctionLower<'a> {
             let leaf_val = self
                 .emit(InstKind::LoadLocal(*local), Some(*leaf_ty))
                 .ok_or_else(|| "dyn thunk: LoadLocal(writeback) returned no value".to_string())?;
-            let off_v = self
-                .emit(
-                    InstKind::Const(crate::ir::Const::U64(*offset)),
-                    Some(Type::U64),
-                )
-                .ok_or_else(|| "dyn thunk: Const(writeback offset) returned no value".to_string())?;
+            let off_v = self.emit_u64(*offset);
             self.emit(
                 InstKind::PtrWrite {
                     ptr: data_ptr_v,
@@ -1508,12 +1498,7 @@ impl<'a> FunctionLower<'a> {
             if impl_takes_ptr_self {
                 break;
             }
-            let off_v = self
-                .emit(
-                    InstKind::Const(crate::ir::Const::U64(*offset)),
-                    Some(Type::U64),
-                )
-                .ok_or_else(|| "dyn thunk: Const(offset) returned no value".to_string())?;
+            let off_v = self.emit_u64(*offset);
             let v = self
                 .emit(
                     InstKind::PtrRead {
@@ -1882,6 +1867,12 @@ impl<'a> FunctionLower<'a> {
 
     fn fresh_block(&mut self) -> BlockId {
         self.module.function_mut(self.func_id).add_block()
+    }
+
+    /// A `u64` constant — offsets, sizes, indices and enum tags.
+    fn emit_u64(&mut self, n: u64) -> ValueId {
+        self.emit(InstKind::Const(crate::ir::Const::U64(n)), Some(Type::U64))
+            .expect("Const returns a value")
     }
 
     /// Append an instruction to the current block. Panics if no block is

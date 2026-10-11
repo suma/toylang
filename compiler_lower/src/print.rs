@@ -15,7 +15,7 @@ use super::bindings::{
 };
 use super::FunctionLower;
 use crate::ir::{
-    BinOp, Const, EnumId, InstKind, LocalId, StructId, Terminator, Type, ValueId,
+    BinOp, EnumId, InstKind, LocalId, StructId, Terminator, Type, ValueId,
 };
 
 impl<'a> FunctionLower<'a> {
@@ -211,28 +211,8 @@ impl<'a> FunctionLower<'a> {
                     if path.len() == 2 && self.enum_defs.contains_key(&path[0]) =>
                 {
                     let enum_id = self.resolve_enum_instance(path[0], None)?;
-                    let enum_def = self.module.enum_def(enum_id).clone();
-                    let variant_idx = enum_def
-                        .variants
-                        .iter()
-                        .position(|v| v.name == path[1])
-                        .ok_or_else(|| {
-                            format!(
-                                "unknown enum variant `{}::{}`",
-                                self.interner.resolve(path[0]).unwrap_or("?"),
-                                self.interner.resolve(path[1]).unwrap_or("?"),
-                            )
-                        })?;
-                    if !enum_def.variants[variant_idx].payload_types.is_empty() {
-                        return Err(format!(
-                            "enum variant `{}::{}` is a tuple variant; supply its arguments \
-                             via `{}::{}(...)`",
-                            self.interner.resolve(path[0]).unwrap_or("?"),
-                            self.interner.resolve(path[1]).unwrap_or("?"),
-                            self.interner.resolve(path[0]).unwrap_or("?"),
-                            self.interner.resolve(path[1]).unwrap_or("?"),
-                        ));
-                    }
+                    let variant_idx =
+                        self.checked_variant_index(enum_id, path[0], path[1], None)?;
                     let storage = self.allocate_enum_storage(enum_id);
                     self.write_variant_into_storage(&storage, variant_idx, &[])?;
                     self.emit_print_enum(&storage, newline)?;
@@ -487,29 +467,8 @@ impl<'a> FunctionLower<'a> {
                         ctor_args,
                         None,
                     )?;
-                    let enum_def = self.module.enum_def(enum_id).clone();
-                    let variant_idx = enum_def
-                        .variants
-                        .iter()
-                        .position(|v| v.name == *variant_name)
-                        .ok_or_else(|| {
-                            format!(
-                                "unknown enum variant `{}::{}`",
-                                self.interner.resolve(*enum_name).unwrap_or("?"),
-                                self.interner.resolve(*variant_name).unwrap_or("?"),
-                            )
-                        })?;
-                    let expected =
-                        enum_def.variants[variant_idx].payload_types.len();
-                    if ctor_args.len() != expected {
-                        return Err(format!(
-                            "enum variant `{}::{}` expects {} payload value(s), got {}",
-                            self.interner.resolve(*enum_name).unwrap_or("?"),
-                            self.interner.resolve(*variant_name).unwrap_or("?"),
-                            expected,
-                            ctor_args.len(),
-                        ));
-                    }
+                    let variant_idx =
+                        self.checked_variant_index(enum_id, *enum_name, *variant_name, Some(ctor_args.len()))?;
                     let storage = self.allocate_enum_storage(enum_id);
                     self.write_variant_into_storage(&storage, variant_idx, ctor_args)?;
                     self.emit_print_enum(&storage, newline)?;
@@ -712,9 +671,7 @@ impl<'a> FunctionLower<'a> {
             if i > 0 {
                 self.emit_print_raw_text(", ".to_string(), false);
             }
-            let idx_v = self
-                .emit(InstKind::Const(Const::U64(i as u64)), Some(Type::U64))
-                .expect("Const returns a value");
+            let idx_v = self.emit_u64(i as u64);
             let v = self
                 .emit(
                     InstKind::ArrayLoad { slot, index: idx_v, elem_ty: element_ty },
@@ -848,12 +805,7 @@ impl<'a> FunctionLower<'a> {
             let slots = storage.payloads[idx].clone();
             if idx + 1 < n_variants {
                 let next = self.fresh_block();
-                let want = self
-                    .emit(
-                        InstKind::Const(Const::U64(idx as u64)),
-                        Some(Type::U64),
-                    )
-                    .expect("Const returns a value");
+                let want = self.emit_u64(idx as u64);
                 let cond = self
                     .emit(
                         InstKind::BinOp {

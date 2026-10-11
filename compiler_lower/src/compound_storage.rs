@@ -42,7 +42,7 @@ use super::bindings::{
 };
 use super::{DropTarget, FunctionLower};
 use crate::ir::{
-    BlockId, Const, EnumId, InstKind, LocalId, StructId, Terminator, Type, ValueId,
+    BlockId, EnumId, InstKind, LocalId, StructId, Terminator, Type, ValueId,
 };
 
 /// Where a compound-producing expression should leave its value.
@@ -830,6 +830,37 @@ impl<'a> FunctionLower<'a> {
         Ok(())
     }
 
+    /// The index of `enum_name::variant` in `enum_id`, checked against
+    /// what the site supplies: `payloads` is `None` for a bare path
+    /// (which must name a unit variant) and `Some(n)` for a
+    /// construction with `n` arguments.
+    pub(super) fn checked_variant_index(
+        &self,
+        enum_id: EnumId,
+        enum_name: DefaultSymbol,
+        variant: DefaultSymbol,
+        payloads: Option<usize>,
+    ) -> Result<usize, String> {
+        let en = self.interner.resolve(enum_name).unwrap_or("?");
+        let vn = self.interner.resolve(variant).unwrap_or("?");
+        let variants = &self.module.enum_def(enum_id).variants;
+        let idx = variants
+            .iter()
+            .position(|v| v.name == variant)
+            .ok_or_else(|| format!("unknown enum variant `{en}::{vn}`"))?;
+        let expected = variants[idx].payload_types.len();
+        match payloads {
+            None if expected != 0 => Err(format!(
+                "enum variant `{en}::{vn}` is a tuple variant; supply its arguments \
+                 via `{en}::{vn}(...)`"
+            )),
+            Some(got) if got != expected => Err(format!(
+                "enum variant `{en}::{vn}` expects {expected} payload value(s), got {got}"
+            )),
+            _ => Ok(idx),
+        }
+    }
+
     /// Store `variant_idx` into the storage's tag local, then
     /// evaluate each payload arg and store it into the matching
     /// slot. For enum-typed payloads, the arg is also expected to
@@ -842,12 +873,7 @@ impl<'a> FunctionLower<'a> {
         variant_idx: usize,
         args: &[ExprRef],
     ) -> Result<(), String> {
-        let tag_v = self
-            .emit(
-                InstKind::Const(Const::U64(variant_idx as u64)),
-                Some(Type::U64),
-            )
-            .expect("Const returns a value");
+        let tag_v = self.emit_u64(variant_idx as u64);
         self.emit(
             InstKind::StoreLocal {
                 dst: storage.tag_local,
@@ -1222,28 +1248,8 @@ impl<'a> FunctionLower<'a> {
                         self.interner.resolve(expected_base).unwrap_or("?"),
                     ));
                 }
-                let enum_def = self.module.enum_def(target_enum_id).clone();
-                let variant_idx = enum_def
-                    .variants
-                    .iter()
-                    .position(|v| v.name == path[1])
-                    .ok_or_else(|| {
-                        format!(
-                            "unknown enum variant `{}::{}`",
-                            self.interner.resolve(expected_base).unwrap_or("?"),
-                            self.interner.resolve(path[1]).unwrap_or("?"),
-                        )
-                    })?;
-                if !enum_def.variants[variant_idx].payload_types.is_empty() {
-                    return Err(format!(
-                        "enum variant `{}::{}` is a tuple variant; supply its arguments \
-                         via `{}::{}(...)`",
-                        self.interner.resolve(expected_base).unwrap_or("?"),
-                        self.interner.resolve(path[1]).unwrap_or("?"),
-                        self.interner.resolve(expected_base).unwrap_or("?"),
-                        self.interner.resolve(path[1]).unwrap_or("?"),
-                    ));
-                }
+                let variant_idx =
+                    self.checked_variant_index(target_enum_id, expected_base, path[1], None)?;
                 self.write_variant_into_storage(target, variant_idx, &[])?;
                 Ok(())
             }

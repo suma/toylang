@@ -770,43 +770,7 @@ fn uncallable_reason(
 /// expression, and the only block it could contain would come from a
 /// closure, which cannot be folded anyway.
 fn walk(program: &File, expr_ref: &ExprRef, visit: &mut dyn FnMut(&Expr)) {
-    let Some(expr) = program.expression.get(expr_ref) else {
-        return;
-    };
-    visit(&expr);
-    let mut children: Vec<ExprRef> = Vec::new();
-    match &expr {
-        Expr::Call(_, args) => children.push(*args),
-        Expr::MethodCall(receiver, _, args) => {
-            children.push(*receiver);
-            children.extend(args.iter().copied());
-        }
-        Expr::AssociatedFunctionCall(_, _, args) | Expr::BuiltinCall(_, args) => {
-            children.extend(args.iter().copied())
-        }
-        Expr::Binary(_, lhs, rhs) => children.extend([*lhs, *rhs]),
-        Expr::Unary(_, operand) => children.push(*operand),
-        Expr::Cast(inner, _) => children.push(*inner),
-        Expr::ExprList(items)
-        | Expr::ArrayLiteral(items)
-        | Expr::TupleLiteral(items) => children.extend(items.iter().copied()),
-        Expr::StructLiteral(_, fields) => children.extend(fields.iter().map(|(_, v)| *v)),
-        Expr::FieldAccess(obj, _) | Expr::TupleAccess(obj, _) => children.push(*obj),
-        Expr::BuiltinMethodCall(receiver, _, args) => {
-            children.push(*receiver);
-            children.extend(args.iter().copied());
-        }
-        Expr::IfElifElse(cond, then_block, elifs, else_block) => {
-            children.extend([*cond, *then_block, *else_block]);
-            for (c, b) in elifs {
-                children.extend([*c, *b]);
-            }
-        }
-        _ => {}
-    }
-    for child in children {
-        walk(program, &child, visit);
-    }
+    walk_pool(&program.expression, expr_ref, visit);
 }
 
 // ---------------------------------------------------------------------------

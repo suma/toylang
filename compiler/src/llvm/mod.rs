@@ -300,13 +300,7 @@ impl<'ctx, 'a> Gen<'ctx, 'a> {
     // ---- declarations ----
 
     fn declare_functions(&mut self) -> Result<(), String> {
-        let main_id = self
-            .ir
-            .functions
-            .iter()
-            .position(|f| f.export_name == "main")
-            .map(|i| FuncId(i as u32));
-        let reachable = main_id.map(|id| self.ir.reachable_from(id)).unwrap_or_default();
+        let reachable = self.ir.reachable_from_main();
         for (i, f) in self.ir.functions.iter().enumerate() {
             let id = FuncId(i as u32);
             let import = matches!(f.linkage, Linkage::Import);

@@ -26,7 +26,7 @@ use super::method_registry::PendingMethodInstance;
 use super::templates::lower_param_or_return_type;
 use super::types::lower_scalar;
 use super::FunctionLower;
-use crate::ir::{Const, FuncId, InstKind, Linkage, LocalId, StructId, Type, ValueId};
+use crate::ir::{FuncId, InstKind, Linkage, LocalId, StructId, Type, ValueId};
 
 /// Map an IR `Type` for a primitive scalar receiver back to the
 /// canonical-name symbol that `Stmt::ImplBlock` uses as its target
@@ -1328,9 +1328,7 @@ impl<'a> FunctionLower<'a> {
             .emit(InstKind::DynCoerceSlotAddr { slot_idx }, Some(Type::U64))
             .expect("DynCoerceSlotAddr returns a value");
         for ((off, leaf_ty), value) in layout.iter().zip(values) {
-            let off_v = self
-                .emit(InstKind::Const(Const::U64(*off)), Some(Type::U64))
-                .expect("Const returns a value");
+            let off_v = self.emit_u64(*off);
             self.emit(
                 InstKind::PtrWrite { ptr: addr, offset: off_v, value: *value, value_ty: *leaf_ty },
                 None,
@@ -1477,9 +1475,7 @@ impl<'a> FunctionLower<'a> {
         let index = self
             .lower_expr(index)?
             .ok_or_else(|| "Ptr index produced no value".to_string())?;
-        let size_v = self
-            .emit(InstKind::Const(Const::U64(size)), Some(Type::U64))
-            .expect("Const returns a value");
+        let size_v = self.emit_u64(size);
         let offset = self
             .emit(
                 InstKind::BinOp { op: crate::ir::BinOp::Mul, lhs: index, rhs: size_v },
@@ -1690,9 +1686,7 @@ impl<'a> FunctionLower<'a> {
             let val = self
                 .emit(InstKind::LoadLocal(*local), Some(*ty))
                 .expect("LoadLocal returns a value");
-            let off_v = self
-                .emit(InstKind::Const(Const::U64(*off)), Some(Type::U64))
-                .expect("Const returns a value");
+            let off_v = self.emit_u64(*off);
             self.emit(
                 InstKind::PtrWrite {
                     ptr: addr,
@@ -1714,9 +1708,7 @@ impl<'a> FunctionLower<'a> {
         layout: &[(LocalId, u64, Type)],
     ) {
         for (local, off, ty) in layout {
-            let off_v = self
-                .emit(InstKind::Const(Const::U64(*off)), Some(Type::U64))
-                .expect("Const returns a value");
+            let off_v = self.emit_u64(*off);
             let v = self
                 .emit(
                     InstKind::PtrRead { ptr: addr, offset: off_v, elem_ty: *ty },
@@ -2008,12 +2000,7 @@ impl<'a> FunctionLower<'a> {
             .emit(InstKind::LoadLocal(vtable_ptr_local), Some(crate::ir::Type::U64))
             .expect("LoadLocal returns a value");
         // Compute offset = method_idx * 8 bytes.
-        let offset_val = self
-            .emit(
-                InstKind::Const(Const::U64((method_idx * 8) as u64)),
-                Some(crate::ir::Type::U64),
-            )
-            .expect("Const returns a value");
+        let offset_val = self.emit_u64((method_idx * 8) as u64);
         // Load fn_ptr = *(vtable_ptr + offset) as U64.
         let fn_ptr_val = self
             .emit(

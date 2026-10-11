@@ -21,7 +21,7 @@
 //! node) is freed once and later visits are no-ops.
 
 use super::FunctionLower;
-use crate::ir::{BinOp, Const, FuncId, InstKind, LocalId, Terminator, Type, ValueId};
+use crate::ir::{BinOp, FuncId, InstKind, LocalId, Terminator, Type, ValueId};
 
 /// One queued glue-function body awaiting synthesis. `ensure_drop_glue`
 /// declares the function and enqueues it; the program-level driver
@@ -254,12 +254,7 @@ impl<'a> FunctionLower<'a> {
             .ok_or_else(|| "drop glue: box data LoadLocal returned no value".to_string())?;
         let mut read_vals: Vec<ValueId> = Vec::with_capacity(leaves.len());
         for (leaf_off, leaf_ty) in leaves {
-            let off_v = self
-                .emit(
-                    InstKind::Const(Const::U64(leaf_off)),
-                    Some(Type::U64),
-                )
-                .ok_or_else(|| "drop glue: box leaf offset Const returned no value".to_string())?;
+            let off_v = self.emit_u64(leaf_off);
             let v = self
                 .emit(
                     InstKind::PtrRead {
@@ -330,18 +325,14 @@ impl<'a> FunctionLower<'a> {
                 crate::spelling::spell_type(self.module, self.interner, elem_ty)
             )
         })?;
-        let elem_size_v = self
-            .emit(InstKind::Const(Const::U64(stride)), Some(Type::U64))
-            .ok_or_else(|| "drop glue: vec stride Const returned no value".to_string())?;
+        let elem_size_v = self.emit_u64(stride);
         let cap_v = self
             .emit(InstKind::LoadLocal(cap_local.0), Some(Type::U64))
             .ok_or_else(|| "drop glue: vec cap LoadLocal returned no value".to_string())?;
 
         // i = 0; loop header: i < len ?
         let i_local = self.module.function_mut(self.func_id).add_local(Type::U64);
-        let zero = self
-            .emit(InstKind::Const(Const::U64(0)), Some(Type::U64))
-            .ok_or_else(|| "drop glue: vec index Const returned no value".to_string())?;
+        let zero = self.emit_u64(0);
         self.emit(InstKind::StoreLocal { dst: i_local, src: zero }, None);
         let header = self.fresh_block();
         let body = self.fresh_block();
@@ -401,9 +392,7 @@ impl<'a> FunctionLower<'a> {
         }
         self.emit(InstKind::Call { target: glue_id, args: read_vals }, None);
         // i += 1; back edge.
-        let one = self
-            .emit(InstKind::Const(Const::U64(1)), Some(Type::U64))
-            .ok_or_else(|| "drop glue: vec step Const returned no value".to_string())?;
+        let one = self.emit_u64(1);
         let next = self
             .emit(
                 InstKind::BinOp {
@@ -470,12 +459,7 @@ impl<'a> FunctionLower<'a> {
             }
             let body = self.fresh_block();
             let fallthrough = self.fresh_block();
-            let tag_cmp = self
-                .emit(
-                    InstKind::Const(Const::U64(vi as u64)),
-                    Some(Type::U64),
-                )
-                .ok_or_else(|| "drop glue: variant index Const returned no value".to_string())?;
+            let tag_cmp = self.emit_u64(vi as u64);
             let eq = self
                 .emit(
                     InstKind::BinOp {

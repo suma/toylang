@@ -72,7 +72,7 @@ fn main() -> ExitCode {
             if json {
                 let report = serde_json::json!({
                     "input": display_name,
-                    "emit": emit_name(options.emit),
+                    "emit": options.emit.name(),
                     "output": compiler::output_path(&options).display().to_string(),
                 });
                 println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
@@ -101,15 +101,6 @@ struct Mode {
     json: bool,
     /// HEAP-CHECK: `--heap-check=report|reuse` under `--all-backends`.
     heap_check: compiler::all_backends::HeapCheckRun,
-}
-
-fn emit_name(emit: EmitKind) -> &'static str {
-    match emit {
-        EmitKind::Executable => "exe",
-        EmitKind::Object => "obj",
-        EmitKind::Ir => "ir",
-        EmitKind::Clif => "clif",
-    }
 }
 
 fn parse_args(args: &[String]) -> Result<(CompilerOptions, Mode), String> {

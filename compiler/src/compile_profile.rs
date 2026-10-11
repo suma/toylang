@@ -71,12 +71,7 @@ fn conditions(options: &CompilerOptions) -> Conditions {
         .then(|| frontend::cache::default_cache_dir().display().to_string());
     Conditions {
         input: options.input.display().to_string(),
-        emit: match options.emit {
-            crate::EmitKind::Executable => "exe",
-            crate::EmitKind::Object => "obj",
-            crate::EmitKind::Ir => "ir",
-            crate::EmitKind::Clif => "clif",
-        },
+        emit: options.emit.name(),
         release: options.release,
         compiler_build: if cfg!(debug_assertions) { "debug" } else { "release" },
         backend: options.codegen().name(),

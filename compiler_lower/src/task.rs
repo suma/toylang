@@ -62,14 +62,10 @@ impl FunctionLower<'_> {
             .emit(InstKind::DynCoerceSlotAddr { slot_idx }, Some(Type::U64))
             .ok_or_else(|| "spawn env returned no value".to_string())?;
         for (i, (value, ty)) in args.iter().zip(leaf_tys.iter()).enumerate() {
-            let offset = self
-                .emit(InstKind::Const(Const::U64((i * 8) as u64)), Some(Type::U64))
-                .ok_or_else(|| "spawn env offset returned no value".to_string())?;
+            let offset = self.emit_u64((i * 8) as u64);
             self.emit(InstKind::PtrWrite { ptr: env, offset, value: *value, value_ty: *ty }, None);
         }
-        let size = self
-            .emit(InstKind::Const(Const::U64(size as u64)), Some(Type::U64))
-            .ok_or_else(|| "spawn env size returned no value".to_string())?;
+        let size = self.emit_u64(size as u64);
 
         let tramp = self.build_spawn_trampoline(target, &leaf_tys);
         Ok(self.emit(InstKind::TaskSpawn { body: tramp, env, size }, Some(Type::U64)))

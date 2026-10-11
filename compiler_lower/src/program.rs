@@ -2464,9 +2464,7 @@ impl<'a> FunctionLower<'a> {
             let src = self
                 .emit(InstKind::LoadLocal(ptr), Some(Type::U64))
                 .expect("LoadLocal returns a value");
-            let zero = self
-                .emit(InstKind::Const(crate::ir::Const::U64(0)), Some(Type::U64))
-                .expect("Const returns a value");
+            let zero = self.emit_u64(0);
             let dest = self
                 .emit(
                     InstKind::ArrayElemAddr { slot: storage.scalar_slot(), index: zero, elem_ty: element_ty },
@@ -2475,9 +2473,7 @@ impl<'a> FunctionLower<'a> {
                 .expect("ArrayElemAddr returns a value");
             let bytes = super::array_layout::elem_stride_bytes(element_ty, self.module) as u64
                 * length as u64;
-            let size = self
-                .emit(InstKind::Const(crate::ir::Const::U64(bytes)), Some(Type::U64))
-                .expect("Const returns a value");
+            let size = self.emit_u64(bytes);
             self.emit(InstKind::MemCopy { src, dest, size }, None);
             self.bindings.insert(name, Binding::Array { element_ty, length, storage });
         }

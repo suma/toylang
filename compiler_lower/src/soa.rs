@@ -122,9 +122,7 @@ impl FunctionLower<'_> {
                 if prefix == 0 {
                     return base;
                 }
-                let prefix_v = self
-                    .emit(InstKind::Const(crate::ir::Const::U64(prefix)), Some(Type::U64))
-                    .expect("Const returns a value");
+                let prefix_v = self.emit_u64(prefix);
                 self.emit(
                     InstKind::BinOp {
                         op: crate::ir::BinOp::Add,
@@ -152,9 +150,7 @@ impl FunctionLower<'_> {
         let within_column = if stride == 1 {
             index
         } else {
-            let stride_v = self
-                .emit(InstKind::Const(crate::ir::Const::U64(stride)), Some(Type::U64))
-                .expect("Const returns a value");
+            let stride_v = self.emit_u64(stride);
             self.emit(
                 InstKind::BinOp { op: crate::ir::BinOp::Mul, lhs: index, rhs: stride_v },
                 Some(Type::U64),
@@ -164,9 +160,7 @@ impl FunctionLower<'_> {
         if prefix == 0 {
             return within_column;
         }
-        let prefix_v = self
-            .emit(InstKind::Const(crate::ir::Const::U64(prefix)), Some(Type::U64))
-            .expect("Const returns a value");
+        let prefix_v = self.emit_u64(prefix);
         let column_base = self
             .emit(
                 InstKind::BinOp { op: crate::ir::BinOp::Mul, lhs: prefix_v, rhs: cap },
@@ -274,24 +268,15 @@ impl FunctionLower<'_> {
             super::bindings::ArrayStorage::Columns(_) => leaf_ty,
             super::bindings::ArrayStorage::Interleaved(_) => Type::U64,
         };
-        let index_v = self
-            .emit(InstKind::Const(crate::ir::Const::U64(index)), Some(Type::U64))
-            .expect("Const returns a value");
+        let index_v = self.emit_u64(index);
         let addr = self
             .emit(
                 InstKind::ArrayElemAddr { slot, index: index_v, elem_ty: addr_elem_ty },
                 Some(Type::U64),
             )
             .expect("ArrayElemAddr returns a value");
-        let len_v = self
-            .emit(
-                InstKind::Const(crate::ir::Const::U64(length as u64)),
-                Some(Type::U64),
-            )
-            .expect("Const returns a value");
-        let stride_v = self
-            .emit(InstKind::Const(crate::ir::Const::U64(stride)), Some(Type::U64))
-            .expect("Const returns a value");
+        let len_v = self.emit_u64(length as u64);
+        let stride_v = self.emit_u64(stride);
         self.bind_column(name, leaf_ty, addr, len_v, stride_v)?;
         Ok(Some(None))
     }
@@ -349,9 +334,7 @@ impl FunctionLower<'_> {
         let cap = self
             .emit(InstKind::LoadLocal(cap_local), Some(Type::U64))
             .expect("LoadLocal returns a value");
-        let prefix_v = self
-            .emit(InstKind::Const(crate::ir::Const::U64(prefix)), Some(Type::U64))
-            .expect("Const returns a value");
+        let prefix_v = self.emit_u64(prefix);
         let column_offset = self
             .emit(
                 InstKind::BinOp { op: crate::ir::BinOp::Mul, lhs: prefix_v, rhs: cap },
@@ -364,9 +347,7 @@ impl FunctionLower<'_> {
                 Some(Type::U64),
             )
             .expect("BinOp returns a value");
-        let stride_v = self
-            .emit(InstKind::Const(crate::ir::Const::U64(stride)), Some(Type::U64))
-            .expect("Const returns a value");
+        let stride_v = self.emit_u64(stride);
         // The window is over the *live* elements, not the capacity:
         // `len` is what a caller may read.
         self.bind_column(name, leaf_ty, addr, len, stride_v)?;

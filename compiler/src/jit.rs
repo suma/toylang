@@ -286,21 +286,7 @@ fn compile_program_to_jit(
     // and the libc/libm fallback. TEST-PERF: unreachable stdlib
     // functions are declared-but-bodyless (demand-driven lowering),
     // so only the reachable closure is defined.
-    let main_id = ir_module
-        .functions
-        .iter()
-        .position(|f| f.export_name == "main")
-        .map(|i| FuncId(i as u32));
-    let reachable = main_id
-        .map(|id| ir_module.reachable_from(id))
-        .unwrap_or_default();
-    for func_id in 0..ir_module.functions.len() {
-        let func_id = FuncId(func_id as u32);
-        if matches!(ir_module.function(func_id).linkage, Linkage::Import)
-            || !reachable.contains(&func_id)
-        {
-            continue;
-        }
+    for func_id in ir_module.emitted_bodies() {
         let func = ir_module.function(func_id);
         if func.blocks.is_empty() {
             return Err(format!(

@@ -223,6 +223,37 @@ pub struct EnumVariant {
 }
 
 impl Function {
+    /// A declared function with no body yet and every side table empty.
+    fn empty(
+        symbol: DefaultSymbol,
+        export_name: String,
+        linkage: Linkage,
+        params: Vec<Type>,
+        return_type: Type,
+    ) -> Self {
+        Self {
+            symbol,
+            export_name,
+            display_name: None,
+            hide_frame: false,
+            linkage,
+            params,
+            param_ref_pointee: Vec::new(),
+            dyn_coerce_slots: Vec::new(),
+            param_dyn_trait: Vec::new(),
+            return_type,
+            self_writeback_types: Vec::new(),
+            self_writeback_locals: Vec::new(),
+            ptr_params: Vec::new(),
+            resident_compounds: Vec::new(),
+            locals: Vec::new(),
+            array_slots: Vec::new(),
+            address_taken_locals: std::collections::BTreeSet::new(),
+            blocks: Vec::new(),
+            entry: BlockId(0),
+        }
+    }
+
     /// CODE-SIZE-SELF-ABI: the pointer description for parameter `i`,
     /// if that parameter travels as an address.
     pub fn ptr_param(&self, i: usize) -> Option<&PtrSelf> {
@@ -475,27 +506,7 @@ impl Module {
         module_rank: u32,
     ) -> FuncId {
         let id = FuncId(self.functions.len() as u32);
-        self.functions.push(Function {
-            symbol,
-            export_name,
-            display_name: None,
-            hide_frame: false,
-            linkage,
-            params,
-            param_ref_pointee: Vec::new(),
-            dyn_coerce_slots: Vec::new(),
-            param_dyn_trait: Vec::new(),
-            return_type,
-            self_writeback_types: Vec::new(),
-            self_writeback_locals: Vec::new(),
-            ptr_params: Vec::new(),
-            resident_compounds: Vec::new(),
-            locals: Vec::new(),
-            array_slots: Vec::new(),
-            address_taken_locals: std::collections::BTreeSet::new(),
-            blocks: Vec::new(),
-            entry: BlockId(0),
-        });
+        self.functions.push(Function::empty(symbol, export_name, linkage, params, return_type));
         let entries = self.function_index.entry(symbol).or_default();
         if let Some(prev) = entries
             .iter()
@@ -535,27 +546,7 @@ impl Module {
         let id = FuncId(self.functions.len() as u32);
         // Use a placeholder symbol slot — never looked up by symbol.
         let symbol = DefaultSymbol::try_from_usize(0).unwrap();
-        self.functions.push(Function {
-            symbol,
-            export_name,
-            display_name: None,
-            hide_frame: false,
-            linkage,
-            params,
-            param_ref_pointee: Vec::new(),
-            dyn_coerce_slots: Vec::new(),
-            param_dyn_trait: Vec::new(),
-            return_type,
-            self_writeback_types: Vec::new(),
-            self_writeback_locals: Vec::new(),
-            ptr_params: Vec::new(),
-            resident_compounds: Vec::new(),
-            locals: Vec::new(),
-            array_slots: Vec::new(),
-            address_taken_locals: std::collections::BTreeSet::new(),
-            blocks: Vec::new(),
-            entry: BlockId(0),
-        });
+        self.functions.push(Function::empty(symbol, export_name, linkage, params, return_type));
         id
     }
 
@@ -663,6 +654,33 @@ impl Module {
             }
         }
         seen
+    }
+
+    /// The function exported as `main`, if the module has one.
+    pub fn main_id(&self) -> Option<FuncId> {
+        self.functions
+            .iter()
+            .position(|f| f.export_name == "main")
+            .map(|i| FuncId(i as u32))
+    }
+
+    /// [`Self::reachable_from`] `main` — empty when there is no `main`.
+    pub fn reachable_from_main(&self) -> rustc_hash::FxHashSet<FuncId> {
+        self.main_id().map(|id| self.reachable_from(id)).unwrap_or_default()
+    }
+
+    /// The functions a backend must give a body, in id order: those
+    /// reachable from `main`, minus `Linkage::Import` declarations
+    /// (an `extern fn` has no body). Lowering is demand-driven, so an
+    /// unreachable stdlib function is declared but bodyless.
+    pub fn emitted_bodies(&self) -> Vec<FuncId> {
+        let reachable = self.reachable_from_main();
+        (0..self.functions.len())
+            .map(|i| FuncId(i as u32))
+            .filter(|id| {
+                !matches!(self.function(*id).linkage, Linkage::Import) && reachable.contains(id)
+            })
+            .collect()
     }
 
     /// The callee of a direct call, if the instruction is one.

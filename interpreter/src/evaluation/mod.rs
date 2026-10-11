@@ -504,56 +504,22 @@ impl<'a> EvaluationContext<'a> {
         string_interner: &'a mut DefaultStringInterner,
         shared: &crate::SharedRunData,
     ) -> Self {
-        let heap_manager = Rc::new(RefCell::new(HeapManager::new()));
-        let global_allocator: Rc<dyn Allocator> = Rc::new(GlobalAllocator::new(heap_manager.clone()));
-        let allocator_stack: Vec<Rc<dyn Allocator>> = vec![global_allocator.clone()];
-        let result_symbol = string_interner.get_or_intern("result");
-        Self {
+        let mut ctx = Self::new_with_qualified(
             stmt_pool,
             expr_pool,
             string_interner,
-            function: shared.func_map.clone(),
-            function_qualified: shared.func_qualified.clone(),
-            current_module_path: None,
-            environment: Environment::new(),
-            method_registry: shared.method_registry.clone(),
-            null_object: Rc::new(RefCell::new(Object::null_unknown())),
-            location_pool: None,
-            source_map: None,
-            call_stack: Vec::new(),
-            recursion_depth: 0,
-            max_recursion_depth: 1000,
-            call_depth: 0,
-            max_call_depth: 30,
-            loop_steps: 0,
-            max_loop_steps: None,
-            heap_manager,
-            global_allocator,
-            allocator_stack,
-            enum_definitions: shared.enum_definitions.clone(),
-            struct_definitions: shared.struct_definitions.clone(),
-            contract_mode: ContractMode::from_env(),
-            result_symbol,
-            extern_registry: {
-                let mut registry = extern_math::build_default_registry();
-                registry.extend(extern_io::build_io_registry());
-                registry.extend(extern_net::build_net_registry());
-                registry
-            },
-            extern_buf_registry: {
-                let mut registry = extern_io::build_io_buf_registry();
-                registry.extend(extern_net::build_net_buf_registry());
-                registry
-            },
-            drop_trait_structs: shared.drop_trait_structs.clone(),
-            transferred_bindings: shared.transferred_bindings.clone(),
-            drop_flags: shared.drop_flags.clone(),
-            pending_param_drops: Vec::new(),
-            match_scrutinee_is_place: Vec::new(),
-            drop_scopes: vec![Vec::new()],
-            generic_type_scopes: Vec::new(),
-            pending_annotation: None,
-        }
+            HashMap::default(),
+            HashMap::default(),
+        );
+        ctx.function = shared.func_map.clone();
+        ctx.function_qualified = shared.func_qualified.clone();
+        ctx.method_registry = shared.method_registry.clone();
+        ctx.enum_definitions = shared.enum_definitions.clone();
+        ctx.struct_definitions = shared.struct_definitions.clone();
+        ctx.drop_trait_structs = shared.drop_trait_structs.clone();
+        ctx.transferred_bindings = shared.transferred_bindings.clone();
+        ctx.drop_flags = shared.drop_flags.clone();
+        ctx
     }
 
     /// Module-aware function resolver. Mirrors the type-checker's

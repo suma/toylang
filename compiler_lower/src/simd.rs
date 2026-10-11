@@ -244,12 +244,7 @@ impl<'a> FunctionLower<'a> {
         ty: VecTy,
     ) -> Result<ValueId, String> {
         let index = self.simd_operand_value(name, arg)?;
-        let stride = self
-            .emit(
-                InstKind::Const(crate::ir::Const::U64(ty.lane_bytes() as u64)),
-                Some(Type::U64),
-            )
-            .ok_or_else(|| format!("{name}: could not materialise the lane width"))?;
+        let stride = self.emit_u64(ty.lane_bytes() as u64);
         self.emit(
             InstKind::BinOp { op: crate::ir::BinOp::Mul, lhs: index, rhs: stride },
             Some(Type::U64),

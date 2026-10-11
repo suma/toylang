@@ -172,24 +172,7 @@ pub fn emit_clif_text(
     // TEST-PERF: only emit reachable functions — unreachable stdlib
     // bodies are no longer lowered, and their declarations have no
     // cranelift code to render.
-    let main_id = ir_module
-        .functions
-        .iter()
-        .position(|f| f.export_name == "main")
-        .map(|i| FuncId(i as u32));
-    let reachable = main_id
-        .map(|id| ir_module.reachable_from(id))
-        .unwrap_or_default();
-    for func_id in 0..ir_module.functions.len() {
-        let func_id = FuncId(func_id as u32);
-        // Skip `Linkage::Import` functions — they have no body to
-        // lower (declaration-only `extern fn` from the prelude or
-        // user code). Same skip as `build_object_module`.
-        if matches!(ir_module.function(func_id).linkage, Linkage::Import)
-            || !reachable.contains(&func_id)
-        {
-            continue;
-        }
+    for func_id in ir_module.emitted_bodies() {
         let clif = session.lower_function(&ir_module, func_id)?;
         out.push_str(&format!(
             "; --- {} ---\n{}\n",
@@ -212,29 +195,13 @@ fn build_object_module(
     session.declare_all(ir_module, interner)?;
     drop(declare_phase);
 
-    let funcs_to_compile: Vec<FuncId> = {
-        // TEST-PERF: only compile functions reachable from `main`. The
-        // auto-loaded stdlib leaves ~190 declared-but-bodyless functions
-        // in the module (lowering is demand-driven, so only the reachable
-        // closure has bodies); compiling all of them costs ~85ms per
-        // program. Reachability follows direct calls, closure construction
-        // and vtable thunks — anything `main` can transfer control to.
-        let main_id = ir_module
-            .functions
-            .iter()
-            .position(|f| f.export_name == "main")
-            .map(|i| FuncId(i as u32));
-        let reachable = main_id
-            .map(|id| ir_module.reachable_from(id))
-            .unwrap_or_default();
-        (0..ir_module.functions.len())
-            .map(|i| FuncId(i as u32))
-            .filter(|&id| {
-                !matches!(ir_module.function(id).linkage, Linkage::Import)
-                    && reachable.contains(&id)
-            })
-            .collect()
-    };
+    // TEST-PERF: only compile functions reachable from `main`. The
+    // auto-loaded stdlib leaves ~190 declared-but-bodyless functions
+    // in the module (lowering is demand-driven, so only the reachable
+    // closure has bodies); compiling all of them costs ~85ms per
+    // program. Reachability follows direct calls, closure construction
+    // and vtable thunks — anything `main` can transfer control to.
+    let funcs_to_compile = ir_module.emitted_bodies();
 
     for &func_id in &funcs_to_compile {
         let func = ir_module.function(func_id);
@@ -1068,14 +1035,7 @@ impl<M: Module> CodegenSession<M> {
         // auto-loaded stdlib leaves ~190 declared-but-bodyless functions
         // in the module; declaring them all as cranelift `Local`s makes
         // `finish()` / `finalize_definitions()` demand a body for each.
-        let main_id = ir_module
-            .functions
-            .iter()
-            .position(|f| f.export_name == "main")
-            .map(|i| FuncId(i as u32));
-        let reachable = main_id
-            .map(|id| ir_module.reachable_from(id))
-            .unwrap_or_default();
+        let reachable = ir_module.reachable_from_main();
         for (i, func) in ir_module.functions.iter().enumerate() {
             let id = FuncId(i as u32);
             if !matches!(func.linkage, Linkage::Import) && !reachable.contains(&id) {
@@ -1974,43 +1934,13 @@ fn ir_to_cranelift_ty(t: IrType) -> Option<types::Type> {
 /// per leaf scalar element, recursing through nested compound
 /// fields. Unit yields nothing (no cranelift slot).
 pub(super) fn flatten_struct_to_cranelift_tys(ir_module: &IrModule, t: IrType) -> Vec<types::Type> {
-    match t {
-        IrType::Struct(id) => {
-            let mut out = Vec::new();
-            let def = ir_module.struct_def(id);
-            for (_field_name, field_ty) in &def.fields {
-                out.extend(flatten_struct_to_cranelift_tys(ir_module, *field_ty));
-            }
-            out
-        }
-        IrType::Tuple(id) => {
-            let mut out = Vec::new();
-            if let Some(def) = ir_module.tuple_defs.get(id.0 as usize) {
-                for elem_ty in def {
-                    out.extend(flatten_struct_to_cranelift_tys(ir_module, *elem_ty));
-                }
-            }
-            out
-        }
-        // An enum value at the function boundary lays out as
-        // [tag, variant0_payload..., variant1_payload..., ...] in
-        // canonical declaration order. The same flattening drives
-        // both signature construction and the call-site dest list,
-        // so caller and callee always agree on which slot is which.
-        IrType::Enum(id) => {
-            let mut out = Vec::new();
-            // Tag: U64 in the IR, I64 in cranelift terms.
-            out.push(types::I64);
-            let def = ir_module.enum_def(id);
-            for variant in &def.variants {
-                for ty in &variant.payload_types {
-                    out.extend(flatten_struct_to_cranelift_tys(ir_module, *ty));
-                }
-            }
-            out
-        }
-        other => ir_to_cranelift_ty(other).into_iter().collect(),
-    }
+    // An enum lays out as [tag, variant0_payload..., variant1_payload...]
+    // in declaration order. The same flattening drives both signature
+    // construction and the call-site dest list (and the LLVM backend's
+    // `leaves`), so caller and callee always agree on which slot is which.
+    let mut leaves = Vec::new();
+    compiler_ir::layout::flatten_compound_leaf_types(ir_module, t, &mut leaves);
+    leaves.into_iter().filter_map(ir_to_cranelift_ty).collect()
 }
 
 // ---------------------------------------------------------------------------

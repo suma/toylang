@@ -25,7 +25,7 @@ use string_interner::{DefaultStringInterner, DefaultSymbol};
 use super::array_layout::leaf_scalar_count;
 use super::bindings::{Binding, EnumStorage, FieldChainResult, FieldShape, TupleElementShape};
 use super::FunctionLower;
-use crate::ir::{BinOp, Const, InstKind, LocalId, Type, ValueId};
+use crate::ir::{BinOp, InstKind, LocalId, Type, ValueId};
 
 /// One step of a field / tuple access chain below an array-element
 /// read — see [`FunctionLower::resolve_array_element_leaf`].
@@ -583,12 +583,7 @@ impl<'a> FunctionLower<'a> {
     ) -> Result<(ValueId, Option<usize>), String> {
         match self.resolve_const_index(&info.index_ref, length) {
             super::array_access::ConstIndex::Valid(i) => {
-                let idx_v = self
-                    .emit(
-                        InstKind::Const(Const::U64(i as u64)),
-                        Some(Type::U64),
-                    )
-                    .expect("Const returns a value");
+                let idx_v = self.emit_u64(i as u64);
                 Ok((idx_v, Some(i)))
             }
             super::array_access::ConstIndex::OutOfBounds => {
@@ -664,9 +659,7 @@ impl<'a> FunctionLower<'a> {
         let element = self.const_table_element(bytes, size, length, &index_ref);
         self.current_expr = outer;
         let (base, offset) = element?;
-        let leaf_off_v = self
-            .emit(InstKind::Const(crate::ir::Const::U64(leaf_offset)), Some(Type::U64))
-            .expect("Const returns a value");
+        let leaf_off_v = self.emit_u64(leaf_offset);
         let at = self
             .emit(
                 InstKind::BinOp { op: crate::ir::BinOp::Add, lhs: offset, rhs: leaf_off_v },
@@ -702,61 +695,7 @@ impl<'a> FunctionLower<'a> {
             return Ok(None);
         };
         let (idx_v, const_i) = self.lower_array_element_index(info, length)?;
-        // AoS: flat leaf index `i * unit + offsets[leaf]` (folded when
-        // the element index folded). SoA: the leaf's own column slot
-        // at the element index — one load, no arithmetic.
-        let (slot, leaf_idx_v) = match &storage {
-            super::bindings::ArrayStorage::Columns(cols) => (cols[info.leaf], idx_v),
-            super::bindings::ArrayStorage::Interleaved(slot) => {
-                // NUM-W-AOT-pack Phase 3: `unit` steps per element,
-                // the leaf `offsets[leaf]` steps in (bytes for a
-                // packed compound slot).
-                let (unit, offsets) = self.interleaved_units(*slot);
-                let leaf_idx_v = match const_i {
-                    Some(i) => self
-                        .emit(
-                            InstKind::Const(Const::U64(i as u64 * unit + offsets[info.leaf])),
-                            Some(Type::U64),
-                        )
-                        .expect("Const returns a value"),
-                    None => {
-                        let base_v = {
-                            let leaf_count_v = self
-                                .emit(
-                                    InstKind::Const(Const::U64(unit)),
-                                    Some(Type::U64),
-                                )
-                                .expect("Const returns a value");
-                            self.emit(
-                                InstKind::BinOp {
-                                    op: BinOp::Mul,
-                                    lhs: idx_v,
-                                    rhs: leaf_count_v,
-                                },
-                                Some(Type::U64),
-                            )
-                            .expect("imul returns")
-                        };
-                        let off_v = self
-                            .emit(
-                                InstKind::Const(Const::U64(offsets[info.leaf])),
-                                Some(Type::U64),
-                            )
-                            .expect("Const returns a value");
-                        self.emit(
-                            InstKind::BinOp {
-                                op: BinOp::Add,
-                                lhs: base_v,
-                                rhs: off_v,
-                            },
-                            Some(Type::U64),
-                        )
-                        .expect("iadd returns")
-                    }
-                };
-                (*slot, leaf_idx_v)
-            }
-        };
+        let (slot, leaf_idx_v) = self.array_leaf_slot(info, &storage, idx_v, const_i);
         let v = self
             .emit(
                 InstKind::ArrayLoad {
@@ -772,6 +711,57 @@ impl<'a> FunctionLower<'a> {
         self.pending_struct_value = None;
         self.pending_tuple_value = None;
         Ok(Some(Some(v)))
+    }
+
+    /// The slot and leaf index of `info`'s leaf in element `idx_v`
+    /// (`const_i` when the index folded). AoS: the flat leaf index
+    /// `i * unit + offsets[leaf]`, folded when the element index
+    /// folded. SoA: the leaf's own column slot at the element index —
+    /// no arithmetic.
+    fn array_leaf_slot(
+        &mut self,
+        info: &ArrayElementLeaf,
+        storage: &super::bindings::ArrayStorage,
+        idx_v: ValueId,
+        const_i: Option<usize>,
+    ) -> (crate::ir::ArraySlotId, ValueId) {
+        match storage {
+            super::bindings::ArrayStorage::Columns(cols) => (cols[info.leaf], idx_v),
+            super::bindings::ArrayStorage::Interleaved(slot) => {
+                // NUM-W-AOT-pack Phase 3: `unit` steps per element,
+                // the leaf `offsets[leaf]` steps in (bytes for a
+                // packed compound slot).
+                let (unit, offsets) = self.interleaved_units(*slot);
+                let leaf_idx_v = match const_i {
+                    Some(i) => self.emit_u64(i as u64 * unit + offsets[info.leaf]),
+                    None => {
+                        let base_v = {
+                            let leaf_count_v = self.emit_u64(unit);
+                            self.emit(
+                                InstKind::BinOp {
+                                    op: BinOp::Mul,
+                                    lhs: idx_v,
+                                    rhs: leaf_count_v,
+                                },
+                                Some(Type::U64),
+                            )
+                            .expect("imul returns")
+                        };
+                        let off_v = self.emit_u64(offsets[info.leaf]);
+                        self.emit(
+                            InstKind::BinOp {
+                                op: BinOp::Add,
+                                lhs: base_v,
+                                rhs: off_v,
+                            },
+                            Some(Type::U64),
+                        )
+                        .expect("iadd returns")
+                    }
+                };
+                (*slot, leaf_idx_v)
+            }
+        }
     }
 
     /// `ps[i].f = v` write — the store half of the shortcut: one
@@ -795,58 +785,7 @@ impl<'a> FunctionLower<'a> {
         let v = self
             .lower_expr(rhs)?
             .ok_or_else(|| "field assignment rhs produced no value".to_string())?;
-        let (slot, leaf_idx_v) = match &storage {
-            super::bindings::ArrayStorage::Columns(cols) => (cols[info.leaf], idx_v),
-            super::bindings::ArrayStorage::Interleaved(slot) => {
-                // NUM-W-AOT-pack Phase 3: `unit` steps per element,
-                // the leaf `offsets[leaf]` steps in (bytes for a
-                // packed compound slot).
-                let (unit, offsets) = self.interleaved_units(*slot);
-                let leaf_idx_v = match const_i {
-                    Some(i) => self
-                        .emit(
-                            InstKind::Const(Const::U64(i as u64 * unit + offsets[info.leaf])),
-                            Some(Type::U64),
-                        )
-                        .expect("Const returns a value"),
-                    None => {
-                        let base_v = {
-                            let leaf_count_v = self
-                                .emit(
-                                    InstKind::Const(Const::U64(unit)),
-                                    Some(Type::U64),
-                                )
-                                .expect("Const returns a value");
-                            self.emit(
-                                InstKind::BinOp {
-                                    op: BinOp::Mul,
-                                    lhs: idx_v,
-                                    rhs: leaf_count_v,
-                                },
-                                Some(Type::U64),
-                            )
-                            .expect("imul returns")
-                        };
-                        let off_v = self
-                            .emit(
-                                InstKind::Const(Const::U64(offsets[info.leaf])),
-                                Some(Type::U64),
-                            )
-                            .expect("Const returns a value");
-                        self.emit(
-                            InstKind::BinOp {
-                                op: BinOp::Add,
-                                lhs: base_v,
-                                rhs: off_v,
-                            },
-                            Some(Type::U64),
-                        )
-                        .expect("iadd returns")
-                    }
-                };
-                (*slot, leaf_idx_v)
-            }
-        };
+        let (slot, leaf_idx_v) = self.array_leaf_slot(&info, &storage, idx_v, const_i);
         self.emit(
             InstKind::ArrayStore {
                 slot,

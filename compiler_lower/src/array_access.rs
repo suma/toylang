@@ -83,12 +83,7 @@ impl<'a> FunctionLower<'a> {
             }
             ArrayStorage::Columns(cols) => (cols[j], i),
         };
-        let idx_v = self
-            .emit(
-                InstKind::Const(Const::U64(leaf_idx as u64)),
-                Some(Type::U64),
-            )
-            .expect("Const returns a value");
+        let idx_v = self.emit_u64(leaf_idx as u64);
         self.emit(
             InstKind::ArrayStore {
                 slot,
@@ -161,9 +156,7 @@ impl<'a> FunctionLower<'a> {
         let base = self
             .emit(InstKind::ConstBytesAddr { bytes }, Some(Type::U64))
             .expect("ConstBytesAddr returns a value");
-        let size_v = self
-            .emit(InstKind::Const(Const::U64(size)), Some(Type::U64))
-            .expect("Const returns a value");
+        let size_v = self.emit_u64(size);
         let offset = self
             .emit(
                 InstKind::BinOp { op: crate::ir::BinOp::Mul, lhs: idx, rhs: size_v },
@@ -190,9 +183,7 @@ impl<'a> FunctionLower<'a> {
             .emit(InstKind::LoadLocal(ptr), Some(Type::U64))
             .expect("LoadLocal returns a value");
         let stride = super::array_layout::elem_stride_bytes(element_ty, self.module) as u64;
-        let stride_v = self
-            .emit(InstKind::Const(Const::U64(stride)), Some(Type::U64))
-            .expect("Const returns a value");
+        let stride_v = self.emit_u64(stride);
         let offset = self
             .emit(
                 InstKind::BinOp { op: crate::ir::BinOp::Mul, lhs: idx, rhs: stride_v },
@@ -210,9 +201,7 @@ impl<'a> FunctionLower<'a> {
         length: usize,
     ) -> Result<ValueId, String> {
         match self.resolve_const_index(index_ref, length) {
-            ConstIndex::Valid(i) => Ok(self
-                .emit(InstKind::Const(Const::U64(i as u64)), Some(Type::U64))
-                .expect("Const returns a value")),
+            ConstIndex::Valid(i) => Ok(self.emit_u64(i as u64)),
             ConstIndex::OutOfBounds => {
                 Err(format!("array index out of bounds (length {length})"))
             }
@@ -248,9 +237,7 @@ impl<'a> FunctionLower<'a> {
         };
         let aos_base = match (storage, const_elem_idx) {
             (ArrayStorage::Interleaved(_), None) => {
-                let leaf_count_v = self
-                    .emit(InstKind::Const(Const::U64(unit)), Some(Type::U64))
-                    .expect("Const returns a value");
+                let leaf_count_v = self.emit_u64(unit);
                 Some(
                     self.emit(
                         InstKind::BinOp { op: BinOp::Mul, lhs: elem_idx, rhs: leaf_count_v },
@@ -284,17 +271,10 @@ impl<'a> FunctionLower<'a> {
             ArrayStorage::Interleaved(slot) => {
                 let offset = addressing.offsets[j];
                 let index = match (addressing.const_elem_idx, addressing.aos_base, offset) {
-                    (Some(i), _, _) => self
-                        .emit(
-                            InstKind::Const(Const::U64(i as u64 * addressing.unit + offset)),
-                            Some(Type::U64),
-                        )
-                        .expect("Const returns a value"),
+                    (Some(i), _, _) => self.emit_u64(i as u64 * addressing.unit + offset),
                     (None, Some(base), 0) => base,
                     (None, Some(base), _) => {
-                        let off_v = self
-                            .emit(InstKind::Const(Const::U64(offset)), Some(Type::U64))
-                            .expect("Const returns");
+                        let off_v = self.emit_u64(offset);
                         self.emit(
                             InstKind::BinOp { op: BinOp::Add, lhs: base, rhs: off_v },
                             Some(Type::U64),
@@ -658,9 +638,7 @@ impl<'a> FunctionLower<'a> {
             let base = self
                 .emit(InstKind::ConstBytesAddr { bytes }, Some(Type::U64))
                 .ok_or_else(|| "const array address returned no value".to_string())?;
-            let stride_v = self
-                .emit(InstKind::Const(Const::U64(stride)), Some(Type::U64))
-                .ok_or_else(|| "const array stride returned no value".to_string())?;
+            let stride_v = self.emit_u64(stride);
             let offset = self
                 .emit(
                     InstKind::BinOp {
@@ -758,9 +736,7 @@ impl<'a> FunctionLower<'a> {
                 ConstIndex::NotConstant => None,
             };
             let elem_idx_v = match const_elem_idx {
-                Some(i) => self
-                    .emit(InstKind::Const(Const::U64(i as u64)), Some(Type::U64))
-                    .expect("Const returns a value"),
+                Some(i) => self.emit_u64(i as u64),
                 None => {
                     let raw_idx = self
                         .lower_expr(index_ref)?
@@ -796,9 +772,7 @@ impl<'a> FunctionLower<'a> {
         // treats them uniformly. Constant-index out-of-bounds is
         // caught here.
         let idx_v = match self.resolve_const_index(index_ref, length) {
-            ConstIndex::Valid(i) => self
-                .emit(InstKind::Const(Const::U64(i as u64)), Some(Type::U64))
-                .expect("Const returns a value"),
+            ConstIndex::Valid(i) => self.emit_u64(i as u64),
             ConstIndex::OutOfBounds => {
                 return Err(format!("array index out of bounds (length {length})"));
             }
@@ -937,9 +911,7 @@ impl<'a> FunctionLower<'a> {
         }
         let slot = storage.scalar_slot();
         let idx_v = match self.resolve_const_index(index_ref, length) {
-            ConstIndex::Valid(i) => self
-                .emit(InstKind::Const(Const::U64(i as u64)), Some(Type::U64))
-                .expect("Const returns a value"),
+            ConstIndex::Valid(i) => self.emit_u64(i as u64),
             ConstIndex::OutOfBounds => {
                 return Err(format!("array index out of bounds (length {length})"));
             }

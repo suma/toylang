@@ -34,7 +34,7 @@ use super::bindings::{
     TupleElementShape,
 };
 use super::{DropTarget, FunctionLower};
-use crate::ir::{BinOp, BlockId, Const, InstKind, Terminator, Type, ValueId};
+use crate::ir::{BinOp, BlockId, InstKind, Terminator, Type, ValueId};
 
 impl<'a> FunctionLower<'a> {
     /// Lower `match scrutinee { arm, ... }`. Compiler MVP scope:
@@ -376,12 +376,7 @@ impl<'a> FunctionLower<'a> {
         let tag_v = self
             .emit(InstKind::LoadLocal(scrut_storage.tag_local), Some(Type::U64))
             .expect("LoadLocal returns a value");
-        let want = self
-            .emit(
-                InstKind::Const(Const::U64(variant_idx as u64)),
-                Some(Type::U64),
-            )
-            .expect("Const returns a value");
+        let want = self.emit_u64(variant_idx as u64);
         let tag_eq = self
             .emit(
                 InstKind::BinOp {

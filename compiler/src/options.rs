@@ -20,6 +20,18 @@ pub enum EmitKind {
     Clif,
 }
 
+impl EmitKind {
+    /// The spelling `--emit=` takes and the JSON outputs report.
+    pub fn name(self) -> &'static str {
+        match self {
+            EmitKind::Executable => "exe",
+            EmitKind::Object => "obj",
+            EmitKind::Ir => "ir",
+            EmitKind::Clif => "clif",
+        }
+    }
+}
+
 /// Build configuration.
 ///
 /// `#[non_exhaustive]` on purpose: adding a field here used to break

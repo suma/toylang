@@ -35,7 +35,7 @@ use string_interner::DefaultSymbol;
 
 use super::bindings::{self, Binding};
 use super::FunctionLower;
-use crate::ir::{BinOp, Const, FuncId, InstKind, LocalId, Terminator, Type, ValueId};
+use crate::ir::{BinOp, FuncId, InstKind, LocalId, Terminator, Type, ValueId};
 
 /// One outlined `parallel for` body awaiting lowering.
 ///
@@ -197,9 +197,7 @@ impl FunctionLower<'_> {
             .emit(InstKind::DynCoerceSlotAddr { slot_idx }, Some(Type::U64))
             .ok_or_else(|| "parallel for env returned no value".to_string())?;
         for (i, (value, ty)) in capture_vals.iter().zip(capture_tys.iter()).enumerate() {
-            let offset = self
-                .emit(InstKind::Const(Const::U64((i * 8) as u64)), Some(Type::U64))
-                .ok_or_else(|| "parallel for env offset returned no value".to_string())?;
+            let offset = self.emit_u64((i * 8) as u64);
             self.emit(
                 InstKind::PtrWrite {
                     ptr: env,
@@ -215,9 +213,7 @@ impl FunctionLower<'_> {
         // the same answer the sequential header gives on its first
         // test, and it keeps the runtime from seeing a wrapped count.
         let count_local = self.module.function_mut(self.func_id).add_local(Type::U64);
-        let zero = self
-            .emit(InstKind::Const(Const::U64(0)), Some(Type::U64))
-            .ok_or_else(|| "parallel for zero returned no value".to_string())?;
+        let zero = self.emit_u64(0);
         self.emit(
             InstKind::StoreLocal {
                 dst: count_local,
@@ -276,9 +272,7 @@ impl FunctionLower<'_> {
         self.terminate(Terminator::Jump(call_blk));
 
         self.switch_to(call_blk);
-        let from = self
-            .emit(InstKind::Const(Const::U64(0)), Some(Type::U64))
-            .ok_or_else(|| "parallel for from returned no value".to_string())?;
+        let from = self.emit_u64(0);
         let until = self
             .emit(InstKind::LoadLocal(count_local), Some(Type::U64))
             .ok_or_else(|| "parallel for until returned no value".to_string())?;
@@ -569,9 +563,7 @@ impl FunctionLower<'_> {
         let cur = self
             .emit(InstKind::LoadLocal(k_local), Some(Type::U64))
             .ok_or_else(|| "parallel body: step load returned no value".to_string())?;
-        let one = self
-            .emit(InstKind::Const(Const::U64(1)), Some(Type::U64))
-            .ok_or_else(|| "parallel body: step const returned no value".to_string())?;
+        let one = self.emit_u64(1);
         let next = self
             .emit(
                 InstKind::BinOp {
@@ -633,12 +625,7 @@ impl FunctionLower<'_> {
         let env = self
             .emit(InstKind::LoadLocal(env_local), Some(Type::U64))
             .ok_or_else(|| "parallel body: env load returned no value".to_string())?;
-        let offset = self
-            .emit(
-                InstKind::Const(Const::U64((slot * 8) as u64)),
-                Some(Type::U64),
-            )
-            .ok_or_else(|| "parallel body: env offset returned no value".to_string())?;
+        let offset = self.emit_u64((slot * 8) as u64);
         self.emit(
             InstKind::PtrRead {
                 ptr: env,

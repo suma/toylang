@@ -203,3 +203,66 @@ fn main() -> u64 {
 "#,
     );
 }
+
+/// WINDOW-ESCAPE-UNWRAP: taking the window out of its `Option` first --
+/// `??`, a `match` arm, `if val` -- is the same window. The taint used
+/// to stop at the unwrap, so all three compiled and returned a view of
+/// a freed buffer.
+#[test]
+fn a_window_unwrapped_from_its_option_is_still_refused() {
+    let found = escapes(
+        r#"
+fn coalesced() -> Span<u64> {
+    var v: Vec<u64> = Vec::new()
+    v.push(1u64)
+    val w = v.as_span()
+    val s: Span<u64> = w ?? panic("empty")
+    s
+}
+fn matched() -> Span<u64> {
+    var v: Vec<u64> = Vec::new()
+    v.push(1u64)
+    match v.as_span() {
+        Option::Some(s) => s,
+        Option::None => panic("empty"),
+    }
+}
+fn if_val() -> Span<u64> {
+    var v: Vec<u64> = Vec::new()
+    v.push(1u64)
+    val w = v.as_span()
+    if val Option::Some(s) = w { return s }
+    panic("empty")
+}
+fn main() -> u64 { 0u64 }
+"#,
+    );
+    assert_eq!(found.len(), 3, "{found:?}");
+    assert!(found.iter().all(|m| m.contains("`v`")), "{found:?}");
+}
+
+/// The other direction: what an arm reads off the unwrapped window is
+/// a copy, and a payload of a scalar type carries nothing.
+#[test]
+fn a_value_read_off_an_unwrapped_window_is_accepted() {
+    assert_accepted(
+        r#"
+fn count() -> u64 {
+    var v: Vec<u64> = Vec::new()
+    v.push(1u64)
+    match v.as_span() {
+        Option::Some(s) => s.len(),
+        Option::None => 0u64,
+    }
+}
+fn first() -> u64 {
+    var v: Vec<u64> = Vec::new()
+    v.push(7u64)
+    val w = v.as_span()
+    val s = w ?? panic("empty")
+    s.get(0u64)
+}
+fn main() -> u64 { count() }
+"#,
+    );
+}

@@ -18,6 +18,7 @@
 - **STDLIB-CHECK-FIXED の一部 — 全体走査 pass の clone と行番号の数え直しを削り、型検査の固定費 8.0 → 6.7 ms** (残りは未実装節)
 - **OWNING-TEMP-DROP — `String::from_str("a").len()` / `mk().n` の一時値をスカラーの読み出しの後で drop する** (残りは未実装節)
 - **OWNING-TEMP-DROP (所有値の読み出し) — `val r = mk().renamed()` / `String::from_str("a").concat(b)` の一時値を文の前に束縛して drop する (compiled レーンの拒否も消えた)**
+- **WINDOW-ESCAPE-UNWRAP — `??` / match の腕 / `if val` で `Option` から出した窓も `[E0026]` で止める**
 - **CONSUMING-SELF-NO-DROP (trait impl) — `dyn` で使われない trait の `self: Self` method もレシーバを drop する**
 - **NEXT-ITEM-ALIAS — `val m = it.next()` / `match it.next()` / for-in の item に所有者を付けない (二重解放と tree-walker のずれを解消)**
 
@@ -675,13 +676,6 @@
   フィールドは漏れる (`fn first(self: Self) -> String { self.s }` の `self.t`)。Rust の
   部分移動のように、移ったフィールドを経路で持てば両方消える (drop glue がフィールド
   単位で飛ばせることが前提)。
-
-- **WINDOW-ESCAPE-UNWRAP: `Option` から出した窓の脱出を見逃す** —
-  `[E0026]` は `v.as_span()` (`Option<Span<T>>`) をそのまま返すのは
-  拒否するが、`val s: Span<u64> = w ?? panic(..)` や match の payload で
-  取り出してから返すと通る (taint が unwrap で途切れる)。M5 の
-  `Ptr::borrow` を足すときに見つけた (2026-09-25)。`??` / match の
-  payload 束縛が scrutinee の taint を引き継げばよい。
 
 - **UNIT-STRUCT-FIELD: struct のフィールドに `()` を書けない** ★ —
   `struct S { u: () }` が `[E0004] Unsupported operation 'field type in

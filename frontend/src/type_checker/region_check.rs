@@ -355,7 +355,9 @@ impl RegionCheck<'_> {
                 }
                 None
             }
-            Expr::Identifier(name) => self.tainted.get(name).copied(),
+            // Filtered by type: a scalar payload bound out of a tainted
+            // scrutinee (`Some(n)` of an `Option<u64>`) is a copy.
+            Expr::Identifier(name) => self.through(expr_ref, self.tainted.get(name).copied()),
             Expr::IfElifElse(cond, then_block, elifs, else_block) => {
                 self.walk_expr(cond);
                 let mut taint = self.walk_expr(then_block);
@@ -366,13 +368,26 @@ impl RegionCheck<'_> {
                 innermost(taint, self.walk_expr(else_block))
             }
             Expr::Match(scrutinee, arms) => {
-                self.walk_expr(scrutinee);
+                // WINDOW-ESCAPE-UNWRAP: a name an arm binds is part of
+                // the scrutinee, so it carries the scrutinee's region
+                // -- `Some(s)` out of `v.as_span()` is the same window.
+                // `??` and `if val` arrive here as a `match` too.
+                let scrutinee_taint = self.walk_expr(scrutinee);
                 let mut taint = None;
                 for arm in arms {
+                    self.enter_scope();
+                    for name in arm.pattern.bound_names() {
+                        match scrutinee_taint {
+                            Some(index) => self.tainted.insert(name, index),
+                            None => self.tainted.remove(&name),
+                        };
+                        self.declare(name);
+                    }
                     if let Some(guard) = arm.guard {
                         self.walk_expr(&guard);
                     }
                     taint = innermost(taint, self.walk_expr(&arm.body));
+                    self.leave_scope();
                 }
                 taint
             }

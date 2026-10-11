@@ -4944,7 +4944,10 @@ frame with it — it may not be returned, nor bound or assigned outside
 the buffer's scope. Staying beside the buffer is fine, which is what a
 window is for, and a window on a *parameter* belongs to the caller, so
 handing that one back out is correct (`fn as_span(&self) ->
-Option<Span<T>>` is exactly that shape). The rule is
+Option<Span<T>>` is exactly that shape). Taking the window out of its
+`Option` first — `w ?? panic(..)`, a `match` arm's `Some(s)`, `if val`
+— is the same window, so it is refused the same way; a scalar read off
+it (`s.len()`, `s.get(0u64)`) is a copy and is not. The rule is
 [Region escape](#region-escape-e0022)'s over a different owner, and
 shares its pass; `--explain E0026` has the reasoning.
 

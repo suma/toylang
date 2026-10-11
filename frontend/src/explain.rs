@@ -1415,6 +1415,18 @@ own, and say so:
 
     val s = e.clone()            # a second String, with its own buffer
 
+**Calling a consuming method through a borrow is the same thing.** A
+`self: Self` method owns its receiver and drops it, so calling one on
+something that only borrows an owning value would free what the owner
+still holds —
+
+    fn close_it(h: &Handle) -> u64 { h.finish() }   # E0027
+    fn twice(&self) -> u64 { self.finish() }        # E0027 (in a `&self` method)
+    fn via(f: &dyn Fin) -> u64 { f.done() }         # E0027 when an owning type implements `Fin`
+
+Call it on the owner, take a copy with `clone()`, or give the method
+`&self`.
+
 The rule exists because the alternative is silent: on a heap that never
 reuses an address the second free is invisible, and the damage shows up
 only for something the OS hands back once, like a descriptor.";

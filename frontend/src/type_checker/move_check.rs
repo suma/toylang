@@ -163,6 +163,8 @@ pub fn check_moves(
         stand_ins: 0,
         tail_root: None,
         implicit_self: None,
+        ref_params: HashSet::default(),
+        owning_implementors: HashSet::default(),
         consuming_methods: collect_consuming_methods(program, interner),
         binding_types: HashMap::default(),
         probe: None,
@@ -188,6 +190,14 @@ pub fn check_moves(
                 .map(|(name, _)| name),
         )
         .collect();
+    for i in 0..program.statement.len() {
+        if let Some(Stmt::ImplBlock { trait_name: Some(t), target_type, target_type_args, .. }) =
+            program.statement.get_ref(&StmtRef(i as u32))
+            && checker.is_owning(&TypeDecl::Struct(*target_type, target_type_args.clone().into()))
+        {
+            checker.owning_implementors.insert(*t);
+        }
+    }
     for function in &program.function {
         if function.is_extern {
             continue;
@@ -197,7 +207,6 @@ pub fn check_moves(
         let generic_owns = !function.generic_params.is_empty() && unique;
         checker.run_function_owning(&function.parameter, function.code, owns, generic_owns);
     }
-    let dyn_traits = dyn_traits(program, expr_types);
     // Impl-block methods, which `program.function` does not contain.
     //
     // Leaving them out did not merely miss diagnostics — it broke
@@ -220,15 +229,11 @@ pub fn check_moves(
             Some(Stmt::ImplBlock { target_type, .. }) => generic_structs.contains(target_type),
             _ => true,
         };
-        // CONSUMING-SELF-NO-DROP: the body owns a `self: Self` unless
-        // the method may be reached through `&dyn`, where the receiver
-        // stays the caller's -- so a trait impl qualifies only when
-        // nothing in the program names its trait as `dyn`.
-        let inherent = match program.statement.get_ref(&stmt_ref) {
-            Some(Stmt::ImplBlock { trait_name: None, .. }) => true,
-            Some(Stmt::ImplBlock { trait_name: Some(t), .. }) => !dyn_traits.contains(t),
-            _ => false,
-        };
+        // CONSUMING-SELF-NO-DROP: the body owns a `self: Self`, in a
+        // trait impl as well -- a consuming call through `&dyn` (or any
+        // other borrow) is refused (CONSUME-THROUGH-BORROW), so the
+        // receiver is always the caller's to hand over.
+        let inherent = matches!(program.statement.get_ref(&stmt_ref), Some(Stmt::ImplBlock { .. }));
         let self_ty = match program.statement.get_ref(&stmt_ref) {
             Some(Stmt::ImplBlock { target_type, target_type_args, .. }) => {
                 Some(TypeDecl::Struct(*target_type, target_type_args.clone().into()))
@@ -282,67 +287,6 @@ pub fn check_moves(
         transferred: checker.transferred,
         drop_flags: checker.drop_flags,
     }
-}
-
-/// Every trait the program names as `dyn` -- in an expression's type,
-/// a parameter, a return type or a struct field. A `self: Self` method
-/// of any other trait is only ever called on a value the caller hands
-/// over.
-fn dyn_traits(program: &File, expr_types: &HashMap<ExprRef, TypeDecl>) -> HashSet<DefaultSymbol> {
-    fn collect(ty: &TypeDecl, out: &mut HashSet<DefaultSymbol>) {
-        match ty {
-            TypeDecl::Dyn(t) => {
-                out.insert(*t);
-            }
-            TypeDecl::Ref { inner, .. } | TypeDecl::Range(inner) => collect(inner, out),
-            TypeDecl::Array(elems, _, _)
-            | TypeDecl::Tuple(elems)
-            | TypeDecl::Struct(_, elems)
-            | TypeDecl::Enum(_, elems) => elems.iter().for_each(|t| collect(t, out)),
-            TypeDecl::Dict(k, v) => {
-                collect(k, out);
-                collect(v, out);
-            }
-            TypeDecl::Function(params, ret) => {
-                params.iter().for_each(|t| collect(t, out));
-                collect(ret, out);
-            }
-            _ => {}
-        }
-    }
-    let mut out = HashSet::default();
-    for ty in expr_types.values() {
-        collect(ty, &mut out);
-    }
-    fn signature(
-        params: &[(DefaultSymbol, TypeDecl)],
-        ret: &Option<TypeDecl>,
-        out: &mut HashSet<DefaultSymbol>,
-    ) {
-        params.iter().for_each(|(_, t)| collect(t, out));
-        if let Some(r) = ret {
-            collect(r, out);
-        }
-    }
-    for f in &program.function {
-        signature(&f.parameter, &f.return_type, &mut out);
-    }
-    for i in 0..program.statement.len() {
-        match program.statement.get_ref(&StmtRef(i as u32)) {
-            Some(Stmt::ImplBlock { methods, .. }) => {
-                for m in methods {
-                    signature(&m.parameter, &m.return_type, &mut out);
-                }
-            }
-            Some(Stmt::StructDecl { fields, .. }) => {
-                for f in fields {
-                    collect(&f.type_decl, &mut out);
-                }
-            }
-            _ => {}
-        }
-    }
-    out
 }
 
 /// The set of owning types is computed by `DropAnalysis` (DROP-GLUE):
@@ -729,6 +673,12 @@ struct MoveCheck<'a> {
     /// walked, the binding `t`. A tail naming (part of) `t` hands that
     /// value into `x`; a tail naming anything else stays a read.
     tail_root: Option<DefaultSymbol>,
+    /// Traits some owning type implements: a consuming method called
+    /// through `&dyn` one of them may drop what the caller owns.
+    owning_implementors: HashSet<DefaultSymbol>,
+    /// The current body's parameters taken by reference (`&T`), and
+    /// an implicit `&self` / `&mut self`: names that only borrow.
+    ref_params: HashSet<DefaultSymbol>,
     /// The type of the method's implicit `&self` / `&mut self` while its
     /// body is walked (`None` for a free function or `self: Self`).
     implicit_self: Option<TypeDecl>,
@@ -862,10 +812,19 @@ impl MoveCheck<'_> {
         self.moved.clear();
         self.borrows.clear();
         self.binding_types.clear();
+        self.ref_params.clear();
         for (name, ty) in params {
             if let TypeDecl::Struct(t, _) | TypeDecl::Enum(t, _) | TypeDecl::Identifier(t) = ty {
                 self.binding_types.insert(*name, *t);
             }
+            if is_borrow(ty) {
+                self.ref_params.insert(*name);
+            }
+        }
+        if self.implicit_self.is_some()
+            && let Some(self_sym) = self.interner.get("self")
+        {
+            self.ref_params.insert(self_sym);
         }
         self.scopes.push(Vec::new());
         // DOUBLE-DROP-LANE-DIVERGENCE: an implicit `&self` / `&mut self`
@@ -1408,6 +1367,73 @@ impl MoveCheck<'_> {
         }
     }
 
+    /// CONSUME-THROUGH-BORROW: a consuming method owns its receiver and
+    /// drops it (CONSUMING-SELF-NO-DROP), so calling one on a receiver
+    /// that only borrows an owning value -- a `&T` parameter, `self` in a
+    /// `&self` method, a `&dyn`, a field of one, a binding of a borrow,
+    /// an element read (`v.get(i)`) -- drops what the owner still holds,
+    /// and the owner drops it again. Refused as `[E0027]`, taking an
+    /// owning value out of a borrow.
+    fn check_consume_through_borrow(&mut self, call: ExprRef, receiver: ExprRef, method: DefaultSymbol) {
+        let receiver_ty = match self.expr_types.get(&receiver) {
+            Some(TypeDecl::Ref { inner, .. }) => (**inner).clone(),
+            Some(other) => other.clone(),
+            None => return,
+        };
+        // Through `&dyn Trait` the value is whichever implementor the
+        // caller has; through a generic, whatever it is instantiated
+        // with. Either may own something.
+        let may_own = match &receiver_ty {
+            TypeDecl::Dyn(t) => self.owning_implementors.contains(t),
+            ty if ty.contains_generic() => true,
+            ty => self.is_owning(ty),
+        };
+        if !may_own {
+            return;
+        }
+        let borrowed = matches!(self.expr_types.get(&receiver), Some(TypeDecl::Ref { .. })) || {
+            let mut at = receiver;
+            loop {
+                match self.program.expression.get_ref(&at) {
+                    Some(Expr::FieldAccess(inner, _) | Expr::TupleAccess(inner, _)) => at = *inner,
+                    Some(Expr::Identifier(name)) => {
+                        break self.ref_params.contains(name) || self.borrows.contains(name);
+                    }
+                    Some(Expr::MethodCall(_, m, _)) => {
+                        break self.interner.resolve(*m).is_some_and(super::reads_a_kept_element);
+                    }
+                    _ => break false,
+                }
+            }
+        };
+        if borrowed {
+            self.report_consume_through_borrow(call, receiver, method, Some(receiver_ty));
+        }
+    }
+
+    fn report_consume_through_borrow(
+        &mut self,
+        call: ExprRef,
+        receiver: ExprRef,
+        method: DefaultSymbol,
+        ty: Option<TypeDecl>,
+    ) {
+        let receiver_text = match self.program.expression.get_ref(&receiver) {
+            Some(Expr::Identifier(name)) => self.interner.resolve(*name).unwrap_or("?").to_string(),
+            _ => "<receiver>".to_string(),
+        };
+        let call_text = format!("{receiver_text}.{}()", self.interner.resolve(method).unwrap_or("?"));
+        let ty_text = ty
+            .or_else(|| self.expr_types.get(&receiver).cloned())
+            .map(|t| t.spell_with(Some(self.interner)))
+            .unwrap_or_else(|| "value".to_string());
+        let mut error = TypeCheckError::consume_through_borrow(call_text, ty_text);
+        if let Some(loc) = self.location(call) {
+            error = error.with_location(loc);
+        }
+        self.errors.push(error);
+    }
+
     /// Walk a `val` / `var` initializer.
     ///
     /// `val v = f()?` is `{ val t = f()  match t { Ok(p) => p, Err(e) =>
@@ -1730,6 +1756,7 @@ impl MoveCheck<'_> {
                 // HEAP-CHECK). A name some impl declares `&self` stays
                 // a read: the call site cannot tell which it reaches.
                 if self.consumes_receiver(*receiver, *method) {
+                    self.check_consume_through_borrow(expr_ref, *receiver, *method);
                     let target = self.signatures.method_target(*method, args.len());
                     self.walk_expr(*receiver, Use::Transfer, conditional);
                     self.walk_arg_list(args, target.as_ref(), conditional);

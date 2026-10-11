@@ -566,12 +566,17 @@ every impl of that name takes `self: Self`.
 The method then owns `self`, like any by-value parameter: it drops it
 at its end unless it hands it on (returns it, stores it, or hands over
 one of its owning fields — `self.out` above). This holds for a method
-whose name is `self: Self` in every impl, in an inherent `impl` or in a
-trait `impl` whose trait the program never names as `dyn` (no `&dyn
-Trait` in any expression, signature or field). Through `&dyn` the
-receiver stays the caller's, so a trait that is used that way, and a
-name some other impl declares `&self`, still leave the receiver to
-nobody, and it leaks.
+whose name is `self: Self` in every impl, inherent or trait; a name
+some other impl declares `&self` still leaves the receiver to nobody,
+and it leaks.
+
+Since the method drops its receiver, **it may not be called through a
+borrow** of an owning value (`[E0027]`): on a `&T` parameter, on `self`
+inside a `&self` method, on a field of either, on a binding of a
+borrow, on an element read (`v.get(i).finish()`), on a generic `&T`, or
+through `&dyn Trait` when some owning type implements the trait. The
+method would free what the owner still holds, and the owner would free
+it again. Call it on the owner, or `clone()` first.
 (Before 2026-10-08 no consuming method dropped its receiver.)
 
 ### Concrete-args impl dispatch

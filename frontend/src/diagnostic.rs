@@ -807,7 +807,9 @@ fn code_for(kind: &TypeCheckErrorKind) -> &'static str {
         TypeCheckErrorKind::UnsafeRequired { .. } => codes::UNSAFE_REQUIRED,
         TypeCheckErrorKind::UnusedResult { .. } => codes::UNUSED_RESULT,
         TypeCheckErrorKind::WindowEscape { .. } => codes::WINDOW_ESCAPE,
-        TypeCheckErrorKind::BorrowCopyOut { .. } => codes::BORROW_COPY_OUT,
+        TypeCheckErrorKind::BorrowCopyOut { .. } | TypeCheckErrorKind::ConsumeThroughBorrow { .. } => {
+            codes::BORROW_COPY_OUT
+        }
         TypeCheckErrorKind::OwningElementCopy { .. } => codes::OWNING_ELEMENT_COPY,
         TypeCheckErrorKind::ParallelBody { .. } => codes::PARALLEL_BODY,
         TypeCheckErrorKind::SpawnBody { .. } => codes::SPAWN_BODY,

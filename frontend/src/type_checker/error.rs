@@ -164,6 +164,10 @@ pub enum TypeCheckErrorKind {
     /// `name` is the binding that would have become the second owner,
     /// `ty` what it names.
     BorrowCopyOut { name: String, ty: String },
+    /// CONSUME-THROUGH-BORROW: a `self: Self` method called on a
+    /// receiver that only borrows an owning value. `call` is the call as
+    /// written (`f.done()`), `ty` the receiver's type.
+    ConsumeThroughBorrow { call: String, ty: String },
     /// ELEMENT-BORROW E5: an owning element was read out of a
     /// container by value. `name` is the binding, `ty` the element
     /// type, `receiver` how the container was spelled.
@@ -508,6 +512,19 @@ impl TypeCheckError {
     pub fn borrow_copy_out(name: String, ty: String) -> Self {
         Self {
             kind: Box::new(TypeCheckErrorKind::BorrowCopyOut { name, ty }),
+            context: None,
+            location: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+            anchors: None,
+            cascade: false,
+        }
+    }
+
+    /// CONSUME-THROUGH-BORROW: see the kind.
+    pub fn consume_through_borrow(call: String, ty: String) -> Self {
+        Self {
+            kind: Box::new(TypeCheckErrorKind::ConsumeThroughBorrow { call, ty }),
             context: None,
             location: None,
             origin_module: None,
@@ -961,6 +978,14 @@ impl TypeCheckError {
                     "`{name}` would take a `{ty}` out of a borrow, and that value owns what \
                      the borrow only names — two owners of one resource. Read through the \
                      borrow instead, or take a copy of your own with `clone()`"
+                )
+            }
+            TypeCheckErrorKind::ConsumeThroughBorrow { call, ty } => {
+                format!(
+                    "`{call}` takes its receiver by value (`self: Self`), but the receiver \
+                     only borrows a `{ty}` -- the method would free what the owner still \
+                     holds, and the owner would free it again. Call it on the owner, take a \
+                     copy of your own with `clone()`, or give the method `&self`"
                 )
             }
             TypeCheckErrorKind::OwningElementCopy { name, ty, receiver } => {

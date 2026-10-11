@@ -18,6 +18,7 @@
 - **STDLIB-CHECK-FIXED の一部 — 全体走査 pass の clone と行番号の数え直しを削り、型検査の固定費 8.0 → 6.7 ms** (残りは未実装節)
 - **OWNING-TEMP-DROP — `String::from_str("a").len()` / `mk().n` の一時値をスカラーの読み出しの後で drop する** (残りは未実装節)
 - **OWNING-TEMP-DROP (所有値の読み出し) — `val r = mk().renamed()` / `String::from_str("a").concat(b)` の一時値を文の前に束縛して drop する (compiled レーンの拒否も消えた)**
+- **CONSUME-THROUGH-BORROW — `&T` 引数 / `&self` の `self` / `&dyn` / generic `&T` / 要素の読み出しに `self: Self` の method を呼ぶと二重 drop していたのを `[E0027]` で拒否。trait impl は `dyn` で使われていてもレシーバを drop する**
 - **OWNING-TEMP-DROP (式の途中) — `take(mk().renamed())` / `println(s.concat(..))` / `if peek(&mk())` / `return` / 前にスカラーを評価する引数も束縛する。値が窓として文の外へ出る形は対象外 (aec212f0 の穴を塞いだ)**
 - **COMPOUND-BLOCK-DROP-TIMING (呼び出しの中だけで触れる末尾) — `{ val t = mk()  t.renamed() }` の `t` もブロックの終わりで drop、`val r: H = { .. }` のこの形も compiled レーンで通る**
 - **OWNING-TEMP-DROP (引数) — `s.concat(String::from_str("x"))` / `peek(&mk())` / `v.push(mk())` の引数の一時値を文の前に束縛する**
@@ -667,10 +668,9 @@
   `ptr_read` 側に表す) 残る。
 
 - **CONSUMING-SELF-NO-DROP の残り** ★ — `self: Self` の method が `self` を drop する
-  ようになった (2026-10-08、trait impl は 2026-10-11 に `dyn` で使われない trait
-  だけ) が、対象はその名前の method が全部 `self: Self` のときだけ。残り:
-  (a) **`dyn` で使われる trait の impl** (`&dyn` から呼ばれると受け手が借用なので
-  drop できない — 直接の呼び出しと `&dyn` 経由を lowering で分ければ足りる)、(b) 同名の
+  ようになった (2026-10-08、trait impl も 2026-10-11。借用越しの消費呼び出しは
+  `[E0027]` で拒否) が、対象はその名前の method が全部 `self: Self` のときだけ。
+  残り: (b) 同名の
   method を `&self` で持つ型がある名前 (呼び出し側が型を知らないと移動にしないため)、
   (c) generic impl で `self` を `var me = self` と別名にしてから要素に触れる形
   (CALLEE-DROP-GENERIC の probe が断る)。どれも二重解放ではなく漏れ。

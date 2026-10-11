@@ -755,3 +755,59 @@ fn a_binding_with_an_alias_is_not_reinitialised() {
         "the refusal should name the move: {diagnostics:?}"
     );
 }
+
+/// CONSUME-THROUGH-BORROW: a `self: Self` method owns and drops its
+/// receiver, so calling one on something that only borrows an owning
+/// value -- a `&T` parameter, `self` in a `&self` method, a `&dyn`, a
+/// generic `&T` -- freed what the caller still held, and the caller
+/// freed it again (`close 1` printed three times). Each is `[E0027]`.
+#[test]
+fn a_consuming_call_through_a_borrow_is_refused() {
+    let found: Vec<String> = diagnose(
+        r#"
+struct H { id: u64 }
+impl Drop for H { fn drop(&mut self) { println("close {self.id}") } }
+trait Fin { fn done(self: Self) -> u64 }
+impl Fin for H { fn done(self: Self) -> u64 { self.id } }
+impl H {
+    fn finish(self: Self) -> u64 { self.id }
+    fn twice(&self) -> u64 { self.finish() }
+}
+fn by_ref(h: &H) -> u64 { h.finish() }
+fn by_dyn(f: &dyn Fin) -> u64 { f.done() }
+fn by_generic<T: Fin>(x: &T) -> u64 { x.done() }
+fn main() -> u64 { 0u64 }
+"#,
+    )
+    .into_iter()
+    .filter(|d| d.code == "E0027")
+    .map(|d| d.message)
+    .collect();
+    assert_eq!(found.len(), 4, "{found:?}");
+    for call in ["self.finish()", "h.finish()", "f.done()", "x.done()"] {
+        assert!(found.iter().any(|m| m.contains(call)), "no E0027 for `{call}`: {found:?}");
+    }
+}
+
+/// The other direction: a consuming call on an owner, and one through
+/// `&dyn` a trait no owning type implements, stay legal.
+#[test]
+fn a_consuming_call_on_an_owner_is_accepted() {
+    assert_eq!(
+        run(r#"
+struct H { id: u64 }
+impl Drop for H { fn drop(&mut self) { println("close {self.id}") } }
+impl H { fn finish(self: Self) -> u64 { self.id } }
+struct N { v: i64 }
+trait Take { fn take(self: Self) -> i64 }
+impl Take for N { fn take(self: Self) -> i64 { self.v } }
+fn by_dyn(t: &dyn Take) -> i64 { t.take() }
+fn main() -> i64 {
+    val h = H { id: 4u64 }
+    val n = N { v: 3i64 }
+    h.finish() as i64 + by_dyn(&n)
+}
+"#),
+        7
+    );
+}

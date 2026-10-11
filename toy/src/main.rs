@@ -21,6 +21,7 @@ mod collide;
 mod fix;
 mod fresh;
 mod hook;
+mod lsp;
 mod package;
 mod scaffold;
 mod test_runner;
@@ -43,6 +44,8 @@ usage:
   toy query type|def|refs FILE:LINE:COL... [--in PATH] [--format=text|json]
   toy query callers|callees NAME... [--in PATH] [--format=text|json]
   toy hook                       (a Claude Code PostToolUse hook: checks the edited .t file)
+  toy lsp                        (a Language Server on stdin/stdout: diagnostics, hover,
+                                  definition, references, symbols, call hierarchy, quick fixes)
   toy clean [PATH] [--all] [--format=text|json] [-v]
   toy new   <DIR> [--format=text|json] [-v]
   toy init  [DIR] [--format=text|json] [-v]
@@ -240,6 +243,12 @@ fn main() {
         // Reads the Claude Code hook input on stdin; the exit code is
         // the answer (CLAUDE_CODE_INTEGRATION.md T2).
         process::exit(hook::run());
+    }
+
+    if command == "lsp" {
+        // A Language Server on stdin / stdout until the client says
+        // `exit` (CLAUDE_CODE_INTEGRATION.md T4).
+        process::exit(lsp::run());
     }
 
     if command == "query" {

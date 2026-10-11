@@ -30,6 +30,9 @@ PostToolUse フック)。差し戻されたら、その行を直してから先�
    - `toy query def main.t:9:20` / `toy query refs main.t:5:4` — 定義と参照
    - `toy query callers NAME` / `toy query callees NAME`
    - `toy api core/std/string.t` — モジュールのシグネチャ一覧 (stdlib を grep しない)
+   - `toylang` プラグイン (`claude-plugin/`、`toy lsp`) が入っていれば、組み込みの
+     `LSP` ツール (hover / goToDefinition / findReferences / documentSymbol /
+     incomingCalls ...) が `.t` に効く。答えは `toy query` と同じ
 4. **実行とテスト** — `toy run <パッケージ>`、`toy test <パッケージ>`
    (`test "名前" { assert_eq(a, b) }` ブロックを走らせる)
 

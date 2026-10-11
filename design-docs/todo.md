@@ -57,6 +57,7 @@
 - **TYPECHECK-HASH-TYPEDECL — frontend 全体を FxHash に、`TypeDecl` の子を `Rc` で共有**
 - **AST-BORROW — AST を clone せずに借用で読む**
 - **LEND-SKIP-PRIMITIVE — 読むだけ判定がスカラー引数の本体を歩かない**
+- **CLAUDE-CODE T4 — `toy lsp` (stdio の LSP サーバ) と Claude Code プラグイン**
 - **COMPILE-CONST-FACTORS — コンパイラの定数倍 5 件**
 - **CTFE-LOWER-ROOTS / CRANELIFT-VERIFIER — コンパイル時間の 2 件**
 - **MATCH-SCRUTINEE-CALL-AOT — 呼び出しの enum を scrutinee にすると compiled レーンが位置なしで 落ちる**
@@ -1066,10 +1067,12 @@
 > 着手するかどうか、どの形にするかが決まっていないもの。決まって段取りが
 > できたら未実装節へ、終わったら完了済み節へ移す。
 
-* **Claude Code 連携 (CLAUDE-CODE-INTEGRATION) の残り** — T1 / C1 / C2 / T2 / T3 は
-  2026-09-30〜10-01 に landing (完了済み節)。残りは T4 `toy lsp` (Claude Code の
-  組み込み `LSP` ツールの操作が `toy query` とほぼ一対一)、T5 プラグイン化、
-  T6 `toy mcp` (任意)。[`CLAUDE_CODE_INTEGRATION.md`](CLAUDE_CODE_INTEGRATION.md)。
+* **Claude Code 連携 (CLAUDE-CODE-INTEGRATION) の残り** — T1 / C1 / C2 / T2 / T3 /
+  T4 (`toy lsp`) は landing (完了済み節)。残りは T5 プラグイン化の仕上げ
+  (T4 の LSP 登録だけ `claude-plugin/` に置いた。フック・スキルの同梱と、
+  別リポジトリ向けの `toy` の解決が残り)、T6 `toy mcp` (任意)。LSP の
+  残り (補完・rename・formatting・増分同期) は
+  [`CLAUDE_CODE_INTEGRATION.md`](CLAUDE_CODE_INTEGRATION.md) §6。
 * **ヒープ検査モード (HEAP-CHECK) の残り** — H0 (`--heap-check=report`、
   二重 free の棚卸し) と H0b (報告に二重 drop を起こした関数名) は 2026-09-26 に
   landing (完了済み節)、棚卸しで見つかった二重 drop も全部潰した
@@ -1152,7 +1155,6 @@
   依存が来るまで作らない。
 * モジュール拡張 — バージョニング、リモートパッケージ
 * 言語内からの AST 取得・操作
-* LSP 対応 — 補完 / go-to-definition / hover / 診断 / フォーマット。frontend の AST・型チェッカ・`SourceLocation` を再利用できる。ただし**エージェントは LSP より CLI クエリを使いやすい**ので、LLM ループの観点では `--api` / 型ホール (P7 で landing 済み) の方が先だった
 
 ## 現状の把握
 

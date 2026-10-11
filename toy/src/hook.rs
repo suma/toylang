@@ -51,11 +51,7 @@ pub fn run() -> i32 {
         return 2;
     }
     // Not in a package: `toy` has nothing to check it against.
-    let Ok(pkg) = package::find(&file, stdlib.clone()) else { return 0 };
-    let pkg = match module_of_package(&pkg, &file) {
-        true => package::find(&pkg.root, stdlib).unwrap_or(pkg),
-        false => pkg,
-    };
+    let Ok(pkg) = package::find_checking(&file, stdlib) else { return 0 };
     interpreter::set_diagnostic_root(Some(pkg.root.clone()));
 
     let diagnostics = match crate::fix::diagnose(&pkg) {
@@ -92,16 +88,6 @@ fn edited_file(input: &str) -> Option<PathBuf> {
         .as_str()
         .or_else(|| v["tool_response"]["filePath"].as_str())?;
     Some(PathBuf::from(path))
-}
-
-/// Whether `file` is a module of `pkg` (under its `src/`, other than an
-/// entry `src/main.t`).
-fn module_of_package(pkg: &package::Package, file: &Path) -> bool {
-    let src = pkg.root.join("src");
-    let (Ok(src), Ok(file)) = (src.canonicalize(), file.canonicalize()) else {
-        return false;
-    };
-    file.starts_with(&src) && file != src.join("main.t")
 }
 
 /// The errors, one per line, with how to see the rest and how to apply

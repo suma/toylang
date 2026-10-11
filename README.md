@@ -274,6 +274,15 @@ cargo run -q -p toy -- query refs    main.t:5:4  --in mypkg   # where it is used
 cargo run -q -p toy -- query callers twice      --in mypkg   # / callees
 ```
 
+`toy lsp` is a Language Server on stdin / stdout for any editor: it
+publishes the diagnostics `toy check` reports (from the unsaved buffers,
+modules included), and answers hover, go to definition, references,
+implementation, document / workspace symbols and call hierarchy from the
+same index as `toy query`; a machine-applicable fix is offered as a quick
+fix. Positions are UTF-16 and documents are synced in full. Point an
+editor's generic LSP client at `toy lsp` for files ending in `.t`
+(design: [`design-docs/CLAUDE_CODE_INTEGRATION.md`](design-docs/CLAUDE_CODE_INTEGRATION.md) §6).
+
 For a loop that checks the same package over and over, build `toy` once
 with `cargo build --release -p toy` and call `target/release/toy`
 directly; `cargo run` pays a freshness check and a debug build each time.
@@ -293,6 +302,12 @@ into Claude Code:
   that runs `target/release/toy hook` after every edit to a `.t` file and
   hands the errors back one per line, and permission for `toy`'s
   read-only subcommands
+- [`claude-plugin/`](claude-plugin/) — a plugin that registers `toy lsp`
+  for `.t` files, so Claude Code's built-in LSP tool (definition,
+  references, hover, symbols, call hierarchy) and its diagnostics work on
+  toylang. Install it from this repository with
+  `/plugin marketplace add ./` and `/plugin install toylang@toylang`
+  after `cargo build --release -p toy`
 
 The design is in [`design-docs/LLM_TOOLING.md`](design-docs/LLM_TOOLING.md)
 and [`design-docs/CLAUDE_CODE_INTEGRATION.md`](design-docs/CLAUDE_CODE_INTEGRATION.md).

@@ -1441,7 +1441,7 @@ pub(crate) fn load_and_integrate_module(
     let mut tried: Vec<String> = Vec::with_capacity(candidates.len());
     for (idx, path) in candidates.iter().enumerate() {
         tried.push(path.clone());
-        if let Ok(source) = std::fs::read_to_string(path) {
+        if let Ok(source) = read_module_source(std::path::Path::new(path)) {
             // Three candidate spellings per root, tried later-root
             // first, so the root's rank reads back off the index. A
             // candidate past the roots is the legacy cwd-relative
@@ -1572,6 +1572,51 @@ pub fn forget_discovered_modules() {
     discovered_cache().lock().unwrap().clear();
 }
 
+/// Drop what [`discover_core_modules`] remembered about the module
+/// root holding `file`, leaving the other roots cached. For a process
+/// that keeps the stdlib warm while one package's files change
+/// (`toy lsp`).
+pub fn forget_discovered_modules_holding(file: &std::path::Path) {
+    let file = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+    discovered_cache().lock().unwrap().retain(|root, _| !file.starts_with(root));
+}
+
+type SourceOverlay = std::sync::Mutex<rustc_hash::FxHashMap<std::path::PathBuf, String>>;
+
+fn source_overlay() -> &'static SourceOverlay {
+    static OVERLAY: std::sync::OnceLock<SourceOverlay> = std::sync::OnceLock::new();
+    OVERLAY.get_or_init(Default::default)
+}
+
+/// Read module `path` from `text` instead of the disk (`None`: from the
+/// disk again). An editor's unsaved buffer is the module the user
+/// means, so `toy lsp` checks against it. Forgets the cached walk of
+/// the root holding `path`, so the next check sees the change.
+pub fn set_module_source_overlay(path: &std::path::Path, text: Option<String>) {
+    let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    {
+        let mut overlay = source_overlay().lock().unwrap();
+        match text {
+            Some(t) => overlay.insert(key.clone(), t),
+            None => overlay.remove(&key),
+        };
+    }
+    forget_discovered_modules_holding(&key);
+}
+
+/// A module's source: the overlay's text when one is set, else the file.
+fn read_module_source(path: &std::path::Path) -> std::io::Result<String> {
+    let overlay = source_overlay().lock().unwrap();
+    if !overlay.is_empty() {
+        let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        if let Some(text) = overlay.get(&key) {
+            return Ok(text.clone());
+        }
+    }
+    drop(overlay);
+    std::fs::read_to_string(path)
+}
+
 pub fn discover_core_modules(
     dir: &std::path::Path,
 ) -> Result<Vec<DiscoveredCoreModule>, String> {
@@ -1643,7 +1688,7 @@ fn walk_core_dir(
             // is still readable, and nothing silently shadows.
             continue;
         }
-        let source = std::fs::read_to_string(&path)
+        let source = read_module_source(&path)
             .map_err(|e| format!("read {}: {}", path.display(), e))?;
         let file_name = path
             .file_name()

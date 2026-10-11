@@ -30,7 +30,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 機能ごとの実装詳細・フェーズ履歴 | [`design-docs/FEATURE_NOTES.md`](design-docs/FEATURE_NOTES.md) |
 | LLM 向けの診断・テスト機能の設計 | [`design-docs/LLM_FEEDBACK_LOOP.md`](design-docs/LLM_FEEDBACK_LOOP.md) |
 | 診断・`toy` を LLM の道具として仕上げる第 2 ラウンド (related / edits / `toy query` / `toy fix`、landing 済み) | [`design-docs/LLM_TOOLING.md`](design-docs/LLM_TOOLING.md) |
-| Claude Code から toylang を使う口 (スキル・フックは landing 済み、LSP / プラグイン / MCP は未着手) | [`design-docs/CLAUDE_CODE_INTEGRATION.md`](design-docs/CLAUDE_CODE_INTEGRATION.md) |
+| Claude Code から toylang を使う口 (スキル・フック・`toy lsp` は landing 済み、プラグインは LSP の登録のみ、MCP は未着手) | [`design-docs/CLAUDE_CODE_INTEGRATION.md`](design-docs/CLAUDE_CODE_INTEGRATION.md) |
 | backtrace / 行番号 / ファイル名の設計 | [`design-docs/DEBUG_OBSERVABILITY.md`](design-docs/DEBUG_OBSERVABILITY.md) |
 | **AOT コンパイルのどこが遅いか** (`--profile=compile`) | [`design-docs/COMPILE_PROFILE.md`](design-docs/COMPILE_PROFILE.md) |
 | LLVM バックエンドの性能 (実行時間のプロファイル、`--release` のコンパイル時間と並列化の試作) | [`design-docs/LLVM_PERF.md`](design-docs/LLVM_PERF.md) |
@@ -209,6 +209,14 @@ cargo run -q -p toy -- check mypkg [--format=text|json|short]   # short: 1 行 1
 # Claude Code のフック用 (stdin にフックの JSON)。.claude/settings.json が .t の
 # Edit / Write のたびに呼び、誤りを 1 行 1 件で差し戻す (exit 2)。release ビルドを使う
 echo '{"tool_input":{"file_path":"mypkg/main.t"}}' | target/release/toy hook
+# LSP サーバ (CLAUDE-CODE T4)。stdin/stdout、UTF-16 の位置、全文同期。
+# 診断 (`toy check` と同じ)・hover・definition・references・implementation・
+# documentSymbol・workspace/symbol・callHierarchy・quick fix (machine-applicable な提案)。
+# 未保存のバッファで検査する (モジュールも)。どのパッケージで検査するかは `toy hook` と同じ、
+# パッケージ外の .t は stdlib だけで単独に。Claude Code ではプラグインで登録する:
+# `/plugin marketplace add ./` → `/plugin install toylang@toylang`
+# (`claude-plugin/`、release の toy が要る)
+target/release/toy lsp
 # 診断の machine-applicable な提案を当てて再検査、を提案が尽きるまで
 # (LLM-TOOLING #1)。書き換えるのはパッケージ内のファイルだけ。
 # --dry-run はパッケージの複製で全巡を回し、編集を報告するだけで書かない。

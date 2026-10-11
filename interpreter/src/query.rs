@@ -66,6 +66,9 @@ enum Target {
     /// A method a trait declares; its uses are the calls that reach
     /// any implementation of it.
     TraitMethod { owner: DefaultSymbol, method: DefaultSymbol, decl: Place },
+    /// A trait's name, written where no expression is (`impl Area for`,
+    /// `&dyn Area`); only `toy lsp` resolves it.
+    Trait(DefaultSymbol),
 }
 
 pub struct Index<'a> {
@@ -381,6 +384,18 @@ impl<'a> Index<'a> {
         self.word_place(c.file, c.start, c.end, c.bare)
     }
 
+    fn trait_decl(&self, name: DefaultSymbol) -> Option<(StmtRef, SourceLocation)> {
+        (0..self.program.statement.len()).find_map(|i| {
+            let s = StmtRef(i as u32);
+            match self.program.statement.get(&s) {
+                Some(Stmt::TraitDecl { name: n, .. }) if n == name => {
+                    Some((s, *self.program.location_pool.get_stmt_location(&s)?))
+                }
+                _ => None,
+            }
+        })
+    }
+
     fn struct_decl(&self, name: DefaultSymbol) -> Option<(StmtRef, SourceLocation)> {
         (0..self.program.statement.len()).find_map(|i| {
             let s = StmtRef(i as u32);
@@ -662,6 +677,7 @@ impl<'a> Index<'a> {
             }
             Target::Local { name: n, .. } => format!("local {}", name(*n)),
             Target::Struct(s) => format!("type {}", name(*s)),
+            Target::Trait(s) => format!("trait {}", name(*s)),
             Target::Field { owner, field } => format!("field {}.{}", name(*owner), name(*field)),
             Target::Const(s) => format!("constant {}", name(*s)),
             Target::Variant { owner, variant } => format!("variant {}::{}", name(*owner), name(*variant)),
@@ -685,6 +701,10 @@ impl<'a> Index<'a> {
                 self.word_place(loc.file, name_at.end_offset as usize, usize::MAX, *field)
             }
             Target::TraitMethod { decl, .. } => Some(decl.clone()),
+            Target::Trait(t) => {
+                let (_, loc) = self.trait_decl(*t)?;
+                self.word_place(loc.file, loc.offset as usize, usize::MAX, *t)
+            }
             Target::Variant { owner, variant } => {
                 let (_, loc) = self.struct_decl(*owner)?;
                 let name_at = self.word_place(loc.file, loc.offset as usize, usize::MAX, *owner)?;
@@ -934,5 +954,530 @@ pub fn answer(index: &Index, kind: &str, subject: &str) -> serde_json::Value {
             json!({ "subject": subject, "results": results })
         }
         other => fail(format!("unknown query `{other}` (type, def, refs, callers, callees)")),
+    }
+}
+
+/// What a declaration is, for an editor's outline (`toy lsp`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolKind {
+    Function,
+    Method,
+    Test,
+    Struct,
+    Enum,
+    Trait,
+    Impl,
+    Field,
+    Variant,
+    Const,
+}
+
+/// One declaration and the ones inside it.
+#[derive(Debug, Clone)]
+pub struct Symbol {
+    pub name: String,
+    pub kind: SymbolKind,
+    /// The whole declaration.
+    pub range: Place,
+    /// Its name.
+    pub selection: Place,
+    /// `Point` for a method `Point::norm`, the module for a module's function.
+    pub container: Option<String>,
+    pub children: Vec<Symbol>,
+}
+
+/// A function or method as a call hierarchy names it.
+#[derive(Debug, Clone)]
+pub struct CallableItem {
+    /// `f`, `Point::norm`, `std::math::abs`: what `toy query callers` takes.
+    pub name: String,
+    pub method: bool,
+    pub range: Place,
+    pub selection: Place,
+}
+
+/// The positional questions an editor asks (`toy lsp`), by file and
+/// byte offset rather than `toy query`'s `FILE:LINE:COL` text.
+impl<'a> Index<'a> {
+    /// The program's file for `path`, matched as [`answer`] matches one.
+    pub fn file_named(&self, path: &str) -> Option<FileId> {
+        self.file_id(path)
+    }
+
+    pub fn definition_at(&self, file: FileId, offset: usize) -> Option<Place> {
+        self.definition(&self.target_or_type_at(file, offset)?)
+    }
+
+    /// [`Self::target_at`], or a type named where no expression is —
+    /// an annotation (`val s: String`), a parameter's type.
+    fn target_or_type_at(&self, file: FileId, offset: usize) -> Option<Target> {
+        if let Some(target) = self.target_at(file, offset) {
+            return Some(target);
+        }
+        let sym = self.interner.get(self.word_at(file, offset)?)?;
+        if self.struct_decl(sym).is_some() {
+            return Some(Target::Struct(sym));
+        }
+        self.trait_decl(sym).map(|_| Target::Trait(sym))
+    }
+
+    /// Where a callable's text ends: its closing brace, not the
+    /// whitespace and comments the parser's range runs on into.
+    fn callable_end(&self, c: &Callable) -> usize {
+        self.body_end(c.file, c.start, c.end)
+    }
+
+    fn body_end(&self, file: FileId, start: usize, end: usize) -> usize {
+        let source = self.program.source_map.source(file).unwrap_or("");
+        source.get(start..end.min(source.len())).and_then(|t| t.rfind('}')).map_or(end, |i| start + i + 1)
+    }
+
+    /// Every use of the name at `offset`, and its declaration first
+    /// when `include_declaration`.
+    pub fn references_at(&self, file: FileId, offset: usize, include_declaration: bool) -> Vec<Place> {
+        let Some(target) = self.target_at(file, offset) else { return Vec::new() };
+        let mut out = self.references(&target);
+        if include_declaration {
+            if let Some(def) = self.definition(&target) {
+                out.retain(|p| *p != def);
+                out.insert(0, def);
+            }
+        }
+        out
+    }
+
+    /// Markdown for the name or expression at `offset`: its declaration
+    /// as written, what it is, its type, and the `#` comment above it.
+    /// The place is the range the answer is about.
+    pub fn hover_at(&self, file: FileId, offset: usize) -> Option<(String, Option<Place>)> {
+        let target = self.target_or_type_at(file, offset);
+        // The narrowest expression's type only: a wider one is the type
+        // of something else (`LIMIT` inside `x > LIMIT` is not `bool`).
+        let ty = match &target {
+            Some(Target::Const(c)) => self
+                .program
+                .consts
+                .iter()
+                .find(|d| d.name == *c)
+                .map(|d| d.type_decl.spell_with(Some(self.interner))),
+            // A use of a local has the type its declaration was given.
+            Some(Target::Local { decl, .. }) => self
+                .file_id(&decl.file)
+                .and_then(|f| self.binding_type_at(f, decl.offset as usize))
+                .map(|(t, _)| t)
+                .or_else(|| {
+                    let (e, _) = self.exprs_at(file, offset).into_iter().next()?;
+                    self.types.get(&e).map(|t| t.spell_with(Some(self.interner)))
+                }),
+            _ => self.binding_type_at(file, offset).map(|(t, _)| t).or_else(|| {
+                let (e, _) = self.exprs_at(file, offset).into_iter().next()?;
+                self.types.get(&e).map(|t| t.spell_with(Some(self.interner)))
+            }),
+        };
+        let Some(target) = target else {
+            let (e, loc) = self.exprs_at(file, offset).into_iter().next()?;
+            let ty = self.types.get(&e)?.spell_with(Some(self.interner));
+            return Some((format!("```toy\n{ty}\n```"), Some(self.place(&loc))));
+        };
+        let def = self.definition(&target);
+        let mut out = String::new();
+        let decl = match &target {
+            Target::Callable(i) => self.signature_text(*i),
+            _ => def.as_ref().and_then(|d| self.line_text(d)),
+        };
+        if let Some(decl) = decl {
+            out.push_str(&format!("```toy\n{decl}\n```\n"));
+        }
+        out.push_str(&self.describe(&target));
+        // A function's type is its signature; a call's would be what it returns.
+        if let (Some(ty), false) = (&ty, matches!(target, Target::Callable(_) | Target::Struct(_) | Target::Trait(_))) {
+            out.push_str(&format!(": `{ty}`"));
+        }
+        if let Some(doc) = def.as_ref().and_then(|d| self.doc_comment(d)) {
+            out.push_str("\n\n");
+            out.push_str(&doc);
+        }
+        let range = self.word_range_at(file, offset);
+        Some((out, range))
+    }
+
+    /// The implementations of what is at `offset`: a trait method's impl
+    /// methods, the candidates of a call through `dyn`, the impl blocks
+    /// of a trait named there.
+    pub fn implementations_at(&self, file: FileId, offset: usize) -> Vec<Place> {
+        if let Some(Target::TraitMethod { owner, method, .. }) = self.target_at(file, offset) {
+            let implementors = self.implementors_of(owner);
+            return (0..self.callables.len())
+                .filter(|&i| {
+                    let c = &self.callables[i];
+                    c.bare == method && c.owner.is_some_and(|o| implementors.contains(&o))
+                })
+                .filter_map(|i| self.callable_place(i))
+                .collect();
+        }
+        for (e, loc) in self.all_exprs() {
+            if loc.file != file || !self.is_dynamic_call(e) {
+                continue;
+            }
+            let on = self
+                .call_name_place(e, &loc)
+                .is_some_and(|p| p.offset as usize <= offset && offset < p.end_offset as usize);
+            if on {
+                return self.resolve_call(e).into_iter().filter_map(|i| self.callable_place(i)).collect();
+            }
+        }
+        let Some(word) = self.word_at(file, offset) else { return Vec::new() };
+        let Some(trait_sym) = self.interner.get(word) else { return Vec::new() };
+        let is_trait = (0..self.program.statement.len()).any(|i| {
+            matches!(self.program.statement.get(&StmtRef(i as u32)), Some(Stmt::TraitDecl { name, .. }) if name == trait_sym)
+        });
+        if !is_trait {
+            return Vec::new();
+        }
+        (0..self.program.statement.len())
+            .filter_map(|i| {
+                let s = StmtRef(i as u32);
+                let Some(Stmt::ImplBlock { target_type, trait_name: Some(t), .. }) = self.program.statement.get(&s) else {
+                    return None;
+                };
+                if t != trait_sym {
+                    return None;
+                }
+                let loc = self.program.location_pool.get_stmt_location(&s)?;
+                let after_for = self.word_place(loc.file, loc.offset as usize, usize::MAX, t)?;
+                self.word_place(loc.file, after_for.end_offset as usize, usize::MAX, target_type)
+            })
+            .collect()
+    }
+
+    /// The function or method whose name is at `offset`, declared or called.
+    pub fn callable_at(&self, file: FileId, offset: usize) -> Option<CallableItem> {
+        match self.target_at(file, offset)? {
+            Target::Callable(i) => self.callable_item(i),
+            _ => None,
+        }
+    }
+
+    /// Who calls `item`, each with the places of the calls.
+    pub fn incoming_calls(&self, item: &CallableItem) -> Vec<(CallableItem, Vec<Place>)> {
+        let Some(target) = self.find_callable(item) else { return Vec::new() };
+        // One pass over the calls, each charged to the callable holding
+        // it — what `calls_in` of every callable would find, without
+        // walking the expressions once per callable.
+        let mut by_caller: Vec<(usize, Vec<Place>)> = Vec::new();
+        for (e, loc) in self.all_exprs() {
+            if !matches!(
+                self.program.expression.get(&e),
+                Some(Expr::Call(..) | Expr::MethodCall(..) | Expr::AssociatedFunctionCall(..))
+            ) || !self.resolve_call(e).contains(&target)
+            {
+                continue;
+            }
+            let Some(caller) = self.enclosing_callable(loc.file, loc.offset as usize) else { continue };
+            let at = self.call_name_place(e, &loc).unwrap_or_else(|| self.place(&loc));
+            match by_caller.iter_mut().find(|(c, _)| *c == caller) {
+                Some((_, sites)) if !sites.contains(&at) => sites.push(at),
+                Some(_) => {}
+                None => by_caller.push((caller, vec![at])),
+            }
+        }
+        by_caller.into_iter().filter_map(|(c, sites)| Some((self.callable_item(c)?, sites))).collect()
+    }
+
+    /// What `item` calls, each with the places of the calls. Calls
+    /// that cannot be followed are left out: there is no item to name.
+    pub fn outgoing_calls(&self, item: &CallableItem) -> Vec<(CallableItem, Vec<Place>)> {
+        let Some(source) = self.find_callable(item) else { return Vec::new() };
+        let mut out: Vec<(CallableItem, Vec<Place>)> = Vec::new();
+        for edge in self.calls_in(source) {
+            let Some(name) = edge.function else { continue };
+            if let Some((_, sites)) = out.iter_mut().find(|(c, _)| c.name == name) {
+                sites.push(edge.at);
+                continue;
+            }
+            let Some(i) = self.callables.iter().position(|c| c.display == name) else { continue };
+            if let Some(callee) = self.callable_item(i) {
+                out.push((callee, vec![edge.at]));
+            }
+        }
+        out
+    }
+
+    /// The declarations of one file, nested (fields in their struct,
+    /// methods in their impl).
+    pub fn document_symbols(&self, file: FileId) -> Vec<Symbol> {
+        self.symbols(Some(file))
+    }
+
+    /// Declarations anywhere in the program whose name contains `query`
+    /// (ignoring case), flattened. Methods are matched as `Type::name` too.
+    pub fn workspace_symbols(&self, query: &str) -> Vec<Symbol> {
+        let query = query.to_lowercase();
+        let mut out = Vec::new();
+        fn walk(s: Symbol, query: &str, out: &mut Vec<Symbol>) {
+            let full = match &s.container {
+                Some(c) => format!("{c}::{}", s.name),
+                None => s.name.clone(),
+            };
+            let children = s.children.clone();
+            if full.to_lowercase().contains(query) && s.kind != SymbolKind::Impl {
+                out.push(Symbol { children: Vec::new(), ..s });
+            }
+            for c in children {
+                walk(c, query, out);
+            }
+        }
+        for s in self.symbols(None) {
+            walk(s, &query, &mut out);
+        }
+        out
+    }
+
+    fn callable_item(&self, i: usize) -> Option<CallableItem> {
+        let c = &self.callables[i];
+        Some(CallableItem {
+            name: c.display.clone(),
+            method: c.owner.is_some(),
+            range: self.span_place(c.file, c.start, self.callable_end(c)),
+            selection: self.callable_place(i)?,
+        })
+    }
+
+    /// The callable an item names: by name and declaration, else by name.
+    fn find_callable(&self, item: &CallableItem) -> Option<usize> {
+        let named: Vec<usize> = (0..self.callables.len()).filter(|&i| self.callables[i].display == item.name).collect();
+        named
+            .iter()
+            .copied()
+            .find(|&i| {
+                self.callable_place(i)
+                    .is_some_and(|p| p.offset == item.selection.offset && p.file == item.selection.file)
+            })
+            .or_else(|| named.first().copied())
+    }
+
+    fn span_place(&self, file: FileId, start: usize, end: usize) -> Place {
+        let mut loc = SourceLocation::new(0, 0, start as u32, end as u32);
+        loc.file = file;
+        self.place(&loc)
+    }
+
+    /// A callable's declaration up to its body: name, parameters,
+    /// return type and contracts.
+    fn signature_text(&self, i: usize) -> Option<String> {
+        let c = &self.callables[i];
+        let source = self.program.source_map.source(c.file)?;
+        // The body is the outermost brace pair inside the declaration.
+        let body = self
+            .blocks
+            .iter()
+            .filter(|(f, s, e)| *f == c.file && c.start <= *s && *e <= c.end.max(*e) && *s < c.end)
+            .map(|(_, s, _)| *s)
+            .min()
+            .unwrap_or(c.end);
+        let text = source.get(c.start..body.min(source.len()))?;
+        let text: Vec<&str> = text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
+        Some(text.join("\n").trim().to_string()).filter(|t| !t.is_empty())
+    }
+
+    /// The source line a place is on, trimmed.
+    fn line_text(&self, at: &Place) -> Option<String> {
+        let file = self.file_id(&at.file)?;
+        let source = self.program.source_map.source(file)?;
+        let start = source[..(at.offset as usize).min(source.len())].rfind('\n').map_or(0, |i| i + 1);
+        let end = source[start..].find('\n').map_or(source.len(), |i| start + i);
+        let line = source[start..end].trim();
+        let line = line.strip_suffix('{').unwrap_or(line).trim_end();
+        Some(line.to_string()).filter(|l| !l.is_empty())
+    }
+
+    /// The `#` comment lines directly above a declaration.
+    fn doc_comment(&self, at: &Place) -> Option<String> {
+        let file = self.file_id(&at.file)?;
+        let source = self.program.source_map.source(file)?;
+        let before = &source[..(at.offset as usize).min(source.len())];
+        let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+        let mut lines: Vec<&str> = Vec::new();
+        for line in source[..line_start].lines().rev() {
+            let Some(text) = line.trim().strip_prefix('#') else { break };
+            lines.push(text.strip_prefix(' ').unwrap_or(text));
+        }
+        lines.reverse();
+        Some(lines.join("\n")).filter(|d| !d.trim().is_empty())
+    }
+
+    /// The identifier under `offset`.
+    fn word_at(&self, file: FileId, offset: usize) -> Option<&str> {
+        let (s, e) = self.word_bounds(file, offset)?;
+        self.program.source_map.source(file)?.get(s..e)
+    }
+
+    /// The end of the line `offset` is on.
+    fn line_end(&self, file: FileId, offset: usize) -> usize {
+        let source = self.program.source_map.source(file).unwrap_or("");
+        let offset = offset.min(source.len());
+        source[offset..].find('\n').map_or(source.len(), |i| offset + i)
+    }
+
+    fn word_range_at(&self, file: FileId, offset: usize) -> Option<Place> {
+        let (s, e) = self.word_bounds(file, offset)?;
+        Some(self.span_place(file, s, e))
+    }
+
+    fn word_bounds(&self, file: FileId, offset: usize) -> Option<(usize, usize)> {
+        let bytes = self.program.source_map.source(file)?.as_bytes();
+        let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+        if offset > bytes.len() || !(bytes.get(offset).is_some_and(|b| ident(*b))) {
+            return None;
+        }
+        let start = (0..offset).rev().take_while(|&i| ident(bytes[i])).last().unwrap_or(offset);
+        let end = (offset..bytes.len()).find(|&i| !ident(bytes[i])).unwrap_or(bytes.len());
+        Some((start, end))
+    }
+
+    /// From `start` to the end of the first brace pair opening after
+    /// `from` — a declaration's extent when its node records only where
+    /// it begins.
+    fn braced_end(&self, file: FileId, from: usize) -> Option<usize> {
+        self.blocks.iter().filter(|(f, s, _)| *f == file && *s >= from).min_by_key(|(_, s, _)| *s).map(|(_, _, e)| *e)
+    }
+
+    fn symbols(&self, only: Option<FileId>) -> Vec<Symbol> {
+        let name = |s: DefaultSymbol| self.interner.resolve(s).unwrap_or("?").to_string();
+        let wanted = |f: FileId| only.is_none_or(|o| o == f);
+        let mut out: Vec<Symbol> = Vec::new();
+        for (i, c) in self.callables.iter().enumerate() {
+            if c.owner.is_some() || !wanted(c.file) {
+                continue;
+            }
+            let Some(selection) = self.callable_place(i) else { continue };
+            let test = c.display.starts_with("test \"");
+            let container = c.module.as_ref().map(|m| m.iter().map(|s| name(*s)).collect::<Vec<_>>().join("::"));
+            out.push(Symbol {
+                name: if test { c.display.clone() } else { name(c.bare) },
+                kind: if test { SymbolKind::Test } else { SymbolKind::Function },
+                range: self.span_place(c.file, c.start, self.callable_end(c)),
+                selection,
+                container,
+                children: Vec::new(),
+            });
+        }
+        for i in 0..self.program.statement.len() {
+            let s = StmtRef(i as u32);
+            let Some(loc) = self.program.location_pool.get_stmt_location(&s).copied() else { continue };
+            if !wanted(loc.file) {
+                continue;
+            }
+            let file = loc.file;
+            let start = loc.offset as usize;
+            let decl = |sym: DefaultSymbol| self.word_place(file, start, usize::MAX, sym);
+            let symbol = match self.program.statement.get(&s) {
+                Some(Stmt::StructDecl { name: n, fields, .. }) => {
+                    let Some(sel) = decl(n) else { continue };
+                    let end = self.braced_end(file, sel.end_offset as usize).unwrap_or(sel.end_offset as usize);
+                    let children = fields
+                        .iter()
+                        .filter(|f| !f.is_positional())
+                        .filter_map(|f| {
+                            let sym = self.interner.get(&f.name)?;
+                            let at = self.word_place(file, sel.end_offset as usize, end, sym)?;
+                            Some(Symbol {
+                                name: f.name.clone(),
+                                kind: SymbolKind::Field,
+                                range: at.clone(),
+                                selection: at,
+                                container: Some(name(n)),
+                                children: Vec::new(),
+                            })
+                        })
+                        .collect();
+                    Symbol { name: name(n), kind: SymbolKind::Struct, range: self.span_place(file, start, end), selection: sel, container: None, children }
+                }
+                Some(Stmt::EnumDecl { name: n, variants, .. }) => {
+                    let Some(sel) = decl(n) else { continue };
+                    let end = self.braced_end(file, sel.end_offset as usize).unwrap_or(sel.end_offset as usize);
+                    let children = variants
+                        .iter()
+                        .filter_map(|v| {
+                            let at = self.word_place(file, sel.end_offset as usize, end, v.name)?;
+                            Some(Symbol {
+                                name: name(v.name),
+                                kind: SymbolKind::Variant,
+                                range: at.clone(),
+                                selection: at,
+                                container: Some(name(n)),
+                                children: Vec::new(),
+                            })
+                        })
+                        .collect();
+                    Symbol { name: name(n), kind: SymbolKind::Enum, range: self.span_place(file, start, end), selection: sel, container: None, children }
+                }
+                Some(Stmt::TraitDecl { name: n, methods, .. }) => {
+                    let Some(sel) = decl(n) else { continue };
+                    let end = self.braced_end(file, sel.end_offset as usize).unwrap_or(sel.end_offset as usize);
+                    let children = methods
+                        .iter()
+                        .filter_map(|m| {
+                            let at = self.word_place(file, m.node.start, usize::MAX, m.name)?;
+                            Some(Symbol {
+                                name: name(m.name),
+                                kind: SymbolKind::Method,
+                                range: self.span_place(file, m.node.start, m.node.end.max(at.end_offset as usize)),
+                                selection: at,
+                                container: Some(name(n)),
+                                children: Vec::new(),
+                            })
+                        })
+                        .collect();
+                    Symbol { name: name(n), kind: SymbolKind::Trait, range: self.span_place(file, start, end), selection: sel, container: None, children }
+                }
+                Some(Stmt::ImplBlock { target_type, trait_name, methods, .. }) => {
+                    let Some(first) = decl(trait_name.unwrap_or(target_type)) else { continue };
+                    let sel = match trait_name {
+                        Some(_) => self.word_place(file, first.end_offset as usize, usize::MAX, target_type).unwrap_or(first),
+                        None => first,
+                    };
+                    let end = self.braced_end(file, sel.end_offset as usize).unwrap_or(sel.end_offset as usize);
+                    let children = methods
+                        .iter()
+                        .filter_map(|m| {
+                            let at = self.word_place(file, m.node.start, m.node.end, m.name)?;
+                            Some(Symbol {
+                                name: name(m.name),
+                                kind: SymbolKind::Method,
+                                range: self.span_place(file, m.node.start, self.body_end(file, m.node.start, m.node.end)),
+                                selection: at,
+                                container: Some(name(target_type)),
+                                children: Vec::new(),
+                            })
+                        })
+                        .collect();
+                    let title = match trait_name {
+                        Some(t) => format!("impl {} for {}", name(t), name(target_type)),
+                        None => format!("impl {}", name(target_type)),
+                    };
+                    Symbol { name: title, kind: SymbolKind::Impl, range: self.span_place(file, start, end), selection: sel, container: None, children }
+                }
+                _ => continue,
+            };
+            out.push(symbol);
+        }
+        for c in &self.program.consts {
+            let Some(loc) = self.program.location_pool.get_expr_location(&c.value) else { continue };
+            if !wanted(loc.file) {
+                continue;
+            }
+            let Some(sel) = self.word_place(loc.file, c.node.start, usize::MAX, c.name) else { continue };
+            out.push(Symbol {
+                name: name(c.name),
+                kind: SymbolKind::Const,
+                range: self.span_place(loc.file, c.node.start, self.line_end(loc.file, (loc.end_offset as usize).max(sel.end_offset as usize))),
+                selection: sel,
+                container: None,
+                children: Vec::new(),
+            });
+        }
+        out.sort_by(|a, b| (&a.range.file, a.range.offset).cmp(&(&b.range.file, b.range.offset)));
+        out
     }
 }

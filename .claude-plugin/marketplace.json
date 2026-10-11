@@ -1,0 +1,12 @@
+{
+  "name": "toylang",
+  "owner": { "name": "toylang" },
+  "description": "Claude Code integration for toylang, from this repository",
+  "plugins": [
+    {
+      "name": "toylang",
+      "source": "./claude-plugin",
+      "description": "`toy lsp` registered for .t files"
+    }
+  ]
+}

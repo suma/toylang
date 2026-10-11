@@ -1,6 +1,6 @@
 # CLAUDE_CODE_INTEGRATION.md — Claude Code から toylang を呼び出す
 
-**状態: 提案 (2026-09-30)。** Claude Code が **toylang のプログラム**を書く・
+**状態: T1 / T2 / T3 / T4 / C1 / C2 landing 済み (2026-09-30〜10-12)、T5 は LSP の登録のみ。** Claude Code が **toylang のプログラム**を書く・
 直すときに、`toy` の診断・修正・問い合わせを道具として使えるようにするには
 何が要るかの検討。処理系自身の開発 (このリポジトリで Rust を書く作業) は
 [`COMPILER_DEV_LOOP.md`](COMPILER_DEV_LOOP.md) の対象で、ここでは扱わない。
@@ -31,7 +31,7 @@ Claude Code のドキュメントの調査と、このセッションでの観�
 | 口 | できること | toylang での使い道 | 確度 |
 |---|---|---|---|
 | **フック** (`PostToolUse`、matcher `Edit\|Write`) | 編集直後にコマンドを走らせ、結果を Claude に返す。exit 2 で stderr が Claude に届く / JSON の `additionalContext` 等 | `.t` を編集したら自動で `toy check` し、誤りを即座に差し戻す | 仕組みは高い。JSON 出力の欄の正確な位置は**要確認** |
-| **LSP** (プラグインで登録) | 組み込み `LSP` ツールが goToDefinition / findReferences / hover / documentSymbol / workspaceSymbol / goToImplementation / prepareCallHierarchy / incomingCalls / outgoingCalls を呼ぶ (操作一覧は `LSP` ツールの定義で確認) | `toy query` をそのまま LSP で出す | 操作一覧は確認済み。**プラグインでの登録書式は要確認**。プロジェクト単位での単独登録は不可とされる |
+| **LSP** (プラグインで登録) | 組み込み `LSP` ツールが goToDefinition / findReferences / hover / documentSymbol / workspaceSymbol / goToImplementation / prepareCallHierarchy / incomingCalls / outgoingCalls を呼ぶ (操作一覧は `LSP` ツールの定義で確認) | `toy query` をそのまま LSP で出す | 確認済み (2026-10-12): プラグインの `lspServers` (plugin.json 内、または `.lsp.json`) でだけ登録でき、プロジェクトの settings.json からは登録できない。書式は §6 |
 | **MCP サーバ** (`.mcp.json`、stdio) | 独自ツール `mcp__<server>__<tool>` を足す。出力は既定 25k トークンまで | check / fix / query / explain / api を構造化された道具として出す | 高い |
 | **スキル** (`.claude/skills/<name>/SKILL.md`) | 関係するときだけ本文を読み込む手引き。スクリプトを同梱できる | toylang の文法の要点と `toy` の使い方を、`.t` を扱うときだけ読ませる | 高い |
 | **プラグイン** (`.claude-plugin/plugin.json`) | スキル・フック・MCP・LSP・エージェントを束ねて配る | 上の全部を 1 つにして、toylang を使う別リポジトリに入れる | 高い (manifest の細部は要確認) |
@@ -103,6 +103,13 @@ documentSymbol は `toy api`、goToImplementation は trait メソッド → imp
   編集で stderr の 1 行が Claude に差し戻され、直すと何も出ない。警告だけのときに
   JSON の `additionalContext` で返す経路は、パイプでの出力までしか確かめていない
 
+- **T4 (✅ 2026-10-12)** — `toy lsp` (`toy/src/lsp.rs`)。stdio、UTF-16 の位置、
+  全文同期。診断 (パース + 型検査、`toy check` と同じもの)、hover / definition /
+  references / implementation / documentSymbol / workspaceSymbol / callHierarchy、
+  machine-applicable な提案を quick fix (`codeAction`) として出す。答えは
+  `interpreter::query::Index` に足した位置単位の公開 API から取る。
+  Claude Code への登録は `claude-plugin/` (§6)。設計と実測は §6
+
 ### 優先順
 
 1. **T1** — 誤った場所に誘導する不具合なので最初に。小さい
@@ -140,12 +147,100 @@ documentSymbol は `toy api`、goToImplementation は trait メソッド → imp
 - 警告 (E0025 等) だけなら exit 0 で JSON の `additionalContext` に載せる
   (形は**要確認**)
 
-## 5. 非目標
+## 6. `toy lsp` の設計 (T4)
+
+### 何を答えるか
+
+| LSP | 中身 |
+|---|---|
+| `publishDiagnostics` | `toy check` の診断そのもの (パース失敗は `diagnose_parse_failure`、それ以外は型検査。lowering はしない)。`related` は `relatedInformation`、コードは `code` |
+| `hover` | 宣言の書いた形 (関数はシグネチャと契約、それ以外は宣言の行)・何であるか (`function greet::twice` / `local a` / `field Rect.w`)・型・宣言の直前の `#` コメント |
+| `definition` / `references` | `toy query def` / `refs` と同じ解決。加えて、式でない位置に書いた**型名・trait 名** (`val s: String`、`impl Area for`) も定義へ飛ぶ |
+| `implementation` | trait メソッドの宣言 → 各 impl のメソッド、`dyn` 越しの呼び出し → 候補の impl、trait 名 → impl ブロック |
+| `documentSymbol` | 関数・struct (フィールド)・enum (variant)・trait (メソッド)・`impl` ブロック (メソッド)・`const`、入れ子 |
+| `workspace/symbol` | 開いているパッケージ全体 (stdlib を含む) から名前の部分一致。`Type::name` でも当たる。500 件で打ち切り |
+| `callHierarchy` | `toy query callers` / `callees` と同じ辺。`dyn` 越しは候補全部、追えない呼び出しは出さない |
+| `codeAction` | 範囲にかかる診断の提案を `quickfix` として。machine-applicable なものは `isPreferred` |
+
+### どのパッケージで検査するか
+
+`toy hook` と同じ規則 (`package::find_checking` に共通化): `src/` の下の
+モジュールはパッケージの入口から、それ以外 (`main.t`、`tests/*.t`) は
+自分を入口として。**パッケージに属さない `.t` は stdlib だけを root に単独で**
+検査する (エディタは何でも開くので、「no package found」で黙るより答えたほうが良い)。
+解析は入口ごとに 1 つ持ち、それを必要とする開いた文書が無くなったら捨てて、
+出した診断を空にする。
+
+### 未保存のテキスト
+
+開いている文書は**エディタの内容で**検査する。入口はそのテキストを直接パースし、
+モジュールは `module_integration::set_module_source_overlay` で差し込む
+(モジュールの読み込みは `read_module_source` を通り、overlay があればそちらを返す)。
+overlay を変えるとその root の探索キャッシュだけ捨てる
+(`forget_discovered_modules_holding`)。stdlib の探索結果は保持される。
+close すると overlay を外し、ディスクの内容に戻る。
+
+### いつ検査するか
+
+変更は解析を dirty にするだけで、**既に届いているメッセージを処理し終えてから**
+まとめて再検査し、変わった診断だけを publish する。打鍵の連続は 1 回の検査に
+なる。要求 (hover 等) は自分の解析が dirty なら先に再検査するので、要求より古い
+テキストで答えることはない。パースに失敗した間は**最後にパースできたプログラム**で
+navigation に答える (書きかけの行で hover が消えないように)。
+
+### 位置
+
+LSP の既定どおり UTF-16 の code unit (`positionEncoding: utf-16`)。Index は
+検査したテキストのバイト offset で答えるので、変換はサーバの端でだけ行う。
+モジュールのファイル名はプログラムの中では root からの表示パス (`src/greet.t`) なので、
+`discover_core_modules_multi` の `display_path` → 実パスの対応で URI に戻す。
+`/tmp` と `/private/tmp` のように正規化でパスが変わる場合に備え、開いている
+文書にはクライアントが使った URI をそのまま返す。
+
+### 実測 (2026-10-12、release、`poc/logsearch` = 12,600 行 + stdlib)
+
+| 操作 | 時間 |
+|---|---|
+| 初回の検査 + documentSymbol | 49 ms |
+| 変更後の再検査 + 応答 | 30 ms |
+| hover (再検査込み) | 29 ms |
+| references | 11 ms |
+| workspace/symbol (全件) | 7 ms |
+| incomingCalls | 12 ms (呼び出しを 1 回だけ走査する形にする前は 217 ms) |
+
+再検査は毎回プログラム全体の型検査で、増分ではない。この規模ではそれで足りている。
+
+### Claude Code への登録
+
+LSP はプラグインでしか登録できない。リポジトリに 2 つを置いた:
+
+- `claude-plugin/.claude-plugin/plugin.json` — `lspServers.toylang`
+  (`${CLAUDE_PROJECT_DIR}/target/release/toy lsp`、`.t` → `toylang`)
+- `.claude-plugin/marketplace.json` — このリポジトリをローカル marketplace にする
+
+入れ方は `/plugin marketplace add ./` → `/plugin install toylang@toylang`
+(`cargo build --release -p toy` が先に要る)。`.claude/settings.json` で自動で
+有効にする形 (`extraKnownMarketplaces` / `enabledPlugins`) にはしていない —
+プラグインの導入は使う人が選ぶもの、という扱い。**Claude Code の組み込み LSP
+ツールから実際に呼ばれることは、このセッションでは確かめていない** (プラグインの
+読み込みにセッションの再起動が要る)。`claude plugin validate` は通る。
+別リポジトリで使うなら `command` を PATH 上の `toy` (`cargo install --path toy`、
+stdlib は T1 の配置) に変える — これが T5 の残り。
+
+### 未対応
+
+- 補完 (`completion`)、rename、formatting、signatureHelp、semantic tokens
+- 増分同期 (全文同期のみ)、`$/cancelRequest` (要求は 1 本ずつ同期的に処理する)
+- match の腕で束縛した名前の hover に型が出ない (パターンの束縛は式ではなく、
+  型検査器が型を記録していない)
+- trait 名の references (定義と implementation は答える)
+
+## 7. 非目標
 
 - **処理系開発の支援** — このリポジトリで Rust を書く作業は CLAUDE.md と
   COMPILER_DEV_LOOP の管轄。本書のスキルやフックは `.t` の編集にだけ反応する
 - **LSP を Claude Code 専用にする** — T4 は標準の LSP として作り、Claude Code は
-  その利用者の 1 つ
+  その利用者の 1 つ (VS Code 等の汎用クライアントからもそのまま使える)
 - **フックで `toy fix` を自動適用する** — 編集を Claude の知らないところで
   書き換えると、次の Edit の `old_string` が合わなくなる。提案は差し戻すだけにし、
   適用は Claude が選ぶ (`toy fix` を Bash で呼ぶ)

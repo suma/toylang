@@ -257,6 +257,29 @@ pub fn find(start: &Path, stdlib: Vec<PathBuf>) -> Result<Package, String> {
     Ok(Package { root, entry, module_roots, build_dir })
 }
 
+/// The package that checks `file` when it is edited: `find`, except
+/// that a module under the package's `src/` is checked through the
+/// package's entry. Checked as an entry of its own, a module's
+/// references to itself by name (`greet::double` inside `greet.t`)
+/// would not resolve. Shared by `toy hook` and `toy lsp`.
+pub fn find_checking(file: &Path, stdlib: Vec<PathBuf>) -> Result<Package, String> {
+    let pkg = find(file, stdlib.clone())?;
+    if module_of_package(&pkg, file) {
+        return Ok(find(&pkg.root, stdlib).unwrap_or(pkg));
+    }
+    Ok(pkg)
+}
+
+/// Whether `file` is a module of `pkg` (under its `src/`, other than an
+/// entry `src/main.t`).
+fn module_of_package(pkg: &Package, file: &Path) -> bool {
+    let src = pkg.root.join("src");
+    let (Ok(src), Ok(file)) = (src.canonicalize(), file.canonicalize()) else {
+        return false;
+    };
+    file.starts_with(&src) && file != src.join("main.t")
+}
+
 /// A short, stable digest for a path or a test name.
 ///
 /// `DefaultHasher` is SipHash13 with fixed keys, so the answer is the

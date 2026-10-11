@@ -1,0 +1,12 @@
+{
+  "name": "toylang",
+  "description": "toylang code intelligence for Claude Code: `toy lsp` for .t files (diagnostics, hover, definition, references, symbols, call hierarchy)",
+  "version": "0.1.0",
+  "lspServers": {
+    "toylang": {
+      "command": "${CLAUDE_PROJECT_DIR}/target/release/toy",
+      "args": ["lsp"],
+      "extensionToLanguage": { ".t": "toylang" }
+    }
+  }
+}

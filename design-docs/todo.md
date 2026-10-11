@@ -18,6 +18,7 @@
 - **STDLIB-CHECK-FIXED の一部 — 全体走査 pass の clone と行番号の数え直しを削り、型検査の固定費 8.0 → 6.7 ms** (残りは未実装節)
 - **OWNING-TEMP-DROP — `String::from_str("a").len()` / `mk().n` の一時値をスカラーの読み出しの後で drop する** (残りは未実装節)
 - **OWNING-TEMP-DROP (所有値の読み出し) — `val r = mk().renamed()` / `String::from_str("a").concat(b)` の一時値を文の前に束縛して drop する (compiled レーンの拒否も消えた)**
+- **CONSUMING-SELF-NO-DROP (同名の `&self` がある名前) — 全呼び出しのレシーバの型が分かる名前なら `self: Self` の method がレシーバを drop する**
 - **CONSUME-THROUGH-BORROW — `&T` 引数 / `&self` の `self` / `&dyn` / generic `&T` / 要素の読み出しに `self: Self` の method を呼ぶと二重 drop していたのを `[E0027]` で拒否。trait impl は `dyn` で使われていてもレシーバを drop する**
 - **OWNING-TEMP-DROP (式の途中) — `take(mk().renamed())` / `println(s.concat(..))` / `if peek(&mk())` / `return` / 前にスカラーを評価する引数も束縛する。値が窓として文の外へ出る形は対象外 (aec212f0 の穴を塞いだ)**
 - **COMPOUND-BLOCK-DROP-TIMING (呼び出しの中だけで触れる末尾) — `{ val t = mk()  t.renamed() }` の `t` もブロックの終わりで drop、`val r: H = { .. }` のこの形も compiled レーンで通る**
@@ -671,8 +672,9 @@
   ようになった (2026-10-08、trait impl も 2026-10-11。借用越しの消費呼び出しは
   `[E0027]` で拒否) が、対象はその名前の method が全部 `self: Self` のときだけ。
   残り: (b) 同名の
-  method を `&self` で持つ型がある名前 (呼び出し側が型を知らないと移動にしないため)、
-  (c) generic impl で `self` を `var me = self` と別名にしてから要素に触れる形
+  method を `&self` で持つ型があり、かつその名前を generic / `dyn` のレシーバで呼ぶ
+  箇所がある名前 (その呼び出しはどの impl に届くか分からず移動にしないため。型の
+  分かる呼び出しだけなら 2026-10-12 に対応)、(c) generic impl で `self` を `var me = self` と別名にしてから要素に触れる形
   (CALLEE-DROP-GENERIC の probe が断る)。どれも二重解放ではなく漏れ。
 
 - **PARTIAL-MOVE: フィールドを 1 つ渡すと束縛まるごと移動になる** ★ — 所有する

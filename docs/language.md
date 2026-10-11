@@ -566,9 +566,13 @@ every impl of that name takes `self: Self`.
 The method then owns `self`, like any by-value parameter: it drops it
 at its end unless it hands it on (returns it, stores it, or hands over
 one of its owning fields — `self.out` above). This holds for a method
-whose name is `self: Self` in every impl, inherent or trait; a name
-some other impl declares `&self` still leaves the receiver to nobody,
-and it leaks.
+whose name is `self: Self` in every impl, inherent or trait, and for
+one whose name another type declares `&self` as long as every call of
+that name in the program has a receiver of a named type (each then
+reaches its own impl). When some call of the name goes through a
+generic or `dyn` receiver, that call cannot tell which impl it reaches
+and treats the receiver as read, so the method leaves its receiver to
+nobody, and it leaks.
 
 Since the method drops its receiver, **it may not be called through a
 borrow** of an owning value (`[E0027]`): on a `&T` parameter, on `self`

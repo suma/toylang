@@ -1109,6 +1109,55 @@ fn main() -> u64 {
     );
 }
 
+/// CONSUMING-SELF-NO-DROP when another type declares the same name
+/// with `&self`: every call of `finish` names its receiver's type, so
+/// the one reaching `A` consumes and `A::finish` drops `self`
+/// (`close 1`; it leaked before). In the second program a generic body
+/// calls `close` on a `T`, where the call site cannot tell which impl it
+/// reaches and so treats the receiver as read; `C::close` must then not
+/// drop either, and its receiver keeps leaking (no `close 3`) rather
+/// than being freed twice.
+#[test]
+fn a_consuming_method_beside_a_borrowing_namesake_drops_its_receiver() {
+    let src = r#"
+struct H { id: u64 }
+impl Drop for H { fn drop(&mut self) { println("close {self.id}") } }
+struct A { h: H }
+impl A { fn finish(self: Self) -> u64 { self.h.id } }
+struct B { n: u64 }
+impl B { fn finish(&self) -> u64 { self.n } }
+fn main() -> u64 {
+    val a = A { h: H { id: 1u64 } }
+    println(a.finish())
+    val b = B { n: 2u64 }
+    println(b.finish())
+    println("end")
+    0u64
+}
+    "#;
+    assert_renders(src, "consuming_self_namesake", "close 1\n1\n2\nend\n");
+
+    let generic = r#"
+struct H { id: u64 }
+impl Drop for H { fn drop(&mut self) { println("close {self.id}") } }
+trait Shut { fn close(&self) -> u64 }
+struct C { h: H }
+impl C { fn close(self: Self) -> u64 { self.h.id } }
+struct D { n: u64 }
+impl Shut for D { fn close(&self) -> u64 { self.n } }
+fn shut<T: Shut>(x: &T) -> u64 { x.close() }
+fn main() -> u64 {
+    val c = C { h: H { id: 3u64 } }
+    println(c.close())
+    val d = D { n: 4u64 }
+    println(shut(&d))
+    println("end")
+    0u64
+}
+    "#;
+    assert_renders(generic, "consuming_self_namesake_generic", "3\n4\nend\n");
+}
+
 /// FIELD-MOVE-DOUBLE-DROP: handing an owning field over -- into a
 /// container, a struct literal, or out as the function's value -- hands
 /// over the binding it is read from. The binding kept its drop, and the

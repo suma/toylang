@@ -207,6 +207,19 @@ pub fn check_moves(
         let generic_owns = !function.generic_params.is_empty() && unique;
         checker.run_function_owning(&function.parameter, function.code, owns, generic_owns);
     }
+    // Method names called somewhere on a receiver whose type the call
+    // site cannot name (a generic, a `dyn`): those calls fall back to
+    // "consumes only if every impl does" (`consumes_receiver`).
+    let untyped_receivers: HashSet<DefaultSymbol> = (0..program.expression.len())
+        .filter_map(|i| match program.expression.get_ref(&ExprRef(i as u32)) {
+            Some(Expr::MethodCall(receiver, method, _))
+                if expr_types.get(receiver).and_then(named_receiver_type).is_none() =>
+            {
+                Some(*method)
+            }
+            _ => None,
+        })
+        .collect();
     // Impl-block methods, which `program.function` does not contain.
     //
     // Leaving them out did not merely miss diagnostics — it broke
@@ -259,9 +272,14 @@ pub fn check_moves(
             // take `self: Self` treats the receiver as moved
             // (`consumes_receiver`, whether or not it knows the type),
             // so the body is the one that drops it.
+            // A name some other impl declares `&self` qualifies too
+            // when no call of it anywhere has a receiver whose type the
+            // call site cannot name: every call then resolves by type,
+            // and those reaching this impl consume.
             checker.self_owned = if explicit_self
                 && inherent
-                && checker.consuming_methods.everywhere.contains(&m.name)
+                && (checker.consuming_methods.everywhere.contains(&m.name)
+                    || !untyped_receivers.contains(&m.name))
             {
                 self_ty.clone()
             } else {
@@ -531,6 +549,16 @@ fn borrow_shape(params: &[TypeDecl]) -> Vec<bool> {
 }
 
 /// Whether a binding of this type names a borrow rather than a value.
+/// The named type a method call's receiver has, through a borrow --
+/// what decides which impl the call reaches.
+fn named_receiver_type(ty: &TypeDecl) -> Option<DefaultSymbol> {
+    match ty {
+        TypeDecl::Struct(t, _) | TypeDecl::Enum(t, _) | TypeDecl::Identifier(t) => Some(*t),
+        TypeDecl::Ref { inner, .. } => named_receiver_type(inner),
+        _ => None,
+    }
+}
+
 fn is_borrow(ty: &TypeDecl) -> bool {
     matches!(ty, TypeDecl::Ref { .. })
 }
@@ -1357,10 +1385,7 @@ impl MoveCheck<'_> {
             Some(Expr::Identifier(r)) => self.binding_types.get(r).copied(),
             _ => None,
         }
-        .or_else(|| match self.expr_types.get(&receiver) {
-            Some(TypeDecl::Struct(t, _) | TypeDecl::Enum(t, _) | TypeDecl::Identifier(t)) => Some(*t),
-            _ => None,
-        });
+        .or_else(|| self.expr_types.get(&receiver).and_then(named_receiver_type));
         match ty {
             Some(t) => self.consuming_methods.by_type.get(&(t, method)).copied().unwrap_or(false),
             None => self.consuming_methods.everywhere.contains(&method),

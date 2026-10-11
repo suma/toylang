@@ -70,6 +70,7 @@ mod char_literal_generic_arg;
 mod compound_arg_call;
 mod compound_call_tail;
 mod compound_call_receiver;
+mod owning_temps;
 mod narrow_for_range;
 mod enum_assoc_fn_producer;
 mod return_type_instantiates;

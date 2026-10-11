@@ -7019,6 +7019,35 @@ A limit worth knowing:
   `--heap-check=reuse` addresses are reused on purpose, to find code
   that relies on this; see [Heap checks](#heap-checks).)
 
+#### Temporaries
+
+A call read through without a binding — `mk().n`, `mk().get()`,
+`String::from_str("abc").len()`, `if mk().ok() { .. }` — produces a
+value nobody names. When it owns something it is **dropped right after
+the read**, exactly as if it had been bound:
+
+```rust
+val n = String::from_str("abc").len()   # the String is freed here
+```
+
+The type checker rewrites the read to `{ val __temp = <call>
+__temp.<read> }`, so every lane runs the same rule and the usual ones
+follow: a consuming method (`mk().finish()`) takes the temporary and
+drops it itself, a `&mut self` method (`mk().bump()`) runs before the
+drop.
+
+Two kinds of temporary are left alone, and **leak** — bind them with
+`val` when that matters:
+
+- one that is not fresh: `get`, `next` and `__getitem__` hand back an
+  element the container still owns (the reason for `[E0028]`), and
+  `borrow` a reference. Dropping those would free the container's
+  buffer.
+- one whose read is not a scalar: a `ptr`, `str`, reference or
+  window (`Span`, `Column`) may point into the temporary, an owning
+  field taken out (`mk().name`) moves it, and a method's owning result
+  (`String::from_str("a").concat(b)`) is not covered yet.
+
 #### Lending an element (`borrow`)
 
 A container's `get` answers with the element, and for an owning element
@@ -7133,9 +7162,9 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   - the **root of a field / element read or a method receiver**, in
     any position — `mk().n`, `mk().inner.x`, `triple(1).2`,
     `mk().get()`, `String::from_str("ab").len()`, `v.get(i).len()`,
-    `take(mk().inner)`, `println(mk().n)`. The call runs once. A
-    temporary that owns something (`impl Drop`) is not dropped, on any
-    lane — bind it with `val` when it should be.
+    `take(mk().inner)`, `println(mk().n)`. The call runs once. An
+    owning temporary is dropped after a scalar read and leaked after
+    any other (see [Temporaries](#temporaries)).
 
   An enum-producing position (an `if` or `match` arm, a block tail, an
   enum payload) also takes an **associated function that returns that

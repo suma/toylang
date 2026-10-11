@@ -1008,6 +1008,10 @@ fn check_typing_collecting(
         string_interner,
         &mut expr_types,
     ));
+    // OWNING-TEMP-DROP: a call read through without a binding gets one,
+    // so it is dropped like any other owner -- before the move check,
+    // which then sees a consuming call or a field taken out as a move.
+    frontend::type_checker::bind_owning_temporaries(program, string_interner, &mut expr_types);
     drop(expr_types_phase);
     let moves_phase = prof::phase("moves");
     let mut analysis = frontend::type_checker::check_moves(program, string_interner, &expr_types);

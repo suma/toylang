@@ -614,6 +614,17 @@ impl<'a> TypeCheckerVisitor<'a> {
         if *ty == TypeDecl::Number {
             self.type_inference.visited_numbers.push(*expr_ref);
         }
+        // OWNING-TEMP-DROP: an operand reached through `accept_expr`
+        // records no type, and `bind_owning_temporaries` decides from
+        // the type of a read (`mk().get() > 3`) whether its temporary
+        // can be dropped. Only reads: a literal's type is settled
+        // later, and other shapes have nobody asking.
+        if matches!(
+            self.core.expr_pool.get_ref(expr_ref),
+            Some(Expr::MethodCall(..) | Expr::FieldAccess(..) | Expr::TupleAccess(..))
+        ) {
+            self.type_inference.expr_types.entry(*expr_ref).or_insert_with(|| ty.clone());
+        }
     }
 
     /// NUMBER-HINT: is `ty` an integer type an unsuffixed literal is

@@ -86,6 +86,8 @@ pub use move_check::check_moves;
 pub use parallel_check::check_parallel_loops;
 mod spawn_outline;
 pub use spawn_outline::outline_spawn_bodies;
+mod owning_temps;
+pub use owning_temps::bind_owning_temporaries;
 pub use module_path_check::check_module_paths;
 
 mod contains_drop;

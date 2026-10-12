@@ -99,3 +99,95 @@ fn a_method_on_a_non_owning_compound_temporary() {
         "Less\nColor::Green\nP { x: 4 }\nEqual\n5\nGreater\n",
     );
 }
+
+
+/// COMPOUND-CALL-EXPR-POS: a chain of compound-returning methods
+/// (`mk().twin().get()`) and an operator's compound result read through
+/// (`(p + p).x`). Each step is bound in a block of its own, all under
+/// the same synthetic name -- which also pins that a `val` whose
+/// annotated block declares that name again keeps its own value (the
+/// lowering used to bind the outer name before the block, and the
+/// block's exit left it meaning the inner one: 3 for 6).
+#[test]
+fn a_chain_of_compound_results_is_read_through() {
+    let src = r#"
+        struct P { x: i64 }
+        impl P {
+            fn twin(&self) -> P { P { x: self.x * 2i64 } }
+            fn get(&self) -> i64 { self.x }
+            fn add(&self, o: &Self) -> P { P { x: self.x + o.x } }
+            fn neg(&self) -> P { P { x: 0i64 - self.x } }
+        }
+        fn mk(x: i64) -> P { P { x: x } }
+        fn main() -> u64 {
+            println(mk(3i64).twin().get())
+            val p = mk(5i64)
+            println(p.twin().twin().get())
+            val t: P = { val t = mk(3i64)  t.twin() }
+            println(t.x)
+            println((p + p).x)
+            println((p + mk(1i64)).get())
+            println((-p).x)
+            0u64
+        }
+    "#;
+    assert_renders(src, "compound_chain", "6\n20\n6\n10\n6\n-5\n");
+}
+
+/// COMPOUND-CALL-EXPR-POS: a compound is written whole into an array
+/// element (`arr[i] = mk()`, a binding, a literal, under `soa` too,
+/// a tuple, an enum), built from calls in an array literal, written
+/// into a struct field (`o.p = mk()`, `o.p = o.p.swap()` reading the
+/// old value), and called as a statement for its effect alone.
+#[test]
+fn a_compound_is_written_into_any_place() {
+    let src = r#"
+        struct P { x: i64, y: u8 }
+        impl P { fn swap(&self) -> P { P { x: self.y as i64, y: self.x as u8 } } }
+        struct O { p: P, n: u64 }
+        enum E { A(i64), B }
+        fn mk(x: i64) -> P { P { x: x, y: 3u8 } }
+        fn me(x: i64) -> E { E::A(x) }
+        fn pr(a: u64) -> (u64, i64) { (a, -1i64) }
+        fn noisy() -> P { println("made")  mk(0i64) }
+        fn main() -> u64 {
+            var arr: [P; 3] = [mk(0i64), mk(0i64), mk(0i64)]
+            arr[1u64] = mk(7i64)
+            val q = P { x: 8i64, y: 9u8 }
+            arr[2u64] = q
+            arr[0u64] = P { x: 5i64, y: 6u8 }
+            val i = 2u64
+            arr[i - 1u64] = mk(11i64)
+            println(arr[0u64].x + arr[1u64].x + arr[2u64].x)
+            println(arr[2u64].y)
+            var ss: soa [P; 2] = [mk(0i64), mk(0i64)]
+            ss[1u64] = mk(4i64)
+            println(ss[1u64].x)
+            var ts: [(u64, i64); 2] = [(0u64, 0i64), (0u64, 0i64)]
+            ts[1u64] = pr(6u64)
+            val t = ts[1u64]
+            println(t.1)
+            var es: [E; 2] = [E::B, E::B]
+            es[0u64] = me(4i64)
+            val e0 = es[0u64]
+            match e0 {
+                E::A(v) => println(v),
+                E::B => println("b"),
+            }
+            var o = O { p: mk(1i64), n: 3u64 }
+            o.p = mk(2i64)
+            o.p = o.p.swap()
+            println(o.p.x)
+            println(o.p.y)
+            noisy()
+            pr(1u64)
+            if o.n > 1u64 { noisy() } else { noisy() }
+            0u64
+        }
+    "#;
+    assert_renders(
+        src,
+        "compound_into_place",
+        "24\n9\n4\n-1\n4\n3\n2\nmade\nmade\n",
+    );
+}

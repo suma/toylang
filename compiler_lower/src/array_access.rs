@@ -352,12 +352,10 @@ impl<'a> FunctionLower<'a> {
                             &literal_fields,
                         )?;
                     }
-                    _ => {
-                        return Err(
-                            "compiler MVP only supports struct-literal array elements (bind to val first)"
-                                .to_string(),
-                        );
-                    }
+                    // COMPOUND-CALL-EXPR-POS: any other element (a call,
+                    // a binding, a block) is built the way a `val`
+                    // would build it.
+                    _ => self.lower_into_struct_fields(expr_ref, struct_id, &fields)?,
                 }
                 let leaves = flatten_struct_locals(&fields);
                 for (j, (local, ty)) in leaves.iter().enumerate() {
@@ -411,11 +409,7 @@ impl<'a> FunctionLower<'a> {
                             self.store_value_into_tuple_element_shape(e, j, &shape)?;
                         }
                     }
-                    _ => {
-                        return Err(
-                            "compiler MVP only supports tuple-literal array elements".to_string(),
-                        );
-                    }
+                    _ => self.lower_into_tuple_elements(expr_ref, &elements)?,
                 }
                 let leaves = flatten_tuple_element_locals(&elements);
                 for (j, (local, ty)) in leaves.iter().enumerate() {
@@ -873,11 +867,32 @@ impl<'a> FunctionLower<'a> {
         // names: under SoA these stores scatter across the columns.
         // That is inherent to writing a whole element by column, and
         // it is what the layout trades for the reads.
-        if let Type::Enum(enum_id) = element_ty {
+        //
+        // COMPOUND-CALL-EXPR-POS: a struct or tuple element is written
+        // whole the same way (`arr[i] = mk()`, `arr[i] = q`). The value
+        // is built in scratch locals by the path a `val` would take --
+        // a literal, a binding, a call -- and stored leaf by leaf in
+        // the order the whole-element read loads them.
+        if matches!(element_ty, Type::Enum(_) | Type::Struct(_) | Type::Tuple(_)) {
             let leaf_count = leaf_scalar_count(self.module, element_ty);
-            let value_storage = self.allocate_enum_storage(enum_id);
-            self.lower_into_enum_storage(value, &value_storage)?;
-            let leaves = super::bindings::flatten_enum_storage_locals(&value_storage);
+            let leaves: Vec<(LocalId, Type)> = match element_ty {
+                Type::Enum(enum_id) => {
+                    let value_storage = self.allocate_enum_storage(enum_id);
+                    self.lower_into_enum_storage(value, &value_storage)?;
+                    super::bindings::flatten_enum_storage_locals(&value_storage)
+                }
+                Type::Struct(struct_id) => {
+                    let fields = self.allocate_struct_fields(struct_id);
+                    self.lower_into_struct_fields(value, struct_id, &fields)?;
+                    flatten_struct_locals(&fields)
+                }
+                Type::Tuple(tuple_id) => {
+                    let elements = self.allocate_tuple_elements(tuple_id)?;
+                    self.lower_into_tuple_elements(value, &elements)?;
+                    flatten_tuple_element_locals(&elements)
+                }
+                _ => unreachable!(),
+            };
             let const_elem_idx = match self.resolve_const_index(index_ref, length) {
                 ConstIndex::Valid(i) => Some(i),
                 ConstIndex::OutOfBounds => {
@@ -899,15 +914,6 @@ impl<'a> FunctionLower<'a> {
                 );
             }
             return Ok(None);
-        }
-        // Compound-element whole writes (`ps[i] = p`) are not
-        // supported for structs and tuples — the value graph never
-        // carries a compound, and their leaves can be written one at
-        // a time by name instead.
-        if leaf_scalar_count(self.module, element_ty) != 1 {
-            return Err(
-                "compiler MVP cannot write a whole compound array element (`ps[i] = p`); write individual leaves via `ps[i].field = v`".to_string(),
-            );
         }
         let slot = storage.scalar_slot();
         let idx_v = match self.resolve_const_index(index_ref, length) {

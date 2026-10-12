@@ -2074,9 +2074,14 @@ impl<'a> FunctionLower<'a> {
             }
         };
         let storage = self.allocate_enum_storage(enum_id);
-        self.bindings
-            .insert(name, Binding::Enum(storage.clone()));
         self.lower_into_enum_storage(rhs_ref, &storage)?;
+        // Bound only after the right-hand side: a block there may
+        // declare the same name (`val t: P = { val t = mk()  t.twin() }`,
+        // or the nested `__temp`s OWNING-TEMP-DROP writes for a call
+        // chain), and its scope's exit restored the bindings it saw on
+        // entry -- this one, which the inner `t` had taken over -- so
+        // the name came out meaning the inner value.
+        self.bindings.insert(name, Binding::Enum(storage));
         Ok(None)
     }
 
@@ -2111,14 +2116,14 @@ impl<'a> FunctionLower<'a> {
         // gets the same auto-drop registration a literal rhs would —
         // see `lower_let_struct_literal`.
         self.register_drop_for_struct_binding(struct_id, &fields);
-        self.bindings.insert(
-            name,
-            Binding::Struct {
-                struct_id,
-                fields: fields.clone(),
-            },
-        );
         self.lower_into_struct_fields(rhs_ref, struct_id, &fields)?;
+        // Bound only after the right-hand side: a block there may
+        // declare the same name (`val t: P = { val t = mk()  t.twin() }`,
+        // or the nested `__temp`s OWNING-TEMP-DROP writes for a call
+        // chain), and its scope's exit restored the bindings it saw on
+        // entry -- this one, which the inner `t` had taken over -- so
+        // the name came out meaning the inner value.
+        self.bindings.insert(name, Binding::Struct { struct_id, fields });
         Ok(None)
     }
 
@@ -2148,13 +2153,14 @@ impl<'a> FunctionLower<'a> {
             }
         };
         self.register_drop_for_tuple_binding(&elements);
-        self.bindings.insert(
-            name,
-            Binding::Tuple {
-                elements: elements.clone(),
-            },
-        );
         self.lower_into_tuple_elements(rhs_ref, &elements)?;
+        // Bound only after the right-hand side: a block there may
+        // declare the same name (`val t: P = { val t = mk()  t.twin() }`,
+        // or the nested `__temp`s OWNING-TEMP-DROP writes for a call
+        // chain), and its scope's exit restored the bindings it saw on
+        // entry -- this one, which the inner `t` had taken over -- so
+        // the name came out meaning the inner value.
+        self.bindings.insert(name, Binding::Tuple { elements });
         Ok(None)
     }
 

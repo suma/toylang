@@ -490,7 +490,7 @@ fn main() -> u64 {
   SIMD vector (`f64x2` / `f32x4` / `i32x4` / `i64x2` / `u8x16`)
   (`null` は**予約済みで型検査が拒否する** — `[E0015]`。不在は `Option<T>`、生ポインタは `__builtin_null_ptr()`)
 - Narrow ints (NUM-W): `u8` / `u16` / `u32` / `i8` / `i16` / `i32` (literal suffix `42u8` / `0xFFi32` 等)。`as` cast で wide ↔ narrow 変換 (暗黙 widening は無し)
-- **`soa [T; N]` (DOD Phase 0)**: 配列型の前置修飾子で **SoA (列ごと配置) を選ぶ**。**same-type** — `soa [P; N]` と `[P; N]` は同じ型 (付け外して計測できる)。`ps[i].f` 読み書き・`val p = ps[i]`・range slice は AoS と同書式 (`ps[i] = p` の compound 一括書き込みは不可)。`soa` は contextual keyword (`val soa = 5u64` は従来どおり)。**`ps[i].f` は compiled lane では SoA 以前に未対応だった** ので、AoS 配列でも `arr[i].field` が新規に動く。実装は列方式 (leaf ごとに slot) で IR / codegen / IR VM 無変更。例: `interpreter/example/soa.t`。**enum 要素も可** (tag が独立した列になる。enum 要素だけは `ss[i] = Shape::Point` と丸ごと書ける — variant には leaf の名前が無いため)。列は leaf の実幅で pack される。1 列を関数に渡すのは `ps.mass` → `Column<T>` (下)。heap 版は `soa Vec<T>` (下の `SoaVec<T>`)
+- **`soa [T; N]` (DOD Phase 0)**: 配列型の前置修飾子で **SoA (列ごと配置) を選ぶ**。**same-type** — `soa [P; N]` と `[P; N]` は同じ型 (付け外して計測できる)。`ps[i].f` 読み書き・`val p = ps[i]`・range slice は AoS と同書式 (`ps[i] = p` / `ps[i] = mk()` の丸ごと書き込みも可、列に散る)。`soa` は contextual keyword (`val soa = 5u64` は従来どおり)。**`ps[i].f` は compiled lane では SoA 以前に未対応だった** ので、AoS 配列でも `arr[i].field` が新規に動く。実装は列方式 (leaf ごとに slot) で IR / codegen / IR VM 無変更。例: `interpreter/example/soa.t`。**enum 要素も可** (tag が独立した列になる)。列は leaf の実幅で pack される。1 列を関数に渡すのは `ps.mass` → `Column<T>` (下)。heap 版は `soa Vec<T>` (下の `SoaVec<T>`)
 - **SIMD vector (SIMD)**: 128bit の vector 型 5 種 (`f64x2` / `f32x4` /
   `i32x4` / `i64x2` / `u8x16`)。**通常の演算子が lane-wise に効く**ので
   intrinsic は型と演算子で表せない 17 個だけ (`__simd_splat` /
@@ -729,13 +729,13 @@ fn main() -> u64 {
     (NARROW-UNSIGNED-SUB。以前は narrow 幅だけ wrap していた —
     `5u8 - 10u8` は `251u8`)。止めずに聞くなら `checked_sub`
   - 比較: `==`, `!=`, `<`, `<=`, `>`, `>=`。`==` / `!=` は同型 struct ペアで **operator overload** — その struct に `eq(&self, other: &Self) -> bool` method があれば dispatch (3 backend)。`s == t` で String/Vec<u8> 等の比較が動く
-  - **全 binary / unary operator overload** (Phase B + OP-OVERLOAD-ARITH + OP-OVERLOAD-EXTEND Phase 1-4): 同型 struct ペアで以下に dispatch (3 backend、let-rhs context):
+  - **全 binary / unary operator overload** (Phase B + OP-OVERLOAD-ARITH + OP-OVERLOAD-EXTEND Phase 1-4): 同型 struct ペアで以下に dispatch (3 backend、式のどの位置でも):
     - 算術: `+` / `-` / `*` / `/` / `%` → `add` / `sub` / `mul` / `div` / `rem` (`(&self, &Self) -> Self`)
     - 複合代入: `+=` / `-=` / `*=` / `/=` / `%=` / `&=` / `|=` / `^=` / `<<=` / `>>=` (parser desugar `a OP= b → a = a OP b` で算術 / ビット method 経由、AOT は `assign.rs` で既存 binding leaf locals に上書き)
     - 順序比較: `<` / `<=` / `>` / `>=` → `lt` / `le` / `gt` / `ge` (`(&self, &Self) -> bool`)
     - ビット: `&` / `|` / `^` / `<<` / `>>` → `bitand` / `bitor` / `bitxor` / `shl` / `shr` (Self 戻り)
     - 単項: `-` / `~` / `!` → `neg` / `bitnot` / `not` (`(&self) -> Self`)
-    - **scope 外**: `&&` / `||` (short-circuit semantics)。加えて compiled レーンは **let-rhs 位置以外すべて** — chain (`a + b + c`)、struct literal operand (`a & Foo { ... }`)、結果のフィールド (`(a + b).x`)、引数位置 (`take(a + b)`)、条件位置 (`if (a + b) == c`)。interpreter には制限が無いので**インタプリタで動いた形が AOT で落ちる**。`val sum = a + b` に束縛してから使う (todo.md の OP-OVERLOAD-CHAIN)
+    - **scope 外**: `&&` / `||` (short-circuit semantics)。chain (`a + b + c`)・struct literal operand・結果のフィールド (`(a + b).x`)・引数・条件は compiled レーンでも通る (OP-OVERLOAD-CHAIN / COMPOUND-CALL-EXPR-POS)
   - **代入は値を持たない — 型は `()`**。`a = v` / `p.f = v` / `a[i] = v` /
     `d[k] = v` / `__setitem__` / 複合代入のすべてが `()` なので、
     末尾が代入のブロックは `()` ブロックになる

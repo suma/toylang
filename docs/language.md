@@ -1282,8 +1282,9 @@ val qs: [Particle; 1024]        # element-major (AoS), the default
 - Bounds checks behave identically to the AoS form, including
   negative constant indices (`ps[-1i64].x`).
 
-Writing a whole compound element (`ps[i] = p`) is not supported —
-write individual leaves (`ps[i].x = ...`) instead.
+A whole element can be written too (`ps[i] = p`, `ps[i] = mk()`); under
+`soa` its leaves scatter across the columns, which is the cost the
+layout trades for the reads.
 
 The lowering gives each leaf scalar its own slot (`ArraySlotId`), so
 the columns are ordinary scalar arrays to the IR, codegen, and the

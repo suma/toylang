@@ -504,7 +504,7 @@ impl<'a> FunctionLower<'a> {
     /// Emit `CallTuple` for a tuple-returning callee whose result
     /// lands directly in `target_elements`' leaf locals. Tuple counterpart
     /// to [`Self::emit_struct_call_into_fields`].
-    fn emit_tuple_call_into_elements(
+    pub(super) fn emit_tuple_call_into_elements(
         &mut self,
         func_id: crate::ir::FuncId,
         args: Vec<ValueId>,
@@ -540,7 +540,7 @@ impl<'a> FunctionLower<'a> {
     /// carries the compound `&mut` writeback slots the callee declares
     /// (empty for the constructor shapes this path usually sees), in
     /// the same order `lower_let_call_struct` appends them.
-    fn emit_struct_call_into_fields(
+    pub(super) fn emit_struct_call_into_fields(
         &mut self,
         func_id: crate::ir::FuncId,
         args: Vec<ValueId>,

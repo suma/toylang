@@ -714,17 +714,33 @@ impl<'a> FunctionLower<'a> {
             .and_then(|link| link.env_ptr);
         let target = self.resolve_call_target(fn_name, args_ref)?;
         let ret_ty = self.module.function(target).return_type;
-        // Struct-returning calls in expression position aren't
-        // supported; the user must bind the result with `val x = ...`.
-        if matches!(ret_ty, Type::Struct(_)) {
-            return Err(format!(
-                "compiler MVP cannot use a struct-returning call (`{}`) in expression position; bind the result with `val`",
-                self.interner.resolve(fn_name).unwrap_or("?")
-            ));
+        // COMPOUND-CALL-EXPR-POS: a struct- or tuple-returning call
+        // reached as a plain expression -- a statement whose value is
+        // dropped (`mk()` called for its effect). The value lands in
+        // scratch locals nobody reads; a position that needs it as an
+        // SSA value finds none and says so. It is not offered as a
+        // pending value the way a tail struct literal is: a branch's
+        // scratch locals would then be read where the other branch
+        // never declared them.
+        if capturing_env.is_none() && matches!(ret_ty, Type::Struct(_) | Type::Tuple(_)) {
+            let arg_values = self.lower_call_args(args_ref)?;
+            let extra = self.collect_compound_writeback_dests(args_ref, None)?;
+            match ret_ty {
+                Type::Struct(struct_id) => {
+                    let fields = self.allocate_struct_fields(struct_id);
+                    self.emit_struct_call_into_fields(target, arg_values, extra, struct_id, &fields)?;
+                }
+                Type::Tuple(tuple_id) => {
+                    let elements = self.allocate_tuple_elements(tuple_id)?;
+                    self.emit_tuple_call_into_elements(target, arg_values, extra, &elements)?;
+                }
+                _ => unreachable!(),
+            }
+            return Ok(None);
         }
-        if matches!(ret_ty, Type::Tuple(_)) {
+        if matches!(ret_ty, Type::Struct(_) | Type::Tuple(_)) {
             return Err(format!(
-                "compiler MVP cannot use a tuple-returning call (`{}`) in expression position; bind the result with `val`",
+                "compiler MVP cannot use a compound-returning closure call (`{}`) in expression position; bind the result with `val`",
                 self.interner.resolve(fn_name).unwrap_or("?")
             ));
         }

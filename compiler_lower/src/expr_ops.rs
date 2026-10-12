@@ -611,7 +611,13 @@ impl<'a> FunctionLower<'a> {
             })
             .or_else(|| self.value_scalar(else_body))
             .unwrap_or(Type::Unit);
-        let result_local = if result_ty.produces_value() {
+        // A compound has no SSA value to merge: an `if` reached here
+        // with compound branches is a statement whose value is dropped
+        // (`if c { mk() } else { mk() }`). A struct-typed result local
+        // would be loaded at the merge without ever being stored.
+        let result_local = if result_ty.produces_value()
+            && !matches!(result_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_))
+        {
             Some(self.module.function_mut(self.func_id).add_local(result_ty))
         } else {
             None

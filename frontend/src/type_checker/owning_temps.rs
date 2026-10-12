@@ -104,7 +104,17 @@ pub fn bind_owning_temporaries(
             // `println(f())` becomes for an `Ordering`) or `mk().get()`
             // was refused there. Binding it changes nothing else. A
             // `str` read is fine too: nothing is freed under it.
-            if !is_compound(root_ty, &declared) || !(is_scalar(result_ty) || matches!(result_ty, TypeDecl::String)) {
+            //
+            // A compound result that owns nothing is fine as well: with
+            // no drop there is no timing to disagree on, and binding
+            // each step of `mk().twin().get()` (the chain is visited
+            // step by step, each access over its own root) leaves
+            // nested blocks whose bindings carry their type, which the
+            // compiled lanes take.
+            let result_ok = is_scalar(result_ty)
+                || matches!(result_ty, TypeDecl::String)
+                || (is_compound(result_ty, &declared) && !analysis.contains_drop(result_ty));
+            if !is_compound(root_ty, &declared) || !result_ok {
                 continue;
             }
         }
@@ -558,6 +568,12 @@ fn chain_root(program: &File, access: ExprRef) -> Option<(ExprRef, ExprRef, usiz
 fn produces_fresh_value(program: &File, interner: &DefaultStringInterner, expr: &ExprRef) -> bool {
     match program.expression.get_ref(expr) {
         Some(Expr::Call(..)) | Some(Expr::AssociatedFunctionCall(..)) => true,
+        // An operator on a compound is its overload's call (`(a + b).x`
+        // is `a.add(b).x`); on scalars the root is no compound and the
+        // caller passes it over.
+        // A borrow (`&mut a`) is no new value: it names `a`.
+        Some(Expr::Binary(..)) => true,
+        Some(Expr::Unary(op, _)) => !matches!(op, UnaryOp::Borrow | UnaryOp::BorrowMut),
         Some(Expr::MethodCall(_, method, _)) => {
             !interner.resolve(*method).is_some_and(reads_a_kept_element)
         }

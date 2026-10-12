@@ -441,6 +441,22 @@ impl<'a> FunctionLower<'a> {
                 if let Some(v) = self.try_lower_array_element_leaf_store(lhs, rhs)? {
                     return Ok(v);
                 }
+                // COMPOUND-CALL-EXPR-POS: a struct-typed field written
+                // whole (`o.p = mk()`, `o.p = q`). The value is built in
+                // scratch locals first and then copied leaf by leaf, so a
+                // right-hand side reading the field itself (`o.p =
+                // o.p.twin()`) sees the old value throughout.
+                if let Ok(super::bindings::FieldChainResult::Struct { struct_id, fields }) = self.resolve_field_chain(lhs) {
+                    let scratch = self.allocate_struct_fields(struct_id);
+                    self.lower_into_struct_fields(rhs, struct_id, &scratch)?;
+                    let from = super::bindings::flatten_struct_locals(&scratch);
+                    let to = super::bindings::flatten_struct_locals(&fields);
+                    for ((src, ty), (dst, _)) in from.into_iter().zip(to) {
+                        let v = self.emit(InstKind::LoadLocal(src), Some(ty)).expect("LoadLocal returns a value");
+                        self.emit(InstKind::StoreLocal { dst, src: v }, None);
+                    }
+                    return Ok(None);
+                }
                 // `obj.field = rhs`. Resolve obj statically to a struct
                 // binding, then store rhs into that field's local.
                 let local = self.resolve_field_local(&obj, field)?;

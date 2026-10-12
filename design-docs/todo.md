@@ -12,6 +12,7 @@
 
 ### 2026-10-12
 
+- **GENERIC-REF-PARAM-PRIM — generic な method の `&T` 引数は、`T` がスカラーに実体化されたら番地で渡す (値を渡して VM は誤答・AOT は落ちていた)。`Vec::binary_search` を `&T` 受けに (鍵が呼び出し側に残る)**
 - **CALLEE-DROP-GENERIC の裸の `T` — `a: T` の引数も probe の候補にし、`&self` でスカラーを返す method の `&` 引数に渡すのは貸し出し。`min` / `max` / `clamp` / `pick` が返さなかった `String` を解放する (漏れていた)。手渡した後に使う本体では所有しない側に倒す**
 - **GENERIC-INFER-STRUCT-LITERAL-ARG — compiled レーンが構造体リテラルの引数から型引数を推論する (`min(K { .. }, K { .. })`)**
 - **PRIM-RECEIVER-ENUM-TAIL — プリミティブのレシーバが compound を返す呼び出し (`a.cmp(b)`) を関数末尾 / 枝の値 / compound の slot に置ける**
@@ -1202,13 +1203,6 @@
   コード生成が決定的である必要がある — `compiler/tests/reproducible_build.rs` が pin)。
 
 ### 既知の不具合
-
-- **GENERIC-REF-PARAM-PRIM: generic な method の `&T` 引数がプリミティブの `T` で誤答** ★★ —
-  `impl<T: Ord> W<T> { fn below(&self, x: &T) -> bool { val e: T = p.get(0u64)  e.lt(x) } }`
-  を `W<i64>` で呼ぶと IR VM は逆の答え、AOT は落ちる (2026-10-12 時点の
-  master でも再現)。`Ptr` から読んだ要素と `&T` の組み合わせで起きる
-  (要素が値渡しの引数なら正しい)。`Vec::binary_search` はこのため
-  `x: T` で受ける。
 
 - **CACHE-DIR-RACE: schema を上げた直後の `toy test` が
   「failed to save module cache」を出す** ★ — `.toycache/<2桁>/` を

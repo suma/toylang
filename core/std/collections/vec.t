@@ -587,12 +587,8 @@ impl<T: Ord> Vec<T> {
     # bound from `get` would carry drop glue and free an owning
     # element's resource while the vector still holds it.
     #
-    # `x` is taken by value, as `contains` / `index_of` take theirs. An
-    # owning key (`String`) is **moved in** and freed by the search --
-    # pass `k.clone()` to keep `k`. (Not `&T`: a generic method's `&T`
-    # parameter answers wrongly for a primitive `T` read off a `Ptr`,
-    # GENERIC-REF-PARAM-PRIM in `design-docs/todo.md`.)
-    fn binary_search(&self, x: T) -> Result<u64, u64> {
+    # `x` is borrowed, as in Rust: the caller keeps an owning key.
+    fn binary_search(&self, x: &T) -> Result<u64, u64> {
         val p: Ptr<T> = Ptr { addr: self.data }
         var lo: u64 = 0u64
         var hi: u64 = self.len

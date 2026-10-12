@@ -109,7 +109,8 @@ fn clamp_refuses_reversed_bounds() {
 }
 
 /// `binary_search` finds a present key (`Ok`) and the insertion point
-/// of a missing one (`Err`), over primitives and over `String`.
+/// of a missing one (`Err`), over primitives and over `String`. The key
+/// is borrowed, so the caller still has `k`.
 #[test]
 fn binary_search_reports_the_position() {
     let src = r#"
@@ -125,28 +126,29 @@ fn binary_search_reports_the_position() {
             v.push(3i64)
             v.push(5i64)
             v.push(7i64)
-            val a = v.binary_search(5i64)
+            val a = v.binary_search(&5i64)
             println(show(a))
-            val b = v.binary_search(0i64)
+            val b = v.binary_search(&0i64)
             println(show(b))
-            val c = v.binary_search(8i64)
+            val c = v.binary_search(&8i64)
             println(show(c))
-            val d = v.binary_search(4i64)
+            val d = v.binary_search(&4i64)
             println(show(d))
             var s: Vec<String> = Vec::new()
             s.push(String::from_str("apple"))
             s.push(String::from_str("fig"))
             s.push(String::from_str("pear"))
             val k = String::from_str("fig")
-            val e = s.binary_search(k)
+            val e = s.binary_search(&k)
             println(show(e))
+            println(k)
             val none: Vec<u64> = Vec::new()
-            val f = none.binary_search(3u64)
+            val f = none.binary_search(&3u64)
             println(show(f))
             0u64
         }
     "#;
-    assert_renders(src, "ord_cmp_binary_search", "Ok(2)\nErr(0)\nErr(4)\nErr(2)\nOk(1)\nErr(0)\n");
+    assert_renders(src, "ord_cmp_binary_search", "Ok(2)\nErr(0)\nErr(4)\nErr(2)\nOk(1)\nfig\nErr(0)\n");
     if skip_e2e() {
         return;
     }
@@ -197,4 +199,34 @@ fn cmp_on_a_primitive_in_tail_position() {
         }
     "#;
     assert_renders(src, "ord_cmp_prim_tail", "Less\nEqual\nGreater\nGreater\n");
+}
+
+/// GENERIC-REF-PARAM-PRIM: a generic method's `&T` parameter takes an
+/// address when `T` is a scalar. The pointee was decided on the
+/// template, where `&T` is no scalar reference, so the call passed the
+/// value 9 where the body read through an address: the IR VM answered
+/// from address 9 (false, false) and AOT crashed.
+#[test]
+fn a_generic_methods_ref_parameter_of_a_scalar() {
+    let src = r#"
+        struct W<T> { data: ptr }
+        impl<T: Ord> W<T> {
+            fn below(&self, x: &T) -> bool {
+                val p: Ptr<T> = Ptr { addr: self.data }
+                val e: T = p.get(0u64)
+                e.lt(x)
+            }
+        }
+        fn main() -> u64 {
+            val p: Ptr<i64> = Ptr::alloc(1u64)
+            p.set(0u64, 5i64)
+            val w: W<i64> = W { data: p.as_raw() }
+            val k = 1i64
+            var bits = 0u64
+            if w.below(&9i64) { bits = bits + 1u64 }
+            if w.below(&k) { bits = bits + 2u64 }
+            bits
+        }
+    "#;
+    assert_consistent(src, "ord_cmp_generic_ref_param");
 }

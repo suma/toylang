@@ -82,8 +82,8 @@ fn main() -> u64 {
 
     # A sorted vector answers `binary_search` in O(log n).
     v.sort()
-    val hit = v.binary_search(5u64)
-    val miss = v.binary_search(6u64)
+    val hit = v.binary_search(&5u64)
+    val miss = v.binary_search(&6u64)
     val hit_at = match hit {
         Result::Ok(i) => i,
         Result::Err(_) => 99u64,

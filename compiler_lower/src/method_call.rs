@@ -412,6 +412,38 @@ impl<'a> FunctionLower<'a> {
             // becoming an address, so there is nothing to resolve.
             None,
         );
+        // GENERIC-REF-PARAM-PRIM: a `&T` parameter whose `T` resolves
+        // to a scalar takes an address, which only the substituted
+        // type can say (the same fix `instantiate_generic_function`
+        // has). Decided on the template, `&T` was "not a scalar
+        // reference", so `w.below(&9i64)` passed the value 9 where the
+        // body -- and `lt` after it -- read through an address: the IR
+        // VM answered from address 9 and AOT crashed.
+        let ref_pointees: Vec<Option<Type>> = template
+            .parameter
+            .iter()
+            .map(|(_, t)| match t {
+                TypeDecl::Ref { inner, .. } => match inner.as_ref() {
+                    TypeDecl::Generic(g) | TypeDecl::Identifier(g) if subst.contains_key(g) => subst
+                        .get(g)
+                        .copied()
+                        .filter(|ty| crate::templates::is_scalar_pointee(*ty)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        {
+            let f = self.module.function_mut(func_id);
+            let offset = f.param_ref_pointee.len().saturating_sub(ref_pointees.len());
+            for (i, p) in ref_pointees.into_iter().enumerate() {
+                if p.is_some()
+                    && let Some(slot) = f.param_ref_pointee.get_mut(offset + i)
+                {
+                    *slot = p;
+                }
+            }
+        }
         self.method_instances
             .insert((target_sym, method_sym, inst_args), func_id);
         // TEST-PERF: queued body-bearing instance — not plain work.

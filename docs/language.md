@@ -1784,10 +1784,10 @@ remain for existing callers. Both arguments are taken by value; for an
 owning `T` such as `String`, the ones not returned are freed by the
 call.
 
-**`Vec<T: Ord>::binary_search(x: T) -> Result<u64, u64>`** searches a
+**`Vec<T: Ord>::binary_search(x: &T) -> Result<u64, u64>`** searches a
 vector sorted ascending: `Ok(i)` when an element equal to `x` is at
-`i`, `Err(i)` with the insertion point otherwise. An owning key is
-moved in (pass `k.clone()` to keep it).
+`i`, `Err(i)` with the insertion point otherwise. The key is borrowed
+(`v.binary_search(&k)`), so an owning key stays with the caller.
 
 ### `Dict<K, V>` (stdlib)
 

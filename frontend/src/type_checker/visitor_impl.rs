@@ -97,7 +97,7 @@ impl AcceptableDecl for Stmt {
     fn accept_decl(&mut self, visitor: &mut dyn DeclVisitor) -> Result<TypeDecl, TypeCheckError> {
         match self {
             Stmt::StructDecl { name, generic_params, generic_bounds, fields, visibility } => visitor.visit_struct_decl(*name, generic_params, generic_bounds, fields, visibility),
-            Stmt::ImplBlock { target_type, target_type_args, methods, trait_name, trait_type_args } => visitor.visit_impl_block_with_trait_args(*target_type, target_type_args, methods, *trait_name, trait_type_args),
+            Stmt::ImplBlock { target_type, target_type_args, methods, trait_name, trait_type_args, .. } => visitor.visit_impl_block_with_trait_args(*target_type, target_type_args, methods, *trait_name, trait_type_args),
             Stmt::EnumDecl { name, generic_params, variants, visibility } => visitor.visit_enum_decl(*name, generic_params, variants, visibility),
             Stmt::TraitDecl { name, generic_params, methods, visibility } => visitor.visit_trait_decl_with_generics(*name, generic_params, methods, visibility),
             // Non-declaration statements are no-ops at the declaration level.

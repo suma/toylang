@@ -183,3 +183,7 @@ impl<T> Iterator<T> for SoaVecIter<T> {
     }
 }
 
+# `min` / `max` / `sum` (STDLIB-ITER-TERMINAL, `core/std/iter.t`).
+impl<T: Ord> OrdIterator<T> for SoaVecIter<T> {}
+impl<T: Add + Default> SumIterator<T> for SoaVecIter<T> {}
+

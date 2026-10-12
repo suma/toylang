@@ -268,3 +268,7 @@ impl<T> Iterator<T> for SetIter<T> {
     }
 }
 
+# `min` / `max` / `sum` (STDLIB-ITER-TERMINAL, `core/std/iter.t`).
+impl<T: Ord> OrdIterator<T> for SetIter<T> {}
+impl<T: Add + Default> SumIterator<T> for SetIter<T> {}
+

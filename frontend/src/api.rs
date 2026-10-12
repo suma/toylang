@@ -236,8 +236,9 @@ pub fn items(file: &File, interner: &DefaultStringInterner, source: Option<&str>
                 let mut members = Vec::new();
                 for m in methods {
                     let signature = format!(
-                        "fn {}({}){}",
+                        "fn {}{}({}){}",
                         r.sym(m.name),
+                        r.generics(&m.generic_params, &m.generic_bounds),
                         r.params(m.has_self_param, m.self_is_mut, &m.parameter),
                         r.ret(&m.return_type)
                     );
@@ -260,7 +261,7 @@ pub fn items(file: &File, interner: &DefaultStringInterner, source: Option<&str>
                 it.members = members;
                 out.push(it);
             }
-            Stmt::ImplBlock { target_type, target_type_args, methods, trait_name, trait_type_args } => {
+            Stmt::ImplBlock { target_type, target_type_args, methods, trait_name, trait_type_args, .. } => {
                 let target = format!("{}{}", r.sym(*target_type), r.type_args(target_type_args));
                 let trait_text =
                     trait_name.map(|t| format!("{}{}", r.sym(t), r.type_args(trait_type_args)));

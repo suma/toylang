@@ -465,6 +465,10 @@ impl<K, V, U> Iterator<U> for DictMapIter<K, V, U> {
     }
 }
 
+# `min` / `max` / `sum` (STDLIB-ITER-TERMINAL, `core/std/iter.t`).
+impl<K, V, U: Ord> OrdIterator<U> for DictMapIter<K, V, U> {}
+impl<K, V, U: Add + Default> SumIterator<U> for DictMapIter<K, V, U> {}
+
 
 impl<K, V> DictIter<K, V> {
     fn map<U>(&self, f: fn (K, V) -> U) -> DictMapIter<K, V, U> {

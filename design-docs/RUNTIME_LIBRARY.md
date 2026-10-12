@@ -213,6 +213,13 @@ core/` で確認)。
 
 ### A. 反復子の終端操作 ★★ (純 toylang)
 
+> **✅ 2026-10-12 (STDLIB-ITER-TERMINAL)**: `fold` / `count` / `any` / `all` /
+> `position` / `find` / `last` / `nth` は `Iterator<T>` の default body、
+> `min` / `max` / `sum` は opt-in の `OrdIterator<T>` / `SumIterator<T>`
+> (`core/std/iter.t`)。下の表の中間アダプタ (`take` / `skip` / `rev` /
+> `chain` / `filter_map`) は未着手。経緯は `docs/language.md` の
+> Terminal operations と todo の TRAIT-DEFAULT-BODY-T / ITER-BOUND-INFERENCE。
+
 **`VecIter` / `DictIter` / `StringIter` に終端操作が 1 つも無い**
 (`collect` を除く)。`map` / `filter` / `enumerate` / `zip` という
 中間アダプタだけが在るので、**チェーンの最後で必ず `for` と `var` に
@@ -232,6 +239,12 @@ core/` で確認)。
 アダプタの追加を止めはしないが、テストは closure リテラル形で書く。
 
 ### B. 比較と順序 ★★ (純 toylang + 設計判断)
+
+> **✅ 2026-10-12 (STDLIB-ORD-CMP)**: `Ordering` を入れ、**必須は `lt` の
+> まま** `cmp` / `le` / `gt` / `ge` を default にした (既存の impl が全部
+> そのまま通る方)。汎用 `min` / `max` / `clamp` は `cmp.t` の自由関数、
+> `binary_search` は `impl<T: Ord> Vec<T>`。`math.t` の幅ごとの 30 本は
+> 呼び出し側のために残した。`Eq` trait は従来どおり入れない。
 
 | 無いもの | 何が困るか |
 |---|---|

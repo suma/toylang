@@ -10,6 +10,14 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-10-12
+
+- **STDLIB-ITER-TERMINAL — `Iterator<T>` の default body に `count` / `last` / `nth` / `fold` / `any` / `all` / `position` / `find`、opt-in の `OrdIterator` (`min` / `max`) と `SumIterator` (`sum`、`core/std/ops.t` の `Add`)、`Option::unwrap_or_default`**
+- **STDLIB-ORD-CMP — `enum Ordering`、`Ord` の default `cmp` / `le` / `gt` / `ge` (struct に `<=` / `>` / `>=` が付く)、汎用 `min` / `max` / `clamp`、`Vec::binary_search`**
+- **generic trait の default body — 継承したシグネチャを impl の型引数で言い直す / trait メソッド自身の型引数 (`fold<Acc>`) を捨てずに解析 / 空の impl の bound (`impl<T: Ord> X<T> {}`) を継承した本体に効かせる (`Stmt::ImplBlock` が自分の generics を持つ)**
+- **トレイト実装の登録を signature の事前パスへ — ユーザの impl の本体検査から stdlib の `u64: Default` が見えなかった**
+- **IR VM: compound の戻り値をアドレスを取られたローカルの heap cell に書く (`var best = it.next()` の後の `x.lt(b)` が古い値を読んでいた)**
+
 ### 2026-10-11
 
 - **RUNTIME-REFS-LAZY — ランタイム関数の import を呼ぶ分だけに。宣言は `codegen/runtime_syms.rs` の表 1 つ**
@@ -662,6 +670,14 @@
   従来どおり外側のスコープの終わりまで生き、tree-walker と順序が割れうる。
   直すなら「ブロックの末尾から外へ出る束縛」を move_check が移動として扱う。
 
+- **CALLEE-DROP-GENERIC の残り: 裸の `T` の引数** ★ — `fn max<T: Ord>(a: T, b: T)`
+  の probe は `T` を所有型と見ないので候補にしない。`max(s1, s2)` に `String` を
+  渡すと返さなかった方が漏れる (二重解放はしない、2026-10-12 の `cmp::min` /
+  `max` / `clamp` で確認)。同じ理由で generic な本体は裸の `T` の引数を
+  メソッドの引数に渡すと貸し出しにならず (`e.lt(x)` の `x`)、
+  `Vec::binary_search(k)` は所有型の鍵を受け取って解放する (呼び出し側は
+  `k.clone()` を渡す)。
+
 - **CALLEE-DROP-GENERIC の残り: 要素に触れる generic な受け手** ★ —
   generic な受け手が値渡しの引数を drop するのは、本体での出現がすべて
   「丸ごと手渡す / 貸す / `&self` の method でスカラーを読む」ときだけ
@@ -719,7 +735,13 @@
   - **A4: associated types (`trait Iterator { type Item }`)** — 中〜大。
   - **A5-P3-interp: interpreter 側 JIT の `dyn Trait`** ★ — `ScalarTy::from_type_decl` が `TypeDecl::Dyn` で `None` を返し silent fallback。correctness 問題はなく、compiler 側 JIT が実用的な高速化を担うので優先度は低い。
   - **A5-P4: `Box<dyn Trait>`** — owned trait object + `Vec<Box<dyn Trait>>`。`Box<T>` 自体は `core/std/box.t` にある (`Box<dyn G>` への coercion が無い)。
-  - **A5 残作業** — `&dyn Trait` の return / struct field 位置 (REF-Stage-2 の escape rule が阻む)、`dyn A + B`、`dyn Iterator<T>`、generic trait の default body 内での `T` 参照。
+  - **A5 残作業** — `&dyn Trait` の return / struct field 位置 (REF-Stage-2 の escape rule が阻む)、`dyn A + B`、`dyn Iterator<T>`。
+  - **TRAIT-DEFAULT-BODY-T: generic trait の default body の中で `T` を綴る** ★ —
+    シグネチャは impl の型引数で言い直す (2026-10-12) が、本体は全 impl で共有
+    していて書き換えないので、`val x: T` / `T::default()` は impl 側の同名の
+    `T` を指してしまう (`MapIter<T, U>` の要素は `U`)。直すなら継承のたびに
+    本体の木を複製して型を置換する。今の stdlib は本体で `T` を綴らない書き方
+    (`it.next()` から型を取る、`unwrap_or_default`) で回避している。
 
 - **CLOSURE-CAPTURE の残: E4 / E5** ★ — 設計は
   [`CLOSURE_CAPTURE.md`](CLOSURE_CAPTURE.md)。**E0〜E3 + E6 は landing 済み**
@@ -799,6 +821,25 @@
 
 > interpreter (tree-walker / IR VM) では動くが、compiled レーン (AOT / JIT) が断るか
 > 遅い形。interpreter 側 JIT の silent fallback もここ。
+
+- **PRIM-RECEIVER-ENUM-TAIL: プリミティブのレシーバが enum を返す呼び出しを末尾に置けない** ★ —
+  `fn f(a: i64, b: i64) -> Ordering { a.cmp(b) }` が compiled レーンで
+  「`cmp` is not a struct- or enum-receiver method returning a compound
+  value」(`compound_literal.rs`)。`val o = a.cmp(b)` と束縛すれば通る。
+  `prepare_compound_method_call` がレシーバを struct / enum の束縛に限って
+  いるため。`Ord::cmp` を override する impl が `self.x.cmp(other.x)` と
+  書くと踏む。
+
+- **GENERIC-INFER-STRUCT-LITERAL-ARG: 構造体リテラルの引数から型引数を推論しない** ★ —
+  `min(K { .. }, K { .. })` が compiled レーンで「cannot infer type arguments
+  for generic function `min`」(`call.rs::infer_generic_args_from_param`)。
+  `val` に束縛した名前なら通る。
+
+- **ITER-BOUND-INFERENCE: `I: Iterator<T>` の bound から `T` を推論しない** ★ —
+  `fn min_of<T: Ord, I: Iterator<T>>(it: I) -> Option<T>` に `v.iter()` を
+  渡すと `T` が決まらない (型検査も lowering も引数からしか推論しない)。
+  `I` の実型の `impl Iterator<X>` から `T = X` を引けば、イテレータを受ける
+  自由関数が書ける。今は `OrdIterator` のような opt-in trait で回避している。
 
 - **COMPOUND-CALL-EXPR-POS の残り** ★ — 関数の結果 / 引数 / 腕 / scrutinee / 読み出しの根
   (`mk().n`、`v.get(i).len()`) は通る (2026-10-11)。残りは compound そのものを
@@ -1179,6 +1220,13 @@
   コード生成が決定的である必要がある — `compiler/tests/reproducible_build.rs` が pin)。
 
 ### 既知の不具合
+
+- **GENERIC-REF-PARAM-PRIM: generic な method の `&T` 引数がプリミティブの `T` で誤答** ★★ —
+  `impl<T: Ord> W<T> { fn below(&self, x: &T) -> bool { val e: T = p.get(0u64)  e.lt(x) } }`
+  を `W<i64>` で呼ぶと IR VM は逆の答え、AOT は落ちる (2026-10-12 時点の
+  master でも再現)。`Ptr` から読んだ要素と `&T` の組み合わせで起きる
+  (要素が値渡しの引数なら正しい)。`Vec::binary_search` はこのため
+  `x: T` で受ける。
 
 - **CACHE-DIR-RACE: schema を上げた直後の `toy test` が
   「failed to save module cache」を出す** ★ — `.toycache/<2桁>/` を

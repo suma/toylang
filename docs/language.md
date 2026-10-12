@@ -1745,6 +1745,54 @@ at the call site, like any other unsatisfied bound (see
         expected Ord, got P (struct `P` does not implement trait `Ord`)
 ```
 
+#### `Ordering` and the derived methods (STDLIB-ORD-CMP)
+
+`lt` is the only method an `impl Ord` has to write. The trait derives
+the rest from it as default bodies:
+
+| Method | Default body |
+|---|---|
+| `cmp(&self, other: &Self) -> Ordering` | `Less` if `self.lt(other)`, `Greater` if `other.lt(self)`, else `Equal` |
+| `le` / `gt` / `ge` | `!other.lt(self)` / `other.lt(self)` / `!self.lt(other)` |
+
+Since `le` / `gt` / `ge` are also the names the `<=` / `>` / `>=`
+overloads dispatch to, a struct with `impl Ord` gets those operators
+along with `<`. A type whose comparison is naturally three-valued
+overrides `cmp` (`str` does, with one extern call).
+
+`lt` stays the required method, rather than `cmp` as in Rust, so that
+every `impl Ord` written before `Ordering` existed still conforms.
+
+`enum Ordering { Less = -1, Equal = 0, Greater = 1 }` lives in
+`core/std/cmp.t`. `o as i64` is -1 / 0 / 1. Its methods are `==` /
+`!=` (through `eq`), `is_lt` / `is_le` / `is_gt` / `is_ge` / `is_eq` /
+`is_ne`, `reverse()`, and `then(next)` (lexicographic chaining —
+`next` is evaluated eagerly), and it prints as `Less` / `Equal` /
+`Greater`:
+
+```rust
+val o = 3u64.cmp(7u64)
+println(o)                                   # Less
+val by_name_then_age = a.name.cmp(b.name).then(a.age.cmp(b.age))
+```
+
+In the compiled lanes, bind a `cmp` on a primitive receiver with
+`val` before using it as a branch's value (`val o = a.cmp(b)`); the
+call directly in tail position is not lowered yet.
+
+**Generic `min` / `max` / `clamp`** (`core/std/cmp.t`) take any
+`T: Ord`: `min(a, b)` keeps `a` on a tie and `max(a, b)` keeps `b`, so
+together they always hand back both values. `clamp(x, lo, hi)` panics
+when `hi < lo`. The per-width `math::min_u8` ... `math::clamp_i64`
+remain for existing callers. Both arguments are taken by value; for an
+owning `T` such as `String`, the one not returned currently **leaks**
+(it is never freed twice).
+
+**`Vec<T: Ord>::binary_search(x: T) -> Result<u64, u64>`** searches a
+vector sorted ascending: `Ok(i)` when an element equal to `x` is at
+`i`, `Err(i)` with the insertion point otherwise. An owning key is
+moved in (pass `k.clone()` to keep it).
+
 ### `Dict<K, V>` (stdlib)
 
 `core/std/dict.t` provides `Dict<K, V>`, written in toylang on top of
@@ -2710,6 +2758,60 @@ Bind the struct first if you need one (`val it = MyIter { .. }`).
    parameter, and the iterator state is kept flat inside the adapter
    (no nested `DictIter`) with `count` packed into `index`'s high 32
    bits, staying within the 8-return register budget.
+
+   **Terminal operations** (STDLIB-ITER-TERMINAL, `core/std/iter.t`)
+   are default bodies of `trait Iterator<T>`, so every stdlib iterator
+   — and a user iterator that writes `impl Iterator<T> for ...` — has
+   them without writing them:
+
+   | Method | Answer |
+   |---|---|
+   | `count()` | elements left, `u64` |
+   | `last()` / `nth(n)` | `Option<T>` (`nth(0)` is the next one) |
+   | `fold(init, f)` | `f(...f(f(init, e0), e1)...)`; `f: fn (Acc, T) -> Acc` |
+   | `any(p)` / `all(p)` | `bool`; stop at the first deciding element. `all` of nothing is `true` |
+   | `position(p)` | `Option<u64>`, counted from where the iterator stands |
+   | `find(p)` | `Option<T>`, the first element `p` holds for |
+   | `min()` / `max()` | `Option<T>`; ties: `min` keeps the first, `max` the last (Rust's rule) |
+   | `sum()` | `T`; `T`'s zero for nothing. Integers wrap, as `+` does |
+
+   ```rust
+   val it = v.iter()
+   val n = it.count()
+   val total = v.iter().fold(0u64, fn(acc: u64, x: u64) -> u64 { acc + x })
+   val big = v.iter().any(fn(x: u64) -> bool { x > 100u64 })
+   val smallest = v.iter().min() ?? 0u64
+   ```
+
+   Each one takes the iterator **by value**, like `collect`, so the
+   caller's binding keeps its position. What `last` / `nth` / `find` /
+   `min` / `max` hand back is the element itself — the same alias
+   `next` returns — and binding it does not free it
+   (NEXT-ITEM-ALIAS).
+
+   `min` / `max` need `T: Ord` and `sum` needs `T: Add + Default`
+   (`Add` is in `core/std/ops.t`, implemented by every numeric
+   primitive). A default body on `Iterator<T>` cannot ask for a bound
+   on `T`, so they live on two traits of their own that an iterator
+   opts into with an empty impl, whose bound the inherited body is
+   checked under:
+
+   ```rust
+   impl OrdIterator<u64> for Countdown {}
+   impl SumIterator<u64> for Countdown {}
+   # the stdlib's own, in core/std/collections/vec.t:
+   # impl<T: Ord> OrdIterator<T> for VecIter<T> {}
+   ```
+
+   The stdlib iterators that yield a single value opt in (`Vec`'s,
+   `map` / `filter`, `Deque`, `Set`, `soa Vec`, `String`'s, the Dict
+   `map`); the tuple-yielding ones (`enumerate`, `zip`, `Dict::iter`)
+   do not. `min()` on an iterator of a type with no `Ord` is the
+   ordinary bound violation at the call site.
+
+   In the compiled lanes a closure can only take and return scalars,
+   so the closure-taking operations over `enumerate` / `zip` (tuple
+   elements) run on the interpreter only.
 
    `break` / `continue` / `return` inside the body propagate
    through the desugared `match` and `while` to the expected target
@@ -3693,13 +3795,24 @@ needs a separate dispatch path for defaults. The 3-way
 `assert_consistent` tests in `compiler/tests/consistency.rs`
 (`trait_default_body_*`) pin this contract.
 
+On a **generic trait** the inherited signature is restated in the
+impl's terms: `impl<T, U> Iterator<U> for MapIter<T, U>` inherits
+`fn find(self: Self, p: fn (U) -> bool) -> Option<U>` from the trait's
+`fn find(self: Self, p: fn (T) -> bool) -> Option<T>`. A trait method
+may have type parameters of its own (`fn fold<Acc>(...)`), and an
+impl's bounds apply to the bodies it inherits, so an empty
+`impl<T: Ord> OrdIterator<T> for VecIter<T> {}` makes `T: Ord` hold
+inside `OrdIterator`'s default bodies.
+
 Current limitations:
 
-- A default body on a generic trait (`trait Iterator<T> { fn count(self) -> u64 { ... } }`)
-  that references the trait's type parameter `T` is **not yet
-  supported**: substituting `T → <concrete>` at expansion time is
-  pending A2+. Defaults that do not reference `T` work even on
-  generic traits.
+- The **body** of a default is one body shared by every impl and is
+  not rewritten, so it must not spell the trait's type parameter
+  (`val x: T = ...`, `T::default()`): in an impl that names its
+  parameters differently, `T` would mean the impl's `T`. Take types
+  from the signature and from calls instead (`var best = it.next()`).
+- A method type parameter shares a namespace with the impl's, so
+  spell it so it cannot meet one (`Acc`, not `A`).
 - No `super` / `Trait::default_method` syntax for invoking the
   default from within an override.
 
@@ -5668,6 +5781,7 @@ o.unwrap()                                   # T  — panics on None
 o.expect("must be Some")                     # T  — panics with the literal message on None
 o.map(fn(x: u64) -> u64 { x + 1u64 })        # Option<U>
 o.unwrap_or_else(fn() -> u64 { 0u64 })       # T  — default computed lazily
+o.unwrap_or_default()                        # T  — payload or `T::default()` (needs `T: Default`)
 
 val r: Result<u64, str> = Result::Err("boom")
 
@@ -5960,11 +6074,13 @@ Method dispatch:
 
 | Trait | File | Method | Used by |
 |---|---|---|---|
-| `Ord` | `cmp.t` | `lt(self, other) -> bool` | `Vec::sort` |
+| `Ord` | `cmp.t` | `lt(self, other) -> bool` (`cmp` / `le` / `gt` / `ge` derived) | `Vec::sort`, `Vec::binary_search`, `min` / `max` / `clamp` |
 | `Hash` | `hash.t` | `hash(self) -> u64` | `Dict`, `Set` |
 | `Clone` | `clone.t` | `clone(&self) -> Self` | anything that must keep a value it also gives away |
-| `Default` | `default.t` | `default() -> Self` | `Vec::resize`, `Dict::get_or_default` |
-| `Iterator<T>` | `iter.t` | `next(&mut self) -> Option<T>` | every stdlib iterator; `for` loops |
+| `Default` | `default.t` | `default() -> Self` | `Vec::resize`, `Dict::get_or_default`, `Option::unwrap_or_default` |
+| `Add` | `ops.t` | `add(&self, other: &Self) -> Self` | `SumIterator::sum` |
+| `Iterator<T>` | `iter.t` | `next(&mut self) -> Option<T>` (terminal operations derived) | every stdlib iterator; `for` loops |
+| `OrdIterator<T>` / `SumIterator<T>` | `iter.t` | none (opt in with an empty impl) | `min` / `max` / `sum` on an iterator |
 
 `Clone` is part of the ownership model, not a convenience: `val b = a`
 on a compound is an *alias*, and putting `a` into a container moves it

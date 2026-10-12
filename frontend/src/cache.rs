@@ -32,7 +32,7 @@ use crate::ast::module_interface::ModuleInterface;
 ///
 /// Mismatched versions are treated as a cache miss by
 /// [`load_full_module`].
-pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 70;
+pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 71;
 // v2: `File` gained `id` (JIT cache key) and `tests` (LLM-LOOP P4).
 // v3: `BuiltinFunctionSymbols` interns the MEMORY_PROFILING M4 counter
 // names, shifting every later symbol id.
@@ -137,6 +137,9 @@ pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 70;
 //      bare call in a module's body can resolve to that module first.
 // v49: MODULE-SYSTEM P3 — `File::call_paths`, another new field.
 // v69: CONCURRENCY B — `File::spawn_blocks` / `File::spawn_captures`.
+// v71: STDLIB-ITER-TERMINAL — `Stmt::ImplBlock` gains the impl's own
+//      `generic_params` / `generic_bounds`, and a trait method's own
+//      type parameters (`fn fold<Acc>`) are parsed instead of skipped.
 // v48: CONCURRENCY A1 — `File::parallel_loops` (a new field on the
 //      cached `File`, so an older entry decodes to the wrong shape).
 // v47: ELEMENT-BORROW E1 — `BuiltinFunction::PtrRef` /

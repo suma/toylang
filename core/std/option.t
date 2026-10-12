@@ -77,3 +77,16 @@ impl<T> Option<T> {
         }
     }
 }
+
+# A block of its own so `Option<T>` does not require `T: Default`
+# everywhere -- the shape `Vec::resize` uses.
+impl<T: Default> Option<T> {
+    # The payload, or `T`'s zero when there is none. `SumIterator::sum`
+    # starts from this: the first element, or zero for an empty stream.
+    fn unwrap_or_default(self: Self) -> T {
+        match self {
+            Option::Some(v) => v,
+            Option::None => T::default(),
+        }
+    }
+}

@@ -139,6 +139,36 @@ impl<'a> TypeCheckerVisitor<'a> {
         )
     }
 
+    /// Record that `struct_symbol` implements `trait_symbol` with these
+    /// type args. Idempotent: the signature pre-pass
+    /// (`register_impl_block_methods`) and the conformance check both
+    /// call it for the same block.
+    pub fn record_trait_impl(
+        &mut self,
+        struct_symbol: DefaultSymbol,
+        trait_symbol: DefaultSymbol,
+        trait_type_args: &[TypeDecl],
+    ) {
+        self.context
+            .struct_trait_impls
+            .entry(struct_symbol)
+            .or_default()
+            .insert(trait_symbol);
+        // TRAIT-BOUND: record the concrete type args of this impl so
+        // call-site bound checks can distinguish `Iter<i64>` from
+        // `Iter<str>`. The args are stored verbatim: a generic impl
+        // (`impl<T> Iter<T> for Counter`) registers `[Generic(T)]`,
+        // which the bound check treats as a wildcard match.
+        let entries = self
+            .context
+            .trait_impl_type_args
+            .entry((struct_symbol, trait_symbol))
+            .or_default();
+        if !entries.iter().any(|e| e.as_slice() == trait_type_args) {
+            entries.push(trait_type_args.to_vec());
+        }
+    }
+
     /// ITER-PROTOCOL-TRAIT: generic-aware conformance check. Substitutes
     /// the trait's declared generic params with the impl site's
     /// `trait_type_args` (e.g. `impl Iterator<i64> for Counter`
@@ -337,21 +367,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
 
-        self.context
-            .struct_trait_impls
-            .entry(struct_symbol)
-            .or_default()
-            .insert(trait_symbol);
-        // TRAIT-BOUND: record the concrete type args of this impl so
-        // call-site bound checks can distinguish `Iter<i64>` from
-        // `Iter<str>`. The args are stored verbatim: a generic impl
-        // (`impl<T> Iter<T> for Counter`) registers `[Generic(T)]`,
-        // which the bound check treats as a wildcard match.
-        self.context
-            .trait_impl_type_args
-            .entry((struct_symbol, trait_symbol))
-            .or_default()
-            .push(trait_type_args.clone());
+        self.record_trait_impl(struct_symbol, trait_symbol, trait_type_args);
         match strengthened {
             Some(error) => Err(error),
             None => Ok(()),
@@ -397,18 +413,18 @@ pub fn expand_trait_defaults_in_pool(stmt_pool: &mut StmtPool) {
     // Pass 1: index trait default bodies by trait name.
     let mut defaults: rustc_hash::FxHashMap<
         DefaultSymbol,
-        Vec<TraitMethodSignature>,
+        (Vec<DefaultSymbol>, Vec<TraitMethodSignature>),
     > = rustc_hash::FxHashMap::default();
     for index in 0..stmt_pool.len() {
         let stmt_ref = StmtRef(index as u32);
-        if let Some(Stmt::TraitDecl { name, methods, .. }) = stmt_pool.get(&stmt_ref) {
+        if let Some(Stmt::TraitDecl { name, methods, generic_params, .. }) = stmt_pool.get(&stmt_ref) {
             let with_body: Vec<TraitMethodSignature> = methods
                 .iter()
                 .filter(|sig| sig.body.is_some())
                 .cloned()
                 .collect();
             if !with_body.is_empty() {
-                defaults.insert(name, with_body);
+                defaults.insert(name, (generic_params, with_body));
             }
         }
     }
@@ -423,20 +439,37 @@ pub fn expand_trait_defaults_in_pool(stmt_pool: &mut StmtPool) {
             Some(s) => s,
             None => continue,
         };
-        let (target_type, target_type_args, methods, trait_name, trait_type_args) = match stmt {
+        let (target_type, target_type_args, methods, trait_name, trait_type_args, generic_params, generic_bounds) = match stmt {
             Stmt::ImplBlock {
                 target_type,
                 target_type_args,
                 methods,
                 trait_name: Some(t),
                 trait_type_args,
-            } => (target_type, target_type_args, methods, t, trait_type_args),
+                generic_params,
+                generic_bounds,
+            } => (target_type, target_type_args, methods, t, trait_type_args, generic_params, generic_bounds),
             _ => continue,
         };
-        let trait_defaults = match defaults.get(&trait_name) {
+        let (trait_generic_params, trait_defaults) = match defaults.get(&trait_name) {
             Some(v) => v,
             None => continue,
         };
+        // A default body of a generic trait is written against the
+        // trait's own parameters (`T` in `trait Iterator<T>`), but it
+        // is installed on an impl that names them differently
+        // (`impl<A, B> Iterator<(A, B)> for ZipIter<A, B>`). The
+        // signature is what callers and the compiled lanes read, so it
+        // is restated in the impl's terms. The body is shared between
+        // impls and is not rewritten -- it must not spell the trait's
+        // parameters itself (see `core/std/iter.t`).
+        let mut subst: rustc_hash::FxHashMap<DefaultSymbol, TypeDecl> =
+            rustc_hash::FxHashMap::default();
+        if trait_generic_params.len() == trait_type_args.len() {
+            for (p, a) in trait_generic_params.iter().zip(trait_type_args.iter()) {
+                subst.insert(*p, a.clone());
+            }
+        }
         // Append a synthesized MethodFunction for each default the
         // impl omitted. User methods stay first so registration
         // order is preserved (defaults that call user methods via
@@ -447,7 +480,13 @@ pub fn expand_trait_defaults_in_pool(stmt_pool: &mut StmtPool) {
                 continue;
             }
             let body = sig.body.expect("filtered by Pass 1");
-            new_methods.push(synthesize_default_method(sig, body));
+            new_methods.push(synthesize_default_method(
+                sig,
+                body,
+                &subst,
+                &generic_params,
+                &generic_bounds,
+            ));
         }
         if new_methods.len() == methods.len() {
             continue;
@@ -460,6 +499,8 @@ pub fn expand_trait_defaults_in_pool(stmt_pool: &mut StmtPool) {
                 methods: new_methods,
                 trait_name: Some(trait_name),
                 trait_type_args,
+                generic_params,
+                generic_bounds,
             },
         );
     }
@@ -521,6 +562,8 @@ fn inherit_trait_contracts(stmt_pool: &mut StmtPool) {
             methods,
             trait_name: Some(trait_name),
             trait_type_args,
+            generic_params,
+            generic_bounds,
         }) = stmt_pool.get(&stmt_ref)
         else {
             continue;
@@ -555,6 +598,8 @@ fn inherit_trait_contracts(stmt_pool: &mut StmtPool) {
                 methods: new_methods,
                 trait_name: Some(trait_name),
                 trait_type_args,
+                generic_params,
+                generic_bounds,
             },
         );
     }
@@ -619,14 +664,37 @@ fn parameter_names_match(sig: &TraitMethodSignature, method: &MethodFunction) ->
 /// borrowed verbatim from the trait declaration; `Self` and `self`
 /// resolution happens later when the body is type-checked inside the
 /// impl block's `current_impl_target` scope.
-fn synthesize_default_method(sig: &TraitMethodSignature, body: StmtRef) -> Rc<MethodFunction> {
+fn synthesize_default_method(
+    sig: &TraitMethodSignature,
+    body: StmtRef,
+    subst: &rustc_hash::FxHashMap<DefaultSymbol, TypeDecl>,
+    impl_generic_params: &[DefaultSymbol],
+    impl_generic_bounds: &rustc_hash::FxHashMap<DefaultSymbol, TypeDecl>,
+) -> Rc<MethodFunction> {
+    // Same layering the parser gives a written method: the impl's
+    // parameters first, then the method's own, and a method-level
+    // bound wins over an impl-level one of the same name.
+    let mut generic_params: Vec<DefaultSymbol> = impl_generic_params.to_vec();
+    for p in &sig.generic_params {
+        if !generic_params.contains(p) {
+            generic_params.push(*p);
+        }
+    }
+    let mut generic_bounds = impl_generic_bounds.clone();
+    for (k, v) in &sig.generic_bounds {
+        generic_bounds.insert(*k, v.clone());
+    }
     Rc::new(MethodFunction {
         node: sig.node.clone(),
         name: sig.name,
-        generic_params: sig.generic_params.clone(),
-        generic_bounds: sig.generic_bounds.clone(),
-        parameter: sig.parameter.clone(),
-        return_type: sig.return_type.clone(),
+        generic_params,
+        generic_bounds,
+        parameter: sig
+            .parameter
+            .iter()
+            .map(|(n, t)| (*n, substitute_generics(t, subst)))
+            .collect(),
+        return_type: sig.return_type.as_ref().map(|t| substitute_generics(t, subst)),
         requires: sig.requires.clone(),
         ensures: sig.ensures.clone(),
         // POINTER P6: the default body is the signature's body, so it

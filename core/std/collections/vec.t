@@ -575,6 +575,42 @@ impl<T: Ord> Vec<T> {
             i = i + 1u64
         }
     }
+
+    # Search a vector sorted ascending (`sort`) for `x` (STDLIB-ORD-CMP).
+    # `Ok(i)` when `self[i]` compares equal to `x` -- any one of them if
+    # there are several; `Err(i)` when there is none, `i` being where
+    # `x` would go to keep the order (`insert(i, x)`). O(log n)
+    # comparisons. On an unsorted vector the answer is unspecified, as
+    # in Rust.
+    #
+    # The element is read straight off the buffer, as in `sort`: a local
+    # bound from `get` would carry drop glue and free an owning
+    # element's resource while the vector still holds it.
+    #
+    # `x` is taken by value, as `contains` / `index_of` take theirs. An
+    # owning key (`String`) is **moved in** and freed by the search --
+    # pass `k.clone()` to keep `k`. (Not `&T`: a generic method's `&T`
+    # parameter answers wrongly for a primitive `T` read off a `Ptr`,
+    # GENERIC-REF-PARAM-PRIM in `design-docs/todo.md`.)
+    fn binary_search(&self, x: T) -> Result<u64, u64> {
+        val p: Ptr<T> = Ptr { addr: self.data }
+        var lo: u64 = 0u64
+        var hi: u64 = self.len
+        while lo < hi {
+            val mid: u64 = lo + (hi - lo) / 2u64
+            val e: T = p.get(mid)
+            # `x.gt(e)` is `e.lt(x)` unless the type overrides it (the
+            # `Ord` default), so this is the same two `lt`s `cmp` makes.
+            if x.lt(e) {
+                hi = mid
+            } elif x.gt(e) {
+                lo = mid + 1u64
+            } else {
+                return Result::Ok(mid)
+            }
+        }
+        Result::Err(lo)
+    }
 }
 
 # DROP-GLUE: the buffer dies with the binding. The element values
@@ -633,6 +669,10 @@ impl<T> Iterator<T> for VecIter<T> {
         }
     }
 }
+
+# `min` / `max` / `sum` (STDLIB-ITER-TERMINAL, `core/std/iter.t`).
+impl<T: Ord> OrdIterator<T> for VecIter<T> {}
+impl<T: Add + Default> SumIterator<T> for VecIter<T> {}
 
 
 # Concrete-args impl: byte-vector helpers live here because the
@@ -826,6 +866,10 @@ impl<T, U> Iterator<U> for MapIter<T, U> {
     }
 }
 
+# `min` / `max` / `sum` (STDLIB-ITER-TERMINAL, `core/std/iter.t`).
+impl<T, U: Ord> OrdIterator<U> for MapIter<T, U> {}
+impl<T, U: Add + Default> SumIterator<U> for MapIter<T, U> {}
+
 
 impl<T> VecIter<T> {
     # `it.map(f)` yields `f(x)` for each element `x`.
@@ -877,6 +921,10 @@ impl<T> Iterator<T> for FilterIter<T> {
         r
     }
 }
+
+# `min` / `max` / `sum` (STDLIB-ITER-TERMINAL, `core/std/iter.t`).
+impl<T: Ord> OrdIterator<T> for FilterIter<T> {}
+impl<T: Add + Default> SumIterator<T> for FilterIter<T> {}
 
 
 impl<T> VecIter<T> {

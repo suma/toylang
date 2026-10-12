@@ -124,7 +124,10 @@ fn rewrite_program(program: &mut File, aliases: &AliasMap) {
                 }
                 Stmt::EnumDecl { name, generic_params, variants, visibility }
             }
-            Stmt::ImplBlock { target_type, mut target_type_args, methods, trait_name, mut trait_type_args } => {
+            Stmt::ImplBlock { target_type, mut target_type_args, methods, trait_name, mut trait_type_args, generic_params, mut generic_bounds } => {
+                for bound in generic_bounds.values_mut() {
+                    *bound = resolve_in_type(aliases, bound);
+                }
                 for arg in target_type_args.iter_mut() {
                     *arg = resolve_in_type(aliases, arg);
                 }
@@ -151,6 +154,8 @@ fn rewrite_program(program: &mut File, aliases: &AliasMap) {
                     methods: new_methods,
                     trait_name,
                     trait_type_args,
+                    generic_params,
+                    generic_bounds,
                 }
             }
             Stmt::TraitDecl { name, generic_params, mut methods, visibility } => {

@@ -35,8 +35,128 @@
 #   comparison needs heap copies that the AOT backend cannot express
 #   in a generic context.
 
+# The answer of a three-way comparison (STDLIB-ORD-CMP). The variants
+# carry the numbers Rust and C's `memcmp` use, so `o as i64` is -1, 0
+# or 1 (ENUM-DISCRIMINANT).
+enum Ordering {
+    Less = -1,
+    Equal = 0,
+    Greater = 1,
+}
+
+impl Ordering {
+    # `==` / `!=` dispatch here (OP-OVERLOAD-ENUM).
+    fn eq(&self, other: &Self) -> bool {
+        (self as i64) == (other as i64)
+    }
+
+    fn is_lt(&self) -> bool { (self as i64) < 0i64 }
+    fn is_le(&self) -> bool { (self as i64) <= 0i64 }
+    fn is_gt(&self) -> bool { (self as i64) > 0i64 }
+    fn is_ge(&self) -> bool { (self as i64) >= 0i64 }
+    fn is_eq(&self) -> bool { (self as i64) == 0i64 }
+    fn is_ne(&self) -> bool { (self as i64) != 0i64 }
+
+    # `Less` <-> `Greater`; `Equal` stays. Sorting descending is
+    # comparing ascending and reversing the answer.
+    fn reverse(&self) -> Ordering {
+        match self {
+            Ordering::Less => Ordering::Greater,
+            Ordering::Equal => Ordering::Equal,
+            Ordering::Greater => Ordering::Less,
+        }
+    }
+
+    # Lexicographic chaining: `self` unless it is `Equal`, then `next`.
+    # `a.x.cmp(b.x).then(a.y.cmp(b.y))` orders by `x`, ties by `y`.
+    # `next` is evaluated eagerly -- there is no lazy form without a
+    # closure.
+    fn then(&self, next: Ordering) -> Ordering {
+        match self {
+            Ordering::Equal => next,
+            Ordering::Less => Ordering::Less,
+            Ordering::Greater => Ordering::Greater,
+        }
+    }
+}
+
+impl Display for Ordering {
+    fn to_str(&self) -> str {
+        match self {
+            Ordering::Less => "Less",
+            Ordering::Equal => "Equal",
+            Ordering::Greater => "Greater",
+        }
+    }
+}
+
+# `lt` is the one method an impl must write; the rest are derived from
+# it (STDLIB-ORD-CMP). Keeping `lt` as the required method -- rather
+# than `cmp`, as Rust does -- means every `impl Ord` written before
+# `Ordering` existed still conforms, and `lt` is also what the `<`
+# operator dispatches to. A type whose comparison is naturally
+# three-valued (`str`, below) overrides `cmp` so it is not computed
+# from two `lt` calls.
+#
+# The derived methods are also the operator names: a struct with
+# `impl Ord` gets `<=` / `>` / `>=` (`le` / `gt` / `ge`) along with `<`.
 trait Ord {
     fn lt(&self, other: &Self) -> bool
+
+    fn cmp(&self, other: &Self) -> Ordering {
+        if self.lt(other) {
+            Ordering::Less
+        } elif other.lt(self) {
+            Ordering::Greater
+        } else {
+            Ordering::Equal
+        }
+    }
+
+    fn le(&self, other: &Self) -> bool {
+        !other.lt(self)
+    }
+
+    fn gt(&self, other: &Self) -> bool {
+        other.lt(self)
+    }
+
+    fn ge(&self, other: &Self) -> bool {
+        !self.lt(other)
+    }
+}
+
+# Generic `min` / `max` / `clamp` over `Ord` (STDLIB-ORD-CMP). These are
+# what `math.t`'s per-width `min_u8` ... `clamp_i64` predate; those stay
+# so their callers need not change.
+#
+# Ties follow Rust: `min` returns the first argument, `max` the second,
+# so `min(a, b)` and `max(a, b)` together always hand back both values.
+#
+# Both arguments are taken by value. For an owning `T` (`String`) the
+# one not returned **leaks**: a generic body is not yet trusted to drop
+# a bare-`T` parameter (CALLEE-DROP-GENERIC in `design-docs/todo.md`),
+# so nobody frees it. It is a leak, never a double free. Compare through
+# `cmp` / `lt` and keep both when that matters.
+pub fn min<T: Ord>(a: T, b: T) -> T {
+    if b.lt(a) { b } else { a }
+}
+
+pub fn max<T: Ord>(a: T, b: T) -> T {
+    if b.lt(a) { a } else { b }
+}
+
+# `x` pulled into `[lo, hi]`. Panics when the bounds are the wrong way
+# round rather than quietly picking one (the `math::clamp_*` rule).
+pub fn clamp<T: Ord>(x: T, lo: T, hi: T) -> T {
+    assert(!hi.lt(lo), "clamp: the low bound is above the high one")
+    if x.lt(lo) {
+        lo
+    } elif hi.lt(x) {
+        hi
+    } else {
+        x
+    }
 }
 
 # Unsigned widths — native `<`.
@@ -105,7 +225,7 @@ impl Ord for bool {
 # a byte loop written here would allocate once per comparison and a
 # `Vec<str>::sort()` would allocate O(n log n) times.
 #
-# Three-valued underneath so a future `cmp` needs no second extern.
+# Three-valued underneath, so `cmp` needs no second extern.
 # **Not a collation** -- no locale, no case folding, no accents
 # (STDLIB_TEXT §4).
 extern fn __extern_str_cmp(a: str, b: str) -> i64 from "toylang_rt" as "toy_str_cmp"
@@ -113,5 +233,17 @@ extern fn __extern_str_cmp(a: str, b: str) -> i64 from "toylang_rt" as "toy_str_
 impl Ord for str {
     fn lt(&self, other: &Self) -> bool {
         __extern_str_cmp(self, other) < 0i64
+    }
+
+    # One extern call instead of the two `lt`s the default makes.
+    fn cmp(&self, other: &Self) -> Ordering {
+        val c: i64 = __extern_str_cmp(self, other)
+        if c < 0i64 {
+            Ordering::Less
+        } elif c > 0i64 {
+            Ordering::Greater
+        } else {
+            Ordering::Equal
+        }
     }
 }

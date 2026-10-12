@@ -711,6 +711,10 @@ impl Iterator<u8> for StringIter {
     }
 }
 
+# `min` / `max` / `sum` (STDLIB-ITER-TERMINAL, `core/std/iter.t`).
+impl OrdIterator<u8> for StringIter {}
+impl SumIterator<u8> for StringIter {}
+
 
 # ---------------------------------------------------------------------
 # Searching and building (STDLIB-TEXT §8).
@@ -1067,6 +1071,10 @@ impl Iterator<char> for CharsIter {
     }
 }
 
+# `min` / `max` / `sum` (STDLIB-ITER-TERMINAL, `core/std/iter.t`).
+impl OrdIterator<char> for CharsIter {}
+impl SumIterator<char> for CharsIter {}
+
 
 # Iterator adapters (STDLIB-ITER-ADAPT): `map` / `filter` /
 # `enumerate` / `collect` on a `StringIter` (one `u8` per byte).
@@ -1103,6 +1111,10 @@ impl<U> Iterator<U> for StringMapIter<U> {
         }
     }
 }
+
+# `min` / `max` / `sum` (STDLIB-ITER-TERMINAL, `core/std/iter.t`).
+impl<U: Ord> OrdIterator<U> for StringMapIter<U> {}
+impl<U: Add + Default> SumIterator<U> for StringMapIter<U> {}
 
 
 impl StringIter {
@@ -1154,6 +1166,10 @@ impl Iterator<u8> for StringFilterIter {
         r
     }
 }
+
+# `min` / `max` / `sum` (STDLIB-ITER-TERMINAL, `core/std/iter.t`).
+impl OrdIterator<u8> for StringFilterIter {}
+impl SumIterator<u8> for StringFilterIter {}
 
 
 impl StringIter {

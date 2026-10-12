@@ -430,8 +430,14 @@ fn process_impl_blocks_extracted(
     // while the same code in a free function could (free functions
     // are checked in a later pass, with everything already
     // registered). See `register_impl_block_methods`.
-    for (target_type, target_type_args, methods, _trait_name, _trait_type_args) in impl_blocks {
-        tc.register_impl_block_methods(*target_type, target_type_args, methods);
+    for (target_type, target_type_args, methods, trait_name, trait_type_args) in impl_blocks {
+        tc.register_impl_block_methods(
+            *target_type,
+            target_type_args,
+            methods,
+            *trait_name,
+            trait_type_args,
+        );
     }
 
     // Pass 2: check the bodies.
@@ -789,7 +795,7 @@ fn check_typing_collecting(
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
         if let Some(stmt) = program.statement.get(&stmt_ref) {
-            if let frontend::ast::Stmt::ImplBlock { target_type, target_type_args, methods, trait_name, trait_type_args } = &stmt {
+            if let frontend::ast::Stmt::ImplBlock { target_type, target_type_args, methods, trait_name, trait_type_args, .. } = &stmt {
                 impl_blocks.push((*target_type, target_type_args.clone(), methods.clone(), *trait_name, trait_type_args.clone()));
                 impl_locations.push(program.location_pool.get_stmt_location(&stmt_ref).copied());
             }

@@ -27,12 +27,26 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Re-registering is harmless — `register_struct_method` replaces
     /// a spec with matching type args rather than appending — so the
     /// registration the checking pass still does is a no-op repeat.
+    ///
+    /// A trait impl's *conformance* is recorded here too, for the same
+    /// reason. A bound check inside a body (`T: Default` on
+    /// `Option::unwrap_or_default`, reached from a user's
+    /// `impl SumIterator<u64>`) asks whether `u64` implements
+    /// `Default`, and the answer used to depend on whether
+    /// `core/std/default.t`'s block had been *checked* yet -- the user's
+    /// statements come first, so it had not. Whether the impl really
+    /// conforms is still decided when its block is checked.
     pub fn register_impl_block_methods(
         &mut self,
         target_type: DefaultSymbol,
         target_type_args: &[TypeDecl],
         methods: &[Rc<MethodFunction>],
+        trait_name: Option<DefaultSymbol>,
+        trait_type_args: &[TypeDecl],
     ) {
+        if let Some(trait_symbol) = trait_name {
+            self.record_trait_impl(target_type, trait_symbol, trait_type_args);
+        }
         for method in methods {
             self.context.register_struct_method(
                 target_type,

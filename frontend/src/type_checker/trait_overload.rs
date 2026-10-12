@@ -185,6 +185,8 @@ pub fn mangle_overloaded_trait_impls(
             methods,
             trait_name,
             trait_type_args,
+            generic_params,
+            generic_bounds,
         }) = stmt_pool.get(&stmt_ref)
         else {
             continue;
@@ -204,6 +206,8 @@ pub fn mangle_overloaded_trait_impls(
                 methods,
                 trait_name,
                 trait_type_args,
+                generic_params,
+                generic_bounds,
             },
         );
     }

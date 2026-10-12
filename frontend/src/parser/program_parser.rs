@@ -1189,6 +1189,8 @@ impl<'a> Parser<'a> {
                     methods,
                     trait_name,
                     trait_type_args,
+                    generic_params,
+                    generic_bounds,
                     Some(location),
                 );
             }

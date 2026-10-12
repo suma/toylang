@@ -92,3 +92,5 @@ mod name_resolution;
 mod loop_values;
 mod struct_sugar;
 mod next_item_alias;
+mod iter_terminal;
+mod ord_cmp;

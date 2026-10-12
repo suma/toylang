@@ -255,11 +255,9 @@ pub fn midpoint_u64(a: u64, b: u64) -> u64 {
 # ---------------------------------------------------------------------
 # `min` / `max` / `clamp` (STDLIB-NUMERIC N3).
 #
-# Free functions per width rather than methods on `Ord`, because a
-# trait method returning `Self` could not be called through a bound
-# until STDLIB-TRAIT-BASE B1 -- that hole is closed now, so these can
-# move onto `Ord` as default bodies. When they do, **these stay**: the
-# call sites should not have to change.
+# Free functions per width. The generic `min` / `max` / `clamp` over
+# `Ord` (`core/std/cmp.t`, STDLIB-ORD-CMP) cover every width at once;
+# **these stay** so their call sites need not change.
 #
 # `clamp` panics when the bounds are the wrong way round, rather than
 # quietly picking one.

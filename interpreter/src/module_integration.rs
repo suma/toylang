@@ -741,7 +741,7 @@ impl<'a> AstIntegrationContext<'a> {
                     visibility: *visibility,
                 })
             }
-            Stmt::ImplBlock { target_type, target_type_args, methods, trait_name, trait_type_args } => {
+            Stmt::ImplBlock { target_type, target_type_args, methods, trait_name, trait_type_args, generic_params, generic_bounds } => {
                 // Remap target / trait symbols and each method body
                 // through the module's interner. Without the symbol
                 // remap, `target_type` and `trait_name` would still
@@ -784,6 +784,8 @@ impl<'a> AstIntegrationContext<'a> {
                     methods: new_methods,
                     trait_name: new_trait,
                     trait_type_args: new_trait_type_args,
+                    generic_params: self.remap_symbols(generic_params)?,
+                    generic_bounds: self.remap_generic_bounds(generic_bounds)?,
                 })
             }
             Stmt::EnumDecl { name, generic_params, variants, visibility } => {

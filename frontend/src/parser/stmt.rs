@@ -7,28 +7,6 @@ use super::core::Parser;
 use crate::parser::error::{ParserResult, ParserError};
 use string_interner::DefaultSymbol;
 
-/// Skip tokens until matching '>' is found (for generic argument parsing)
-fn skip_until_matching_gt(parser: &mut Parser) {
-    let mut depth = 1;
-    parser.next(); // Skip the initial '<'
-    
-    while let Some(token) = parser.peek() {
-        match token {
-            Kind::LT => depth += 1,
-            Kind::GT => {
-                depth -= 1;
-                if depth == 0 {
-                    parser.next(); // Consume the matching '>'
-                    break;
-                }
-            }
-            Kind::EOF => break,
-            _ => {}
-        }
-        parser.next();
-    }
-}
-
 impl<'a> Parser<'a> {
     pub fn parse_stmt(&mut self) -> ParserResult<StmtRef> {
         parse_stmt(self)
@@ -1244,12 +1222,21 @@ pub fn parse_trait_method_signatures_with_generics(
                         return Err(ParserError::generic_error(location, "expected method name in trait body".to_string()));
                     }
                 };
-                // Per-method generics are accepted but dropped for now.
-                if parser.peek() == Some(&Kind::LT) {
-                    skip_until_matching_gt(parser);
-                }
+                // A method's own type parameters (`fn fold<Acc>(..)`),
+                // parsed the way an impl method's are. They used to be
+                // skipped, which left `Acc` a bare identifier the
+                // compiled lanes could not lower once a default body
+                // using it was inherited (STDLIB-ITER-TERMINAL).
+                let (method_only_params, method_only_bounds) = if parser.peek() == Some(&Kind::LT) {
+                    parser.parse_generic_params()?
+                } else {
+                    (Vec::new(), rustc_hash::FxHashMap::default())
+                };
+                let mut combined_generic_params: Vec<string_interner::DefaultSymbol> =
+                    trait_generic_params.to_vec();
+                combined_generic_params.extend(method_only_params.iter().copied());
                 parser.expect_err(&Kind::ParenOpen)?;
-                let (params, has_self, self_is_mut) = parse_method_param_list_with_generic_context(parser, vec![], trait_generic_params)?;
+                let (params, has_self, self_is_mut) = parse_method_param_list_with_generic_context(parser, vec![], &combined_generic_params)?;
                 parser.expect_err(&Kind::ParenClose)?;
 
                 let mut ret_ty: Option<TypeDecl> = None;
@@ -1259,7 +1246,7 @@ pub fn parse_trait_method_signatures_with_generics(
                     // params so `Option<T>` resolves `T` as a generic
                     // marker, not as an undeclared type name.
                     let gen_set: rustc_hash::FxHashSet<string_interner::DefaultSymbol> =
-                        trait_generic_params.iter().copied().collect();
+                        combined_generic_params.iter().copied().collect();
                     ret_ty = Some(parser.parse_type_declaration_with_generic_context(&gen_set)?);
                 }
 
@@ -1287,8 +1274,8 @@ pub fn parse_trait_method_signatures_with_generics(
                     module_path: None,
                     node: Node::new(fn_start_pos, fn_end_pos),
                     name: method_name,
-                    generic_params: vec![],
-                    generic_bounds: rustc_hash::FxHashMap::default(),
+                    generic_params: method_only_params,
+                    generic_bounds: method_only_bounds,
                     parameter: params,
                     return_type: ret_ty,
                     requires: clauses.requires,

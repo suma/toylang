@@ -220,6 +220,8 @@ impl AstBuilder {
         methods: Vec<Rc<MethodFunction>>,
         trait_name: Option<DefaultSymbol>,
         trait_type_args: Vec<crate::type_decl::TypeDecl>,
+        generic_params: Vec<DefaultSymbol>,
+        generic_bounds: rustc_hash::FxHashMap<DefaultSymbol, crate::type_decl::TypeDecl>,
         location: Option<SourceLocation>,
     ) -> StmtRef {
         let stmt_ref = self.stmt_pool.add(Stmt::ImplBlock {
@@ -227,6 +229,8 @@ impl AstBuilder {
             target_type_args,
             methods,
             trait_name,
+            generic_params,
+            generic_bounds,
             trait_type_args,
         });
         self.location_pool.add_stmt_location(location);

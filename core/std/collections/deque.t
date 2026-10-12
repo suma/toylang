@@ -182,3 +182,7 @@ impl<T> Iterator<T> for DequeIter<T> {
     }
 }
 
+# `min` / `max` / `sum` (STDLIB-ITER-TERMINAL, `core/std/iter.t`).
+impl<T: Ord> OrdIterator<T> for DequeIter<T> {}
+impl<T: Add + Default> SumIterator<T> for DequeIter<T> {}
+

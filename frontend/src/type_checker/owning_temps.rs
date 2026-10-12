@@ -561,7 +561,15 @@ fn produces_fresh_value(program: &File, interner: &DefaultStringInterner, expr: 
 /// iterator whose `next` makes a fresh value (`map`) therefore leaks
 /// it, which is the safe side.
 pub fn reads_a_kept_element(method: &str) -> bool {
-    matches!(method, "get" | "next" | "borrow" | "__getitem__")
+    // `find` / `last` / `nth` / `min` / `max` are the iterator terminal
+    // operations that hand back an element (`core/std/iter.t`): the same
+    // shallow copy `next` returns, so the same alias (STDLIB-ITER-TERMINAL).
+    // A user method of one of these names that returns a *new* owning
+    // value leaks rather than double-frees -- the side this rule errs on.
+    matches!(
+        method,
+        "get" | "next" | "borrow" | "__getitem__" | "find" | "last" | "nth" | "min" | "max"
+    )
 }
 
 /// A value that cannot point anywhere.

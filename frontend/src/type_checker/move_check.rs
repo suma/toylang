@@ -1623,13 +1623,24 @@ impl MoveCheck<'_> {
                         // lane.
                         self.transferred.insert(stmt_ref);
                         self.borrows.insert(*name);
-                    } else if self.is_owning(&ty) && self.reads_kept_element(*rhs) {
+                    } else if self.reads_kept_element(*rhs) {
                         // NEXT-ITEM-ALIAS: `val m = it.next()` names an
                         // element the container still owns (a shallow
                         // copy, like `get`, which `[E0028]` refuses
                         // instead -- `next` has no `borrow` to point
                         // at). The binding owns nothing, so it is not
                         // dropped and handing it on is no move.
+                        //
+                        // Whatever the static type says: a trait's
+                        // default body (`Iterator::last`'s `var last =
+                        // it.next()`) is one body shared by every impl,
+                        // so the type recorded for it is whichever impl
+                        // was checked last -- `Option<u8>` for a
+                        // `StringIter` -- while the tree-walker drops by
+                        // the value it holds at run time, a `String`, and
+                        // freed the element it was about to return
+                        // (STDLIB-ITER-TERMINAL). For a value that owns
+                        // nothing, not dropping it changes nothing.
                         self.transferred.insert(stmt_ref);
                     } else if self.is_owning(&ty) {
                         self.declare_owning(*name, stmt_ref, *rhs);

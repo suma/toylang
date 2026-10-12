@@ -86,6 +86,15 @@ pub enum Stmt {
         /// inherent `impl <Type>`. Trait conformance is recorded by the
         /// type-checker; runtime dispatch sees the methods either way.
         trait_name: Option<DefaultSymbol>,
+        /// The impl's own type parameters and bounds (`impl<T: Ord>`).
+        /// Each written method already carries them merged into its own
+        /// `generic_params` / `generic_bounds`; the block keeps them
+        /// too so a method the block *inherits* from a trait default
+        /// body is checked under the same bounds -- an empty
+        /// `impl<T: Ord> OrdIterator<T> for VecIter<T> {}` has no
+        /// written method to read them from.
+        generic_params: Vec<DefaultSymbol>,
+        generic_bounds: rustc_hash::FxHashMap<DefaultSymbol, TypeDecl>,
         /// ITER-PROTOCOL-TRAIT: concrete type arguments supplied to a
         /// **generic** trait at this impl site (e.g. `<i64>` in
         /// `impl Iterator<i64> for Counter`). Empty for non-generic

@@ -1085,7 +1085,10 @@ pub fn resolve_array_lengths(
                 }
                 Stmt::EnumDecl { name, generic_params, variants, visibility }
             }
-            Stmt::ImplBlock { target_type, mut target_type_args, methods, trait_name, mut trait_type_args } => {
+            Stmt::ImplBlock { target_type, mut target_type_args, methods, trait_name, mut trait_type_args, generic_params, mut generic_bounds } => {
+                for bound in generic_bounds.values_mut() {
+                    resolve_size_in_type(bound, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
+                }
                 for arg in target_type_args.iter_mut() {
                     resolve_size_in_type(arg, expression, location_pool, &const_values, interner, &const_fn_names, &mut errors);
                 }
@@ -1112,6 +1115,8 @@ pub fn resolve_array_lengths(
                     methods: new_methods,
                     trait_name,
                     trait_type_args,
+                    generic_params,
+                    generic_bounds,
                 }
             }
             Stmt::TraitDecl { name, generic_params, mut methods, visibility } => {

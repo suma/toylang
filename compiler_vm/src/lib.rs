@@ -374,13 +374,16 @@ impl<'a> Vm<'a> {
                         if let (Some(dest), Some(slot)) = (caller_dest, ret_slots.first()) {
                             self.write_value(dest, *slot);
                         }
-                        // Wire compound return into the caller's locals.
-                        if !caller_dests.is_empty() {
-                            let frame = self.frames.last_mut().expect("no active frame");
-                            for (i, dest) in caller_dests.iter().enumerate() {
-                                if let Some(slot) = ret_slots.get(i) {
-                                    frame.write_local(*dest, *slot);
-                                }
+                        // Wire compound return into the caller's locals,
+                        // through the cell-aware path: a destination
+                        // whose address the caller takes lives in its
+                        // heap cell, and a raw slot write would leave
+                        // `address_of` reading the previous value (a
+                        // `match` payload of `var best = it.next()`
+                        // borrowed by `x.lt(b)` saw the stale one).
+                        for (i, dest) in caller_dests.iter().enumerate() {
+                            if let Some(slot) = ret_slots.get(i) {
+                                self.write_local(*dest, *slot);
                             }
                         }
                     }

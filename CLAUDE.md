@@ -26,7 +26,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 構文・型・セマンティクスの**正本** | [`docs/language.md`](docs/language.md) |
 | `requires` / `ensures` の**書き方・検証・落とし穴** | [`docs/design_by_contract.md`](docs/design_by_contract.md) |
 | `Vec<T>` に契約を入れる案 (選択待ち) | [`design-docs/VEC_CONTRACTS.md`](design-docs/VEC_CONTRACTS.md) |
-| いつ何が landing したか / 未実装項目 | [`design-docs/todo.md`](design-docs/todo.md) |
+| いつ何が landing したか / 未実装項目 | [`design-docs/todo.md`](design-docs/todo.md) (2026-09-19 以前の完了は [`todo_done.md`](design-docs/todo_done.md)) |
 | 機能ごとの実装詳細・フェーズ履歴 | [`design-docs/FEATURE_NOTES.md`](design-docs/FEATURE_NOTES.md) |
 | LLM 向けの診断・テスト機能の設計 | [`design-docs/LLM_FEEDBACK_LOOP.md`](design-docs/LLM_FEEDBACK_LOOP.md) |
 | 診断・`toy` を LLM の道具として仕上げる第 2 ラウンド (related / edits / `toy query` / `toy fix`、landing 済み) | [`design-docs/LLM_TOOLING.md`](design-docs/LLM_TOOLING.md) |
@@ -381,7 +381,7 @@ mod foo_tests;
 ```
 
 を足す。この構成の理由と実測値は
-[`design-docs/todo.md`](design-docs/todo.md) の BUILD-PERF にある
+[`design-docs/todo_done.md`](design-docs/todo_done.md) の BUILD-PERF にある
 (テストバイナリ 73 本 → 12 本、クリーンビルド 37.5s → 23.7s)。
 interpreter のテストは共有ヘルパを `use crate::common::...` で参照する
 (以前の `mod common;` は suite.rs 側に 1 つだけある)。
@@ -830,7 +830,9 @@ fn main() -> u64 {
     git log のコミットメッセージに書く。ここを段落で埋めると、
     常時読まれるファイルが changelog になる (2026-08-10 に 90 KB →
     12 KB に圧縮した。それ以前は `todo.md` を読もうとして出力上限に
-    到達していた)
+    到達していた)。**直近 3〜4 週より前の完了は
+    `design-docs/todo_done.md` へ移す** (2026-10-12 に 102 KB → 65 KB。
+    1 行サマリでも溜まると同じことが起きる)
   - **未実装節に完了項目を残さない** — 完了済み節と二重になる
   - **機能一覧を再掲しない** — 言語仕様は `docs/language.md` が正本。
     再掲した節は実際に食い違った (`String` を alias と書き続けていた)
@@ -1062,7 +1064,7 @@ cargo nextest run -p interpreter proptest # 絞り込み
 
 テストの物理配置は 2026-08-19 に別の理由 (ビルド時間) で決着している。
 `tests/*.rs` は 1 クレート 1 バイナリに束ねてあり、経緯と実測値は
-[`design-docs/todo.md`](design-docs/todo.md) の BUILD-PERF にある。
+[`design-docs/todo_done.md`](design-docs/todo_done.md) の BUILD-PERF にある。
 新しいテストファイルの追加手順は上の「Testing」節を参照。
 
 ### 重要な原則

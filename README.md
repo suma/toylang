@@ -1,6 +1,9 @@
 # Programming Language Implementation in Rust
 
-A complete programming language implementation featuring a frontend library and tree-walking interpreter, built as a learning project to explore language design and implementation techniques.
+A statically typed language implemented in Rust — a frontend, a tree-walking
+oracle, an IR VM, a JIT, and an ahead-of-time compiler (Cranelift or LLVM) —
+with a standard library and a build tool written around it. It started as a
+learning project and now runs real programs (see [Project Status](#project-status)).
 
 > **For language syntax and semantics, see [`docs/language.md`](docs/language.md)** —
 > the consolidated reference. This README covers the project as a whole
@@ -49,7 +52,8 @@ is where most of the gaps in the language were found.
 - **Fixed Arrays**: `val arr: [i64; 5] = [1, 2, 3, 4, 5]` with type
   inference, and `[0u8; 64]` to repeat a literal
 - **Tuples**: `val (a, b) = (1u64, 2u64)` with destructuring (including nested patterns)
-- **Dictionary Type**: `dict{key1: value1, key2: value2}` with Object-keyable types
+- **Dictionaries**: `Dict<K, V>` in the standard library on every engine; the
+  `dict{key1: value1}` literal is interpreter-only
 - **Structures**: `struct Point { x: i64, y: i64 }` with method implementations,
   the field shorthand `Point { x, y }`, and destructuring
   `val Point { x, y: b, .. } = p`
@@ -93,8 +97,10 @@ is where most of the gaps in the language were found.
   resolved by matching the **end** of a path (`math::f` finds `std.math.f`)
 - **Qualified Identifiers**: Rust-style `module::function` syntax
 - **A standard library written in the language itself** (`core/std/`):
-  `String` / `Vec<T>` / `Box<T>` / `Dict<K, V>` / `Option` / `Result` /
-  `Span<T>` / `Ptr<T>`, files, sockets, a poller, JSON, hashes, time
+  `String` / `Vec<T>` / `Box<T>` / `Dict<K, V>` / `Set<T>` / `Option` / `Result` /
+  `Span<T>` / `Ptr<T>`, iterator adapters and terminal operations (`map` /
+  `filter` / `fold` / `min` / `sum`), `Ord` with `sort` / `binary_search`,
+  files, sockets, a poller, JSON, hashes, time
 
 ### Type System
 - **Context-based Type Inference**: Automatic type resolution based on usage context
@@ -884,23 +890,17 @@ fn main() -> u64 {
 
 ## Development Features
 
-### Comprehensive Testing
-- **Extensive Test Coverage**: All language features tested with edge cases including destruction system
-- **One test binary per crate**: `tests/suite.rs` gathers each crate's test files, run with `cargo nextest`; doc-tests separately with `cargo test --doc`
-- **Property-based Testing**: Automated testing of language invariants
-- **Performance Benchmarks**: Detailed performance analysis with Criterion
-- **Resource Management Tests**: Validation of automatic destruction and custom `drop` methods
-
-### Performance Optimizations
-- **Type Inference Caching**: Efficient memoization of type resolution
-- **Memory Pool Design**: Reduced allocation overhead for AST nodes
-- **Structured Error System**: Fast error categorization and reporting
-- **Conditional Debug Logging**: Zero-overhead resource tracking in production builds
-
-### Development Tools
-- **Rich Example Suite**: Multiple example programs demonstrating language features
-- **Detailed Error Messages**: Structured error reporting with context information
-- **Performance Profiling**: Built-in benchmarks for interpreter performance
+- **Consistency tests**: `compiler/tests/consistency/` runs a program on
+  every engine and pins the output; `example_consistency` does the same for
+  every program in `interpreter/example/` (~190)
+- **One test binary per crate**: `tests/suite.rs` gathers each crate's test
+  files, run with `cargo nextest`; doc-tests separately with `cargo test --doc`
+- **Property-based tests** of the frontend and of the language's invariants,
+  and `--check`, which turns a program's own contracts into property tests
+- **Heap checks**: `--heap-check=poison|reuse|report` stops at a use after
+  free, an access past a block's end, or a double free, on every engine
+- **Benchmarks**: Criterion benches in `interpreter/benches/`; the compile
+  phases are timed by `--profile=compile`
 
 ## Project Status
 
@@ -920,8 +920,9 @@ heavy ingest went from 24 ms to 2.5 ms
 What is missing is listed, not hidden:
 [`design-docs/todo.md`](design-docs/todo.md) has the unimplemented section
 and the known defects, each with what it costs and what it would take. The
-largest open items are trait inheritance and associated types, and the
-compiled engines' refusal of a compound-returning call outside a `val`.
+largest open items are trait inheritance and associated types, compound
+values captured by a closure on the compiled engines, and passing an array
+of structs to a function there.
 
 ## Technical Highlights
 
@@ -937,7 +938,6 @@ compiled engines' refusal of a compound-returning call outside a `val`.
   interesting ones are the consistency tests, which run a program on all
   four engines and compare — and pin the *output*, because four engines
   agreeing on a wrong answer is the failure mode that costs the most
-- **Debug-mode Logging**: Conditional compilation for zero-overhead production builds
 - **Diagnostics built for a reader** (and for a machine): every error has a
   code, a span, and `--explain` prose with a reproduction and a fix;
   `--format=json` puts the same thing on stderr as data. A diagnostic

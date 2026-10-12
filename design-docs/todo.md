@@ -13,6 +13,7 @@
 
 ### 2026-10-12
 
+- **TEST-NAME-COLLISION — モジュールの `test` が自分の本体を走らせる (各ファイルが `__test_0` から数えるので、エントリの同番のテストの本体を走らせ、その合否を報告していた)**
 - **COMPOUND-CALL-EXPR-POS — compiled レーンで compound の結果を連鎖・配列要素・フィールド・タプル要素・捨てる文・`match` の scrutinee に置ける。配列要素の compound なフィールド (`hs[i].e`) と enum を持つタプル (`(1u64, E::A(7i64))`) も**
 - **COMPOUND-TEMP-RECEIVER — 所有しない compound の一時値へのメソッド (`f().to_str()`) と `println(f())` が compiled レーンで通る**
 - **TRAIT-DEFAULT-BODY-T — generic trait の default body が `T` を書ける (書いた本体は impl ごとに複製して型を言い直す)。`T::default()` も**

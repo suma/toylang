@@ -1216,6 +1216,9 @@ impl<'a> AstIntegrationContext<'a> {
     /// target slot exists — the mapping is arithmetic, so the
     /// reference is correct as soon as the loop reaches that index.
     fn integrate(&mut self) -> Result<Vec<Rc<Function>>, String> {
+        // Before anything remaps the test functions' names.
+        self.rename_test_functions();
+
         // Record the pool offsets before the first append.
         self.expr_base = self.main_program.expression.len() as u32;
         self.stmt_base = self.main_program.statement.len() as u32;
@@ -1377,6 +1380,34 @@ impl<'a> AstIntegrationContext<'a> {
             });
         }
         Ok(())
+    }
+
+    /// Give the module's test functions names the program has not used.
+    ///
+    /// The parser numbers each file's `test` blocks from `__test_0`,
+    /// so the entry's first test and every module's first test arrived
+    /// as functions of one name. A test is found by its function's
+    /// name, the first match won, and a module test ran the entry's
+    /// body — passing or failing with its verdict. Seeding the symbol
+    /// cache renames the function and its `TestCase` together, since
+    /// both reach the main program through `remap_symbol`.
+    fn rename_test_functions(&mut self) {
+        if self.module_program.tests.is_empty() {
+            return;
+        }
+        let taken: std::collections::HashSet<DefaultSymbol> =
+            self.main_program.function.iter().map(|f| f.name).collect();
+        let mut next = self.main_program.tests.len();
+        for test in &self.module_program.tests {
+            let fresh = loop {
+                let candidate = self.main_string_interner.get_or_intern(format!("__test_{next}"));
+                next += 1;
+                if !taken.contains(&candidate) {
+                    break candidate;
+                }
+            };
+            self.symbol_cache[test.function.to_usize()] = Some(fresh);
+        }
     }
 
     fn copy_tests(&mut self) -> Result<(), String> {

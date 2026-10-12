@@ -394,6 +394,29 @@ test "triple works" {
 }
 
 #[test]
+fn each_test_runs_its_own_body_when_files_number_them_alike() {
+    // Every file numbers its `test` blocks from `__test_0`, so the
+    // entry's first test and each module's first test lowered to
+    // functions of one name. Lookup by name took the entry's, and a
+    // module test passed or failed with the entry's verdict.
+    let pkg = scratch("test_name_collision");
+    // A test that must panic: running any other file's body instead
+    // fails it, on the compiled lane too (it gets a driver of its own).
+    write(&pkg, "src/a.t", "pub fn one() -> u64 { 1u64 }\ntest \"a panics\" panics \"from a\" { panic(\"from a\") }\n");
+    write(&pkg, "src/b.t", "pub fn two() -> u64 { 2u64 }\ntest \"b ok\" { assert_eq(b::two(), 2u64) }\n");
+    write(&pkg, "main.t", "fn main() -> u64 { 0u64 }\ntest \"main ok\" { assert_eq(1u64, 1u64) }\n");
+    for backend in ["vm", "aot"] {
+        let out = run(&pkg, &["test", pkg.0.to_str().unwrap(), "--backend", backend]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success() && stdout.contains("3 passed, 0 failed"),
+            "{backend}\nstdout: {stdout}\nstderr: {stderr}"
+        );
+    }
+}
+
+#[test]
 fn a_filter_selects_by_name_and_a_path_still_reads_as_a_path() {
     // `toy test <filter> <path>` in either order: the argument that
     // names something on disk is the path.

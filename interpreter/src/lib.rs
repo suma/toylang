@@ -743,6 +743,7 @@ fn check_typing_collecting(
         &mut program.statement,
         &mut program.expression,
         Some(&mut program.location_pool),
+        string_interner,
     );
 
     // ERROR_MODEL E1: give each impl of a generic trait its own method

@@ -383,7 +383,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // The locations are read-only here; a copied body goes without
         // them (the interpreter's `check_typing` expands first, with
         // them, and this second call then finds nothing to add).
-        expand_trait_defaults_in_pools(self.core.stmt_pool, self.core.expr_pool, None);
+        expand_trait_defaults_in_pools(self.core.stmt_pool, self.core.expr_pool, None, self.core.string_interner);
         Ok(())
     }
 }
@@ -412,7 +412,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 /// violation of the trait's own contract is reported before any the
 /// impl adds.
 pub fn expand_trait_defaults_in_pool(stmt_pool: &mut StmtPool) {
-    expand_defaults(stmt_pool, None, None);
+    expand_defaults(stmt_pool, None, None, None);
 }
 
 /// `expand_trait_defaults_in_pool` with the expression pool and the
@@ -423,14 +423,16 @@ pub fn expand_trait_defaults_in_pools(
     stmt_pool: &mut StmtPool,
     expr_pool: &mut ExprPool,
     locations: Option<&mut LocationPool>,
+    interner: &string_interner::DefaultStringInterner,
 ) {
-    expand_defaults(stmt_pool, Some(expr_pool), locations);
+    expand_defaults(stmt_pool, Some(expr_pool), locations, Some(interner));
 }
 
 fn expand_defaults(
     stmt_pool: &mut StmtPool,
     mut expr_pool: Option<&mut ExprPool>,
     mut locations: Option<&mut LocationPool>,
+    interner: Option<&string_interner::DefaultStringInterner>,
 ) {
     inherit_trait_contracts(stmt_pool);
     // Pass 1: index trait default bodies by trait name.
@@ -507,6 +509,7 @@ fn expand_defaults(
                     stmt_pool,
                     exprs,
                     locations.as_deref_mut(),
+                    interner,
                     body,
                     trait_generic_params,
                     &subst,

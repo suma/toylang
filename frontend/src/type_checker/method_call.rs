@@ -1242,6 +1242,39 @@ impl<'a> TypeCheckerVisitor<'a> {
             ));
         }
 
+        // TRAIT-DEFAULT-BODY-T: a primitive named as a path. Nobody
+        // writes `u64::default()` (the parser takes `u64` for the type
+        // keyword), but a default body's `T::default()` restated for
+        // `impl Zero<u64> for K` is that call: the impl it reaches is
+        // `impl Default for u64`, registered under the name `u64`.
+        if let Some(prim) = self.primitive_type_decl_from_symbol(struct_name)
+            && let Some(method) = self.context.get_struct_method(struct_name, function_name, &[]).cloned()
+        {
+            let params: Vec<TypeDecl> = method
+                .parameter
+                .iter()
+                .skip(usize::from(method.has_self_param))
+                .map(|(_, t)| t.substitute_self(&prim))
+                .collect();
+            if args.len() != params.len() {
+                return Err(TypeCheckError::coded(crate::diagnostic::codes::ARITY, format!(
+                    "Associated function '{}::{}' expects {} arguments, found {}",
+                    self.resolve_symbol_name(struct_name),
+                    self.resolve_symbol_name(function_name),
+                    params.len(),
+                    args.len()
+                )));
+            }
+            for (arg_expr, expected_ty) in args.iter().zip(params.iter()) {
+                let actual_ty = self.visit_expr(arg_expr)?;
+                let actual_ty = self.coerce_number_expr(arg_expr, &actual_ty, expected_ty)?;
+                if !self.is_arg_compatible_dyn_aware(&actual_ty, expected_ty) && !matches!(actual_ty, TypeDecl::Unknown) {
+                    return Err(TypeCheckError::type_mismatch(expected_ty.clone(), actual_ty));
+                }
+            }
+            return Ok(method.return_type.clone().unwrap_or(TypeDecl::Unit).substitute_self(&prim));
+        }
+
         // Verify the struct exists — generic and non-generic both count.
         // From/Into: an enum target is also allowed (`MyErr::from(...)`
         // for `impl From<str> for MyErr`); the enum's methods are

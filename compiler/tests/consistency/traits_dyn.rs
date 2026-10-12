@@ -1387,3 +1387,32 @@ fn a_default_body_spells_the_traits_parameter() {
     "#;
     assert_renders(src, "traits_default_body_t", "3\n12\n1\n42\n-7\n8\n9\n");
 }
+
+/// TRAIT-DEFAULT-BODY-T: `T::default()` in a default body, with the
+/// bound on the impl. `W<T>` keeps `T` (shared body), `P<A, B>` gets
+/// `B::default()`, and `impl Zero<u64> for K` gets a call the parser
+/// cannot spell, `u64::default()`, which reaches `impl Default for u64`.
+#[test]
+fn a_default_body_calls_through_the_traits_parameter() {
+    let src = r#"
+        trait Zero<T> {
+            fn zero(&self) -> T { T::default() }
+        }
+        struct W<T> { v: T }
+        impl<T: Default> Zero<T> for W<T> {}
+        struct P<A, B> { a: A, b: B }
+        impl<A, B: Default> Zero<B> for P<A, B> {}
+        struct K { n: u64 }
+        impl Zero<u64> for K {}
+        fn main() -> u64 {
+            val w: W<u64> = W { v: 3u64 }
+            val p: P<u8, i64> = P { a: 1u8, b: 5i64 }
+            val k = K { n: 1u64 }
+            val a = w.zero()
+            val b = p.zero()
+            val c = k.zero()
+            a + (b as u64) + c + 7u64
+        }
+    "#;
+    assert_consistent(src, "traits_default_body_t_path");
+}

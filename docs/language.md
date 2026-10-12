@@ -3842,11 +3842,12 @@ trait Source<T> {
 ```
 
 A body that does not spell them stays one body shared by every impl.
+`T::default()` works the same way when the impl bounds the parameter
+(`impl<T: Default> Zero<T> for W<T> {}`); for `impl Zero<u64> for K {}`
+the copy calls `u64`'s `impl Default`.
 
 Current limitations:
 
-- A type parameter cannot be used as a path (`T::default()`) in any
-  generic body, a default one included.
 - A method type parameter shares a namespace with the impl's, so
   spell it so it cannot meet one (`Acc`, not `A`).
 - No `super` / `Trait::default_method` syntax for invoking the

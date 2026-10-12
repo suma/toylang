@@ -23,7 +23,7 @@
 //! and `toy query` answers from the original.
 
 use rustc_hash::FxHashMap;
-use string_interner::DefaultSymbol;
+use string_interner::{DefaultStringInterner, DefaultSymbol};
 
 use crate::ast::{
     BuiltinFunction, Expr, ExprPool, ExprRef, LocationPool, MatchArm, Pattern, SliceInfo, Stmt,
@@ -38,6 +38,7 @@ pub(crate) fn restate_default_body(
     stmts: &mut StmtPool,
     exprs: &mut ExprPool,
     locations: Option<&mut LocationPool>,
+    interner: Option<&DefaultStringInterner>,
     body: StmtRef,
     params: &[DefaultSymbol],
     subst: &FxHashMap<DefaultSymbol, TypeDecl>,
@@ -51,12 +52,13 @@ pub(crate) fn restate_default_body(
     if subst.is_empty() {
         return None;
     }
-    let mut probe = Copier { stmts, exprs, locations: None, params, subst: &subst, dry: true, changed: false };
+    let mut probe =
+        Copier { stmts, exprs, locations: None, interner, params, subst: &subst, dry: true, changed: false };
     probe.stmt(body);
     if !probe.changed {
         return None;
     }
-    let mut copier = Copier { stmts, exprs, locations, params, subst: &subst, dry: false, changed: false };
+    let mut copier = Copier { stmts, exprs, locations, interner, params, subst: &subst, dry: false, changed: false };
     Some(copier.stmt(body))
 }
 
@@ -67,6 +69,8 @@ struct Copier<'a> {
     stmts: &'a mut StmtPool,
     exprs: &'a mut ExprPool,
     locations: Option<&'a mut LocationPool>,
+    /// To name a primitive (`T::default()` -> `u64::default()`).
+    interner: Option<&'a DefaultStringInterner>,
     params: &'a [DefaultSymbol],
     subst: &'a FxHashMap<DefaultSymbol, TypeDecl>,
     dry: bool,
@@ -83,7 +87,9 @@ impl Copier<'_> {
     }
 
     /// A type parameter used as a path (`T::default()`): the name of
-    /// what it stands for, when that is a named type.
+    /// what it stands for, when that is a named type or a primitive
+    /// (whose impls are registered under its name, `impl Default for
+    /// u64`). A tuple has no name and stays as written.
     fn type_name(&mut self, s: DefaultSymbol) -> DefaultSymbol {
         let Some(to) = self.subst.get(&s) else {
             return s;
@@ -91,7 +97,9 @@ impl Copier<'_> {
         let named = match to {
             TypeDecl::Generic(n) | TypeDecl::Identifier(n) => Some(*n),
             TypeDecl::Struct(n, _) | TypeDecl::Enum(n, _) => Some(*n),
-            _ => None,
+            other => other
+                .primitive_canonical_name()
+                .and_then(|name| self.interner.and_then(|i| i.get(name))),
         };
         match named {
             Some(n) => {

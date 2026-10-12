@@ -12,7 +12,7 @@
 
 ### 2026-10-12
 
-- **TRAIT-DEFAULT-BODY-T — generic trait の default body が `T` を書ける (`val x: T` / `Vec<T>` / `__builtin_sizeof::<T>()`)。書いた本体は impl の型引数が違うときだけ impl ごとに複製して型を言い直す (`default_body.rs`)**
+- **TRAIT-DEFAULT-BODY-T — generic trait の default body が `T` を書ける (`val x: T` / `Vec<T>` / `__builtin_sizeof::<T>()`)。書いた本体は impl の型引数が違うときだけ impl ごとに複製して型を言い直す (`default_body.rs`)。`T::default()` も (`impl Zero<u64>` では `u64` の impl を呼ぶ)**
 - **ITER-BOUND-INFERENCE — `fn f<T, I: Iterator<T>>(it: I)` の `T` を `I` の実型の impl から推論する (型検査と lowering の両方)。bound の中の兄弟の型引数を `Generic` で持つ (cache v72)。`var b: Option<T>` を `-> Option<T>` で返すと「expected Option<T>, got Option<T>」になっていたのも直した**
 - **GENERIC-REF-PARAM-PRIM — generic な method の `&T` 引数は、`T` がスカラーに実体化されたら番地で渡す (値を渡して VM は誤答・AOT は落ちていた)。`Vec::binary_search` を `&T` 受けに (鍵が呼び出し側に残る)**
 - **CALLEE-DROP-GENERIC の裸の `T` — `a: T` の引数も probe の候補にし、`&self` でスカラーを返す method の `&` 引数に渡すのは貸し出し。`min` / `max` / `clamp` / `pick` が返さなかった `String` を解放する (漏れていた)。手渡した後に使う本体では所有しない側に倒す**
@@ -734,10 +734,6 @@
   - **A5-P3-interp: interpreter 側 JIT の `dyn Trait`** ★ — `ScalarTy::from_type_decl` が `TypeDecl::Dyn` で `None` を返し silent fallback。correctness 問題はなく、compiler 側 JIT が実用的な高速化を担うので優先度は低い。
   - **A5-P4: `Box<dyn Trait>`** — owned trait object + `Vec<Box<dyn Trait>>`。`Box<T>` 自体は `core/std/box.t` にある (`Box<dyn G>` への coercion が無い)。
   - **A5 残作業** — `&dyn Trait` の return / struct field 位置 (REF-Stage-2 の escape rule が阻む)、`dyn A + B`、`dyn Iterator<T>`。
-  - **GENERIC-PARAM-PATH: 型引数をパスとして書く (`T::default()`)** ★ —
-    generic な本体では `T::default()` が `[E0003] Type or module 'T' not found`
-    (default body でも自由関数でも)。`Default` の bound があっても値を作れないので、
-    今は `Option::None` + `unwrap_or_default` で回避している。
 
 - **CLOSURE-CAPTURE の残: E4 / E5** ★ — 設計は
   [`CLOSURE_CAPTURE.md`](CLOSURE_CAPTURE.md)。**E0〜E3 + E6 は landing 済み**

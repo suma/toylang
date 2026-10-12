@@ -466,6 +466,9 @@ fn parse_for_with_label(
     label: Option<DefaultSymbol>,
     parallel: Option<crate::type_checker::SourceLocation>,
 ) -> ParserResult<StmtRef> {
+    // The loop is located at its `for`, where its variable is declared
+    // (`toy query` / `toy lsp` find the name from here).
+    let for_at = parser.current_source_location();
     parser.expect_err(&Kind::For)?;
     let current_token = parser.peek().cloned();
     match current_token {
@@ -499,8 +502,7 @@ fn parse_for_with_label(
                     parser.pop_context();
                     let end = end?;
                     let (block, _) = parse_loop_body(parser, label, None)?;
-                    let location = parser.current_source_location();
-                    let stmt = parser.ast_builder.for_stmt_with_label(label, ident, start, end, block, Some(location));
+                    let stmt = parser.ast_builder.for_stmt_with_label(label, ident, start, end, block, Some(for_at));
                     if let Some(at) = parallel {
                         parser.parallel_loops.insert(stmt, at);
                     }

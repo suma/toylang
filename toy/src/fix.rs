@@ -45,7 +45,7 @@ pub struct Outcome {
 /// Check the package, the way `toy check --backend vm` does: parse
 /// errors if there are any, otherwise type errors and warnings.
 pub fn diagnose(pkg: &Package) -> Result<Vec<Diagnostic>, String> {
-    let source = std::fs::read_to_string(&pkg.entry)
+    let source = crate::package::entry_source(pkg)
         .map_err(|e| format!("cannot read {}: {e}", pkg.entry.display()))?;
     let name = pkg.entry.to_string_lossy().into_owned();
     let mut session = compiler_core::CompilerSession::new();

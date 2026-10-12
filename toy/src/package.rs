@@ -270,6 +270,64 @@ pub fn find_checking(file: &Path, stdlib: Vec<PathBuf>) -> Result<Package, Strin
     Ok(pkg)
 }
 
+/// `find_checking`, falling back to `standalone` when `file` is in no
+/// package. What `toy hook` and `toy lsp` both check an edited file
+/// through, so the two never disagree about it. The flag says whether
+/// it is a package (one `toy check` / `toy fix` accept).
+pub fn checking_or_standalone(file: &Path, stdlib: Vec<PathBuf>) -> Option<(Package, bool)> {
+    if stdlib_root_of(file, &stdlib).is_none()
+        && let Ok(pkg) = find_checking(file, stdlib.clone())
+    {
+        return Some((pkg, true));
+    }
+    Some((standalone(file, stdlib)?, false))
+}
+
+/// A file in no package, checked without one. A stdlib module goes
+/// through a do-nothing entry (`STDLIB_CHECK_ENTRY`): every stdlib body
+/// is type-checked whether or not it is called, so that checks the
+/// module, and checked as an entry of its own it would lose its
+/// references to itself by name (`hex::encode` inside `hex.t`). Any
+/// other file is its own entry against the stdlib.
+fn standalone(file: &Path, stdlib: Vec<PathBuf>) -> Option<Package> {
+    if let Some(root) = stdlib_root_of(file, &stdlib) {
+        return Some(Package {
+            entry: root.join(STDLIB_CHECK_ENTRY),
+            build_dir: root.join("build"),
+            root,
+            module_roots: stdlib,
+        });
+    }
+    let dir = file.parent()?;
+    Some(Package {
+        root: dir.to_path_buf(),
+        entry: file.to_path_buf(),
+        module_roots: stdlib,
+        build_dir: dir.join("build"),
+    })
+}
+
+/// The name of the entry a stdlib module is checked through. It is
+/// never on disk; `entry_source` supplies its text.
+pub const STDLIB_CHECK_ENTRY: &str = ".toy-stdlib-check.t";
+
+/// The text of `pkg`'s entry: the file, or the do-nothing program for
+/// the synthetic entry `standalone` gives a stdlib module.
+pub fn entry_source(pkg: &Package) -> std::io::Result<String> {
+    match std::fs::read_to_string(&pkg.entry) {
+        Err(_) if pkg.entry.file_name().is_some_and(|n| n == STDLIB_CHECK_ENTRY) => {
+            Ok("fn main() -> u64 {\n    0u64\n}\n".to_string())
+        }
+        r => r,
+    }
+}
+
+/// The stdlib root `file` lives under, if any.
+fn stdlib_root_of(file: &Path, stdlib: &[PathBuf]) -> Option<PathBuf> {
+    let file = file.canonicalize().ok()?;
+    stdlib.iter().filter_map(|r| r.canonicalize().ok()).find(|r| file.starts_with(r))
+}
+
 /// Whether `file` is a module of `pkg` (under its `src/`, other than an
 /// entry `src/main.t`).
 fn module_of_package(pkg: &Package, file: &Path) -> bool {

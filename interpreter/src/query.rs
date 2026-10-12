@@ -465,7 +465,9 @@ impl<'a> Index<'a> {
                         }
                     }
                 }
-                Some(Stmt::Val(name, _, _)) | Some(Stmt::Var(name, _, _)) => {
+                Some(Stmt::Val(name, _, _))
+                | Some(Stmt::Var(name, _, _))
+                | Some(Stmt::For(_, name, _, _, _)) => {
                     let Some(decl) = self.word_place(file, loc.offset as usize, usize::MAX, name) else {
                         continue;
                     };
@@ -508,26 +510,42 @@ impl<'a> Index<'a> {
 
     /// The type a `val` / `var` whose name is at `offset` was given.
     fn binding_type_at(&self, file: FileId, offset: usize) -> Option<(String, Place)> {
-        let Target::Local { decl, name, .. } = self.declaration_at(file, offset)? else { return None };
-        (0..self.program.statement.len()).find_map(|i| {
+        let target = self.declaration_at(file, offset)?;
+        let Target::Local { decl, name, .. } = &target else { return None };
+        let declared = (0..self.program.statement.len()).find_map(|i| {
             let s = StmtRef(i as u32);
             let (bound, annotation, rhs) = match self.program.statement.get(&s)? {
                 Stmt::Val(n, ann, rhs) => (n, ann, Some(rhs)),
                 Stmt::Var(n, ann, rhs) => (n, ann, rhs),
+                // A range `for`'s variable has its start's type.
+                Stmt::For(_, n, start, _, _) => (n, None, Some(start)),
                 _ => return None,
             };
             // The statement that declares exactly this name here —
             // desugaring leaves hidden bindings over the same range.
             let loc = self.program.location_pool.get_stmt_location(&s)?;
-            if bound != name
+            if bound != *name
                 || loc.file != file
-                || self.word_place(file, loc.offset as usize, usize::MAX, bound).as_ref() != Some(&decl)
+                || self.word_place(file, loc.offset as usize, usize::MAX, bound).as_ref() != Some(decl)
             {
                 return None;
             }
             let written = annotation.filter(|t| !matches!(t, TypeDecl::Unknown | TypeDecl::Hole));
             let ty = written.or_else(|| rhs.and_then(|r| self.types.get(&r).cloned()))?;
             Some((ty.spell_with(Some(self.interner)), decl.clone()))
+        });
+        // A name a pattern binds (a match arm, `if val`, a destructuring
+        // `val`, a `for` item) is not an expression and the checker keeps
+        // no type for it; every use of it is one, typed the same.
+        declared.or_else(|| {
+            self.references(&target).iter().find_map(|at| {
+                let f = self.file_id(&at.file)?;
+                let ty = self.exprs_at(f, at.offset as usize).into_iter().find_map(|(e, loc)| {
+                    let exact = loc.offset == at.offset && loc.end_offset == at.end_offset;
+                    exact.then(|| self.types.get(&e)).flatten()
+                })?;
+                Some((ty.spell_with(Some(self.interner)), decl.clone()))
+            })
         })
     }
 
@@ -608,18 +626,30 @@ impl<'a> Index<'a> {
         let decl = (0..self.program.statement.len())
             .filter_map(|i| {
                 let s = StmtRef(i as u32);
-                let named = match self.program.statement.get(&s) {
-                    Some(Stmt::Val(n, _, _)) | Some(Stmt::Var(n, _, _)) => n == name,
-                    _ => false,
+                // A range `for`'s variable is visible in its body only:
+                // the first block after the `for`.
+                let (named, is_for) = match self.program.statement.get(&s) {
+                    Some(Stmt::Val(n, _, _)) | Some(Stmt::Var(n, _, _)) => (n == name, false),
+                    Some(Stmt::For(_, n, _, _, _)) => (n == name, true),
+                    _ => (false, false),
                 };
                 if !named {
                     return None;
                 }
                 let loc = self.program.location_pool.get_stmt_location(&s)?;
+                let visible = if is_for {
+                    self.blocks
+                        .iter()
+                        .filter(|(f, s, _)| *f == file && *s >= loc.offset as usize)
+                        .min_by_key(|(_, s, _)| *s)
+                        .is_some_and(|(_, s, e)| *s <= at && at < *e)
+                } else {
+                    self.in_scope(file, loc.offset as usize, at)
+                };
                 let inside = loc.file == file
                     && c.start <= loc.offset as usize
                     && (loc.offset as usize) < at
-                    && self.in_scope(file, loc.offset as usize, at);
+                    && visible;
                 inside.then_some(loc.offset as usize)
             })
             .max();

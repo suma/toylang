@@ -801,6 +801,9 @@ fn check_typing_collecting(
     // LLM-LOOP P3: a fix suggestion has to quote the text it replaces,
     // so the checker needs the source to build one.
     tc.source_code = source_code;
+    if collect_types.is_some() {
+        tc.operand_types = Some(HashMap::default());
+    }
     drop(setup_phase);
     let declarations_phase = prof::phase("declarations");
 
@@ -997,6 +1000,9 @@ fn check_typing_collecting(
     let mut expr_types = tc.get_expr_types();
     if let Some(sink) = collect_types {
         sink.clone_from(&expr_types);
+        for (e, ty) in tc.operand_types.take().unwrap_or_default() {
+            sink.entry(e).or_insert(ty);
+        }
     }
     let spawn_captures = tc.take_spawn_captures();
     drop(tc);
@@ -2540,6 +2546,31 @@ pub fn diagnose_parse_failure(
     filename: &str,
     core_modules_dirs: &[std::path::PathBuf],
 ) -> Vec<Diagnostic> {
+    recover_parse_failure(source, filename, core_modules_dirs).diagnostics
+}
+
+/// What [`recover_parse_failure`] found: the diagnostics, and the tree
+/// the parser recovered with what checking it got as far as — enough to
+/// answer questions about the text as it is (`toy lsp`'s outline and
+/// hover while a file does not parse).
+pub struct RecoveredParse {
+    pub diagnostics: Vec<Diagnostic>,
+    /// The recovered tree, integrated and checked when the diagnosis
+    /// got that far. `None` when the parser gave no tree or the checker
+    /// gave up on it part-way.
+    pub program: Option<frontend::ast::File>,
+    /// The interner `program`'s symbols are in.
+    pub interner: DefaultStringInterner,
+    /// The type of each expression, as far as checking got.
+    pub types: HashMap<frontend::ast::ExprRef, frontend::type_decl::TypeDecl>,
+}
+
+/// [`diagnose_parse_failure`], keeping the recovered tree.
+pub fn recover_parse_failure(
+    source: &str,
+    filename: &str,
+    core_modules_dirs: &[std::path::PathBuf],
+) -> RecoveredParse {
     let mut parser = frontend::ParserWithInterner::new(source);
     parser.set_source_file(filename);
     let outcome = parser.parse_program_recovering();
@@ -2552,11 +2583,18 @@ pub fn diagnose_parse_failure(
             d
         })
         .collect();
+    let mut types = HashMap::default();
+    let done = |diagnostics, program, parser: &mut frontend::ParserWithInterner, types| RecoveredParse {
+        diagnostics,
+        program,
+        interner: std::mem::take(parser.get_string_interner()),
+        types,
+    };
     let Some(mut program) = outcome.result else {
-        return diagnostics;
+        return done(diagnostics, None, &mut parser, types);
     };
     if outcome.errors.is_empty() {
-        return diagnostics;
+        return done(diagnostics, Some(program), &mut parser, types);
     }
 
     // Each declaration's byte range.
@@ -2603,26 +2641,29 @@ pub fn diagnose_parse_failure(
             .iter()
             .find(|d| d.start <= offset && offset < d.end.max(d.start + 1))
         else {
-            return diagnostics;
+            return done(diagnostics, Some(program), &mut parser, types);
         };
         broken.push((decl.start, decl.end));
         broken_names.extend(decl.name.clone());
     }
 
-    let interner = parser.get_string_interner();
     // The checker has not been asked to survive a recovered tree before;
-    // if it cannot, the parse errors are still the answer.
+    // if it cannot, the parse errors are still the answer (and the tree,
+    // left half rewritten, is no answer at all).
     let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        check_typing_diagnostics(
+        check_typing_with_types(
             &mut program,
-            interner,
+            parser.get_string_interner(),
             Some(source),
             Some(filename),
             core_modules_dirs,
+            &mut types,
         )
     }));
-    let Ok(Err(type_errors)) = checked else {
-        return diagnostics;
+    let type_errors = match checked {
+        Ok(Err(type_errors)) => type_errors,
+        Ok(Ok(_)) => return done(diagnostics, Some(program), &mut parser, types),
+        Err(_) => return done(diagnostics, None, &mut parser, HashMap::default()),
     };
     let names_broken = |message: &str| {
         broken_names.iter().any(|name| {
@@ -2642,7 +2683,7 @@ pub fn diagnose_parse_failure(
         !inside_broken && !names_broken(&d.message)
     }));
     frontend::diagnostic::normalize(&mut diagnostics, filename);
-    diagnostics
+    done(diagnostics, Some(program), &mut parser, types)
 }
 
 /// Diagnostics as text, the way a type-check failure is printed.

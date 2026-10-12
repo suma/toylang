@@ -110,9 +110,13 @@ fn notify(method: &str, params: Value) {
 /// what the checker said.
 struct Analysis {
     pkg: Package,
-    session: compiler_core::CompilerSession,
-    /// The last program that parsed. A parse error keeps the previous
-    /// one, so navigation still works while a line is half written.
+    /// The interner `program`'s symbols are in.
+    interner: string_interner::DefaultStringInterner,
+    /// The program as last checked. While the entry does not parse it
+    /// is the tree the parser recovered (the declarations around the
+    /// error are partial, the rest as written), so the outline and
+    /// navigation follow the text as it is; only when the parser gives
+    /// no tree at all does the previous program stay.
     program: Option<frontend::ast::File>,
     types: rustc_hash::FxHashMap<frontend::ast::ExprRef, frontend::type_decl::TypeDecl>,
     /// What the program's files are called inside it (the entry as
@@ -124,7 +128,7 @@ struct Analysis {
 impl Analysis {
     fn index(&self) -> Option<Index<'_>> {
         let program = self.program.as_ref()?;
-        Some(Index::new(program, self.session.string_interner(), &self.types))
+        Some(Index::new(program, &self.interner, &self.types))
     }
 
     /// Where a file the program names is.
@@ -310,7 +314,7 @@ impl Server {
             self.dirty.insert(pkg.entry.clone());
             self.analyses.entry(pkg.entry.clone()).or_insert_with(|| Analysis {
                 pkg,
-                session: compiler_core::CompilerSession::new(),
+                interner: Default::default(),
                 program: None,
                 types: Default::default(),
                 paths: HashMap::new(),
@@ -333,16 +337,7 @@ impl Server {
         if !path.is_file() {
             return None;
         }
-        match package::find_checking(path, self.stdlib.clone()) {
-            Ok(pkg) => Some(pkg),
-            // In no package: on its own, against the stdlib.
-            Err(_) => Some(Package {
-                root: path.parent()?.to_path_buf(),
-                entry: path.to_path_buf(),
-                module_roots: self.stdlib.clone(),
-                build_dir: path.parent()?.join("build"),
-            }),
-        }
+        package::checking_or_standalone(path, self.stdlib.clone()).map(|(pkg, _)| pkg)
     }
 
     // ---- checking ---------------------------------------------------
@@ -638,7 +633,7 @@ fn check(a: &mut Analysis, documents: &HashMap<PathBuf, Document>) {
     let entry = a.pkg.entry.clone();
     let source = match documents.get(&entry) {
         Some(d) => d.text.clone(),
-        None => match std::fs::read_to_string(&entry) {
+        None => match package::entry_source(&a.pkg) {
             Ok(s) => s,
             Err(_) => return,
         },
@@ -656,7 +651,7 @@ fn check(a: &mut Analysis, documents: &HashMap<PathBuf, Document>) {
                 &a.pkg.module_roots,
                 &mut types,
             );
-            a.session = session;
+            a.interner = std::mem::take(session.string_interner_mut());
             a.program = Some(program);
             a.types = types;
             a.paths = file_paths(a);
@@ -665,7 +660,16 @@ fn check(a: &mut Analysis, documents: &HashMap<PathBuf, Document>) {
                 Err(errors) => errors,
             }
         }
-        Err(_) => interpreter::diagnose_parse_failure(&source, &name, &a.pkg.module_roots),
+        Err(_) => {
+            let recovered = interpreter::recover_parse_failure(&source, &name, &a.pkg.module_roots);
+            if let Some(program) = recovered.program {
+                a.interner = recovered.interner;
+                a.program = Some(program);
+                a.types = recovered.types;
+                a.paths = file_paths(a);
+            }
+            recovered.diagnostics
+        }
     };
     a.diagnostics = diagnostics
         .into_iter()

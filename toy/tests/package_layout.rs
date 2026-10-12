@@ -2354,6 +2354,45 @@ fn query_type_answers_expressions_and_bindings() {
 }
 
 #[test]
+fn query_type_answers_names_that_patterns_and_loops_bind() {
+    // None of these names is an expression the checker typed: a match
+    // arm's payload (used only as an operand), a destructuring `val`, an
+    // `if val`, and a range `for`'s variable.
+    let pkg = scratch("query_bound");
+    write(
+        &pkg,
+        "main.t",
+        "struct P { x: u64, y: i64 }
+fn main() -> u64 {
+    val o: Option<u64> = Option::Some(3u64)
+    val a = match o {
+        Option::Some(v) => v + 1u64,
+        Option::None => 0u64,
+    }
+    val P { x, y: yy } = P { x: 1u64, y: 2i64 }
+    if val Option::Some(w) = o {
+        println(w)
+    }
+    var t = 0u64
+    for e in 0u64..3u64 {
+        t = t + e
+    }
+    a + x + t + (yy as u64)
+}
+",
+    );
+    let m = pkg.0.join("main.t").to_str().unwrap().to_string();
+    let pos = |l: u32, c: u32| format!("{m}:{l}:{c}");
+    let r = query(&pkg, &["type", &pos(5, 22), &pos(5, 28), &pos(8, 13), &pos(8, 19), &pos(9, 25), &pos(13, 9), &pos(14, 17)]);
+    let types: Vec<&str> = r["answers"].as_array().unwrap().iter().map(|a| a["type"].as_str().unwrap_or("-")).collect();
+    assert_eq!(types, ["u64", "u64", "u64", "i64", "u64", "u64", "u64"], "{r:#}");
+
+    // The loop variable is a local of its body.
+    let r = query(&pkg, &["def", &pos(14, 17)]);
+    assert_eq!(at(&r["answers"][0]["definition"]), ("main.t".to_string(), 13, 9), "{r:#}");
+}
+
+#[test]
 fn query_def_and_refs_follow_functions_methods_modules_and_locals() {
     let pkg = query_pkg();
     let m = pkg.0.join("main.t").to_str().unwrap().to_string();
@@ -2729,6 +2768,30 @@ fn hook_feeds_errors_back_and_stays_quiet_otherwise() {
     let out = hook(&pkg.0.join("notes.md"));
     assert_eq!(out.status.code(), Some(0));
     assert!(out.stdout.is_empty() && out.stderr.is_empty());
+}
+
+#[test]
+fn hook_checks_a_file_in_no_package_as_toy_lsp_does() {
+    // No `main.t`, no `src/`: checked on its own against the stdlib, the
+    // same answer `toy lsp` gives, without `toy fix` (which wants a package).
+    let dir = std::env::temp_dir().join(format!("toy_hook_loose_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let loose = Pkg(dir.clone());
+    let file = loose.0.join("loose.t");
+    std::fs::write(&file, "fn main() -> u64 {\n    if 1u64 > 0u64 { 1u64 } else if 2u64 > 1u64 { 2u64 } else { 3u64 }\n}\n").unwrap();
+    let out = hook(&file);
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.lines().any(|l| l.starts_with("loose.t:2:29: E0033")), "{stderr}");
+    assert!(!stderr.contains("toy fix"), "{stderr}");
+
+    // A stdlib module is checked through the stdlib, not as an entry of
+    // its own: `hex.t` names itself (`hex::...`), which an entry could
+    // not resolve.
+    let out = hook(&stdlib().join("std/hex.t"));
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(out.stderr.is_empty());
 }
 
 #[test]

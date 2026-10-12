@@ -21,6 +21,7 @@ mod tests {
             call_paths: rustc_hash::FxHashMap::default(),
             spawn_blocks: rustc_hash::FxHashSet::default(),
             spawn_captures: rustc_hash::FxHashMap::default(),
+            operand_types: None,
             current_call_path: None,
             context: TypeCheckContext::new(),
             type_inference: TypeInferenceState::new(),

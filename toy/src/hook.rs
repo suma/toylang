@@ -5,9 +5,8 @@
 //! on stdin as JSON; the edited path is `tool_input.file_path`. The
 //! exit code is the answer Claude Code acts on:
 //!
-//! * `0`, nothing printed — not a `.t` file, not in a package, or it
-//!   checks clean. A clean check says nothing, so a successful edit
-//!   costs no context.
+//! * `0`, nothing printed — not a `.t` file, or it checks clean. A
+//!   clean check says nothing, so a successful edit costs no context.
 //! * `0`, a JSON `additionalContext` on stdout — only warnings.
 //! * `2`, the errors on stderr, one per line (`--format=short`) — Claude
 //!   Code feeds stderr of a blocking hook back to the model, which fixes
@@ -17,7 +16,8 @@
 //! package, so the package's entry is checked (checked as an entry of
 //! its own, a module's references to itself by name — `greet::double`
 //! inside `greet.t` — would not resolve). Anything else (`main.t`,
-//! `tests/*.t`) is checked as the entry it is. Type checking only, no
+//! `tests/*.t`) is checked as the entry it is, and a file in no package
+//! on its own against the stdlib (the same choice `toy lsp` makes). Type checking only, no
 //! lowering: the `--backend vm` question, answered in ~20 ms.
 //!
 //! It never edits the file. Applying a fix behind Claude's back would
@@ -50,8 +50,8 @@ pub fn run() -> i32 {
         eprintln!("toy hook: {problem}");
         return 2;
     }
-    // Not in a package: `toy` has nothing to check it against.
-    let Ok(pkg) = package::find_checking(&file, stdlib) else { return 0 };
+    // In no package: on its own against the stdlib, as `toy lsp` does.
+    let Some((pkg, packaged)) = package::checking_or_standalone(&file, stdlib) else { return 0 };
     interpreter::set_diagnostic_root(Some(pkg.root.clone()));
 
     let diagnostics = match crate::fix::diagnose(&pkg) {
@@ -65,7 +65,7 @@ pub fn run() -> i32 {
         diagnostics.into_iter().partition(|d| d.severity == Severity::Error);
 
     if !errors.is_empty() {
-        eprint!("{}", report(&pkg.root, &pkg.entry, &errors));
+        eprint!("{}", report(&pkg.root, &pkg.entry, packaged, &errors));
         return 2;
     }
     if !warnings.is_empty() {
@@ -92,7 +92,7 @@ fn edited_file(input: &str) -> Option<PathBuf> {
 
 /// The errors, one per line, with how to see the rest and how to apply
 /// the fixes.
-fn report(root: &Path, entry: &Path, errors: &[Diagnostic]) -> String {
+fn report(root: &Path, entry: &Path, packaged: bool, errors: &[Diagnostic]) -> String {
     let shown = &errors[..errors.len().min(MAX_ERRORS)];
     let mut out = format!("toy check: {} error(s) after this edit\n", errors.len());
     out.push_str(&interpreter::diagnostics_short(shown));
@@ -103,17 +103,21 @@ fn report(root: &Path, entry: &Path, errors: &[Diagnostic]) -> String {
             .map(|r| r.display().to_string())
             .unwrap_or_else(|| p.display().to_string())
     };
-    if errors.len() > shown.len() {
+    if errors.len() > shown.len() && packaged {
         out.push_str(&format!(
             "... and {} more: `toy check {} --format=json`\n",
             errors.len() - shown.len(),
             rel(entry)
         ));
+    } else if errors.len() > shown.len() {
+        out.push_str(&format!("... and {} more\n", errors.len() - shown.len()));
     }
     let fixable = errors
         .iter()
         .any(|d| d.suggestions.iter().any(|s| s.applicability == Applicability::MachineApplicable));
-    if fixable {
+    // `toy fix` works on a package; outside one the `(fix: ...)` marks
+    // are the edits to make by hand.
+    if fixable && packaged {
         out.push_str(&format!(
             "`toy fix {}` applies the ones marked (fix: ...)\n",
             root.display()

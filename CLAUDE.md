@@ -213,7 +213,8 @@ echo '{"tool_input":{"file_path":"mypkg/main.t"}}' | target/release/toy hook
 # 診断 (`toy check` と同じ)・hover・definition・references・implementation・
 # documentSymbol・workspace/symbol・callHierarchy・quick fix (machine-applicable な提案)。
 # 未保存のバッファで検査する (モジュールも)。どのパッケージで検査するかは `toy hook` と同じ、
-# パッケージ外の .t は stdlib だけで単独に。Claude Code ではプラグインで登録する:
+# パッケージ外の .t は stdlib だけで単独に (フックも同じ)、stdlib のモジュールは stdlib ごと。
+# パースできない間はエラー回復した木で答える。Claude Code ではプラグインで登録する:
 # `/plugin marketplace add ./` → `/plugin install toylang@toylang`
 # (`claude-plugin/`、release の toy が要る)
 target/release/toy lsp
@@ -224,7 +225,7 @@ target/release/toy lsp
 cargo run -q -p toy -- fix   mypkg [--dry-run] [--format=text|json]
 # 検査済みプログラムへの問い合わせ (LLM-TOOLING #4)。位置は FILE:LINE:COL、
 # 複数を 1 回で聞ける (stdlib の検査が 1 回で済む)。ローカルはブロック
-# スコープで解決し、match の腕 / if val の束縛・パターンの variant・
+# スコープで解決し、match の腕 / if val / 範囲 for の束縛 (型も)・パターンの variant・
 # 値として渡した関数名も木から引く。dyn 経由の呼び出しは impl 群を
 # dynamic: true で、追えない呼び出し (closure 等) は opaque として出す
 cargo run -q -p toy -- query type    main.t:7:13 main.t:12:9 [--in mypkg] [--format=json]

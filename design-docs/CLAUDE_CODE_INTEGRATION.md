@@ -99,6 +99,8 @@ documentSymbol は `toy api`、goToImplementation は trait メソッド → imp
   が無ければ何もしない。検査対象は、`src/` の下のモジュールならパッケージの入口
   (モジュール単独を入口にすると、自分を名前で呼ぶ `greet::double` が「`greet`
   が見つからない」という偽のエラーになるため)、それ以外は編集したファイル。
+  パッケージに属さないファイルは `toy lsp` と同じく単独で検査する (2026-10-12
+  から。それまでは黙っていて、同じファイルで LSP と答えが割れた)。
   所要 ~26 ms (release)。**このセッションで実際に発火させて確かめた**: 誤りのある
   編集で stderr の 1 行が Claude に差し戻され、直すと何も出ない。警告だけのときに
   JSON の `additionalContext` で返す経路は、パイプでの出力までしか確かめていない
@@ -154,7 +156,7 @@ documentSymbol は `toy api`、goToImplementation は trait メソッド → imp
 | LSP | 中身 |
 |---|---|
 | `publishDiagnostics` | `toy check` の診断そのもの (パース失敗は `diagnose_parse_failure`、それ以外は型検査。lowering はしない)。`related` は `relatedInformation`、コードは `code` |
-| `hover` | 宣言の書いた形 (関数はシグネチャと契約、それ以外は宣言の行)・何であるか (`function greet::twice` / `local a` / `field Rect.w`)・型・宣言の直前の `#` コメント |
+| `hover` | 宣言の書いた形 (関数はシグネチャと契約、それ以外は宣言の行)・何であるか (`function greet::twice` / `local a` / `field Rect.w`)・型 (パターンや範囲 `for` が束縛した名前は式ではないので、使われた位置の式の型)・宣言の直前の `#` コメント |
 | `definition` / `references` | `toy query def` / `refs` と同じ解決。加えて、式でない位置に書いた**型名・trait 名** (`val s: String`、`impl Area for`) も定義へ飛ぶ |
 | `implementation` | trait メソッドの宣言 → 各 impl のメソッド、`dyn` 越しの呼び出し → 候補の impl、trait 名 → impl ブロック |
 | `documentSymbol` | 関数・struct (フィールド)・enum (variant)・trait (メソッド)・`impl` ブロック (メソッド)・`const`、入れ子 |
@@ -164,10 +166,15 @@ documentSymbol は `toy api`、goToImplementation は trait メソッド → imp
 
 ### どのパッケージで検査するか
 
-`toy hook` と同じ規則 (`package::find_checking` に共通化): `src/` の下の
+`toy hook` と同じ規則 (`package::checking_or_standalone` に共通化): `src/` の下の
 モジュールはパッケージの入口から、それ以外 (`main.t`、`tests/*.t`) は
 自分を入口として。**パッケージに属さない `.t` は stdlib だけを root に単独で**
 検査する (エディタは何でも開くので、「no package found」で黙るより答えたほうが良い)。
+**stdlib のモジュール** (stdlib の root の下のファイル) は、何もしない合成の入口
+(`package::STDLIB_CHECK_ENTRY`、ディスクには無い) を通して検査する。stdlib の
+body は呼ばれなくても全部型検査されるので、それでモジュールが検査される。
+モジュール自身を入口にすると、自分を名前で呼ぶ `hex::nibble` が解決できずに
+偽のエラーになる。
 解析は入口ごとに 1 つ持ち、それを必要とする開いた文書が無くなったら捨てて、
 出した診断を空にする。
 
@@ -185,8 +192,12 @@ close すると overlay を外し、ディスクの内容に戻る。
 変更は解析を dirty にするだけで、**既に届いているメッセージを処理し終えてから**
 まとめて再検査し、変わった診断だけを publish する。打鍵の連続は 1 回の検査に
 なる。要求 (hover 等) は自分の解析が dirty なら先に再検査するので、要求より古い
-テキストで答えることはない。パースに失敗した間は**最後にパースできたプログラム**で
-navigation に答える (書きかけの行で hover が消えないように)。
+テキストで答えることはない。パースに失敗した間は、**パーサがエラー回復で作った木**
+(`interpreter::recover_parse_failure`。診断を出すために作って型検査まで通す木を
+そのまま受け取る) で答える。誤りを含む宣言は途中までだが、残りは書いたとおりで、
+位置も今のテキストに合う。以前は最後にパースできたプログラムで答えていたので、
+編集で行がずれると outline も hover もずれ、一度もパースできていない新しい
+ファイルでは何も返らなかった。木が得られないときだけ前のプログラムが残る。
 
 ### 位置
 
@@ -234,9 +245,8 @@ workspaceSymbol / incomingCalls / outgoingCalls、パッケージ外の
 `interpreter/example/dyn_trait_demo.t` で goToImplementation (trait メソッドから
 と `dyn` 越しの呼び出しから) と trait 名の hover。`.t` を Write すると、
 `publishDiagnostics` が次のツール呼び出しに `<new-diagnostics>` として添えて
-届く (`[E0033]` を確認)。パースに失敗した新規ファイルは、パースできた版が無いので
-documentSymbol が空になる。パッケージ外のファイルは LSP が単独で検査するが、
-`toy hook` は黙る (「検査する相手が無い」扱い) — 同じファイルで 2 つの答えが割れる。
+届く (`[E0033]` を確認)。このとき見つけた 2 点 (パースに失敗した新規ファイルの
+documentSymbol が空、パッケージ外のファイルで `toy hook` だけが黙る) は直した。
 別リポジトリで使うなら `command` を PATH 上の `toy` (`cargo install --path toy`、
 stdlib は T1 の配置) に変える — これが T5 の残り。
 
@@ -244,8 +254,6 @@ stdlib は T1 の配置) に変える — これが T5 の残り。
 
 - 補完 (`completion`)、rename、formatting、signatureHelp、semantic tokens
 - 増分同期 (全文同期のみ)、`$/cancelRequest` (要求は 1 本ずつ同期的に処理する)
-- match の腕で束縛した名前の hover に型が出ない (パターンの束縛は式ではなく、
-  型検査器が型を記録していない)
 - trait 名の references (定義と implementation は答える)
 
 ## 7. 非目標

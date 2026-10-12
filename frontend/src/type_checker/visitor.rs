@@ -62,6 +62,13 @@ pub struct TypeCheckerVisitor<'a> {
     /// `val __spawn_N = body` is checked. Handed to
     /// `File::spawn_captures` by the driver.
     pub spawn_captures: HashMap<ExprRef, Vec<(DefaultSymbol, TypeDecl)>>,
+    /// The type of each name read as an operand of a binary operator,
+    /// recorded only when a tool asked for every type (`toy query`,
+    /// `toy lsp`). Operands are visited through `accept_expr`, which
+    /// records nothing, so a local used only in `k + 1u64` would have
+    /// no type to show. Kept apart from `expr_types` so the passes
+    /// that read that map see what they always saw.
+    pub operand_types: Option<HashMap<ExprRef, TypeDecl>>,
     /// The qualifier of the call being visited right now, when it
     /// has more than one segment. Set by `visit_expr`, which is the
     /// only frame that knows the node's `ExprRef`.
@@ -314,6 +321,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             call_paths: HashMap::default(),
             spawn_blocks: rustc_hash::FxHashSet::default(),
             spawn_captures: HashMap::default(),
+            operand_types: None,
             current_call_path: None,
             context: TypeCheckContext::new(),
             type_inference: TypeInferenceState::new(),

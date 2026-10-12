@@ -23,3 +23,4 @@ compiler_lower = { path = "../compiler_lower" }
 frontend = { path = "../frontend", features = ["serde"] }
 interpreter = { path = "../interpreter" }
 serde_json = "1.0"
+string-interner.workspace = true

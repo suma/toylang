@@ -254,6 +254,50 @@ fn an_unsaved_module_is_what_the_entry_is_checked_against() {
 }
 
 #[test]
+fn a_file_that_does_not_parse_still_has_an_outline_and_types() {
+    // Never parsed cleanly, so there is no earlier program to fall back
+    // on: the outline is the recovered tree's, at the text's positions.
+    let pkg = scratch("recover");
+    let text = "\
+fn helper(o: Option<u64>) -> u64 {
+    match o {
+        Option::Some(v) => v + 1u64,
+        Option::None => 0u64,
+    }
+}
+
+fn main() -> u64 {
+    if 1u64 > 0u64 { 1u64 } else if 2u64 > 1u64 { 2u64 } else { 3u64 }
+}
+";
+    write(&pkg, "main.t", text);
+    let main = pkg.0.join("main.t");
+    let mut s = Server::start(&pkg.0);
+    s.open(&main, text);
+    let diags = s.diagnostics(&main);
+    assert!(diags.iter().any(|d| d["code"] == json!("E0033")), "{diags:?}");
+    let symbols = s.request("textDocument/documentSymbol", json!({ "textDocument": { "uri": uri(&main) } }));
+    let names: Vec<(&str, u64)> = symbols
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| (x["name"].as_str().unwrap(), x["selectionRange"]["start"]["line"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(names, vec![("helper", 0), ("main", 7)], "{symbols}");
+
+    // A match arm's payload, used only as an operand, has a type.
+    let hover = s.at("textDocument/hover", &main, 2, 21);
+    assert!(hover["contents"]["value"].as_str().unwrap_or("").contains("`u64`"), "{hover}");
+
+    // An edit that shifts the lines: the outline follows the text, not
+    // the program from before the edit.
+    s.change(&main, &format!("# a comment\n\n{text}"));
+    let symbols = s.request("textDocument/documentSymbol", json!({ "textDocument": { "uri": uri(&main) } }));
+    assert_eq!(symbols[1]["selectionRange"]["start"]["line"], json!(9), "{symbols}");
+    assert_eq!(s.stop(), 0);
+}
+
+#[test]
 fn columns_are_utf16_code_units() {
     let pkg = scratch("utf16");
     // The emoji is 4 bytes but 2 UTF-16 units, so the `n` after it is

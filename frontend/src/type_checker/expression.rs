@@ -431,6 +431,14 @@ impl<'a> TypeCheckerVisitor<'a> {
             ty
         };
 
+        if let Some(types) = self.operand_types.as_mut() {
+            for (operand, ty) in [(lhs, &lhs_ty), (rhs, &rhs_ty)] {
+                if matches!(self.core.expr_pool.get(&operand), Some(Expr::Identifier(_))) {
+                    types.insert(operand, ty.clone());
+                }
+            }
+        }
+
         // STDLIB-ORD: record the operand types when both are `str`, so
         // `apply_str_ordering_rewrites` can find the comparisons it
         // has to turn into `Ord` calls. Operands reach the checker

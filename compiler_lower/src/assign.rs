@@ -419,6 +419,9 @@ impl<'a> FunctionLower<'a> {
                 if let Some(v) = self.try_lower_array_element_leaf_store(lhs, rhs)? {
                     return Ok(v);
                 }
+                if self.try_write_compound_place(lhs, rhs)? {
+                    return Ok(None);
+                }
                 let local = self.resolve_tuple_element_local(&tuple, index)?;
                 let rhs_val = self
                     .lower_expr(rhs)?
@@ -441,20 +444,7 @@ impl<'a> FunctionLower<'a> {
                 if let Some(v) = self.try_lower_array_element_leaf_store(lhs, rhs)? {
                     return Ok(v);
                 }
-                // COMPOUND-CALL-EXPR-POS: a struct-typed field written
-                // whole (`o.p = mk()`, `o.p = q`). The value is built in
-                // scratch locals first and then copied leaf by leaf, so a
-                // right-hand side reading the field itself (`o.p =
-                // o.p.twin()`) sees the old value throughout.
-                if let Ok(super::bindings::FieldChainResult::Struct { struct_id, fields }) = self.resolve_field_chain(lhs) {
-                    let scratch = self.allocate_struct_fields(struct_id);
-                    self.lower_into_struct_fields(rhs, struct_id, &scratch)?;
-                    let from = super::bindings::flatten_struct_locals(&scratch);
-                    let to = super::bindings::flatten_struct_locals(&fields);
-                    for ((src, ty), (dst, _)) in from.into_iter().zip(to) {
-                        let v = self.emit(InstKind::LoadLocal(src), Some(ty)).expect("LoadLocal returns a value");
-                        self.emit(InstKind::StoreLocal { dst, src: v }, None);
-                    }
+                if self.try_write_compound_place(lhs, rhs)? {
                     return Ok(None);
                 }
                 // `obj.field = rhs`. Resolve obj statically to a struct
@@ -470,4 +460,53 @@ impl<'a> FunctionLower<'a> {
         }
     }
 
+
+    /// COMPOUND-CALL-EXPR-POS: a compound place -- a struct field or a
+    /// tuple element whose type is a struct, a tuple or an enum --
+    /// written whole (`o.p = mk()`, `t.0 = mk()`, `o.pair = pr()`).
+    /// `false` when `lhs` is not such a place.
+    ///
+    /// The value is built in scratch locals first and then copied leaf
+    /// by leaf, so a right-hand side that reads the place itself
+    /// (`o.p = o.p.swap()`) sees the old value throughout.
+    fn try_write_compound_place(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<bool, String> {
+        use super::bindings::{
+            flatten_enum_storage_locals, flatten_struct_locals, flatten_tuple_element_locals, FieldChainResult,
+        };
+        let Ok(place) = self.resolve_field_chain(lhs) else {
+            return Ok(false);
+        };
+        let (from, to) = match place {
+            FieldChainResult::Struct { struct_id, fields } => {
+                let scratch = self.allocate_struct_fields(struct_id);
+                self.lower_into_struct_fields(rhs, struct_id, &scratch)?;
+                (flatten_struct_locals(&scratch), flatten_struct_locals(&fields))
+            }
+            FieldChainResult::Tuple { elements } => {
+                let mut scratch = Vec::with_capacity(elements.len());
+                for e in &elements {
+                    let ty = match &e.shape {
+                        super::bindings::TupleElementShape::Scalar { ty, .. } => *ty,
+                        super::bindings::TupleElementShape::Struct { struct_id, .. } => Type::Struct(*struct_id),
+                        super::bindings::TupleElementShape::Tuple { tuple_id, .. } => Type::Tuple(*tuple_id),
+                    };
+                    let shape = self.allocate_tuple_element_shape(ty)?;
+                    scratch.push(super::bindings::TupleElementBinding { index: e.index, shape });
+                }
+                self.lower_into_tuple_elements(rhs, &scratch)?;
+                (flatten_tuple_element_locals(&scratch), flatten_tuple_element_locals(&elements))
+            }
+            FieldChainResult::Enum(storage) => {
+                let scratch = self.allocate_enum_storage(storage.enum_id);
+                self.lower_into_enum_storage(rhs, &scratch)?;
+                (flatten_enum_storage_locals(&scratch), flatten_enum_storage_locals(&storage))
+            }
+            FieldChainResult::Scalar { .. } => return Ok(false),
+        };
+        for ((src, ty), (dst, _)) in from.into_iter().zip(to) {
+            let v = self.emit(InstKind::LoadLocal(src), Some(ty)).expect("LoadLocal returns a value");
+            self.emit(InstKind::StoreLocal { dst, src: v }, None);
+        }
+        Ok(true)
+    }
 }

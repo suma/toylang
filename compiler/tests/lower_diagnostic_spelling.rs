@@ -59,17 +59,18 @@ fn cases() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
         (
             // A struct-returning call goes anywhere a value is built
             // now (COMPOUND-CALL-EXPR-POS: an argument, an array
-            // element, a field, a dropped statement). A tuple's
-            // compound element is still not written whole.
-            "compound tuple element written whole",
-            r#"struct P { x: i64 }
-               fn mk() -> P { P { x: 1i64 } }
+            // element, a field, a tuple element, a dropped statement).
+            // A compound field of an array element is still not read
+            // whole.
+            "compound field of an array element",
+            r#"enum E { A(i64), B }
+               struct H { e: E }
                fn main() -> i64 {
-                 var t = (P { x: 0i64 }, 1i64)
-                 t.0 = mk()
-                 t.1
+                 val hs: [H; 1] = [H { e: E::A(7i64) }]
+                 val e = hs[0u64].e
+                 0i64
                }"#,
-            vec!["tuple `t`", "index 0"],
+            vec!["whole compound value", "bind the element first"],
         ),
         (
             "compound capture in a closure",

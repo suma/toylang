@@ -1407,6 +1407,30 @@ impl<'a> FunctionLower<'a> {
                 reload.apply(self);
                 Ok(())
             }
+            // COMPOUND-CALL-EXPR-POS: an enum read out of a place -- a
+            // field chain (`o.e`, `t.1`) or an array element (`es[i]`,
+            // `hs[i].e`), which the element read hands over through
+            // `pending_enum_value`.
+            Expr::FieldAccess(..) | Expr::TupleAccess(..) | Expr::SliceAccess(..) => {
+                if let Ok(super::bindings::FieldChainResult::Enum(src)) = self.resolve_field_chain(expr_ref)
+                    && src.enum_id == target_enum_id
+                {
+                    self.copy_enum_storage(&src, target);
+                    return Ok(());
+                }
+                self.pending_enum_value = None;
+                self.lower_expr(expr_ref)?;
+                match self.pending_enum_value.take() {
+                    Some(src) if src.enum_id == target_enum_id => {
+                        self.copy_enum_storage(&src, target);
+                        Ok(())
+                    }
+                    _ => Err(format!(
+                        "compiler MVP cannot lower {} as an enum-producing expression in this position",
+                        crate::spelling::describe_expr(self.interner, &expr)
+                    )),
+                }
+            }
             other => Err(format!(
                 "compiler MVP cannot lower {} as an enum-producing expression in this position",
                 crate::spelling::describe_expr(self.interner, &other)

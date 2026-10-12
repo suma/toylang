@@ -12,7 +12,7 @@
 
 ### 2026-10-12
 
-- **COMPOUND-CALL-EXPR-POS — compiled レーンで compound の結果の連鎖 (`mk().twin().get()` / `(a + b).x`)、配列要素・配列リテラル要素・struct フィールドへの丸ごと書き込み (`arr[i] = mk()` / `o.p = mk()`)、値を捨てる呼び出し文 (`mk()`) が通る。注釈つきの compound `val` が右辺のブロックで同じ名前を束縛すると内側の値になっていたのも直した**
+- **COMPOUND-CALL-EXPR-POS — compiled レーンで compound の結果の連鎖 (`mk().twin().get()` / `(a + b).x`)、配列要素・配列リテラル要素・struct フィールドへの丸ごと書き込み (`arr[i] = mk()` / `o.p = mk()`)、値を捨てる呼び出し文 (`mk()`) が通る。タプル要素への丸ごと書き込み (`t.0 = mk()`)、タプル要素へのメソッド、enum を読む場所への `match` (`match es[i]`) も。注釈つきの compound `val` が右辺のブロックで同じ名前を束縛すると内側の値になっていたのも直した**
 - **COMPOUND-TEMP-RECEIVER — 所有しない compound を返す呼び出しへのメソッド (`f().to_str()`、`-> Ordering` と名前で書いた戻り値も) と `println(f())` が compiled レーンで通る (owning_temps が `val` に束縛する。`Display` の書き換えが型を記録していなかった)**
 - **TRAIT-DEFAULT-BODY-T — generic trait の default body が `T` を書ける (`val x: T` / `Vec<T>` / `__builtin_sizeof::<T>()`)。書いた本体は impl の型引数が違うときだけ impl ごとに複製して型を言い直す (`default_body.rs`)。`T::default()` も (`impl Zero<u64>` では `u64` の impl を呼ぶ)**
 - **ITER-BOUND-INFERENCE — `fn f<T, I: Iterator<T>>(it: I)` の `T` を `I` の実型の impl から推論する (型検査と lowering の両方)。bound の中の兄弟の型引数を `Generic` で持つ (cache v72)。`var b: Option<T>` を `-> Option<T>` で返すと「expected Option<T>, got Option<T>」になっていたのも直した**
@@ -818,9 +818,10 @@
 
 - **COMPOUND-CALL-EXPR-POS の残り** ★ — compound を返す呼び出し / 演算子の結果は、
   読み出しの根・連鎖 (`mk().twin().get()`、`(a + b).x`)・配列要素と配列リテラルの要素・
-  struct のフィールドへの丸ごと代入・捨てる文として通る (2026-10-12)。残りは
-  タプルの compound 要素への丸ごと代入 (`t.0 = mk()`) と、配列要素の enum を直接
-  `match` する形 (`match es[0u64]`、`val` に束縛すれば通る)
+  struct のフィールド / タプル要素への丸ごと代入・捨てる文・enum を読む場所への
+  `match` (`match es[i]` / `match h.e`) として通る (2026-10-12)。残りは配列要素の
+  compound なフィールドの読み出し (`hs[i].e`、`val h = hs[i]` してから読めば通る) と、
+  タプルの要素に enum を置く形 (`(1u64, E::A(7i64))`、タプル要素の形に enum が無い)
 
 - **OWNING-TEMP-DROP の残り: 条件つきの位置 / 窓 / ポインタを含む compound** ★ —
   一時値は文の前に `val __temp_N` を出して (前に評価されるスカラーも順に束縛して)

@@ -599,7 +599,7 @@ impl<'a> FunctionLower<'a> {
                 Some(b) => b,
                 None => return Ok(None),
             },
-            Expr::FieldAccess(_, _) => match self.resolve_method_receiver_binding(obj) {
+            Expr::FieldAccess(_, _) | Expr::TupleAccess(_, _) => match self.resolve_method_receiver_binding(obj) {
                 Ok(b) => b,
                 Err(_) => return Ok(None),
             },
@@ -1249,12 +1249,14 @@ impl<'a> FunctionLower<'a> {
                         self.interner.resolve(sym).unwrap_or("?")
                     )
                 }),
-            Expr::FieldAccess(_, _) => {
+            // A tuple element is a step of the same chain (`t.0.swap()`).
+            Expr::FieldAccess(_, _) | Expr::TupleAccess(_, _) => {
                 let chain = self.resolve_field_chain(obj)?;
                 match chain {
                     super::bindings::FieldChainResult::Struct { struct_id, fields } => {
                         Ok(Binding::Struct { struct_id, fields })
                     }
+                    super::bindings::FieldChainResult::Enum(storage) => Ok(Binding::Enum(storage)),
                     _ => Err(format!(
                         "compiler MVP requires nested-field method receivers to resolve to a struct (got {})",
                         super::bindings::field_chain_result_name(&chain)

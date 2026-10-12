@@ -1139,6 +1139,28 @@ impl<'a> FunctionLower<'a> {
                 return Ok(MatchScrutinee::Enum(storage));
             }
         }
+        // COMPOUND-CALL-EXPR-POS: any other enum-typed scrutinee -- an
+        // array element (`match es[i]`), a field of one -- is built
+        // into scratch storage the way a `val` of it would be.
+        if let Some(Type::Enum(enum_id)) = self.value_scalar(scrutinee) {
+            let storage = self.allocate_enum_storage(enum_id);
+            self.lower_into_enum_storage(scrutinee, &storage)?;
+            return Ok(MatchScrutinee::Enum(storage));
+        }
+        // A place the type reader cannot name (`hs[i].e`): its read may
+        // still hand an enum over through `pending_enum_value`.
+        if self.value_scalar(scrutinee).is_none()
+            && matches!(scrut_expr, Expr::FieldAccess(..) | Expr::TupleAccess(..) | Expr::SliceAccess(..))
+        {
+            self.pending_enum_value = None;
+            let v = self.lower_expr(scrutinee)?;
+            if let Some(storage) = self.pending_enum_value.take() {
+                return Ok(MatchScrutinee::Enum(storage));
+            }
+            if v.is_some() {
+                return Err("compiler MVP could not tell the type of this `match` scrutinee; bind it with `val`".to_string());
+            }
+        }
         // Generic scalar scrutinee: lower the expression once.
         let ty = self.value_scalar(scrutinee).ok_or_else(|| {
             "compiler MVP requires `match` scrutinee to be either an enum binding \

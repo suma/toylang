@@ -191,3 +191,59 @@ fn a_compound_is_written_into_any_place() {
         "24\n9\n4\n-1\n4\n3\n2\nmade\nmade\n",
     );
 }
+
+/// COMPOUND-CALL-EXPR-POS: a tuple's compound element written whole
+/// (`t.0 = mk()`, `u.0 = (7, 8)`), a struct's tuple / enum field
+/// (`o.pair = pr()`, `o.e = E::A(9)`), a method on a tuple element
+/// (`t.0.swap()`), and a `match` over an enum read out of a place
+/// (`es[0]`, `es[i]`, `h.e`) rather than a binding.
+#[test]
+fn a_compound_place_is_written_and_matched() {
+    let src = r#"
+        struct P { x: i64, y: i64 }
+        impl P { fn swap(&self) -> P { P { x: self.y, y: self.x } } }
+        enum E { A(i64), B }
+        struct O { pair: (u64, i64), e: E, n: u64 }
+        struct H { e: E }
+        fn mk() -> P { P { x: 1i64, y: 2i64 } }
+        fn pr(a: u64) -> (u64, i64) { (a, -1i64) }
+        fn main() -> u64 {
+            var t = (P { x: 0i64, y: 0i64 }, 1i64)
+            t.0 = mk()
+            println(t.0.x)
+            t.0 = t.0.swap()
+            println(t.0.x)
+            var o = O { pair: (0u64, 0i64), e: E::B, n: 1u64 }
+            o.pair = pr(5u64)
+            println(o.pair.0)
+            o.e = E::A(9i64)
+            val e = o.e
+            match e {
+                E::A(v) => println(v),
+                E::B => println("b"),
+            }
+            var u = ((1u64, 2u64), 3u64)
+            u.0 = (7u64, 8u64)
+            println(u.0.1)
+            val es: [E; 2] = [E::A(4i64), E::B]
+            var s = 0i64
+            match es[0u64] {
+                E::A(v) => { s = v }
+                E::B => {}
+            }
+            val i = 1u64
+            val r = match es[i] {
+                E::A(v) => v,
+                E::B => 100i64,
+            }
+            val h = H { e: E::A(7i64) }
+            val q = match h.e {
+                E::A(v) => v,
+                E::B => 0i64,
+            }
+            println(s + r + q)
+            0u64
+        }
+    "#;
+    assert_renders(src, "compound_place_match", "1\n2\n5\n9\n8\n111\n");
+}

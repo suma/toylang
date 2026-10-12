@@ -108,7 +108,7 @@ documentSymbol は `toy api`、goToImplementation は trait メソッド → imp
   references / implementation / documentSymbol / workspaceSymbol / callHierarchy、
   machine-applicable な提案を quick fix (`codeAction`) として出す。答えは
   `interpreter::query::Index` に足した位置単位の公開 API から取る。
-  Claude Code への登録は `claude-plugin/` (§6)。設計と実測は §6
+  Claude Code への登録は `claude-plugin/` で、組み込み LSP ツールからの動作を確かめた。設計と実測は §6
 
 ### 優先順
 
@@ -219,11 +219,24 @@ LSP はプラグインでしか登録できない。リポジトリに 2 つを�
 - `.claude-plugin/marketplace.json` — このリポジトリをローカル marketplace にする
 
 入れ方は `/plugin marketplace add ./` → `/plugin install toylang@toylang`
-(`cargo build --release -p toy` が先に要る)。`.claude/settings.json` で自動で
+(`cargo build --release -p toy` が先に要る)。CLI なら
+`claude plugin marketplace add ./ --scope local` →
+`claude plugin install toylang@toylang --scope local` で、自分の
+`.claude/settings.local.json` にだけ入る。入れた後は **`/reload-plugins`** で
+読み込まれる (セッションの再起動は要らない)。`.claude/settings.json` で自動で
 有効にする形 (`extraKnownMarketplaces` / `enabledPlugins`) にはしていない —
-プラグインの導入は使う人が選ぶもの、という扱い。**Claude Code の組み込み LSP
-ツールから実際に呼ばれることは、このセッションでは確かめていない** (プラグインの
-読み込みにセッションの再起動が要る)。`claude plugin validate` は通る。
+プラグインの導入は使う人が選ぶもの、という扱い。`claude plugin validate` は通る。
+
+**Claude Code の組み込み LSP ツールからの動作は確かめた** (2026-10-12):
+`poc/logsearch` で documentSymbol / hover (シグネチャ・doc コメント・ローカルの型) /
+goToDefinition (パッケージのモジュールと stdlib へ) / findReferences /
+workspaceSymbol / incomingCalls / outgoingCalls、パッケージ外の
+`interpreter/example/dyn_trait_demo.t` で goToImplementation (trait メソッドから
+と `dyn` 越しの呼び出しから) と trait 名の hover。`.t` を Write すると、
+`publishDiagnostics` が次のツール呼び出しに `<new-diagnostics>` として添えて
+届く (`[E0033]` を確認)。パースに失敗した新規ファイルは、パースできた版が無いので
+documentSymbol が空になる。パッケージ外のファイルは LSP が単独で検査するが、
+`toy hook` は黙る (「検査する相手が無い」扱い) — 同じファイルで 2 つの答えが割れる。
 別リポジトリで使うなら `command` を PATH 上の `toy` (`cargo install --path toy`、
 stdlib は T1 の配置) に変える — これが T5 の残り。
 

@@ -499,7 +499,21 @@ pub fn check_typing_with_core_modules(
     filename: Option<&str>,
     core_modules_dirs: &[std::path::PathBuf],
 ) -> Result<(), Vec<String>> {
-    check_typing_diagnostics(program, string_interner, source_code, filename, core_modules_dirs)
+    check_typing_with_core_modules_at(program, string_interner, source_code, filename, None, core_modules_dirs)
+}
+
+/// [`check_typing_with_core_modules`] for an entry whose `filename` is
+/// a display name; `entry` is the file on disk (see
+/// [`check_typing_diagnostics_at`]).
+pub fn check_typing_with_core_modules_at(
+    program: &mut File,
+    string_interner: &mut DefaultStringInterner,
+    source_code: Option<&str>,
+    filename: Option<&str>,
+    entry: Option<&std::path::Path>,
+    core_modules_dirs: &[std::path::PathBuf],
+) -> Result<(), Vec<String>> {
+    check_typing_diagnostics_at(program, string_interner, source_code, filename, entry, core_modules_dirs)
         .map(|_warnings| ())
         .map_err(|diagnostics| {
             let formatter = ErrorFormatter::with_source_map(
@@ -532,7 +546,23 @@ pub fn check_typing_diagnostics(
     filename: Option<&str>,
     core_modules_dirs: &[std::path::PathBuf],
 ) -> Result<Vec<Diagnostic>, Vec<Diagnostic>> {
-    check_typing_collecting(program, string_interner, source_code, filename, core_modules_dirs, None, None)
+    check_typing_collecting(program, string_interner, source_code, filename, None, core_modules_dirs, None, None)
+}
+
+/// [`check_typing_diagnostics`] for an entry reported under a name that
+/// is not its path — `toy` names it relative to the package, which is
+/// not where the process runs. `entry` is the file on disk: the module
+/// walk compares it with what it discovers, so an entry inside `src/`
+/// is not integrated a second time. `None` reads `filename` as the path.
+pub fn check_typing_diagnostics_at(
+    program: &mut File,
+    string_interner: &mut DefaultStringInterner,
+    source_code: Option<&str>,
+    filename: Option<&str>,
+    entry: Option<&std::path::Path>,
+    core_modules_dirs: &[std::path::PathBuf],
+) -> Result<Vec<Diagnostic>, Vec<Diagnostic>> {
+    check_typing_collecting(program, string_interner, source_code, filename, entry, core_modules_dirs, None, None)
 }
 
 /// As [`check_typing_diagnostics`], and additionally hand back the type
@@ -552,6 +582,7 @@ pub fn check_typing_with_types(
         string_interner,
         source_code,
         filename,
+        None,
         core_modules_dirs,
         None,
         Some(types),
@@ -585,17 +616,20 @@ pub fn check_typing_effects(
         string_interner,
         source_code,
         filename,
+        None,
         core_modules_dirs,
         Some(effects),
         None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_typing_collecting(
     program: &mut File,
     string_interner: &mut DefaultStringInterner,
     source_code: Option<&str>,
     filename: Option<&str>,
+    entry: Option<&std::path::Path>,
     core_modules_dirs: &[std::path::PathBuf],
     mut collect_effects: Option<&mut Vec<FunctionEffects>>,
     collect_types: Option<&mut HashMap<frontend::ast::ExprRef, frontend::type_decl::TypeDecl>>,
@@ -635,9 +669,12 @@ fn check_typing_collecting(
     // can recognise it if it lives inside one of the roots. Without
     // this an entry under `src/` is integrated twice and the copy
     // loses its own top-level `const`s.
-    let entry_path = filename
-        .filter(|f| *f != "-" && !f.starts_with('<'))
-        .map(std::path::PathBuf::from);
+    let entry_path = match entry {
+        Some(path) => Some(path.to_path_buf()),
+        None => filename
+            .filter(|f| *f != "-" && !f.starts_with('<'))
+            .map(std::path::PathBuf::from),
+    };
     use frontend::compile_profile as prof;
     let modules_phase = prof::phase("modules");
     let mut module_parse_errors: Vec<Diagnostic> = Vec::new();
@@ -2565,6 +2602,10 @@ pub struct RunOptions<'a> {
     /// The CLI passes everything after the input file; tests set it
     /// directly. Empty by default.
     pub args: Vec<String>,
+    /// The entry file on disk, when the `filename` given to
+    /// [`run_source`] is a display name rather than a path (`toy`
+    /// reports the entry relative to its package).
+    pub entry_path: Option<std::path::PathBuf>,
 }
 
 /// Outcome of [`run_source`]. `exit_code` mirrors the value the
@@ -2916,11 +2957,12 @@ pub fn run_source(
         options.diagnostics_json,
         options.core_modules_dirs,
     )?;
-    match check_typing_diagnostics(
+    match check_typing_diagnostics_at(
         &mut program,
         session.string_interner_mut(),
         Some(source),
         Some(filename),
+        options.entry_path.as_deref(),
         options.core_modules_dirs,
     ) {
         Err(diagnostics) => {

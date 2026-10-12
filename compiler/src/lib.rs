@@ -153,11 +153,12 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
         }
     }
     let diagnostics_json = options.diagnostics_json;
-    let warnings = interpreter::check_typing_diagnostics(
+    let warnings = interpreter::check_typing_diagnostics_at(
         &mut program,
         session.string_interner_mut(),
         Some(&source),
         Some(options.entry_name().as_str()),
+        Some(options.input.as_path()),
         &core_modules_dirs,
     )
     .map_err(|diagnostics| {

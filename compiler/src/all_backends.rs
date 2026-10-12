@@ -351,6 +351,7 @@ fn run_interpreter(
     let core = crate::resolve_core_modules_dirs(options.core_modules_dirs.clone());
     let mut run_options = interpreter::RunOptions::default();
     run_options.core_modules_dirs = &core;
+    run_options.entry_path = Some(options.input.clone());
     if profile.enabled() {
         interpreter::heap::reset_profile();
     }

@@ -573,6 +573,7 @@ fn cmd_build(args: &Args) -> Result<(), String> {
         pkg.ensure_dir(parent)?;
     }
     let mut options = CompilerOptions::new(pkg.entry.clone());
+    options.display_name = Some(pkg.entry_display());
     options.output = Some(out.clone());
     options.emit = EmitKind::Executable;
     options.release = args.release;
@@ -671,6 +672,7 @@ fn run_all_backends(args: &Args, pkg: &package::Package) -> Result<(), String> {
     let source = read_entry(pkg)?;
     let filename = pkg.entry.to_string_lossy().into_owned();
     let mut options = CompilerOptions::new(pkg.entry.clone());
+    options.display_name = Some(pkg.entry_display());
     options.release = args.release;
     options.core_modules_dirs = pkg.module_roots.clone();
     options.link_cache_dir = Some(pkg.link_cache_dir());
@@ -693,7 +695,7 @@ fn run_all_backends(args: &Args, pkg: &package::Package) -> Result<(), String> {
     let code = compiler::all_backends::run_with(
         &options,
         &source,
-        &filename,
+        &pkg.entry_display(),
         compiler::all_backends::ProfileMode::Off,
         heap_check,
         args.json,
@@ -710,6 +712,7 @@ fn run_aot(args: &Args, pkg: &package::Package) -> Result<(), String> {
         pkg.ensure_dir(parent)?;
     }
     let mut options = CompilerOptions::new(pkg.entry.clone());
+    options.display_name = Some(pkg.entry_display());
     options.output = Some(out.clone());
     options.release = args.release;
     options.core_modules_dirs = pkg.module_roots.clone();
@@ -760,6 +763,7 @@ fn run_in_process(
         // The compiler-side JIT, which is the one that compiles rather
         // than falling back silently.
         let mut options = CompilerOptions::new(pkg.entry.clone());
+        options.display_name = Some(pkg.entry_display());
         options.release = args.release;
         options.core_modules_dirs = pkg.module_roots.clone();
         options.verbose = args.verbose;
@@ -772,6 +776,7 @@ fn run_in_process(
     options.core_modules_dirs = &pkg.module_roots;
     options.args = args.program_args.clone();
     options.diagnostics_json = args.json;
+    options.entry_path = Some(pkg.entry.clone());
     // `tree` asks for the tree-walker, which `run_source` reaches by
     // way of the engine choice inside the interpreter; `vm` is the
     // default engine. Neither takes a flag here today, so `tree` is
@@ -782,7 +787,7 @@ fn run_in_process(
     // after the JSON array when that was asked for. `interpreter`
     // exits the same way.
     args.start_interpreter_heap_check();
-    let result = interpreter::run_source(&source, &filename, &options);
+    let result = interpreter::run_source(&source, &pkg.entry_display(), &options);
     if args.heap_check.is_some() {
         // stderr, as `interpreter --heap-check` prints it.
         eprint!("{}", interpreter::heap::heap_check_report());

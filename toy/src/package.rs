@@ -50,6 +50,18 @@ impl Profile {
 }
 
 impl Package {
+    /// The entry as diagnostics name it: relative to the package, as
+    /// its modules (`src/greet.t`) already are, so a report reads the
+    /// same however the package was named on the command line. An
+    /// entry outside the root keeps its path.
+    pub fn entry_display(&self) -> String {
+        self.entry
+            .strip_prefix(&self.root)
+            .unwrap_or(&self.entry)
+            .to_string_lossy()
+            .into_owned()
+    }
+
     /// The name used for the default output binary: the root
     /// directory's own name.
     pub fn name(&self) -> String {

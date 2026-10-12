@@ -445,6 +445,36 @@ fn a_test_failure_reads_the_same_on_both_lanes() {
 }
 
 #[test]
+fn run_names_the_entry_relative_to_the_package() {
+    // Modules were already `src/m.t`; the entry was the path as typed
+    // (absolute here), on every lane and in the binary `build` makes.
+    // The process runs outside the package, so the entry under `src/`
+    // also checks that the walk still recognises it on disk (it holds
+    // a `const`, which a second integration used to lose).
+    let pkg = scratch("run_entry_display");
+    write(&pkg, "main.t", "fn main() -> u64 {\n    val n = 2u64\n    1u64 - n\n}\n");
+    write(&pkg, "src/tool.t", "const K: u64 = 7u64\nfn main() -> u64 {\n    1u64 - K\n}\n");
+    let root = pkg.0.to_str().unwrap();
+    let tool = pkg.0.join("src/tool.t");
+    let tool = tool.to_str().unwrap();
+    for backend in ["vm", "aot", "jit", "all"] {
+        for (entry, expected) in [(root, "Error at main.t:3:"), (tool, "Error at src/tool.t:3:")] {
+            let out = run(&pkg, &["run", entry, "--backend", backend]);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                stderr.contains(expected) && !stderr.contains(root),
+                "{backend} {entry}\nstderr: {stderr}"
+            );
+        }
+    }
+    let built = run(&pkg, &["build", root]);
+    let exe = String::from_utf8_lossy(&built.stdout).trim().to_string();
+    let out = Command::new(&exe).output().expect("spawn the built binary");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Error at main.t:3:") && !stderr.contains(root), "build\nstderr: {stderr}");
+}
+
+#[test]
 fn a_filter_selects_by_name_and_a_path_still_reads_as_a_path() {
     // `toy test <filter> <path>` in either order: the argument that
     // names something on disk is the path.

@@ -185,11 +185,12 @@ pub fn compile_to_jit_main_with_options(
     // file is a disagreement nobody meant to introduce.
     let display_name = options.entry_name();
     if options.diagnostics_json {
-        interpreter::check_typing_diagnostics(
+        interpreter::check_typing_diagnostics_at(
             &mut program,
             session.string_interner_mut(),
             Some(source),
             Some(&display_name),
+            Some(options.input.as_path()),
             &core_modules_dirs,
         )
         .map_err(|diagnostics| {
@@ -197,11 +198,12 @@ pub fn compile_to_jit_main_with_options(
             format!("{} type-check error(s)", diagnostics.len())
         })?;
     } else {
-        interpreter::check_typing_with_core_modules(
+        interpreter::check_typing_with_core_modules_at(
             &mut program,
             session.string_interner_mut(),
             Some(source),
             Some(&display_name),
+            Some(options.input.as_path()),
             &core_modules_dirs,
         )
         .map_err(|errors| format!("type-check failed:\n  {}", errors.join("\n  ")))?;

@@ -309,6 +309,26 @@ impl LocationPool {
         self.stmt_locations.get(stmt_ref.to_index())?.as_ref()
     }
 
+    /// The location of an expression added after the pools stopped
+    /// growing in step (a copied subtree, TRAIT-DEFAULT-BODY-T): pads
+    /// the slots in between with `None`.
+    pub fn put_expr_location(&mut self, expr_ref: &ExprRef, location: Option<SourceLocation>) {
+        let i = expr_ref.to_index();
+        if self.expr_locations.len() <= i {
+            self.expr_locations.resize(i + 1, None);
+        }
+        self.expr_locations[i] = location;
+    }
+
+    /// The statement form of `put_expr_location`.
+    pub fn put_stmt_location(&mut self, stmt_ref: &StmtRef, location: Option<SourceLocation>) {
+        let i = stmt_ref.to_index();
+        if self.stmt_locations.len() <= i {
+            self.stmt_locations.resize(i + 1, None);
+        }
+        self.stmt_locations[i] = location;
+    }
+
     pub fn set_expr_location(&mut self, expr_ref: &ExprRef, location: SourceLocation) {
         if let Some(loc) = self.expr_locations.get_mut(expr_ref.to_index()) {
             *loc = Some(location);

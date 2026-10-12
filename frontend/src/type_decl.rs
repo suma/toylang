@@ -665,6 +665,39 @@ impl TypeDecl {
         }
     }
 
+    /// `self` with every bare name in `params` written as the type
+    /// parameter it is (`Generic`). A type parameter reaches the AST as
+    /// `Identifier(T)` or an argument-less `Struct(T)` wherever it was
+    /// parsed without the parameter list in scope (a bound naming a
+    /// sibling, a default body's annotation), and only `Generic(T)` is
+    /// substituted or compared as the parameter.
+    pub fn name_params_generic(&self, params: &[DefaultSymbol]) -> TypeDecl {
+        let walk = |args: &[TypeDecl]| -> TypeList {
+            args.iter().map(|a| a.name_params_generic(params)).collect::<Vec<_>>().into()
+        };
+        match self {
+            TypeDecl::Identifier(s) if params.contains(s) => TypeDecl::Generic(*s),
+            TypeDecl::Struct(s, args) | TypeDecl::Enum(s, args) if args.is_empty() && params.contains(s) => {
+                TypeDecl::Generic(*s)
+            }
+            TypeDecl::Struct(s, args) => TypeDecl::Struct(*s, walk(args)),
+            TypeDecl::Enum(s, args) => TypeDecl::Enum(*s, walk(args)),
+            TypeDecl::Tuple(elems) => TypeDecl::Tuple(walk(elems)),
+            TypeDecl::Array(elems, size, soa) => TypeDecl::Array(walk(elems), size.clone(), *soa),
+            TypeDecl::Dict(k, v) => TypeDecl::Dict(
+                Rc::new(k.name_params_generic(params)),
+                Rc::new(v.name_params_generic(params)),
+            ),
+            TypeDecl::Range(t) => TypeDecl::Range(Rc::new(t.name_params_generic(params))),
+            TypeDecl::Ref { is_mut, inner } => TypeDecl::Ref {
+                is_mut: *is_mut,
+                inner: Rc::new(inner.name_params_generic(params)),
+            },
+            TypeDecl::Function(args, ret) => TypeDecl::Function(walk(args), Rc::new(ret.name_params_generic(params))),
+            other => other.clone(),
+        }
+    }
+
     pub fn substitute_generics(&self, substitutions: &rustc_hash::FxHashMap<DefaultSymbol, TypeDecl>) -> TypeDecl {
         match self {
             TypeDecl::Generic(param) => {

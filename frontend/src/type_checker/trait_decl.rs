@@ -15,7 +15,7 @@
 
 use std::rc::Rc;
 use string_interner::DefaultSymbol;
-use crate::ast::{MethodFunction, Stmt, StmtPool, StmtRef, TraitMethodSignature, Visibility};
+use crate::ast::{ExprPool, LocationPool, MethodFunction, Stmt, StmtPool, StmtRef, TraitMethodSignature, Visibility};
 use crate::type_decl::TypeDecl;
 use crate::type_checker::{TypeCheckerVisitor, TypeCheckError};
 
@@ -380,7 +380,10 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// `check_typing` calls the free function directly to avoid creating
     /// a `TypeCheckerVisitor` just for the AST mutation.
     pub fn expand_trait_defaults(&mut self) -> Result<(), TypeCheckError> {
-        expand_trait_defaults_in_pool(self.core.stmt_pool);
+        // The locations are read-only here; a copied body goes without
+        // them (the interpreter's `check_typing` expands first, with
+        // them, and this second call then finds nothing to add).
+        expand_trait_defaults_in_pools(self.core.stmt_pool, self.core.expr_pool, None);
         Ok(())
     }
 }
@@ -409,6 +412,26 @@ impl<'a> TypeCheckerVisitor<'a> {
 /// violation of the trait's own contract is reported before any the
 /// impl adds.
 pub fn expand_trait_defaults_in_pool(stmt_pool: &mut StmtPool) {
+    expand_defaults(stmt_pool, None, None);
+}
+
+/// `expand_trait_defaults_in_pool` with the expression pool and the
+/// locations at hand, so a default body that spells the trait's
+/// parameters can be restated per impl (TRAIT-DEFAULT-BODY-T, see
+/// `default_body.rs`). Without them such a body stays shared.
+pub fn expand_trait_defaults_in_pools(
+    stmt_pool: &mut StmtPool,
+    expr_pool: &mut ExprPool,
+    locations: Option<&mut LocationPool>,
+) {
+    expand_defaults(stmt_pool, Some(expr_pool), locations);
+}
+
+fn expand_defaults(
+    stmt_pool: &mut StmtPool,
+    mut expr_pool: Option<&mut ExprPool>,
+    mut locations: Option<&mut LocationPool>,
+) {
     inherit_trait_contracts(stmt_pool);
     // Pass 1: index trait default bodies by trait name.
     let mut defaults: rustc_hash::FxHashMap<
@@ -459,10 +482,9 @@ pub fn expand_trait_defaults_in_pool(stmt_pool: &mut StmtPool) {
         // trait's own parameters (`T` in `trait Iterator<T>`), but it
         // is installed on an impl that names them differently
         // (`impl<A, B> Iterator<(A, B)> for ZipIter<A, B>`). The
-        // signature is what callers and the compiled lanes read, so it
-        // is restated in the impl's terms. The body is shared between
-        // impls and is not rewritten -- it must not spell the trait's
-        // parameters itself (see `core/std/iter.t`).
+        // signature is restated in the impl's terms, and so is a body
+        // that spells a parameter (TRAIT-DEFAULT-BODY-T): it is copied
+        // for this impl. One that does not stays shared.
         let mut subst: rustc_hash::FxHashMap<DefaultSymbol, TypeDecl> =
             rustc_hash::FxHashMap::default();
         if trait_generic_params.len() == trait_type_args.len() {
@@ -479,7 +501,19 @@ pub fn expand_trait_defaults_in_pool(stmt_pool: &mut StmtPool) {
             if new_methods.iter().any(|m| m.name == sig.name) {
                 continue;
             }
-            let body = sig.body.expect("filtered by Pass 1");
+            let mut body = sig.body.expect("filtered by Pass 1");
+            if let Some(exprs) = expr_pool.as_deref_mut()
+                && let Some(copy) = crate::type_checker::default_body::restate_default_body(
+                    stmt_pool,
+                    exprs,
+                    locations.as_deref_mut(),
+                    body,
+                    trait_generic_params,
+                    &subst,
+                )
+            {
+                body = copy;
+            }
             new_methods.push(synthesize_default_method(
                 sig,
                 body,

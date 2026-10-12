@@ -3820,13 +3820,33 @@ impl's bounds apply to the bodies it inherits, so an empty
 `impl<T: Ord> OrdIterator<T> for VecIter<T> {}` makes `T: Ord` hold
 inside `OrdIterator`'s default bodies.
 
+The **body** may spell the trait's type parameters too (`val x: T`,
+`Vec<T>`, `__builtin_sizeof::<T>()`). Where an impl names them
+differently (`impl Source<u8> for Bytes`, `impl<A, B> Source<B> for
+Pairs<A, B>`), the body is copied for that impl with every type in it
+restated, so `T` means `u8` in one and `B` in the other:
+
+```rust
+trait Source<T> {
+    fn get(&self, i: u64) -> T
+    fn size(&self) -> u64
+    fn gather(&self) -> Vec<T> {
+        var out: Vec<T> = Vec::new()
+        for i in 0u64..self.size() {
+            val x: T = self.get(i)
+            out.push(x)
+        }
+        out
+    }
+}
+```
+
+A body that does not spell them stays one body shared by every impl.
+
 Current limitations:
 
-- The **body** of a default is one body shared by every impl and is
-  not rewritten, so it must not spell the trait's type parameter
-  (`val x: T = ...`, `T::default()`): in an impl that names its
-  parameters differently, `T` would mean the impl's `T`. Take types
-  from the signature and from calls instead (`var best = it.next()`).
+- A type parameter cannot be used as a path (`T::default()`) in any
+  generic body, a default one included.
 - A method type parameter shares a namespace with the impl's, so
   spell it so it cannot meet one (`Acc`, not `A`).
 - No `super` / `Trait::default_method` syntax for invoking the

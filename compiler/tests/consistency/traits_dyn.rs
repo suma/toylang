@@ -1326,3 +1326,64 @@ fn a_generic_function_can_borrow_a_primitive() {
     "#;
     assert_stdout_consistent(src, "generic_borrow_primitive");
 }
+
+/// TRAIT-DEFAULT-BODY-T: a generic trait's default body may spell the
+/// trait's parameter (`var out: Vec<T>`, `val x: T`, `r: T`,
+/// `__builtin_sizeof::<T>()`). An impl naming it differently gets its
+/// own copy of the body with `T` restated -- `u8` for `Bytes`, `B`
+/// for `Pairs<A, B>` -- where the shared body made `T` mean nothing
+/// (`expected Vec<u8>, found Vec<T>`) or the impl's own `A`.
+#[test]
+fn a_default_body_spells_the_traits_parameter() {
+    let src = r#"
+        trait Source<T> {
+            fn get(&self, i: u64) -> T
+            fn size(&self) -> u64
+            fn gather(&self) -> Vec<T> {
+                var out: Vec<T> = Vec::new()
+                for i in 0u64..self.size() {
+                    val x: T = self.get(i)
+                    out.push(x)
+                }
+                out
+            }
+            fn last_or(&self, d: T) -> T {
+                var r: T = d
+                for i in 0u64..self.size() {
+                    r = self.get(i)
+                }
+                r
+            }
+            fn width(&self) -> u64 {
+                __builtin_sizeof::<T>()
+            }
+        }
+        struct Bytes { n: u64 }
+        impl Source<u8> for Bytes {
+            fn get(&self, i: u64) -> u8 { (i as u8) + 10u8 }
+            fn size(&self) -> u64 { self.n }
+        }
+        struct Pairs<A, B> { a: A, b: B, n: u64 }
+        impl<A, B> Source<B> for Pairs<A, B> {
+            fn get(&self, i: u64) -> B { self.b }
+            fn size(&self) -> u64 { self.n }
+        }
+        fn main() -> u64 {
+            val b = Bytes { n: 3u64 }
+            val v = b.gather()
+            println(v.size())
+            println(v.get(2u64))
+            println(b.width())
+            val e = Bytes { n: 0u64 }
+            println(e.last_or(42u8))
+            val p: Pairs<u8, i64> = Pairs { a: 1u8, b: -7i64, n: 2u64 }
+            val w = p.gather()
+            println(w.get(1u64))
+            println(p.width())
+            val q: Pairs<u8, i64> = Pairs { a: 1u8, b: -7i64, n: 0u64 }
+            println(q.last_or(9i64))
+            0u64
+        }
+    "#;
+    assert_renders(src, "traits_default_body_t", "3\n12\n1\n42\n-7\n8\n9\n");
+}

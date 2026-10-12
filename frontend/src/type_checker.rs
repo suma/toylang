@@ -41,7 +41,8 @@ mod statement;
 mod struct_literal;
 mod impl_block;
 mod trait_decl;
-pub use trait_decl::expand_trait_defaults_in_pool;
+mod default_body;
+pub use trait_decl::{expand_trait_defaults_in_pool, expand_trait_defaults_in_pools};
 mod trait_overload;
 pub use trait_overload::{
     base_method_name, find_duplicate_impl_method, DuplicateImplMethod, mangle_overloaded_trait_impls,

@@ -739,7 +739,11 @@ fn check_typing_collecting(
     // run time) sees the synthesized methods as if the user had
     // written them. Must run after `integrate_modules` so trait
     // declarations from imported / prelude modules are visible.
-    frontend::type_checker::expand_trait_defaults_in_pool(&mut program.statement);
+    frontend::type_checker::expand_trait_defaults_in_pools(
+        &mut program.statement,
+        &mut program.expression,
+        Some(&mut program.location_pool),
+    );
 
     // ERROR_MODEL E1: give each impl of a generic trait its own method
     // name when two of them would land in the same registry slot

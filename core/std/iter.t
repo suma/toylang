@@ -53,14 +53,14 @@
 # `next` (NEXT-ITEM-ALIAS), so binding the result does not free the
 # element out from under the container.
 #
-# **How the bodies are written matters.** A default body is shared by
-# every impl, and the impls name their element type differently
-# (`impl<T, U> Iterator<U> for MapIter<T, U>`). The signatures are
-# restated in each impl's terms when the default is installed, but the
-# body is not rewritten, so **a default body here must not spell `T`**
-# -- it takes types from `self.next()` and the signature instead.
-# A method's own type parameter is spelled `Acc`, not a single letter,
-# so it cannot meet an impl's own `A` / `B` (`ZipIter<A, B>`).
+# The impls name their element type differently (`impl<T, U>
+# Iterator<U> for MapIter<T, U>`). The signatures are restated in each
+# impl's terms when the default is installed, and a body that spells
+# `T` is copied per impl with `T` restated too (TRAIT-DEFAULT-BODY-T).
+# These bodies take their types from `self.next()` and the signature
+# instead, so they stay one shared body. A method's own type parameter
+# is spelled `Acc`, not a single letter, so it cannot meet an impl's
+# own `A` / `B` (`ZipIter<A, B>`).
 #
 # In the compiled lanes a closure argument can only take and return
 # scalars, so `fold` / `any` / `all` / `position` / `find` over an

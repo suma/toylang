@@ -218,7 +218,7 @@ core/` で確認)。
 > `min` / `max` / `sum` は opt-in の `OrdIterator<T>` / `SumIterator<T>`
 > (`core/std/iter.t`)。下の表の中間アダプタ (`take` / `skip` / `rev` /
 > `chain` / `filter_map`) は未着手。経緯は `docs/language.md` の
-> Terminal operations と todo の TRAIT-DEFAULT-BODY-T。イテレータを受ける自由関数は `<T, I: Iterator<T>>` で書ける (ITER-BOUND-INFERENCE、2026-10-12)。
+> Terminal operations。イテレータを受ける自由関数は `<T, I: Iterator<T>>` で書ける (ITER-BOUND-INFERENCE、2026-10-12)。
 
 **`VecIter` / `DictIter` / `StringIter` に終端操作が 1 つも無い**
 (`collect` を除く)。`map` / `filter` / `enumerate` / `zip` という

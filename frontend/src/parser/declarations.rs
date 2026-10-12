@@ -368,28 +368,10 @@ impl<'a> Parser<'a> {
         // parameter it is, the `T` of `I`'s bound is the same type as
         // the `T` of the signature and the body.
         for bound in bounds.values_mut() {
-            *bound = name_generic_params(bound, &params);
+            *bound = bound.name_params_generic(&params);
         }
 
         Ok((params, bounds))
     }
 }
 
-/// `ty` with every bare name in `params` written as `Generic`.
-fn name_generic_params(ty: &TypeDecl, params: &[DefaultSymbol]) -> TypeDecl {
-    let walk = |args: &[TypeDecl]| -> Vec<TypeDecl> { args.iter().map(|a| name_generic_params(a, params)).collect() };
-    match ty {
-        TypeDecl::Identifier(s) if params.contains(s) => TypeDecl::Generic(*s),
-        TypeDecl::Struct(s, args) | TypeDecl::Enum(s, args) if args.is_empty() && params.contains(s) => {
-            TypeDecl::Generic(*s)
-        }
-        TypeDecl::Struct(s, args) => TypeDecl::Struct(*s, walk(args).into()),
-        TypeDecl::Enum(s, args) => TypeDecl::Enum(*s, walk(args).into()),
-        TypeDecl::Tuple(elems) => TypeDecl::Tuple(walk(elems).into()),
-        TypeDecl::Ref { is_mut, inner } => TypeDecl::Ref {
-            is_mut: *is_mut,
-            inner: std::rc::Rc::new(name_generic_params(inner, params)),
-        },
-        other => other.clone(),
-    }
-}

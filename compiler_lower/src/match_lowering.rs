@@ -786,6 +786,7 @@ impl<'a> FunctionLower<'a> {
                 TupleElementShape::Tuple { elements, .. } => FieldShape::Tuple {
                     elements: elements.clone(),
                 },
+                TupleElementShape::Enum(storage) => FieldShape::Enum(storage.clone()),
             };
             self.bind_field_shape_for_inference(&shape, sub);
         }
@@ -901,6 +902,7 @@ impl<'a> FunctionLower<'a> {
                 TupleElementShape::Tuple { elements, .. } => FieldShape::Tuple {
                     elements: elements.clone(),
                 },
+                TupleElementShape::Enum(storage) => FieldShape::Enum(storage.clone()),
             };
             self.dispatch_field_shape_pattern(&shape, sub, fail_blk)?;
         }
@@ -1147,10 +1149,15 @@ impl<'a> FunctionLower<'a> {
             self.lower_into_enum_storage(scrutinee, &storage)?;
             return Ok(MatchScrutinee::Enum(storage));
         }
-        // A place the type reader cannot name (`hs[i].e`): its read may
-        // still hand an enum over through `pending_enum_value`.
+        // A place the type reader cannot name (`hs[i].e`), or the block
+        // OWNING-TEMP-DROP makes of `mk().1` (`{ val __temp = mk()
+        // __temp.1 }`): its read may still hand an enum over through
+        // `pending_enum_value`.
         if self.value_scalar(scrutinee).is_none()
-            && matches!(scrut_expr, Expr::FieldAccess(..) | Expr::TupleAccess(..) | Expr::SliceAccess(..))
+            && matches!(
+                scrut_expr,
+                Expr::FieldAccess(..) | Expr::TupleAccess(..) | Expr::SliceAccess(..) | Expr::Block(..)
+            )
         {
             self.pending_enum_value = None;
             let v = self.lower_expr(scrutinee)?;

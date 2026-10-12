@@ -108,18 +108,13 @@ fn resolve_leaf_path(
         }
     }
     match ty {
-        // The chain lands on a scalar leaf — the shortcut's target.
+        // The chain lands on a scalar leaf — the shortcut's target —
+        // or on a compound whose leaves are `acc..acc + count`
+        // (COMPOUND-CALL-EXPR-POS: `hs[i].e`, read and written leaf by
+        // leaf).
         Type::I64 | Type::U64 | Type::F64 | Type::F32 | Type::Bool
         | Type::I8 | Type::U8 | Type::I16 | Type::U16 | Type::I32 | Type::U32
-        | Type::Str => Ok(Some((acc, ty))),
-        // A compound value the chain stops short of: reading it
-        // whole needs the pending-compound channel, so point the
-        // user at the element-binding form instead.
-        Type::Struct(_) | Type::Tuple(_) | Type::Enum(_) => Err(
-            "field chain names a whole compound value; bind the element first (`val p = ps[i]`) \
-             and access fields on the binding"
-                .to_string(),
-        ),
+        | Type::Str | Type::Struct(_) | Type::Tuple(_) | Type::Enum(_) => Ok(Some((acc, ty))),
         _ => Ok(None),
     }
 }
@@ -191,6 +186,12 @@ impl<'a> FunctionLower<'a> {
         &mut self,
         obj: &ExprRef,
     ) -> Result<Option<ExprRef>, String> {
+        if !self.materialised_roots.contains_key(obj)
+            && let Some(result) = self.materialise_array_element_place(obj)?
+        {
+            self.materialised_roots.insert(*obj, result);
+            return Ok(Some(*obj));
+        }
         let root = self.chain_root(*obj);
         if self.materialised_roots.contains_key(&root) {
             return Ok(None);
@@ -430,6 +431,9 @@ impl<'a> FunctionLower<'a> {
                     TupleElementShape::Tuple { elements, .. } => Ok(FieldChainResult::Tuple {
                         elements: elements.clone(),
                     }),
+                    TupleElementShape::Enum(storage) => {
+                        Ok(FieldChainResult::Enum((**storage).clone()))
+                    }
                 }
             }
             Expr::FieldAccess(inner, field_sym) => {
@@ -603,6 +607,16 @@ impl<'a> FunctionLower<'a> {
     /// land on a *scalar* leaf: a compound stopover keeps the
     /// pending-compound channel shape (`val p = ps[i]` then `p.x`).
     pub(super) fn resolve_array_element_leaf(
+        &self,
+        expr: &ExprRef,
+    ) -> Result<Option<ArrayElementLeaf>, String> {
+        Ok(self.resolve_array_element_place(expr)?.filter(|info| info.leaf_ty.is_scalar()))
+    }
+
+    /// [`Self::resolve_array_element_leaf`] without the scalar filter:
+    /// a chain that stops at a compound (`hs[i].e`, `hs[i]` itself)
+    /// comes back with that compound type and its first leaf.
+    fn resolve_array_element_place(
         &self,
         expr: &ExprRef,
     ) -> Result<Option<ArrayElementLeaf>, String> {
@@ -872,7 +886,7 @@ impl<'a> FunctionLower<'a> {
         lhs: &ExprRef,
         rhs: &ExprRef,
     ) -> Result<Option<Option<ValueId>>, String> {
-        let Some(info) = self.resolve_array_element_leaf(lhs)? else {
+        let Some(info) = self.resolve_array_element_place(lhs)? else {
             return Ok(None);
         };
         let Some(Binding::Array { length, storage, .. }) =
@@ -880,6 +894,24 @@ impl<'a> FunctionLower<'a> {
         else {
             return Ok(None);
         };
+        if !info.leaf_ty.is_scalar() {
+            // COMPOUND-CALL-EXPR-POS: `hs[i].e = E::B` -- the value is
+            // built in scratch first (so a right side reading the
+            // place sees the old value), then stored over the place's
+            // leaves.
+            let (scratch, leaves) = self.allocate_place_scratch(info.leaf_ty)?;
+            self.lower_into_place_scratch(rhs, &scratch)?;
+            let (idx_v, const_i) = self.lower_array_element_index(&info, length)?;
+            for (k, (local, ty)) in leaves.into_iter().enumerate() {
+                let leaf = ArrayElementLeaf { leaf: info.leaf + k, leaf_ty: ty, ..info };
+                let v = self
+                    .emit(InstKind::LoadLocal(local), Some(ty))
+                    .expect("LoadLocal returns a value");
+                let (slot, index) = self.array_leaf_slot(&leaf, &storage, idx_v, const_i);
+                self.emit(InstKind::ArrayStore { slot, index, value: v, elem_ty: ty }, None);
+            }
+            return Ok(Some(None));
+        }
         let (idx_v, const_i) = self.lower_array_element_index(&info, length)?;
         let v = self
             .lower_expr(rhs)?
@@ -895,5 +927,81 @@ impl<'a> FunctionLower<'a> {
             None,
         );
         Ok(Some(Some(v)))
+    }
+
+    /// COMPOUND-CALL-EXPR-POS: a chain rooted at an array element that
+    /// stops at a compound (`hs[i].e`, `hs[i].p`) -- load just that
+    /// compound's leaves into fresh storage, the way a call root is
+    /// materialised. `Ok(None)` for any other expression.
+    fn materialise_array_element_place(
+        &mut self,
+        expr: &ExprRef,
+    ) -> Result<Option<FieldChainResult>, String> {
+        let Some(info) = self.resolve_array_element_place(expr)? else {
+            return Ok(None);
+        };
+        if info.leaf_ty.is_scalar() {
+            return Ok(None);
+        }
+        let Some(Binding::Array { length, storage, .. }) =
+            self.bindings.get(&info.arr_sym).cloned()
+        else {
+            return Ok(None);
+        };
+        let (scratch, leaves) = self.allocate_place_scratch(info.leaf_ty)?;
+        let (idx_v, const_i) = self.lower_array_element_index(&info, length)?;
+        for (k, (local, ty)) in leaves.into_iter().enumerate() {
+            let leaf = ArrayElementLeaf { leaf: info.leaf + k, leaf_ty: ty, ..info };
+            let (slot, index) = self.array_leaf_slot(&leaf, &storage, idx_v, const_i);
+            let v = self
+                .emit(InstKind::ArrayLoad { slot, index, elem_ty: ty }, Some(ty))
+                .expect("ArrayLoad returns");
+            self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
+        }
+        Ok(Some(scratch))
+    }
+
+    /// Fresh storage for a compound of type `ty`, and its leaves in the
+    /// order an array element lays them out.
+    fn allocate_place_scratch(
+        &mut self,
+        ty: Type,
+    ) -> Result<(FieldChainResult, Vec<(LocalId, Type)>), String> {
+        use super::bindings::{
+            flatten_enum_storage_locals, flatten_struct_locals, flatten_tuple_element_locals,
+        };
+        Ok(match ty {
+            Type::Struct(struct_id) => {
+                let fields = self.allocate_struct_fields(struct_id);
+                let leaves = flatten_struct_locals(&fields);
+                (FieldChainResult::Struct { struct_id, fields }, leaves)
+            }
+            Type::Tuple(tuple_id) => {
+                let elements = self.allocate_tuple_elements(tuple_id)?;
+                let leaves = flatten_tuple_element_locals(&elements);
+                (FieldChainResult::Tuple { elements }, leaves)
+            }
+            Type::Enum(enum_id) => {
+                let storage = self.allocate_enum_storage(enum_id);
+                let leaves = flatten_enum_storage_locals(&storage);
+                (FieldChainResult::Enum(storage), leaves)
+            }
+            _ => return Err("array element place is not a compound".to_string()),
+        })
+    }
+
+    fn lower_into_place_scratch(
+        &mut self,
+        value: &ExprRef,
+        scratch: &FieldChainResult,
+    ) -> Result<(), String> {
+        match scratch {
+            FieldChainResult::Struct { struct_id, fields } => {
+                self.lower_into_struct_fields(value, *struct_id, fields)
+            }
+            FieldChainResult::Tuple { elements } => self.lower_into_tuple_elements(value, elements),
+            FieldChainResult::Enum(storage) => self.lower_into_enum_storage(value, storage),
+            FieldChainResult::Scalar { .. } => Err("array element place is not a compound".to_string()),
+        }
     }
 }

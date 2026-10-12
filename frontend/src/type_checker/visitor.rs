@@ -1139,6 +1139,11 @@ impl<'a> TypeCheckerVisitor<'a> {
                             | (TypeDecl::Struct(a, params_a), TypeDecl::Struct(b, params_b)) => {
                                 a == b && same_spelled_args(params_a, params_b, &func.generic_params)
                             }
+                            // `-> (u64, E)` returning `(3u64, E::B)`: the
+                            // same spellings one level down, in a tuple.
+                            (TypeDecl::Tuple(xs), TypeDecl::Tuple(ys)) => {
+                                same_spelled_args(xs, ys, &func.generic_params)
+                            }
                             _ => false,
                         }
                     }
@@ -1450,6 +1455,12 @@ fn same_spelled_args(a: &[TypeDecl], b: &[TypeDecl], generics: &[DefaultSymbol])
                 n == m && same_spelled_args(xa, ya, generics)
             }
             (TypeDecl::Tuple(xs), TypeDecl::Tuple(ys)) => same_spelled_args(xs, ys, generics),
+            // A user type named bare (`Identifier(E)`) and the resolved
+            // `Enum(E, [])` / `Struct(E, [])`.
+            (TypeDecl::Identifier(n), TypeDecl::Struct(m, args) | TypeDecl::Enum(m, args))
+            | (TypeDecl::Struct(m, args) | TypeDecl::Enum(m, args), TypeDecl::Identifier(n)) => {
+                n == m && args.is_empty()
+            }
             _ => false,
         }
     }

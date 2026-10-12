@@ -365,6 +365,7 @@ impl<'a> FunctionLower<'a> {
                                 TupleElementShape::Tuple { tuple_id, .. } => {
                                     Type::Tuple(*tuple_id)
                                 }
+                                TupleElementShape::Enum(storage) => Type::Enum(storage.enum_id),
                             };
                             self.bind_method_only_param(d, ty, generic_params, inferred);
                         }

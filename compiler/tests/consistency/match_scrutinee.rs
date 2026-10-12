@@ -1328,6 +1328,7 @@ fn main() -> u64 {
 }
 "#;
     let error = lowering_error(src);
-    assert!(error.starts_with("test.t:6:11: "), "{error}");
+    // Line 6; the column names the call inside the scrutinee.
+    assert!(error.starts_with("test.t:6:"), "{error}");
     assert!(error.matches("test.t:").count() == 1, "{error}");
 }

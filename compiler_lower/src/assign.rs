@@ -489,6 +489,7 @@ impl<'a> FunctionLower<'a> {
                         super::bindings::TupleElementShape::Scalar { ty, .. } => *ty,
                         super::bindings::TupleElementShape::Struct { struct_id, .. } => Type::Struct(*struct_id),
                         super::bindings::TupleElementShape::Tuple { tuple_id, .. } => Type::Tuple(*tuple_id),
+                        super::bindings::TupleElementShape::Enum(storage) => Type::Enum(storage.enum_id),
                     };
                     let shape = self.allocate_tuple_element_shape(ty)?;
                     scratch.push(super::bindings::TupleElementBinding { index: e.index, shape });

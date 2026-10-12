@@ -715,11 +715,13 @@ pub(super) fn substitute_field_type(
                 .ok()
                 .map(Type::Enum)
         }
+        // COMPOUND-CALL-EXPR-POS: an element may be a struct, enum or
+        // tuple (`p: (u64, E)`); the layout flattens it like a field.
         TypeDecl::Tuple(elements) => {
             let mut lowered: Vec<Type> = Vec::with_capacity(elements.len());
             for e in elements.iter() {
-                let s = lower_scalar(e)?;
-                if matches!(s, Type::Unit) {
+                let s = substitute_field_type(e, subst, module, templates, enum_templates, interner)?;
+                if !(s.is_scalar() || matches!(s, Type::Struct(_) | Type::Enum(_) | Type::Tuple(_))) {
                     return None;
                 }
                 lowered.push(s);
@@ -1071,11 +1073,16 @@ pub(super) fn lower_param_or_return_type(
                 .ok()
                 .map(Type::Enum)
         }
+        // COMPOUND-CALL-EXPR-POS: an element may be a struct, enum or
+        // tuple (`-> (u64, E)`), passed leaf by leaf like the rest.
         TypeDecl::Tuple(elements) => {
             let mut lowered: Vec<Type> = Vec::with_capacity(elements.len());
             for e in elements.iter() {
-                let s = lower_scalar(e)?;
-                if matches!(s, Type::Unit) {
+                if matches!(e, TypeDecl::Ref { .. }) {
+                    return None;
+                }
+                let s = lower_param_or_return_type(e, struct_defs, enum_defs, module, interner)?;
+                if !(s.is_scalar() || matches!(s, Type::Struct(_) | Type::Enum(_) | Type::Tuple(_))) {
                     return None;
                 }
                 lowered.push(s);

@@ -247,3 +247,101 @@ fn a_compound_place_is_written_and_matched() {
     "#;
     assert_renders(src, "compound_place_match", "1\n2\n5\n9\n8\n111\n");
 }
+
+/// A compound field of an array element (`hs[i].e`, `hs[i].p`,
+/// `hs[i].t`) is read and written in place -- just that field's leaves,
+/// under AoS and `soa` alike -- as a `val`, an argument, a `match`
+/// scrutinee, a branch value and an assignment's either side.
+#[test]
+fn a_compound_field_of_an_array_element() {
+    for layout in ["", "soa "] {
+        let src = format!(
+            r#"
+            enum E {{ A(i64), B }}
+            struct P {{ a: u64, b: u64 }}
+            struct H {{ n: u64, e: E, p: P, t: (u64, u64) }}
+            fn sum(p: P) -> u64 {{ p.a + p.b }}
+            fn tag(e: E) -> u64 {{ match e {{ E::A(x) => x as u64, E::B => 50u64 }} }}
+            fn main() -> u64 {{
+                var hs: {layout}[H; 2] = [
+                    H {{ n: 1u64, e: E::A(7i64), p: P {{ a: 2u64, b: 3u64 }}, t: (1u64, 2u64) }},
+                    H {{ n: 2u64, e: E::B, p: P {{ a: 4u64, b: 5u64 }}, t: (3u64, 4u64) }},
+                ]
+                var r = 0u64
+                for i in 0u64..2u64 {{
+                    r = r + sum(hs[i].p) + tag(hs[i].e) + hs[i].t.1
+                    match hs[i].e {{ E::A(x) => {{ r = r + (x as u64) }} E::B => {{ r = r + 1u64 }} }}
+                }}
+                println(r)
+                val e = hs[0u64].e
+                println(tag(e))
+                hs[0u64].e = E::B
+                hs[1u64].p = P {{ a: 10u64, b: 20u64 }}
+                hs[1u64].t = (hs[1u64].t.1, hs[1u64].t.0)
+                hs[0u64].p = hs[1u64].p
+                println(tag(hs[0u64].e) + sum(hs[0u64].p) + hs[1u64].t.0 * 100u64 + hs[0u64].n)
+                val q: P = if r > 0u64 {{ hs[1u64].p }} else {{ hs[0u64].p }}
+                println(q.b)
+                0u64
+            }}
+        "#
+        );
+        assert_renders(&src, "compound_array_element_field", "85\n7\n481\n20\n");
+    }
+}
+
+/// An enum as a tuple element: in a local, a struct field, an array
+/// element, a parameter and a return value, matched, destructured,
+/// printed and written; and `mk().1` matched and bound.
+#[test]
+fn an_enum_in_a_tuple() {
+    let src = r#"
+        enum E { A(i64), B }
+        struct P { a: u64, b: u64 }
+        struct S { n: u64, p: (u64, E) }
+        fn val_of(e: E) -> u64 { match e { E::A(x) => x as u64, E::B => 9u64 } }
+        fn f(t: (u64, E)) -> u64 { match t.1 { E::A(x) => t.0 + (x as u64), E::B => t.0 } }
+        fn g(t: (P, (u64, E))) -> u64 { t.0.a + t.0.b + f(t.1) }
+        fn mk(n: u64) -> (u64, E) { if n > 0u64 { (n, E::A(n as i64)) } else { (0u64, E::B) } }
+        fn named(n: u64) -> (u64, String) { (n, String::from_str("hi")) }
+        fn main() -> u64 {
+            var t = (1u64, E::A(7i64))
+            println(t)
+            println("t = {t}")
+            val (a, e) = t
+            var r = a + val_of(e)
+            match t {
+                (1u64, E::A(x)) => { r = r + (x as u64) * 100u64 }
+                _ => {}
+            }
+            t.1 = E::B
+            r = r + val_of(t.1) * 1000u64
+            val s = S { n: 1u64, p: (5u64, E::A(4i64)) }
+            r = r + val_of(s.p.1) * 10000u64 + s.p.0
+            val ts = [(1u64, E::B), (2u64, E::A(6i64))]
+            val k = ts[1u64]
+            r = r + val_of(k.1) + val_of(ts[0u64].1)
+            println(r)
+            var w = f((1u64, E::A(2i64)))
+            w = w + g((P { a: 1u64, b: 2u64 }, (3u64, E::A(4i64)))) * 10u64
+            match mk(3u64).1 { E::A(x) => { w = w + (x as u64) * 100u64 } E::B => {} }
+            val m = mk(0u64)
+            w = w + f(m) * 1000u64
+            val b = mk(4u64).1
+            w = w + val_of(b) * 10000u64
+            val nm = named(4u64)
+            w = w + nm.1.len() * 100000u64 + nm.0
+            println(w)
+            0u64
+        }
+    "#;
+    assert_renders(
+        src,
+        "enum_in_a_tuple",
+        "(1, E::A(7))\nt = (1, E::A(7))\n49728\n240407\n",
+    );
+    if skip_e2e() {
+        return;
+    }
+    assert_eq!(tree_walker_heap_check_report(src), "heap check: 0 double frees (0 distinct)\n");
+}

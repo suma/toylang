@@ -1403,7 +1403,7 @@ impl<'a> FunctionLower<'a> {
                 }
                 _ => None,
             },
-            Expr::FieldAccess(..) => match self.resolve_field_chain(expr).ok()? {
+            Expr::FieldAccess(..) | Expr::TupleAccess(..) => match self.resolve_field_chain(expr).ok()? {
                 super::bindings::FieldChainResult::Struct { struct_id, fields } => {
                     Some(Binding::Struct { struct_id, fields })
                 }

@@ -637,6 +637,10 @@ impl<'a> FunctionLower<'a> {
                     let inner = inner.clone();
                     self.emit_print_tuple(&inner, false)?;
                 }
+                TupleElementShape::Enum(storage) => {
+                    let storage = (**storage).clone();
+                    self.emit_print_enum(&storage, false)?;
+                }
             }
         }
         // `(x,)` for the 1-tuple case.

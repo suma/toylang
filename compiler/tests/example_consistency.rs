@@ -86,10 +86,8 @@ const AOT_UNSUPPORTED: &[&str] = &[
     "float64.t",
     // (`jit_heap.t` left in MEMORY-ACCESS M0: `__builtin_mem_set`
     // was the last builtin in it the AOT lane could not lower.)
-    "jit_nested_tuple_fallback.t",
     "panic.t",
     "print_demo.t",
-    "tuple_destructure_nested.t",
 ];
 
 /// Examples that make a backend panic rather than fail cleanly. Each

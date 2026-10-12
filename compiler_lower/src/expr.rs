@@ -391,6 +391,10 @@ impl<'a> FunctionLower<'a> {
                 let nested = elements.clone();
                 self.emit_tuple_format(&nested)
             }
+            TupleElementShape::Enum(storage) => {
+                let storage = (**storage).clone();
+                self.emit_enum_to_string(&storage)
+            }
         }
     }
 
@@ -1899,7 +1903,7 @@ impl<'a> FunctionLower<'a> {
             // through to the compound-borrow rejection.
             if matches!(
                 self.expr_at(a),
-                Some(Expr::FieldAccess(..))
+                Some(Expr::FieldAccess(..) | Expr::TupleAccess(..))
             ) && let Ok(super::bindings::FieldChainResult::Enum(storage)) =
                 self.resolve_field_chain(a)
             {

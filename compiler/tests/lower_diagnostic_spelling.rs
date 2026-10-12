@@ -59,18 +59,18 @@ fn cases() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
         (
             // A struct-returning call goes anywhere a value is built
             // now (COMPOUND-CALL-EXPR-POS: an argument, an array
-            // element, a field, a tuple element, a dropped statement).
-            // A compound field of an array element is still not read
-            // whole.
-            "compound field of an array element",
-            r#"enum E { A(i64), B }
-               struct H { e: E }
-               fn main() -> i64 {
-                 val hs: [H; 1] = [H { e: E::A(7i64) }]
-                 val e = hs[0u64].e
-                 0i64
+            // element and its compound fields, a field, a tuple
+            // element, a dropped statement). An element of a `const`
+            // table is still read only into a binding or one leaf.
+            "const table element in argument position",
+            r#"struct H { n: u64 }
+               const RS: [H; 2] = [H { n: 1u64 }, H { n: 2u64 }]
+               fn take(h: H) -> u64 { h.n }
+               fn main() -> u64 {
+                 val i = 1u64
+                 take(RS[i])
                }"#,
-            vec!["whole compound value", "bind the element first"],
+            vec!["into a binding", "not in this position"],
         ),
         (
             "compound capture in a closure",

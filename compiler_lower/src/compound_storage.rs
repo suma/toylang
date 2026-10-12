@@ -1412,7 +1412,12 @@ impl<'a> FunctionLower<'a> {
             // `hs[i].e`), which the element read hands over through
             // `pending_enum_value`.
             Expr::FieldAccess(..) | Expr::TupleAccess(..) | Expr::SliceAccess(..) => {
-                if let Ok(super::bindings::FieldChainResult::Enum(src)) = self.resolve_field_chain(expr_ref)
+                // `hs[i].e` / `mk().e` load into scratch first; a
+                // binding's field resolves in place.
+                let root = self.materialise_chain_root(expr_ref)?;
+                let chain = self.resolve_field_chain(expr_ref);
+                self.forget_chain_root(root);
+                if let Ok(super::bindings::FieldChainResult::Enum(src)) = chain
                     && src.enum_id == target_enum_id
                 {
                     self.copy_enum_storage(&src, target);
@@ -1630,6 +1635,7 @@ impl<'a> FunctionLower<'a> {
             TupleElementShape::Tuple { tuple_id, elements } => {
                 self.lower_into_tuple_slot(expr_ref, *tuple_id, elements)
             }
+            TupleElementShape::Enum(storage) => self.lower_into_enum_storage(expr_ref, storage),
         }
     }
 

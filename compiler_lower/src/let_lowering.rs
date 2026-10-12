@@ -753,13 +753,45 @@ impl<'a> FunctionLower<'a> {
         // same question a second time to size the binding, and would
         // otherwise fail after the instance had already been created.
         let saved = std::mem::replace(&mut self.pending_return_hint, hint);
+        // Cleared so a compound this rhs hands over is told apart from
+        // one left by an earlier expression; restored when unused.
+        let saved_tuple = self.pending_tuple_value.take();
+        let saved_enum = self.pending_enum_value.take();
         let lowered = self.lower_expr(rhs_ref);
         let scalar = lowered
             .as_ref()
             .ok()
             .and_then(|_| self.value_scalar(rhs_ref));
         self.pending_return_hint = saved;
-        let v = lowered?.ok_or_else(|| "val/var rhs produced no value".to_string())?;
+        let lowered = match lowered {
+            Ok(v) => v,
+            Err(e) => {
+                self.pending_tuple_value = self.pending_tuple_value.take().or(saved_tuple);
+                self.pending_enum_value = self.pending_enum_value.take().or(saved_enum);
+                return Err(e);
+            }
+        };
+        // COMPOUND-CALL-EXPR-POS: a compound the type reader could not
+        // name beforehand -- the block OWNING-TEMP-DROP makes of
+        // `val e = mk().1` (`{ val __temp = mk()  __temp.1 }`) -- still
+        // hands its storage over on the way out.
+        if lowered.is_none() {
+            let binding = match self.pending_enum_value.take() {
+                Some(storage) => Some(Binding::Enum(storage)),
+                None => self.pending_tuple_value.take().map(|elements| Binding::Tuple { elements }),
+            };
+            if let Some(binding) = binding {
+                self.bindings.insert(name, binding);
+                return Ok(None);
+            }
+        }
+        if self.pending_tuple_value.is_none() {
+            self.pending_tuple_value = saved_tuple;
+        }
+        if self.pending_enum_value.is_none() {
+            self.pending_enum_value = saved_enum;
+        }
+        let v = lowered.ok_or_else(|| "val/var rhs produced no value".to_string())?;
         // The annotation is the binding's declared type, so it is a
         // better answer than a failure when the rhs cannot say what it
         // produced -- a generic call whose type argument only the

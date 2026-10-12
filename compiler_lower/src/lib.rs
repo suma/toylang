@@ -2410,6 +2410,15 @@ impl<'a> FunctionLower<'a> {
                 bindings::TupleElementShape::Tuple { elements, .. } => {
                     self.push_tuple_element_drops(elements);
                 }
+                bindings::TupleElementShape::Enum(storage) => {
+                    let ty = crate::ir::Type::Enum(storage.enum_id);
+                    if self.ir_contains_drop(ty) {
+                        let leaves = bindings::flatten_enum_storage_locals(storage);
+                        if let Some(scope) = self.drop_scopes.last_mut() {
+                            scope.push(DropTarget { ty, field_locals: leaves, flag: None });
+                        }
+                    }
+                }
             }
         }
     }

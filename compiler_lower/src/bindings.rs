@@ -215,6 +215,9 @@ pub(super) enum TupleElementShape {
         tuple_id: TupleId,
         elements: Vec<TupleElementBinding>,
     },
+    /// COMPOUND-CALL-EXPR-POS: an enum element (`(1u64, E::A(7i64))`),
+    /// stored the way an enum-typed struct field is.
+    Enum(Box<EnumStorage>),
 }
 
 impl TupleElementBinding {
@@ -410,6 +413,9 @@ pub(super) fn flatten_tuple_element_locals(
             }
             TupleElementShape::Tuple { elements: inner, .. } => {
                 out.extend(flatten_tuple_element_locals(inner));
+            }
+            TupleElementShape::Enum(storage) => {
+                out.extend(flatten_enum_storage_locals(storage));
             }
         }
     }

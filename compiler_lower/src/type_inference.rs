@@ -110,6 +110,7 @@ impl<'a> FunctionLower<'a> {
                         Some(Type::Struct(*struct_id))
                     }
                     TupleElementShape::Tuple { .. } => None,
+                    TupleElementShape::Enum(storage) => Some(Type::Enum(storage.enum_id)),
                 }
             }
             _ => None,
@@ -405,6 +406,7 @@ impl<'a> FunctionLower<'a> {
                         TupleElementShape::Tuple { tuple_id, .. } => {
                             Type::Tuple(*tuple_id)
                         }
+                        TupleElementShape::Enum(storage) => Type::Enum(storage.enum_id),
                     })
             }
             Expr::TupleLiteral(elems) => {

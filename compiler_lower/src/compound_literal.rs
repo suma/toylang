@@ -199,7 +199,12 @@ impl<'a> FunctionLower<'a> {
             // struct-typed field a struct update fills from its base
             // — a lowering error.
             Expr::FieldAccess(_, _) | Expr::TupleAccess(_, _) => {
-                match self.resolve_field_chain(value_ref)? {
+                // COMPOUND-CALL-EXPR-POS: `hs[i].p` / `mk().p` load
+                // into scratch first.
+                let root = self.materialise_chain_root(value_ref)?;
+                let chain = self.resolve_field_chain(value_ref);
+                self.forget_chain_root(root);
+                match chain? {
                     FieldChainResult::Struct { struct_id, fields }
                         if self.struct_shapes_match(struct_id, target_struct_id) =>
                     {
@@ -378,7 +383,12 @@ impl<'a> FunctionLower<'a> {
                 self.copy_tuple_elements_checked(&src, target_elements)
             }
             Expr::FieldAccess(_, _) | Expr::TupleAccess(_, _) => {
-                match self.resolve_field_chain(value_ref)? {
+                // COMPOUND-CALL-EXPR-POS: `hs[i].p` / `mk().p` load
+                // into scratch first.
+                let root = self.materialise_chain_root(value_ref)?;
+                let chain = self.resolve_field_chain(value_ref);
+                self.forget_chain_root(root);
+                match chain? {
                     FieldChainResult::Tuple { elements } => {
                         self.copy_tuple_elements_checked(&elements, target_elements)
                     }
@@ -792,6 +802,7 @@ impl<'a> FunctionLower<'a> {
                             TupleElementShape::Tuple { tuple_id, .. } => {
                                 Type::Tuple(*tuple_id)
                             }
+                            TupleElementShape::Enum(storage) => Type::Enum(storage.enum_id),
                         })
                         .collect();
                     let id = intern_tuple(self.module, element_tys);
@@ -831,6 +842,9 @@ impl<'a> FunctionLower<'a> {
                     tuple_id: inner_id,
                     elements,
                 })
+            }
+            Type::Enum(enum_id) => {
+                Ok(TupleElementShape::Enum(Box::new(self.allocate_enum_storage(enum_id))))
             }
             scalar => {
                 let local = self.module.function_mut(self.func_id).add_local(scalar);
@@ -970,6 +984,11 @@ impl<'a> FunctionLower<'a> {
                     Some(TupleElementShape::Scalar { .. }) => {
                         return Err("tuple access on a scalar element".to_string());
                     }
+                    Some(TupleElementShape::Enum(_)) => {
+                        return Err(
+                            "tuple access on an enum element — match on it instead".to_string(),
+                        );
+                    }
                     None => {
                         return Err(format!("tuple has no element at index {inner_index}"));
                     }
@@ -1001,6 +1020,12 @@ impl<'a> FunctionLower<'a> {
             TupleElementShape::Tuple { elements: inner, .. } => {
                 self.pending_tuple_value = Some(inner.clone());
                 self.pending_struct_value = None;
+                Ok(None)
+            }
+            TupleElementShape::Enum(storage) => {
+                self.pending_struct_value = None;
+                self.pending_tuple_value = None;
+                self.pending_enum_value = Some((**storage).clone());
                 Ok(None)
             }
         }
@@ -1048,9 +1073,17 @@ impl<'a> FunctionLower<'a> {
         elems: Vec<ExprRef>,
     ) -> Result<Option<ValueId>, String> {
         let mut element_bindings: Vec<TupleElementBinding> = Vec::with_capacity(elems.len());
+        // A compound element (`(3u64, E::B)`) is named by the literal
+        // itself, or failing that by the function's return type.
+        let declared: Option<Vec<Type>> = match self.module.function(self.func_id).return_type {
+            Type::Tuple(id) => self.module.tuple_defs.get(id.0 as usize).cloned(),
+            _ => None,
+        }
+        .filter(|tys| tys.len() == elems.len());
         for (i, e) in elems.iter().enumerate() {
             let ty = self
-                .value_scalar(e)
+                .infer_tuple_element_type(e)
+                .or_else(|| declared.as_ref().map(|tys| tys[i]))
                 .ok_or_else(|| format!("tuple element #{i} has no inferable type"))?;
             let shape = self.allocate_tuple_element_shape(ty)?;
             element_bindings.push(TupleElementBinding { index: i, shape });

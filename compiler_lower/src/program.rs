@@ -1395,6 +1395,15 @@ fn lower_program_inner(
         &mut scheduled,
     )?;
 
+    // A test's backtrace frame is the test, as the report and
+    // `__builtin_function_name()` name it — not `__test_N`, a name the
+    // parser made up and integration renumbers.
+    for test in &program.tests {
+        if let Some(id) = module.lookup_function(None, test.function) {
+            module.set_display_name(id, format!("test \"{}\"", test.name));
+        }
+    }
+
     drop(declare_phase);
     let bodies_phase = prof::phase("bodies");
 
@@ -1733,7 +1742,39 @@ fn lower_program_inner(
     // #121: a program that never pushes an allocator heap-allocates
     // through the default one everywhere; say so on each operation.
     crate::alloc_devirt::devirtualize_heap_bindings(&mut module);
+    fold_release_backtraces(&mut module);
     Ok(module)
+}
+
+/// DEBUG-OBS D5: under `--release`, `__builtin_backtrace()` names the
+/// entry frame and nothing else.
+///
+/// A release build records no frames, so the runtime's stack is empty
+/// and the builtin used to return `""` — a program printing its own
+/// failure printed a blank line where the spec promises the frame it
+/// started in. Nothing about that answer depends on the run, so it is
+/// a constant here and the backends need no release path of their own.
+fn fold_release_backtraces(module: &mut Module) {
+    if module.debug_frames {
+        return;
+    }
+    let entry = module
+        .functions
+        .iter()
+        .position(|f| f.export_name == "main")
+        .map(|i| module.frame_name(FuncId(i as u32)))
+        .unwrap_or_else(|| "main".to_string());
+    let text = compiler_ir::render_backtrace(&[compiler_ir::BacktraceEntry { name: &entry, line: None }]);
+    let bytes = text.trim_start_matches('\n').as_bytes().to_vec();
+    for function in &mut module.functions {
+        for block in &mut function.blocks {
+            for inst in &mut block.instructions {
+                if matches!(inst.kind, InstKind::Backtrace) {
+                    inst.kind = InstKind::ConstStrBytes { bytes: bytes.clone() };
+                }
+            }
+        }
+    }
 }
 
 /// TEST-PERF: scan a freshly-lowered function's IR for references to
@@ -3271,10 +3312,15 @@ pub fn install_test_driver(
             },
             frame: None,
         });
+        // The test is the bottom of its backtrace, as it is when the
+        // VM runs it as the entry; the driver around it is plumbing.
+        let frame = module
+            .debug_frames
+            .then(|| module.intern_frame(&module.frame_name(*id), None));
         instructions.push(crate::ir::Instruction {
             result: None,
             kind: InstKind::Call { target: *id, args: Vec::new() },
-            frame: None,
+            frame,
         });
         names.push(name.clone());
     }
@@ -3287,6 +3333,7 @@ pub fn install_test_driver(
     });
     let _ = next_value;
 
+    module.hide_frame(driver);
     let f = module.function_mut(driver);
     f.symbol = entry_symbol;
     f.entry = crate::ir::BlockId(0);

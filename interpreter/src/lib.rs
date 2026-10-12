@@ -1910,7 +1910,12 @@ fn execute_entry_with_values(
     }
 
     let no_args = vec![];
-    eval.push_entry_frame(main_function.name);
+    // A test is named as the report names it, the same frame the
+    // compiled lanes put at the bottom of its backtrace.
+    match program.tests.iter().find(|t| t.function == main_function.name) {
+        Some(test) => eval.push_frame(format!("test \"{}\"", test.name), None),
+        None => eval.push_entry_frame(main_function.name),
+    }
     match eval.evaluate_function(main_function, &no_args) {
         Ok(result) => Ok(result),
         Err(runtime_error) => {

@@ -417,6 +417,34 @@ fn each_test_runs_its_own_body_when_files_number_them_alike() {
 }
 
 #[test]
+fn a_test_failure_reads_the_same_on_both_lanes() {
+    // The bottom frame is the test as the report names it (it was
+    // `__test_0` on the VM lane and the driver's `main` on the
+    // compiled one), and the position is package-relative on both
+    // (the compiled lane printed the absolute path of the entry).
+    let pkg = scratch("test_failure_shape");
+    write(
+        &pkg,
+        "main.t",
+        "fn helper() -> u64 { 1u64 - 2u64 }\nfn main() -> u64 { 0u64 }\ntest \"goes under\" { helper() }\n",
+    );
+    let root = pkg.0.to_str().unwrap();
+    for backend in ["vm", "aot"] {
+        let out = run(&pkg, &["test", root, "--backend", backend]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("Error at main.t:1:")
+                && stderr.contains("helper (called at line 3)")
+                && stderr.contains("           test \"goes under\"\n")
+                && !stderr.contains("__test_")
+                && !stderr.contains("           main\n")
+                && !stderr.contains(root),
+            "{backend}\nstderr: {stderr}"
+        );
+    }
+}
+
+#[test]
 fn a_filter_selects_by_name_and_a_path_still_reads_as_a_path() {
     // `toy test <filter> <path>` in either order: the argument that
     // names something on disk is the path.

@@ -373,14 +373,13 @@ impl<'ctx, 'a> Gen<'ctx, 'a> {
                 let g = self.frame_record(&format!("toy_bt_{i}"), &frame.name, line);
                 self.frame_records.push(g);
             }
-            let entry = self
-                .ir
-                .functions
-                .iter()
-                .position(|f| f.export_name == "main")
-                .map(|i| self.ir.frame_name(FuncId(i as u32)))
-                .unwrap_or_else(|| "main".to_string());
-            self.entry_record = Some(self.frame_record("toy_bt_entry", &entry, 0));
+            // A hidden entry (the `toy test` driver) pushes nothing.
+            let entry = match self.ir.functions.iter().position(|f| f.export_name == "main") {
+                Some(i) if self.ir.frame_hidden(FuncId(i as u32)) => None,
+                Some(i) => Some(self.ir.frame_name(FuncId(i as u32))),
+                None => Some("main".to_string()),
+            };
+            self.entry_record = entry.map(|entry| self.frame_record("toy_bt_entry", &entry, 0));
         }
         // HEAP-CHECK H2 / H5: the instrumented accesses report with a
         // frame of their own.
@@ -601,16 +600,15 @@ impl<'ctx, 'a> Gen<'ctx, 'a> {
         let depth_addr = self.rt("toy_shadow_ctx", &[], IrType::U64, &[])?.into_int_value();
         let stack_addr = self.addr(depth_addr, 8)?;
         let found = self.load_at(depth_addr, IrType::U64)?.into_int_value();
-        let my_depth = if is_entry {
-            if let Some(rec) = self.entry_record {
+        let my_depth = match self.entry_record {
+            Some(rec) if is_entry => {
                 let slot = self.shadow_slot(stack_addr, found)?;
                 self.store_at(slot, self.ptr_to_int(rec)?.into())?;
+                let next = self.b(self.builder.build_int_add(found, self.i64c(1), "d"))?;
+                self.store_at(depth_addr, next.into())?;
+                next
             }
-            let next = self.b(self.builder.build_int_add(found, self.i64c(1), "d"))?;
-            self.store_at(depth_addr, next.into())?;
-            next
-        } else {
-            found
+            _ => found,
         };
         if pushes {
             let over = self.b(self.builder.build_int_compare(

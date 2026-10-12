@@ -6222,7 +6222,10 @@ test "add works" {
 - `interpreter --test <file>` runs them instead of `main`, each in its
   own evaluation context, and prints a `N passed, M failed` summary.
   A failing block reports the assertion's left / right values and the
-  source line; the process exits non-zero when anything failed.
+  source line; the process exits non-zero when anything failed. The
+  bottom frame of its backtrace is the test itself, `test "add works"`
+  (a test from a module carries the module's prefix, as the report
+  does: `test "mathx::add works"`).
 - The body is ordinary code, so `assert` / `assert_eq` / `assert_ne`,
   `panic`, and the [allocation counters](#allocation-counters) are all
   available.

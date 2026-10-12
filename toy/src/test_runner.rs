@@ -750,6 +750,9 @@ fn compile_driver(
         pkg.ensure_dir(parent)?;
     }
     let mut options = compiler::options::CompilerOptions::new(plan.path.clone());
+    // The name the VM lane reports the file under, so a failure cites
+    // `main.t:2:13` on both lanes rather than an absolute path on one.
+    options.display_name = Some(display_path(pkg, &plan.path));
     options.output = Some(exe.clone());
     options.release = opts.release;
     options.codegen = opts.codegen;

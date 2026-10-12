@@ -1029,3 +1029,38 @@ fn release_drops_the_backtrace_but_keeps_the_position() {
         "a release build should not be paying for one:\n{release}"
     );
 }
+
+/// DEBUG-OBS D5: under `--release`, `__builtin_backtrace()` names the
+/// entry frame. The build records no frames, and the builtin used to
+/// return `""` — the spec promises the frame the program started in.
+#[test]
+fn release_backtrace_builtin_names_the_entry_frame() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn inner() -> str { __builtin_backtrace() }
+        fn main() -> u64 {
+            println(inner())
+            0u64
+        }
+    "#;
+    let src_path = unique_path("rel_bt_builtin.t");
+    std::fs::write(&src_path, src).unwrap();
+    let exe = unique_path("rel_bt_builtin");
+    let mut opts = CompilerOptions::new(src_path.clone());
+    opts.output = Some(exe.clone());
+    opts.release = true;
+    if !cfg!(feature = "llvm") {
+        opts.codegen = Some(compiler::Codegen::Cranelift);
+    }
+    opts.link_cache_dir = Some(link_cache_dir_for_tests());
+    compile_file(&opts).expect("compile");
+    let out = Command::new(&exe).output().expect("spawn");
+    let _ = std::fs::remove_file(&exe);
+    let _ = std::fs::remove_file(&src_path);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "   = backtrace (innermost first):\n       main\n"
+    );
+}

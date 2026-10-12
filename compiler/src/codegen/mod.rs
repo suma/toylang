@@ -946,13 +946,17 @@ impl<M: Module> CodegenSession<M> {
             let data = self.declare_frame_record(&format!("toy_bt_{i}"), &frame.name, line)?;
             self.frame_blobs.insert(id, data);
         }
-        let entry = ir_module
-            .functions
-            .iter()
-            .position(|f| f.export_name == "main")
-            .map(|i| ir_module.frame_name(FuncId(i as u32)))
-            .unwrap_or_else(|| "main".to_string());
-        self.entry_frame_blob = Some(self.declare_frame_record("toy_bt_entry", &entry, 0)?);
+        // A hidden entry (the `toy test` driver) pushes nothing: the
+        // tests it calls are the bottom of their backtraces.
+        let entry = match ir_module.functions.iter().position(|f| f.export_name == "main") {
+            Some(i) if ir_module.frame_hidden(FuncId(i as u32)) => None,
+            Some(i) => Some(ir_module.frame_name(FuncId(i as u32))),
+            None => Some("main".to_string()),
+        };
+        self.entry_frame_blob = match entry {
+            Some(entry) => Some(self.declare_frame_record("toy_bt_entry", &entry, 0)?),
+            None => None,
+        };
 
         // The stack itself is the runtime's, and per-thread: this
         // side asks for the address once per activation rather than
@@ -1718,17 +1722,16 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 // that stopped one frame short of the bottom reads as
                 // truncated. Never popped — the process is leaving
                 // either way.
-                let my_depth = if is_entry {
-                    if let Some(entry_record) = shadow.entry {
+                let my_depth = match shadow.entry {
+                    Some(entry_record) if is_entry => {
                         let slot = shadow_slot(self.builder, stack_addr, found);
                         let addr = self.builder.ins().symbol_value(types::I64, entry_record);
                         self.builder.ins().store(flags, addr, slot, 0);
+                        let next = self.builder.ins().iadd_imm(found, 1);
+                        self.builder.ins().store(flags, next, depth_addr, 0);
+                        next
                     }
-                    let next = self.builder.ins().iadd_imm(found, 1);
-                    self.builder.ins().store(flags, next, depth_addr, 0);
-                    next
-                } else {
-                    found
+                    _ => found,
                 };
                 if pushes {
                     // DEBUG-OBS D6: one comparison per *activation*,

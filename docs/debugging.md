@@ -14,8 +14,9 @@ toylang で書いたプログラムが**思った通りに動かないとき**�
 | panic した・契約が破れた | [3. 落ちたときの読み方](#3-落ちたときの読み方) |
 | 再現条件が分からない・直ったか確かめたい | [4. 仮説を契約とテストに書く](#4-仮説を契約とテストに書く) |
 | リーク・解放後の使用・確保が多すぎる | [5. メモリ](#5-メモリ) |
-| レーンによって答えが違う | [6. バックエンド間の食い違い](#6-バックエンド間の食い違い) |
-| 一通りの手順 | [7. 推奨の流れ](#7-推奨の流れ) |
+| どの関数が漏らしたか・作業領域が大きすぎる・確保の思い込みを確かめたい | [6. 契約で確保を追い詰める](#6-契約で確保を追い詰める) |
+| レーンによって答えが違う | [7. バックエンド間の食い違い](#7-バックエンド間の食い違い) |
+| 一通りの手順 | [8. 推奨の流れ](#8-推奨の流れ) |
 
 ## 前提
 
@@ -293,7 +294,241 @@ compiled レーンでは poison は**ビルドフラグ**
 --heap-check=poison`)。AOT バイナリ単体なら `TOY_PROFILE_MEM=1` /
 `TOY_HEAP_CHECK=report` を環境変数で渡す。
 
-## 6. バックエンド間の食い違い
+## 6. 契約で確保を追い詰める
+
+`--profile=mem` は**どこで確保されたか** (確保位置) を言うが、**どの
+関数が持ったまま帰ったか**は言わない。漏れたのが `Vec` や `String` の
+中身なら、確保位置は `core/std/...` の 1 行で、利用者のコードのどこが
+原因かは分からない。ここを埋めるのが、確保カウンタ
+(`__builtin_live_bytes()` ほか 6 つ) を読む契約である。
+
+契約の書き方そのもの (`allocates` / `retains` / `allocations` の違い、
+生の式の書き方) は [`design_by_contract.md` のアロケーション契約](design_by_contract.md#アロケーション契約)
+にある。ここではそれを**調べる道具として**使う技法をまとめる。
+
+### 前提: カウンタが何を見ているか
+
+確かめた性質で、以下の技法はすべてこれに依っている。
+
+- **カウンタは実行全体のもの**で、呼び出し先の確保も含む。関数の
+  契約は「この呼び出しの間に、呼び出し先も含めて何が起きたか」を見る。
+- **`ensures` は、本体のローカルが解放された後で評価される。** 本体で
+  作って捨てた `Vec` は `retains(0u64)` を破らない。返した値は残る。
+- **予算には引数を使った式が書ける** — `ensures retains(n * 8u64)`。
+- **数えるのは要求した分だけ。** `str` (連結・補間・リテラル) は数えない。
+  `realloc` は移動の有無に関係なく「リサイズ 1 回」で、peak は新しい
+  サイズしか見ない (新旧 2 ブロックが同時に生きている瞬間は数えない)。
+- **カウンタは `main` と各 `test` の入口で 0 から始まる。**
+- 契約は `--release` と `INTERPRETER_CONTRACTS=off` で消えるので、
+  調査用に足した節は出荷するバイナリのコストにならない。残せば
+  そのまま仕様の記述になる。
+
+### 技法 1: `retains(0u64)` を関数境界に置いて二分探索する
+
+```rust
+fn label(x: u64) -> String {
+    var s = String::from_str("item-")
+    s.push_char('0' + (x % 10u64) as u32)
+    s
+}
+
+fn total_len(v: &Vec<u64>) -> u64 {
+    var n = 0u64
+    for s in v.iter().map(label) {
+        n = n + s.len()
+    }
+    n
+}
+
+fn count_big(v: &Vec<u64>) -> u64 { ... }
+
+fn report(v: &Vec<u64>) -> u64 {
+    total_len(v) + count_big(v)
+}
+```
+
+`--profile=mem` は stdlib の行しか指さない:
+
+```text
+leaks (1 sites, 5 allocations, 50 bytes)
+  core/std/string.t:143:25  5 allocations  50 bytes
+```
+
+疑わしい呼び出し木の根に `ensures retains(0u64)` を足すと、その関数が
+持ったまま帰ったバイト数が出る:
+
+```text
+Contract violation: `ensures` clause #1 of function `report`: retained 50 bytes, budget 0 bytes
+   = backtrace (innermost first):
+       report (called at line 32)
+       main
+```
+
+次に、その関数が呼ぶ関数 (`total_len` と `count_big`) へ同じ節を下ろす。
+**最初に破れた節**が、漏らした関数の中で一番内側にあるものを指す:
+
+```text
+Contract violation: `ensures` clause #1 of function `total_len`: retained 50 bytes, budget 0 bytes
+   = backtrace (innermost first):
+       total_len (called at line 30)
+       report (called at line 36)
+       main
+```
+
+原因は、`map` が新しく作った `String` を `for` の要素として受け取ると
+解放されないこと (`next()` の結果は要素の別名として扱われ、drop されない)。
+自分で束縛し直すと、ブロックの終わりで解放される:
+
+```rust
+    for i in 0u64..v.size() {
+        val s = label(v.get(i))
+        n = n + s.len()
+    }
+```
+
+この版はリークが 0 になり、3 バックエンドで一致する。
+
+- 破れた節の実測値 (`retained 50 bytes`) は**漏れた量そのもの**なので、
+  要素数との関係 (5 要素 × 10 バイト) から「1 周に 1 個漏れている」と読める。
+- 値を返す関数は `retains(0u64)` では必ず破れる。返す分を予算に書く —
+  `ensures retains(n * 8u64)`。
+- 上の `map` の例は interpreter で示した。compiled レーンは今のところ、
+  `String` を返す closure を渡した `map` をコンパイルできない
+  (`could not infer method-only generic param U`)。予算違反の文言自体は
+  AOT でも同じになる。
+
+### 技法 2: `--check` でまれな経路のリークを探す
+
+確保の契約も `--check` の判定に使われる。特定の入力でしか通らない
+経路のリークは、手で書いたテストではまず踏まないが、入力を生成させると
+見つかる:
+
+```rust
+fn checksum(n: u64) -> u64
+    requires n <= 1000u64
+    ensures retains(0u64)
+{
+    val buf = __builtin_heap_alloc(n * 8u64 + 8u64)
+    if n % 7u64 == 3u64 {
+        return 0u64       # forgets to free
+    }
+    __builtin_heap_free(buf)
+    n * 2u64
+}
+```
+
+```text
+$ interpreter --check --seed=0x5 prog.t
+FAILED  checksum
+    minimal counterexample: n = 444u64
+    Contract violation: `ensures` clause #1 of function `checksum`: retained 3560 bytes, budget 0 bytes
+```
+
+「最小反例」は本当の最小 (`n = 3`) まで縮むとは限らない — 縮小は値を
+半分にしていくので、`n % 7` のような条件は途中で外れる。それでも
+漏れた量 (`3560 = 444 * 8 + 8`) から、どの確保が残ったかを逆算できる。
+
+### 技法 3: 一時的な作業領域を `peak_live_bytes` で測る
+
+`retains(0u64)` は「確保して全部返した」関数を通す。入力と同じ大きさの
+作業コピーを取る関数は漏れていないが、メモリの山は高い。これを見るのが
+`__builtin_peak_live_bytes()` である。
+
+peak は**実行全体で単調に増える値**なので、関数の契約に書ける形は
+「この呼び出しは、実行全体の山を B バイトより多く押し上げない」になる:
+
+```rust
+fn count_repeats(v: &Vec<u64>) -> u64
+    ensures retains(0u64)
+    ensures __builtin_peak_live_bytes() <= old(__builtin_peak_live_bytes()) + 4096u64
+{
+    var w: Vec<u64> = Vec::with_capacity(v.size())
+    for i in 0u64..v.size() { w.push(v.get(i)) }
+    w.sort()
+    ...
+}
+```
+
+100 要素 (作業領域 800 バイト) は通り、1000 要素 (8000 バイト) で
+止まる (3 バックエンド一致):
+
+```text
+Contract violation: `ensures` clause #2 of function `count_repeats` evaluated to false (with result = 993)
+```
+
+この形には限界が 2 つある。
+
+- **呼ぶ前に山が既に高いと見逃す。** 押し上げなければ通るので、
+  それ以前に大きな山があった実行では、関数自身の作業領域は測れない。
+- **生の式の違反は実測値を言わない** (`with result = ...` だけ)。
+  糖衣の 3 節は実測値を出すが、peak の糖衣は無い。
+
+**正確に測るなら `test` の中で測る。** カウンタは `test` の入口で 0 に
+なるので、呼ぶ直前に「山 = 今の live」であることを確かめれば、
+呼んだ後の山との差がその関数の作業領域になる。`assert` の文言に
+実測値を入れておけば、破れたときに数字が出る:
+
+```rust
+test "count_repeats needs no more than the input again" {
+    val v = input(1000u64)
+    val base = __builtin_live_bytes()
+    assert_eq(__builtin_peak_live_bytes(), base)
+    val r = count_repeats(&v)
+    val extra = __builtin_peak_live_bytes() - base
+    assert(extra <= v.size() * 8u64, "working set {extra} bytes")
+    assert_eq(__builtin_live_bytes(), base)
+}
+```
+
+```text
+$ toy test pk --backend vm      # 予算を v.size() * 4u64 に絞った場合
+       |     ^^^^^^ panic: working set 8000 bytes
+2 passed, 1 failed
+```
+
+この test は vm と aot の両レーンで通る。最後の `assert_eq` は
+「呼ぶ前と live が同じ」で、増えていないことだけを見るなら
+`core/std/testing.t` の `assert_no_growth(base)` でも書ける。
+
+### 技法 4: stdlib についての思い込みを `ensures` で確かめる
+
+「この操作はメモリを返すはず」「容量は足りているはず」という前提は、
+カウンタの比較で 1 行の節になる。破れれば前提が間違っている:
+
+```rust
+# Assumption: clear() gives the buffer back.
+fn reset(v: &mut Vec<u64>)
+    ensures __builtin_live_bytes() < old(__builtin_live_bytes())
+{
+    v.clear()
+}
+
+# Assumption: the capacity is enough, nothing is grown inside.
+fn fill(v: &mut Vec<u64>, n: u64)
+    ensures __builtin_realloc_count() == old(__builtin_realloc_count())
+{
+    for i in 0u64..n { v.push(i) }
+}
+```
+
+- `reset` は破れる — **`Vec::clear()` は長さを 0 にするだけで容量を
+  残す**。返したいなら `Vec` ごと捨てる (束縛し直す)。
+- `with_capacity(16u64)` の `Vec` に `fill(&mut v, 16u64)` は通り、続く
+  `fill(&mut v, 1u64)` は破れる (17 個目の `push` で伸ばし直す)。
+  `Vec::new()` から 1000 個積むと `realloc_count` は 8、
+  `with_capacity(1000u64)` なら 0。
+
+### 書き方の注意
+
+- **差を取るときは足し算の形にする。** `live_bytes() - old(live_bytes())`
+  は、入口より live が減る関数で u64 アンダーフローの panic になる。
+  `live_bytes() <= old(live_bytes()) + B` と書く。
+- `old(...)` は**関数の入口**の値。ループの周回ごとの性質は、本体を
+  関数に切り出してから契約を付ける。
+- 漏れる量が分かっているなら、`retains` の予算をその式にして**直った
+  ことの確認**にも使える (予算 0 に戻したときに通れば直っている)。
+
+## 7. バックエンド間の食い違い
 
 ```text
 $ compiler prog.t --all-backends --format=json   # interpreter / JIT / AOT を突き合わせる
@@ -308,7 +543,7 @@ AOT だけが `compiler MVP cannot use ... in expression position; bind the
 result with `val`` で拒むことがある。まず `--backend vm` で意味が正しい
 かを確かめ、それから言われた通り `val` に束縛して書き直す。
 
-## 7. 推奨の流れ
+## 8. 推奨の流れ
 
 1. `toy check --format=json` → `toy fix`。
 2. 型が分からなければ `val x: _ = ...` か `toy query type`。
@@ -317,12 +552,18 @@ result with `val`` で拒むことがある。まず `--backend vm` で意味が
 5. 値を追うのは `log::debug` (+ `TOY_LOG=debug`)。一時的に見るだけなら
    `__builtin_dbg` (stdout に出るので後で外す)。
 6. メモリの疑いは `--profile=mem` → `--heap-check=poison` → `reuse` の順に絞る。
+   リークの持ち主が stdlib の行しか分からなければ、`retains(0u64)` を
+   関数境界に置いて二分探索する (6 節)。
 7. 最後に `--all-backends` / `--backend all` で実行系どうしの一致を見る。
 
 ## 既知の制限
 
 - `__builtin_dbg` の出力先は stdout で固定。
 - `INTERPRETER_CONTRACTS=off` の間は backtrace から呼び出し行が落ちる
-  (上の 3 節)。
+  (3 節)。
 - `toy effects` はテストブロックを内部名 (`__test_0`) で並べる。
 - AOT の `toy test` は最初の panic で同じドライバの残りを止める (`--backend vm` を使う)。
+- `map` が新しく作った所有値 (`String` 等) を for-in の item で受けると、
+  1 周に 1 個漏れる (6 節 技法 1)。compiled レーンはその形
+  (`String` を返す closure を渡した `map`) をそもそもコンパイルできない。
+- peak の契約は「実行全体の山を押し上げない」しか言えない (6 節 技法 3)。

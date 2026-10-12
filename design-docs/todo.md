@@ -399,6 +399,16 @@
 
 ### compiled レーンの穴
 
+- **MAP-OWNED-U-INFER: `String` を返す closure を `VecIter::map` に渡せない** —
+  `v.iter().map(fn(x: u64) -> String { .. })` は compiled レーンで
+  `could not infer method-only generic param U for VecIter::map` になる
+  (`val` に束縛しても同じ。`u64` を返す closure は束縛すれば通る)。
+  interpreter は動く。2026-10-13、`docs/debugging.md` 6 節の例を書いていて発見。
+- **MAP-OWNED-ITEM-LEAK: `map` が作った所有値を for-in の item で受けると漏れる** —
+  NEXT-ITEM-ALIAS が item を要素の別名として drop しないため、新しい
+  `String` を作る `map` は 1 周に 1 個漏れる (`--profile=mem` は
+  `core/std/string.t` の行だけを指す)。束縛し直せば解放される。
+
 > interpreter (tree-walker / IR VM) では動くが、compiled レーン (AOT / JIT) が断るか
 > 遅い形。interpreter 側 JIT の silent fallback もここ。
 

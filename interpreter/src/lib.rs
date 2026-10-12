@@ -802,8 +802,38 @@ fn check_typing_collecting(
         }
     }
 
+    // ITER-BOUND-INFERENCE: each trait impl's target and trait type
+    // args, for reading a bound's arguments off a concrete type. A
+    // generic impl (`impl<T> Iterator<T> for VecIter<T>`) stores no
+    // target args, so its own parameters stand for them, in order.
+    let mut impl_shapes = Vec::new();
+    for i in 0..program.statement.len() {
+        if let Some(frontend::ast::Stmt::ImplBlock {
+            target_type,
+            target_type_args,
+            trait_name: Some(trait_sym),
+            trait_type_args,
+            generic_params,
+            ..
+        }) = program.statement.get_ref(&StmtRef(i as u32))
+        {
+            let targets: Vec<frontend::type_decl::TypeDecl> = if target_type_args.is_empty() {
+                generic_params.iter().map(|g| frontend::type_decl::TypeDecl::Generic(*g)).collect()
+            } else {
+                target_type_args.clone()
+            };
+            impl_shapes.push(((*target_type, *trait_sym), (targets, trait_type_args.clone())));
+        }
+    }
+
     // Setup TypeChecker now that imports and prelude are integrated.
     let mut tc = setup_type_checker(program, string_interner, &skipped_decls);
+    for (key, shape) in impl_shapes {
+        let shapes = tc.context.trait_impl_shapes.entry(key).or_default();
+        if !shapes.contains(&shape) {
+            shapes.push(shape);
+        }
+    }
     // LLM-LOOP P3: a fix suggestion has to quote the text it replaces,
     // so the checker needs the source to build one.
     tc.source_code = source_code;

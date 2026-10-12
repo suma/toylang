@@ -77,7 +77,25 @@ impl TypeCheckerVisitor<'_> {
         // arguments), so unifying against it broke inference that had
         // been working. Solve first, and only reach for the hint when
         // something is genuinely missing.
-        let solved = self.type_inference.solve_constraints(self.core.string_interner);
+        let mut solved = self.type_inference.solve_constraints(self.core.string_interner);
+        // ITER-BOUND-INFERENCE: a bound is evidence too. With `I`
+        // solved to `VecIter<u64>`, `I: Iterator<T>` says `T` is what
+        // `VecIter<u64>`'s impl of `Iterator` names: `u64`.
+        if let Ok(solution) = &solved
+            && fun.generic_params.iter().any(|p| !solution.contains_key(p))
+        {
+            let evidence = self.bound_evidence(&fun.generic_params, &fun.generic_bounds, solution);
+            if !evidence.is_empty() {
+                for (declared, actual) in evidence {
+                    self.type_inference.add_constraint(
+                        declared,
+                        actual,
+                        crate::type_checker::inference::ConstraintContext::Generic,
+                    );
+                }
+                solved = self.type_inference.solve_constraints(self.core.string_interner);
+            }
+        }
         let needs_return_evidence = match &solved {
             Ok(solution) => fun
                 .generic_params
@@ -174,6 +192,62 @@ impl TypeCheckerVisitor<'_> {
         
         self.pop_context();
         Ok(return_type)
+    }
+
+    /// ITER-BOUND-INFERENCE: `(bound arg, what it is for the solved
+    /// type)` pairs for every generic-trait bound whose parameter is
+    /// already solved to a named type with one matching impl. `I:
+    /// Iterator<T>` with `I = VecIter<u64>` and `impl<T> Iterator<T>
+    /// for VecIter<T>` gives `(T, u64)`.
+    pub(crate) fn bound_evidence(
+        &self,
+        generic_params: &[DefaultSymbol],
+        generic_bounds: &HashMap<DefaultSymbol, TypeDecl>,
+        solution: &HashMap<DefaultSymbol, TypeDecl>,
+    ) -> Vec<(TypeDecl, TypeDecl)> {
+        let mut out = Vec::new();
+        for p in generic_params {
+            let (Some(TypeDecl::Struct(trait_sym, bound_args) | TypeDecl::Enum(trait_sym, bound_args)), Some(actual)) =
+                (generic_bounds.get(p), solution.get(p))
+            else {
+                continue;
+            };
+            if bound_args.is_empty() {
+                continue;
+            }
+            let (type_sym, type_args): (DefaultSymbol, &[TypeDecl]) = match actual {
+                TypeDecl::Struct(s, a) | TypeDecl::Enum(s, a) => (*s, a.as_slice()),
+                TypeDecl::Identifier(s) => (*s, &[]),
+                _ => continue,
+            };
+            let Some(shapes) = self.context.trait_impl_shapes.get(&(type_sym, *trait_sym)) else {
+                continue;
+            };
+            let [(target_args, trait_args)] = shapes.as_slice() else {
+                continue;
+            };
+            // The impl's own parameters, read off the target position
+            // by position (`VecIter<T>` against `VecIter<u64>`).
+            let mut impl_subst: HashMap<DefaultSymbol, TypeDecl> = HashMap::default();
+            for (pattern, concrete) in target_args.iter().zip(type_args) {
+                if let TypeDecl::Generic(g) | TypeDecl::Identifier(g) = pattern {
+                    impl_subst.insert(*g, concrete.clone());
+                }
+            }
+            for (declared, impl_arg) in bound_args.iter().zip(trait_args) {
+                let actual = match impl_arg {
+                    TypeDecl::Generic(g) | TypeDecl::Identifier(g) if impl_subst.contains_key(g) => {
+                        impl_subst[g].clone()
+                    }
+                    other => other.substitute_generics(&impl_subst),
+                };
+                if actual.contains_generic() {
+                    continue;
+                }
+                out.push((declared.clone(), actual));
+            }
+        }
+        out
     }
 
     pub(crate) fn handle_generic_associated_function_call(&mut self, struct_name: DefaultSymbol, function_name: DefaultSymbol, 

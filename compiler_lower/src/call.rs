@@ -28,7 +28,7 @@
 
 use rustc_hash::FxHashMap as HashMap;
 
-use frontend::ast::{Expr, ExprRef, UnaryOp};
+use frontend::ast::{Expr, ExprRef, Stmt, StmtRef, UnaryOp};
 use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
 
@@ -129,6 +129,25 @@ impl<'a> FunctionLower<'a> {
                     inferred.insert(*g, Type::Struct(id));
                 }
             }
+            // ITER-BOUND-INFERENCE: a bound names what the arguments
+            // could not -- `I: Iterator<T>` with `I = VecIter<u64>` says
+            // `T = u64`, read off the impl of `Iterator` for `VecIter`.
+            if template.generic_params.iter().any(|p| !inferred.contains_key(p)) {
+                for p in &template.generic_params {
+                    if let (
+                        Some(TypeDecl::Struct(trait_sym, bound_args) | TypeDecl::Enum(trait_sym, bound_args)),
+                        Some(actual),
+                    ) = (template.generic_bounds.get(p), inferred.get(p).copied())
+                    {
+                        for (declared, ty) in self.bound_args_for(*trait_sym, actual).iter().zip(bound_args.iter())
+                            .filter_map(|(a, d)| a.map(|a| (d, a)))
+                            .collect::<Vec<_>>()
+                        {
+                            self.bind_method_only_param(declared, ty, &template.generic_params, &mut inferred);
+                        }
+                    }
+                }
+            }
             // STDLIB-TRAIT-BASE B5: a parameter the arguments could
             // not name may still be named by where the result goes.
             if let Some(hint) = self.pending_return_hint
@@ -185,6 +204,68 @@ impl<'a> FunctionLower<'a> {
     /// (AOT-GENERIC-THROUGH-STRUCT — the same zip the generic-method
     /// path's `bind_method_only_param` performs). Other shapes are
     /// silently skipped (`infer` returns None overall).
+    /// ITER-BOUND-INFERENCE: the type args `actual`'s one impl of
+    /// `trait_sym` gives the trait, in IR types (`None` where one is
+    /// not known). `impl<T> Iterator<T> for VecIter<T>` with `actual =
+    /// VecIter<u64>` answers `[Some(u64)]`.
+    fn bound_args_for(&self, trait_sym: DefaultSymbol, actual: Type) -> Vec<Option<Type>> {
+        let (base, type_args) = match actual {
+            Type::Struct(id) => {
+                let def = self.module.struct_def(id);
+                (def.base_name, def.type_args.clone())
+            }
+            Type::Enum(id) => {
+                let def = self.module.enum_def(id);
+                (def.base_name, def.type_args.clone())
+            }
+            _ => return Vec::new(),
+        };
+        let mut found: Option<(Vec<TypeDecl>, &[TypeDecl])> = None;
+        for i in 0..self.program.statement.len() {
+            if let Some(Stmt::ImplBlock {
+                target_type,
+                target_type_args,
+                trait_name: Some(t),
+                trait_type_args,
+                generic_params,
+                ..
+            }) = self.program.statement.get_ref(&StmtRef(i as u32))
+                && *t == trait_sym
+                && *target_type == base
+            {
+                if found.is_some() {
+                    return Vec::new();
+                }
+                // A generic impl stores no target args; its own
+                // parameters stand for them, in order.
+                let targets: Vec<TypeDecl> = if target_type_args.is_empty() {
+                    generic_params.iter().map(|g| TypeDecl::Generic(*g)).collect()
+                } else {
+                    target_type_args.clone()
+                };
+                found = Some((targets, trait_type_args));
+            }
+        }
+        let Some((targets, trait_args)) = found else {
+            return Vec::new();
+        };
+        let mut impl_subst: HashMap<DefaultSymbol, Type> = HashMap::default();
+        for (pattern, concrete) in targets.iter().zip(type_args.iter()) {
+            if let TypeDecl::Generic(g) | TypeDecl::Identifier(g) = pattern {
+                impl_subst.insert(*g, *concrete);
+            }
+        }
+        trait_args
+            .iter()
+            .map(|a| match a {
+                TypeDecl::Generic(g) | TypeDecl::Identifier(g) if impl_subst.contains_key(g) => {
+                    impl_subst.get(g).copied()
+                }
+                other => crate::types::lower_scalar(other),
+            })
+            .collect()
+    }
+
     pub(super) fn infer_generic_args_from_param(
         &self,
         ptype: &TypeDecl,

@@ -1128,7 +1128,16 @@ impl<'a> TypeCheckerVisitor<'a> {
                                 a == b
                                     && (params_a.is_empty()
                                         || params_b.is_empty()
-                                        || params_a == params_b)
+                                        || same_spelled_args(params_a, params_b, &func.generic_params))
+                            }
+                            // `var best: Option<T> = ..` returned from a
+                            // `-> Option<T>`: the local's `T` is the
+                            // parser's `Identifier(T)`, the signature's
+                            // is `Generic(T)` -- one parameter, two
+                            // spellings, one level down this time.
+                            (TypeDecl::Enum(a, params_a), TypeDecl::Enum(b, params_b))
+                            | (TypeDecl::Struct(a, params_a), TypeDecl::Struct(b, params_b)) => {
+                                a == b && same_spelled_args(params_a, params_b, &func.generic_params)
                             }
                             _ => false,
                         }
@@ -1414,4 +1423,35 @@ pub struct LoopValue {
     /// The hint where the loop stands (`val x: i64 = loop { .. }`),
     /// which a suffix-less `break 0` takes.
     pub hint: Option<TypeDecl>,
+}
+
+/// Whether two type argument lists name the same types, with a type
+/// parameter of `generics` spelled `Generic(T)` on one side and
+/// `Identifier(T)` (or an argument-less `Struct(T)`) on the other.
+fn same_spelled_args(a: &[TypeDecl], b: &[TypeDecl], generics: &[DefaultSymbol]) -> bool {
+    fn param(t: &TypeDecl, generics: &[DefaultSymbol]) -> Option<DefaultSymbol> {
+        match t {
+            TypeDecl::Generic(s) | TypeDecl::Identifier(s) if generics.contains(s) => Some(*s),
+            TypeDecl::Struct(s, args) | TypeDecl::Enum(s, args) if args.is_empty() && generics.contains(s) => {
+                Some(*s)
+            }
+            _ => None,
+        }
+    }
+    fn same(x: &TypeDecl, y: &TypeDecl, generics: &[DefaultSymbol]) -> bool {
+        if x == y {
+            return true;
+        }
+        if let (Some(p), Some(q)) = (param(x, generics), param(y, generics)) {
+            return p == q;
+        }
+        match (x, y) {
+            (TypeDecl::Struct(n, xa) | TypeDecl::Enum(n, xa), TypeDecl::Struct(m, ya) | TypeDecl::Enum(m, ya)) => {
+                n == m && same_spelled_args(xa, ya, generics)
+            }
+            (TypeDecl::Tuple(xs), TypeDecl::Tuple(ys)) => same_spelled_args(xs, ys, generics),
+            _ => false,
+        }
+    }
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| same(x, y, generics))
 }

@@ -227,6 +227,11 @@ pub struct TypeCheckContext {
     /// to verify `fn f<I: Iter<i64>>` only accepts implementors of
     /// `Iter<i64>` specifically, not `Iter<str>`.
     pub trait_impl_type_args: HashMap<(DefaultSymbol, DefaultSymbol), Vec<Vec<TypeDecl>>>,
+    /// ITER-BOUND-INFERENCE: per `(type, trait)`, each impl's target
+    /// type args with its trait type args (`impl<T> Iterator<T> for
+    /// VecIter<T>` -> `([T], [T])`), so a call can read what a bound's
+    /// arguments are for a concrete type (`VecIter<u64>`: `T = u64`).
+    pub trait_impl_shapes: HashMap<(DefaultSymbol, DefaultSymbol), Vec<(Vec<TypeDecl>, Vec<TypeDecl>)>>,
     /// Side-table populated by `visit_closure` (Phase 2): for each
     /// closure literal, the list of `(name, type)` pairs the body
     /// references from outside its own parameter scope. Phase 1+2
@@ -298,6 +303,7 @@ impl TypeCheckContext {
             pending_trait_type_args: Vec::new(),
             struct_trait_impls: HashMap::default(),
             trait_impl_type_args: HashMap::default(),
+            trait_impl_shapes: HashMap::default(),
             closure_captures: HashMap::default(),
             closure_scope_floors: Vec::new(),
             closure_by_ref_bodies: rustc_hash::FxHashSet::default(),

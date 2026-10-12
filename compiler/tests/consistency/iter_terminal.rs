@@ -282,3 +282,61 @@ fn a_compound_result_reaches_an_address_taken_local() {
     "#;
     assert_consistent(src, "iter_terminal_vm_cell");
 }
+
+/// ITER-BOUND-INFERENCE: a free function takes any iterator through
+/// `I: Iterator<T>` and `T` is read off the argument's impl -- a generic
+/// one (`VecIter<T>`, `MapIter<T, U>` yielding `U`), a concrete one
+/// (`StringIter` is `Iterator<u8>`), a user's. The body's `Option<T>`
+/// local is returned as the signature's `Option<T>` (the parser spells
+/// one `Identifier(T)`, the other `Generic(T)`).
+#[test]
+fn a_free_function_takes_an_iterator_through_a_bound() {
+    let src = r#"
+        struct Countdown { n: u64 }
+        impl Iterator<u64> for Countdown {
+            fn next(&mut self) -> Option<u64> {
+                if self.n == 0u64 {
+                    Option::None
+                } else {
+                    self.n = self.n - 1u64
+                    Option::Some(self.n)
+                }
+            }
+        }
+        fn smallest<T: Ord, I: Iterator<T>>(it: I) -> Option<T> {
+            var best: Option<T> = Option::None
+            for x in it {
+                match best {
+                    Option::Some(b) => { if x.lt(b) { best = Option::Some(x) } }
+                    Option::None => { best = Option::Some(x) }
+                }
+            }
+            best
+        }
+        fn first<T, I: Iterator<T>>(it: I) -> Option<T> {
+            var i = it
+            i.next()
+        }
+        fn main() -> u64 {
+            val c = Countdown { n: 4u64 }
+            val a = smallest(c)
+            val s = String::from_str("hello")
+            val si = s.iter()
+            val b = smallest(si)
+            var v: Vec<u64> = Vec::new()
+            v.push(5u64)
+            v.push(2u64)
+            val vi = v.iter()
+            val m = vi.map(fn(x: u64) -> i64 { 10i64 - (x as i64) })
+            val d = smallest(m)
+            val vf = v.iter()
+            val f = first(vf)
+            println(a ?? 99u64)
+            println(b ?? 0u8)
+            println(d ?? 0i64)
+            println(f ?? 0u64)
+            0u64
+        }
+    "#;
+    assert_renders(src, "iter_bound_inference", "0\n101\n5\n5\n");
+}

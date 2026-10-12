@@ -2805,6 +2805,26 @@ Bind the struct first if you need one (`val it = MyIter { .. }`).
    do not. `min()` on an iterator of a type with no `Ord` is the
    ordinary bound violation at the call site.
 
+   A free function can take any iterator through a bound and name its
+   element type in the same list: `T` is read off the impl of
+   `Iterator` for the argument's type (`VecIter<u64>` gives `u64`,
+   `StringIter` gives `u8`, `MapIter<u64, i64>` gives `i64`).
+
+   ```rust
+   fn smallest<T: Ord, I: Iterator<T>>(it: I) -> Option<T> {
+       var best: Option<T> = Option::None
+       for x in it {
+           match best {
+               Option::Some(b) => { if x.lt(b) { best = Option::Some(x) } }
+               Option::None => { best = Option::Some(x) }
+           }
+       }
+       best
+   }
+   val v_iter = v.iter()
+   val m = smallest(v_iter)    # T = u64, I = VecIter<u64>
+   ```
+
    In the compiled lanes a closure can only take and return scalars,
    so the closure-taking operations over `enumerate` / `zip` (tuple
    elements) run on the interpreter only.

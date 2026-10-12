@@ -12,6 +12,7 @@
 
 ### 2026-10-12
 
+- **ITER-BOUND-INFERENCE — `fn f<T, I: Iterator<T>>(it: I)` の `T` を `I` の実型の impl から推論する (型検査と lowering の両方)。bound の中の兄弟の型引数を `Generic` で持つ (cache v72)。`var b: Option<T>` を `-> Option<T>` で返すと「expected Option<T>, got Option<T>」になっていたのも直した**
 - **GENERIC-REF-PARAM-PRIM — generic な method の `&T` 引数は、`T` がスカラーに実体化されたら番地で渡す (値を渡して VM は誤答・AOT は落ちていた)。`Vec::binary_search` を `&T` 受けに (鍵が呼び出し側に残る)**
 - **CALLEE-DROP-GENERIC の裸の `T` — `a: T` の引数も probe の候補にし、`&self` でスカラーを返す method の `&` 引数に渡すのは貸し出し。`min` / `max` / `clamp` / `pick` が返さなかった `String` を解放する (漏れていた)。手渡した後に使う本体では所有しない側に倒す**
 - **GENERIC-INFER-STRUCT-LITERAL-ARG — compiled レーンが構造体リテラルの引数から型引数を推論する (`min(K { .. }, K { .. })`)**
@@ -817,12 +818,6 @@
 
 > interpreter (tree-walker / IR VM) では動くが、compiled レーン (AOT / JIT) が断るか
 > 遅い形。interpreter 側 JIT の silent fallback もここ。
-
-- **ITER-BOUND-INFERENCE: `I: Iterator<T>` の bound から `T` を推論しない** ★ —
-  `fn min_of<T: Ord, I: Iterator<T>>(it: I) -> Option<T>` に `v.iter()` を
-  渡すと `T` が決まらない (型検査も lowering も引数からしか推論しない)。
-  `I` の実型の `impl Iterator<X>` から `T = X` を引けば、イテレータを受ける
-  自由関数が書ける。今は `OrdIterator` のような opt-in trait で回避している。
 
 - **COMPOUND-CALL-EXPR-POS の残り** ★ — 関数の結果 / 引数 / 腕 / scrutinee / 読み出しの根
   (`mk().n`、`v.get(i).len()`) は通る (2026-10-11)。残りは compound そのものを

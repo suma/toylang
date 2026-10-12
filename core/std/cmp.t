@@ -134,9 +134,8 @@ trait Ord {
 # so `min(a, b)` and `max(a, b)` together always hand back both values.
 #
 # Both arguments are taken by value. For an owning `T` (`String`) the
-# one not returned **leaks**: a generic body is not yet trusted to drop
-# a bare-`T` parameter (CALLEE-DROP-GENERIC in `design-docs/todo.md`),
-# so nobody frees it. It is a leak, never a double free. Compare through
+# call frees the ones it does not return (CALLEE-DROP-GENERIC: the body
+# only reads a scalar off `b` and lends `a` to `lt`). Compare through
 # `cmp` / `lt` and keep both when that matters.
 pub fn min<T: Ord>(a: T, b: T) -> T {
     if b.lt(a) { b } else { a }

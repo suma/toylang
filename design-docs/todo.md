@@ -12,6 +12,9 @@
 
 ### 2026-10-12
 
+- **CALLEE-DROP-GENERIC の裸の `T` — `a: T` の引数も probe の候補にし、`&self` でスカラーを返す method の `&` 引数に渡すのは貸し出し。`min` / `max` / `clamp` / `pick` が返さなかった `String` を解放する (漏れていた)。手渡した後に使う本体では所有しない側に倒す**
+- **GENERIC-INFER-STRUCT-LITERAL-ARG — compiled レーンが構造体リテラルの引数から型引数を推論する (`min(K { .. }, K { .. })`)**
+- **PRIM-RECEIVER-ENUM-TAIL — プリミティブのレシーバが compound を返す呼び出し (`a.cmp(b)`) を関数末尾 / 枝の値 / compound の slot に置ける**
 - **STDLIB-ITER-TERMINAL — `Iterator<T>` の default body に `count` / `last` / `nth` / `fold` / `any` / `all` / `position` / `find`、opt-in の `OrdIterator` (`min` / `max`) と `SumIterator` (`sum`、`core/std/ops.t` の `Add`)、`Option::unwrap_or_default`**
 - **STDLIB-ORD-CMP — `enum Ordering`、`Ord` の default `cmp` / `le` / `gt` / `ge` (struct に `<=` / `>` / `>=` が付く)、汎用 `min` / `max` / `clamp`、`Vec::binary_search`**
 - **generic trait の default body — 継承したシグネチャを impl の型引数で言い直す / trait メソッド自身の型引数 (`fold<Acc>`) を捨てずに解析 / 空の impl の bound (`impl<T: Ord> X<T> {}`) を継承した本体に効かせる (`Stmt::ImplBlock` が自分の generics を持つ)**
@@ -670,14 +673,6 @@
   従来どおり外側のスコープの終わりまで生き、tree-walker と順序が割れうる。
   直すなら「ブロックの末尾から外へ出る束縛」を move_check が移動として扱う。
 
-- **CALLEE-DROP-GENERIC の残り: 裸の `T` の引数** ★ — `fn max<T: Ord>(a: T, b: T)`
-  の probe は `T` を所有型と見ないので候補にしない。`max(s1, s2)` に `String` を
-  渡すと返さなかった方が漏れる (二重解放はしない、2026-10-12 の `cmp::min` /
-  `max` / `clamp` で確認)。同じ理由で generic な本体は裸の `T` の引数を
-  メソッドの引数に渡すと貸し出しにならず (`e.lt(x)` の `x`)、
-  `Vec::binary_search(k)` は所有型の鍵を受け取って解放する (呼び出し側は
-  `k.clone()` を渡す)。
-
 - **CALLEE-DROP-GENERIC の残り: 要素に触れる generic な受け手** ★ —
   generic な受け手が値渡しの引数を drop するのは、本体での出現がすべて
   「丸ごと手渡す / 貸す / `&self` の method でスカラーを読む」ときだけ
@@ -821,19 +816,6 @@
 
 > interpreter (tree-walker / IR VM) では動くが、compiled レーン (AOT / JIT) が断るか
 > 遅い形。interpreter 側 JIT の silent fallback もここ。
-
-- **PRIM-RECEIVER-ENUM-TAIL: プリミティブのレシーバが enum を返す呼び出しを末尾に置けない** ★ —
-  `fn f(a: i64, b: i64) -> Ordering { a.cmp(b) }` が compiled レーンで
-  「`cmp` is not a struct- or enum-receiver method returning a compound
-  value」(`compound_literal.rs`)。`val o = a.cmp(b)` と束縛すれば通る。
-  `prepare_compound_method_call` がレシーバを struct / enum の束縛に限って
-  いるため。`Ord::cmp` を override する impl が `self.x.cmp(other.x)` と
-  書くと踏む。
-
-- **GENERIC-INFER-STRUCT-LITERAL-ARG: 構造体リテラルの引数から型引数を推論しない** ★ —
-  `min(K { .. }, K { .. })` が compiled レーンで「cannot infer type arguments
-  for generic function `min`」(`call.rs::infer_generic_args_from_param`)。
-  `val` に束縛した名前なら通る。
 
 - **ITER-BOUND-INFERENCE: `I: Iterator<T>` の bound から `T` を推論しない** ★ —
   `fn min_of<T: Ord, I: Iterator<T>>(it: I) -> Option<T>` に `v.iter()` を

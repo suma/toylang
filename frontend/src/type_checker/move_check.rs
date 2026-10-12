@@ -89,7 +89,11 @@
 //! copied the contents out through raw memory, so it owns an argument
 //! only when a probe walk finds every mention of it hands the whole
 //! value on, lends it, or reads a scalar off it (CALLEE-DROP-GENERIC,
-//! `probe_generic_params`). A name several bodies share is never an
+//! `probe_generic_params`). A bare-`T` parameter is a candidate too
+//! (`T` may be `String`), and lending it to a `&` parameter of a
+//! scalar-answering `&self` method (`b.lt(a)`) keeps it one; it falls
+//! back to a non-owner when owning it would make the body a use after
+//! move. A name several bodies share is never an
 //! owner: the caller cannot tell which body it reaches and keeps the
 //! argument, which then leaks.
 
@@ -142,6 +146,7 @@ pub fn check_moves(
     let signatures = Signatures::collect(program, interner);
     let lend = compute_lend(program, interner, expr_types, &drop_analysis, &signatures);
 
+    let (scalar_readers, scalar_reader_names) = collect_scalar_readers(program, interner);
     let mut checker = MoveCheck {
         program,
         interner,
@@ -178,7 +183,10 @@ pub fn check_moves(
         probe: None,
         safe_receiver: None,
         self_owned: None,
-        scalar_readers: collect_scalar_readers(program, interner),
+        scalar_readers,
+        scalar_reader_names,
+        probe_bare: HashSet::default(),
+        safe_args: HashSet::default(),
     };
     // LEND-FREEING-CALLEE: a name every call resolves to one body.
     // A caller that cannot tell which body a call reaches keeps the
@@ -703,6 +711,15 @@ struct MoveCheck<'a> {
     /// `&mut self` and a scalar result: a call that cannot hand an
     /// element out.
     scalar_readers: HashSet<(DefaultSymbol, DefaultSymbol)>,
+    /// Method names that are such a call on every type
+    /// (`collect_scalar_readers`), for a receiver of a bare type
+    /// parameter.
+    scalar_reader_names: HashSet<DefaultSymbol>,
+    /// The probed parameters whose type is a bare type parameter.
+    probe_bare: HashSet<DefaultSymbol>,
+    /// Arguments being walked that are lent to a `&` parameter of such
+    /// a scalar-reading method.
+    safe_args: HashSet<ExprRef>,
     /// LEND-FREEING-CALLEE: stand-in `val`s handed out so far.
     stand_ins: u32,
     /// DOUBLE-DROP-LANE-DIVERGENCE: while the initializer of `val x =
@@ -795,6 +812,7 @@ impl MoveCheck<'_> {
     ) -> HashSet<DefaultSymbol> {
         let lend = self.lend.get(&body).cloned().unwrap_or_default();
         let mut candidates: HashMap<DefaultSymbol, (DefaultSymbol, bool)> = HashMap::default();
+        let mut bare_params: HashSet<DefaultSymbol> = HashSet::default();
         let mut index = 0usize;
         for (name, ty) in params {
             let is_self = self.interner.resolve(*name) == Some("self");
@@ -810,18 +828,29 @@ impl MoveCheck<'_> {
                 index += 1;
                 lend.get(i).copied().unwrap_or(true)
             };
-            if !self.is_owning(ty) || is_borrow(ty) || lent {
+            // A bare type parameter may be instantiated with an owning
+            // type (`min(s1, s2)` with `String`s): the body owns it on
+            // the same terms. Dropping a scalar instance is a no-op.
+            let bare = matches!(ty, TypeDecl::Generic(_));
+            if !(bare || self.is_owning(ty)) || is_borrow(ty) || lent {
                 continue;
             }
             let base = match ty {
-                TypeDecl::Struct(n, _) | TypeDecl::Enum(n, _) | TypeDecl::Identifier(n) => *n,
+                TypeDecl::Struct(n, _)
+                | TypeDecl::Enum(n, _)
+                | TypeDecl::Identifier(n)
+                | TypeDecl::Generic(n) => *n,
                 _ => continue,
             };
+            if bare {
+                bare_params.insert(*name);
+            }
             candidates.insert(*name, (base, true));
         }
         if candidates.is_empty() {
             return HashSet::default();
         }
+        self.probe_bare = bare_params;
         // The walk's outputs, restored afterwards: the probe decides,
         // the real walk records.
         let errors = self.errors.len();
@@ -833,13 +862,23 @@ impl MoveCheck<'_> {
         self.probe = Some(candidates);
         self.walk_function(params, body, false, &HashSet::default());
         let probe = self.probe.take().unwrap_or_default();
+        // A bare `T` may be instantiated with a type that owns nothing,
+        // where using it after handing it on is fine (`x.greet()` then
+        // `x.name()`, both `self: Self`). If treating it as an owner
+        // made the walk complain, it stays a non-owner.
+        let bare = std::mem::take(&mut self.probe_bare);
+        let refuse_bare = self.errors.len() > errors;
         self.errors.truncate(errors);
         self.element_copies.truncate(element_copies);
         self.transferred = transferred;
         self.drop_flags = drop_flags;
         self.transfer_anchors = transfer_anchors;
         self.stand_ins = stand_ins;
-        probe.into_iter().filter(|(_, (_, ok))| *ok).map(|(name, _)| name).collect()
+        probe
+            .into_iter()
+            .filter(|(name, (_, ok))| *ok && !(refuse_bare && bare.contains(name)))
+            .map(|(name, _)| name)
+            .collect()
     }
 
     /// LEND-FREEING-CALLEE: `owns` says every call reaches this body
@@ -915,7 +954,7 @@ impl MoveCheck<'_> {
             }
             let i = index;
             index += 1;
-            if !self.is_owning(ty) {
+            if !self.is_owning(ty) && !owned_generic.contains(name) && !self.probe_bare.contains(name) {
                 continue;
             }
             let dropped_here = (owns
@@ -1873,9 +1912,13 @@ impl MoveCheck<'_> {
                 // CALLEE-DROP-GENERIC: a scalar read off a probed
                 // parameter leaves no element behind.
                 let safe = match (self.program.expression.get_ref(receiver), &self.probe) {
-                    (Some(Expr::Identifier(r)), Some(probe)) => probe
-                        .get(r)
-                        .is_some_and(|(base, _)| self.scalar_readers.contains(&(*base, *method))),
+                    (Some(Expr::Identifier(r)), Some(probe)) => probe.get(r).is_some_and(|(base, _)| {
+                        if self.probe_bare.contains(r) {
+                            self.scalar_reader_names.contains(method)
+                        } else {
+                            self.scalar_readers.contains(&(*base, *method))
+                        }
+                    }),
                     _ => false,
                 };
                 let prev_safe = std::mem::replace(
@@ -1885,7 +1928,26 @@ impl MoveCheck<'_> {
                 self.walk_expr(*receiver, Use::Read, conditional);
                 self.safe_receiver = prev_safe;
                 let target = self.signatures.method_target(*method, args.len());
+                // A name lent to a `&` parameter of a method that only
+                // reads and answers a scalar (`b.lt(a)`) cannot leave an
+                // element behind either.
+                let lent_args: Vec<ExprRef> = match (&self.probe, &target) {
+                    (Some(_), Some(t)) if self.scalar_reader_names.contains(method) => args
+                        .iter()
+                        .zip(&t.params)
+                        .filter(|(a, ty)| {
+                            is_borrow(ty)
+                                && matches!(self.program.expression.get_ref(a), Some(Expr::Identifier(_)))
+                        })
+                        .map(|(a, _)| *a)
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                self.safe_args.extend(lent_args.iter().copied());
                 self.walk_arg_list(args, target.as_ref(), conditional);
+                for a in &lent_args {
+                    self.safe_args.remove(a);
+                }
             }
             Expr::AssociatedFunctionCall(type_name, fn_name, args) => {
                 // `Enum::Variant(payload)` puts the payload inside the
@@ -2092,6 +2154,7 @@ impl MoveCheck<'_> {
             && let Some((_, ok)) = probe.get_mut(&name)
             && use_kind == Use::Read
             && self.safe_receiver != Some(expr_ref)
+            && !self.safe_args.contains(&expr_ref)
         {
             *ok = false;
         }
@@ -2918,11 +2981,17 @@ impl LendAnalysis<'_> {
 /// method takes `&self` / `&mut self` and returns a primitive scalar
 /// (or nothing) -- `size`, `len`, `is_empty`, `capacity`. Such a call
 /// on a container cannot hand one of its elements out.
+///
+/// The second set names the methods for which that holds across every
+/// type, with `&self` only: a call on a bare type parameter (`b.lt(a)`
+/// with `b: T`) may reach any of them, and what it is lent cannot be
+/// kept in a receiver it may not change.
 fn collect_scalar_readers(
     program: &File,
     interner: &DefaultStringInterner,
-) -> HashSet<(DefaultSymbol, DefaultSymbol)> {
+) -> (HashSet<(DefaultSymbol, DefaultSymbol)>, HashSet<DefaultSymbol>) {
     let mut verdict: HashMap<(DefaultSymbol, DefaultSymbol), bool> = HashMap::default();
+    let mut by_name: HashMap<DefaultSymbol, bool> = HashMap::default();
     for i in 0..program.statement.len() {
         let Some(Stmt::ImplBlock { target_type, methods, .. }) =
             program.statement.get_ref(&StmtRef(i as u32))
@@ -2952,9 +3021,14 @@ fn collect_scalar_readers(
             let ok = m.has_self_param && !by_value_self && scalar;
             let entry = verdict.entry((*target_type, m.name)).or_insert(true);
             *entry = *entry && ok;
+            let entry = by_name.entry(m.name).or_insert(true);
+            *entry = *entry && ok && !m.self_is_mut;
         }
     }
-    verdict.into_iter().filter(|(_, ok)| *ok).map(|(k, _)| k).collect()
+    (
+        verdict.into_iter().filter(|(_, ok)| *ok).map(|(k, _)| k).collect(),
+        by_name.into_iter().filter(|(_, ok)| *ok).map(|(k, _)| k).collect(),
+    )
 }
 
 /// DOUBLE-DROP-LANE-DIVERGENCE: which methods take their receiver by

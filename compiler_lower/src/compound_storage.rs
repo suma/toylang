@@ -1117,6 +1117,20 @@ impl<'a> FunctionLower<'a> {
             {
                 Some(BranchShape::Produces(ShapeSource::Base(*en)))
             }
+            // An enum-returning method, on a struct / enum receiver or
+            // a primitive one (`if c { a.cmp(b) } else { .. }`,
+            // PRIM-RECEIVER-ENUM-TAIL). Like the struct side, resolving
+            // the target emits nothing.
+            Expr::MethodCall(recv, method, args) => {
+                let func_id = match self.resolve_method_target(recv, *method, args) {
+                    Ok(Some((func_id, _))) => Some(func_id),
+                    _ => self.primitive_method_func(recv, *method),
+                }?;
+                match self.module.function(func_id).return_type {
+                    Type::Enum(enum_id) => Some(BranchShape::Produces(ShapeSource::Instance(enum_id))),
+                    _ => None,
+                }
+            }
             Expr::Identifier(sym) => match self.bindings.get(sym) {
                 Some(Binding::Enum(storage)) => {
                     Some(BranchShape::Produces(ShapeSource::Instance(storage.enum_id)))

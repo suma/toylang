@@ -1776,17 +1776,13 @@ println(o)                                   # Less
 val by_name_then_age = a.name.cmp(b.name).then(a.age.cmp(b.age))
 ```
 
-In the compiled lanes, bind a `cmp` on a primitive receiver with
-`val` before using it as a branch's value (`val o = a.cmp(b)`); the
-call directly in tail position is not lowered yet.
-
 **Generic `min` / `max` / `clamp`** (`core/std/cmp.t`) take any
 `T: Ord`: `min(a, b)` keeps `a` on a tie and `max(a, b)` keeps `b`, so
 together they always hand back both values. `clamp(x, lo, hi)` panics
 when `hi < lo`. The per-width `math::min_u8` ... `math::clamp_i64`
 remain for existing callers. Both arguments are taken by value; for an
-owning `T` such as `String`, the one not returned currently **leaks**
-(it is never freed twice).
+owning `T` such as `String`, the ones not returned are freed by the
+call.
 
 **`Vec<T: Ord>::binary_search(x: T) -> Result<u64, u64>`** searches a
 vector sorted ascending: `Ok(i)` when an element equal to `x` is at
@@ -7140,7 +7136,15 @@ the string, grown buffer and all. A generic callee owns its argument
 only when every mention of it hands the whole value on, lends it, or
 reads a scalar off it through a `&self` / `&mut self` method
 (`v.size()`) — `fn maybe<T>(v: Vec<T>, keep: &mut Vec<Vec<T>>, c: bool)
-{ if c { keep.push(v) } }` frees `v` when `c` is false. One that touches
+{ if c { keep.push(v) } }` frees `v` when `c` is false. A parameter
+typed by a bare type parameter (`a: T`) counts as owning, since `T` may
+be `String`: `fn min<T: Ord>(a: T, b: T) -> T { if b.lt(a) { b } else
+{ a } }` frees the one it does not return. Passing such a name to a `&`
+parameter of a `&self` method that answers a scalar (the `a` of
+`b.lt(a)`) lends it. A body that uses a bare-`T` parameter after
+handing it on (`x.greet()` then `x.name()`, both `self: Self`) is
+legal for a `T` that owns nothing, so there the parameter stays a
+non-owner rather than an error. One that touches
 the elements (`get`, `borrow`, an iterator, a field) leaves the argument
 unfreed: it may have copied them out through raw memory
 (`Vec::extend(other)` does), and dropping the argument would free them

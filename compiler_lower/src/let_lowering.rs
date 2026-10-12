@@ -1577,151 +1577,69 @@ impl<'a> FunctionLower<'a> {
         method_sym: DefaultSymbol,
         method_args: &[ExprRef],
     ) -> Result<Option<Option<ValueId>>, String> {
-        if let Some(recv_ty) = self.value_scalar(&recv)
-            && let Some(target_sym) =
-                super::method_call::primitive_target_sym_for_ir_type(recv_ty, self.interner)
-                && let Some(func_id) = super::method_registry::lookup_method_func(
-                    self.method_func_ids, target_sym, method_sym, &[],
-                ) {
-                    let target_ret = self.module.function(func_id).return_type;
-                    if matches!(
-                        target_ret,
-                        Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)
-                    ) {
-                        let recv_value = self
-                            .lower_expr(&recv)?
-                            .ok_or_else(|| {
-                                "primitive method receiver produced no value".to_string()
-                            })?;
-                        let mut all_args: Vec<ValueId> = vec![recv_value];
-                        for (arg_idx, a) in method_args.iter().enumerate() {
-                            // `T` -> `&T` auto-borrow. The receiver
-                            // always occupies slot 0, so this
-                            // argument's entry is `1 + arg_idx`.
-                            // Without it `250u8.checked_add(x)` for
-                            // `fn checked_add(&self, other: &Self)`
-                            // passed the value where the callee reads
-                            // a pointer, and the addition silently
-                            // used 0.
-                            if let Some(ptr) = self.lower_scalar_ref_arg(
-                                a,
-                                self.module
-                                    .function(func_id)
-                                    .param_ref_pointee
-                                    .get(1 + arg_idx)
-                                    .copied()
-                                    .flatten(),
-                            )? {
-                                all_args.push(ptr);
-                                continue;
-                            }
-                            let arg_expr_ref = match self.expr_at(a) {
-                                Some(Expr::Unary(frontend::ast::UnaryOp::Borrow | frontend::ast::UnaryOp::BorrowMut, inner)) => {
-                                    *inner
-                                }
-                                _ => *a,
-                            };
-                            if let Some(Expr::Identifier(sym)) =
-                                self.expr_at(&arg_expr_ref)
-                            {
-                                if let Some(Binding::Struct { fields, .. }) =
-                                    self.bindings.get(sym).cloned()
-                                {
-                                    for (local, ty) in flatten_struct_locals(&fields) {
-                                        let v = self
-                                            .emit(InstKind::LoadLocal(local), Some(ty))
-                                            .expect("LoadLocal returns a value");
-                                        all_args.push(v);
-                                    }
-                                    continue;
-                                }
-                                if let Some(Binding::Tuple { elements }) =
-                                    self.bindings.get(sym).cloned()
-                                {
-                                    for (local, ty) in flatten_tuple_element_locals(&elements) {
-                                        let v = self
-                                            .emit(InstKind::LoadLocal(local), Some(ty))
-                                            .expect("LoadLocal returns a value");
-                                        all_args.push(v);
-                                    }
-                                    continue;
-                                }
-                                if let Some(Binding::Enum(storage)) =
-                                    self.bindings.get(sym).cloned()
-                                {
-                                    let vs = self.load_enum_locals(&storage);
-                                    all_args.extend(vs);
-                                    continue;
-                                }
-                            }
-                            let v = self
-                                .lower_expr(&arg_expr_ref)?
-                                .ok_or_else(|| {
-                                    "method argument produced no value".to_string()
-                                })?;
-                            all_args.push(v);
-                        }
-                        match target_ret {
-                            Type::Struct(struct_id) => {
-                                let fields = self.allocate_struct_fields(struct_id);
-                                let dests: Vec<LocalId> =
-                                    flatten_struct_locals(&fields)
-                                        .into_iter()
-                                        .map(|(l, _)| l)
-                                        .collect();
-                                self.register_drop_for_struct_binding(struct_id, &fields);
-                                self.bindings.insert(
-                                    name,
-                                    Binding::Struct { struct_id, fields },
-                                );
-                                self.emit(
-                                    InstKind::CallStruct {
-                                        target: func_id,
-                                        args: all_args,
-                                        dests,
-                                    },
-                                    None,
-                                );
-                            }
-                            Type::Tuple(tuple_id) => {
-                                let elements = self.allocate_tuple_elements(tuple_id)?;
-                                let dests: Vec<LocalId> =
-                                    flatten_tuple_element_locals(&elements)
-                                        .into_iter()
-                                        .map(|(l, _)| l)
-                                        .collect();
-                                self.bindings.insert(
-                                    name,
-                                    Binding::Tuple { elements },
-                                );
-                                self.emit(
-                                    InstKind::CallTuple {
-                                        target: func_id,
-                                        args: all_args,
-                                        dests,
-                                    },
-                                    None,
-                                );
-                            }
-                            Type::Enum(enum_id) => {
-                                let storage = self.allocate_enum_storage(enum_id);
-                                let dests = Self::flatten_enum_dests(&storage);
-                                self.bindings.insert(name, Binding::Enum(storage));
-                                self.emit(
-                                    InstKind::CallEnum {
-                                        target: func_id,
-                                        args: all_args,
-                                        dests,
-                                    },
-                                    None,
-                                );
-                            }
-                            _ => unreachable!("guard ensured compound return"),
-                        }
-                        return Ok(Some(None));
-                    }
-                }
-        Ok(None)
+        let Some(call) = self.prepare_primitive_compound_method_call(&recv, method_sym, method_args)? else {
+            return Ok(None);
+        };
+        let func_id = call.target;
+        let all_args = call.args;
+        match call.ret {
+            Type::Struct(struct_id) => {
+                let fields = self.allocate_struct_fields(struct_id);
+                let dests: Vec<LocalId> =
+                    flatten_struct_locals(&fields)
+                        .into_iter()
+                        .map(|(l, _)| l)
+                        .collect();
+                self.register_drop_for_struct_binding(struct_id, &fields);
+                self.bindings.insert(
+                    name,
+                    Binding::Struct { struct_id, fields },
+                );
+                self.emit(
+                    InstKind::CallStruct {
+                        target: func_id,
+                        args: all_args,
+                        dests,
+                    },
+                    None,
+                );
+            }
+            Type::Tuple(tuple_id) => {
+                let elements = self.allocate_tuple_elements(tuple_id)?;
+                let dests: Vec<LocalId> =
+                    flatten_tuple_element_locals(&elements)
+                        .into_iter()
+                        .map(|(l, _)| l)
+                        .collect();
+                self.bindings.insert(
+                    name,
+                    Binding::Tuple { elements },
+                );
+                self.emit(
+                    InstKind::CallTuple {
+                        target: func_id,
+                        args: all_args,
+                        dests,
+                    },
+                    None,
+                );
+            }
+            Type::Enum(enum_id) => {
+                let storage = self.allocate_enum_storage(enum_id);
+                let dests = Self::flatten_enum_dests(&storage);
+                self.bindings.insert(name, Binding::Enum(storage));
+                self.emit(
+                    InstKind::CallEnum {
+                        target: func_id,
+                        args: all_args,
+                        dests,
+                    },
+                    None,
+                );
+            }
+            _ => unreachable!("guard ensured compound return"),
+        }
+        Ok(Some(None))
     }
 
     /// Binary arithmetic / bitwise operator overload RHS helper

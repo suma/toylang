@@ -2148,6 +2148,116 @@ impl<'a> FunctionLower<'a> {
         ))
     }
 
+    /// The method a primitive receiver's call reaches (`3u64.cmp(..)`
+    /// -> `u64::cmp`), found without emitting anything.
+    pub(super) fn primitive_method_func(&self, recv: &ExprRef, method_sym: DefaultSymbol) -> Option<FuncId> {
+        let recv_ty = self.value_scalar(recv)?;
+        let target_sym = primitive_target_sym_for_ir_type(recv_ty, self.interner)?;
+        super::method_registry::lookup_method_func(self.method_func_ids, target_sym, method_sym, &[])
+    }
+
+    /// PRIM-RECEIVER-ENUM-TAIL: a compound-returning method on a
+    /// primitive receiver (`a.cmp(b)` -> `Ordering`, `lit.to_string()`),
+    /// prepared like `prepare_compound_method_call` so every position
+    /// that fills a compound slot can take one -- not only a `val`
+    /// right-hand side. `Ok(None)` when the receiver is not a primitive
+    /// with such a method.
+    pub(super) fn prepare_primitive_compound_method_call(
+        &mut self,
+        recv: &ExprRef,
+        method_sym: DefaultSymbol,
+        method_args: &[ExprRef],
+    ) -> Result<Option<CompoundMethodCall>, String> {
+        let recv = *recv;
+        let Some(func_id) = self.primitive_method_func(&recv, method_sym) else {
+            return Ok(None);
+        };
+        let target_ret = self.module.function(func_id).return_type;
+        if !matches!(target_ret, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
+            return Ok(None);
+        }
+            let recv_value = self
+                .lower_expr(&recv)?
+                .ok_or_else(|| {
+                    "primitive method receiver produced no value".to_string()
+                })?;
+            let mut all_args: Vec<ValueId> = vec![recv_value];
+            for (arg_idx, a) in method_args.iter().enumerate() {
+                // `T` -> `&T` auto-borrow. The receiver
+                // always occupies slot 0, so this
+                // argument's entry is `1 + arg_idx`.
+                // Without it `250u8.checked_add(x)` for
+                // `fn checked_add(&self, other: &Self)`
+                // passed the value where the callee reads
+                // a pointer, and the addition silently
+                // used 0.
+                if let Some(ptr) = self.lower_scalar_ref_arg(
+                    a,
+                    self.module
+                        .function(func_id)
+                        .param_ref_pointee
+                        .get(1 + arg_idx)
+                        .copied()
+                        .flatten(),
+                )? {
+                    all_args.push(ptr);
+                    continue;
+                }
+                let arg_expr_ref = match self.expr_at(a) {
+                    Some(Expr::Unary(frontend::ast::UnaryOp::Borrow | frontend::ast::UnaryOp::BorrowMut, inner)) => {
+                        *inner
+                    }
+                    _ => *a,
+                };
+                if let Some(Expr::Identifier(sym)) =
+                    self.expr_at(&arg_expr_ref)
+                {
+                    if let Some(Binding::Struct { fields, .. }) =
+                        self.bindings.get(sym).cloned()
+                    {
+                        for (local, ty) in flatten_struct_locals(&fields) {
+                            let v = self
+                                .emit(InstKind::LoadLocal(local), Some(ty))
+                                .expect("LoadLocal returns a value");
+                            all_args.push(v);
+                        }
+                        continue;
+                    }
+                    if let Some(Binding::Tuple { elements }) =
+                        self.bindings.get(sym).cloned()
+                    {
+                        for (local, ty) in flatten_tuple_element_locals(&elements) {
+                            let v = self
+                                .emit(InstKind::LoadLocal(local), Some(ty))
+                                .expect("LoadLocal returns a value");
+                            all_args.push(v);
+                        }
+                        continue;
+                    }
+                    if let Some(Binding::Enum(storage)) =
+                        self.bindings.get(sym).cloned()
+                    {
+                        let vs = self.load_enum_locals(&storage);
+                        all_args.extend(vs);
+                        continue;
+                    }
+                }
+                let v = self
+                    .lower_expr(&arg_expr_ref)?
+                    .ok_or_else(|| {
+                        "method argument produced no value".to_string()
+                    })?;
+                all_args.push(v);
+            }
+        Ok(Some(CompoundMethodCall {
+            target: func_id,
+            ret: target_ret,
+            args: all_args,
+            writeback_dests: Vec::new(),
+            reload: ReceiverReload::none(),
+        }))
+    }
+
     /// Everything a compound-returning method call needs *except* the
     /// destination: the target, its return type, the flattened
     /// argument values, and the writeback slots the callee appends to
@@ -2171,7 +2281,7 @@ impl<'a> FunctionLower<'a> {
         let Some((target, recv_binding)) =
             self.resolve_method_target(recv, method_sym, method_args)?
         else {
-            return Ok(None);
+            return self.prepare_primitive_compound_method_call(recv, method_sym, method_args);
         };
         let ret = self.module.function(target).return_type;
         if !matches!(ret, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {

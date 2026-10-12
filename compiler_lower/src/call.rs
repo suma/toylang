@@ -114,6 +114,21 @@ impl<'a> FunctionLower<'a> {
                     &mut inferred,
                 );
             }
+            // GENERIC-INFER-STRUCT-LITERAL-ARG: a struct literal of a
+            // non-generic struct names its type outright (`min(K { .. },
+            // K { .. })`). Instantiating it needs `&mut self`, so it
+            // is done here rather than in the walk above.
+            for ((_pname, ptype), arg) in template.parameter.iter().zip(arg_exprs.iter()) {
+                if let TypeDecl::Generic(g) | TypeDecl::Identifier(g) = ptype
+                    && template.generic_params.contains(g)
+                    && !inferred.contains_key(g)
+                    && let Some(Expr::StructLiteral(name, _)) = self.expr_at(arg)
+                    && self.struct_defs.get(name).is_some_and(|t| t.generic_params.is_empty())
+                {
+                    let id = self.resolve_struct_instance(*name, None)?;
+                    inferred.insert(*g, Type::Struct(id));
+                }
+            }
             // STDLIB-TRAIT-BASE B5: a parameter the arguments could
             // not name may still be named by where the result goes.
             if let Some(hint) = self.pending_return_hint

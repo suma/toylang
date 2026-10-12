@@ -76,14 +76,12 @@ fn generic_min_max_clamp() {
             val b = max(4i64, -2i64)
             val c = clamp(9u8, 1u8, 5u8)
             val d = clamp(-3i64, 0i64, 10i64)
-            # Bound first: the compiled lanes infer `T` from a named
-            # argument, not from a struct literal in the argument list.
             val k1 = K { k: 1u64, tag: 1u64 }
             val k2 = K { k: 1u64, tag: 2u64 }
             val lo = min(k1, k2)
-            val k3 = K { k: 1u64, tag: 1u64 }
-            val k4 = K { k: 1u64, tag: 2u64 }
-            val hi = max(k3, k4)
+            # GENERIC-INFER-STRUCT-LITERAL-ARG: a struct literal names
+            # `T` in the compiled lanes too.
+            val hi = max(K { k: 1u64, tag: 1u64 }, K { k: 1u64, tag: 2u64 })
             a * 10000u64 + (b as u64) * 1000u64 + (c as u64) * 100u64
                 + (d as u64) * 10u64 + lo.tag * 3u64 + hi.tag
         }
@@ -166,4 +164,37 @@ fn unwrap_or_default_supplies_the_zero() {
         }
     "#;
     assert_consistent(src, "ord_cmp_unwrap_or_default");
+}
+
+/// PRIM-RECEIVER-ENUM-TAIL: an enum-returning method on a primitive
+/// receiver is a function's value, a branch's value, and the body of
+/// an `Ord::cmp` override -- the compiled lanes took it only as a `val`
+/// right-hand side.
+#[test]
+fn cmp_on_a_primitive_in_tail_position() {
+    let src = r#"
+        struct P { x: i64, y: i64 }
+        impl Ord for P {
+            fn lt(&self, other: &Self) -> bool { self.x < other.x }
+            fn cmp(&self, other: &Self) -> Ordering { self.x.cmp(other.x) }
+        }
+        fn f(a: i64, b: i64) -> Ordering { a.cmp(b) }
+        fn g(a: u8, b: u8, flip: bool) -> Ordering {
+            if flip { b.cmp(a) } else { a.cmp(b) }
+        }
+        fn main() -> u64 {
+            val a = f(1i64, 2i64)
+            println(a)
+            val p = P { x: 3i64, y: 0i64 }
+            val q = P { x: 3i64, y: 1i64 }
+            val c = p.cmp(q)
+            println(c)
+            val b = g(1u8, 2u8, true)
+            println(b)
+            val s = if true { 5u64.cmp(4u64) } else { Ordering::Equal }
+            println(s)
+            0u64
+        }
+    "#;
+    assert_renders(src, "ord_cmp_prim_tail", "Less\nEqual\nGreater\nGreater\n");
 }

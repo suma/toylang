@@ -994,6 +994,85 @@ fn main() -> u64 {
     );
 }
 
+/// CALLEE-DROP-GENERIC, bare `T`: a parameter typed by a bare type
+/// parameter may be instantiated with an owning type, so the probe takes
+/// it as a candidate too. `b.lt(a)` reads a scalar off `b` and lends `a`
+/// to a `&` parameter of a `&self` method answering a scalar, so `pick`
+/// and the stdlib `min` / `max` / `clamp` drop the arguments they do not
+/// return (`close 2` / `close 4` / `close 5` / `close 7` and `close 9`).
+/// They leaked before.
+#[test]
+fn a_generic_callee_drops_a_bare_t_argument_it_does_not_return() {
+    let src = r#"
+struct H { id: u64 }
+impl Drop for H {
+    fn drop(&mut self) { println("close {self.id}") }
+}
+impl Ord for H {
+    fn lt(&self, other: &Self) -> bool { self.id < other.id }
+}
+fn pick<T: Ord>(a: T, b: T) -> T {
+    if b.lt(a) { b } else { a }
+}
+fn run() -> u64 {
+    val a = pick(H { id: 2u64 }, H { id: 1u64 })
+    println("picked {a.id}")
+    val b = min(H { id: 3u64 }, H { id: 4u64 })
+    println("min {b.id}")
+    val c = max(H { id: 5u64 }, H { id: 6u64 })
+    println("max {c.id}")
+    val d = clamp(H { id: 9u64 }, H { id: 7u64 }, H { id: 8u64 })
+    println("clamp {d.id}")
+    0u64
+}
+fn main() -> u64 {
+    run()
+    val before = __builtin_live_bytes()
+    val s = min(String::from_str("pear"), String::from_str("apple"))
+    val t = clamp(String::from_str("m"), String::from_str("a"), String::from_str("k"))
+    println("{s} {t}")
+    val kept = __builtin_live_bytes() - before
+    println("kept {kept}")
+    0u64
+}
+    "#;
+    assert_renders(
+        src,
+        "generic_callee_bare_t",
+        "close 2\npicked 1\nclose 4\nmin 3\nclose 5\nmax 6\nclose 7\nclose 9\nclamp 8\n\
+         close 8\nclose 6\nclose 3\nclose 1\napple k\nkept 6\n",
+    );
+    if skip_e2e() {
+        return;
+    }
+    assert_eq!(tree_walker_heap_check_report(src), "heap check: 0 double frees (0 distinct)\n");
+    let (code, stderr) = compiled_heap_poison_run(src, "generic_callee_bare_t_poison");
+    assert_eq!(code, 0, "instrumented binary stopped:\n{stderr}");
+}
+
+/// The bare `T` stays a non-owner when owning it would make the body a
+/// use after move: `x.greet()` then `x.name()` both take `self: Self`,
+/// which is fine for a `T` that owns nothing (the only kind this works
+/// for), so the program is not refused.
+#[test]
+fn a_bare_t_used_after_a_consuming_call_stays_a_non_owner() {
+    let src = r#"
+trait Greet { fn greet(self: Self) -> u64 }
+trait Named { fn name(self: Self) -> u64 }
+struct Dog { n: u64 }
+impl Greet for Dog { fn greet(self: Self) -> u64 { 1u64 } }
+impl Named for Dog { fn name(self: Self) -> u64 { self.n } }
+fn describe<T: Greet + Named>(x: T) -> u64 {
+    val g = x.greet()
+    g + x.name()
+}
+fn main() -> u64 {
+    describe(Dog { n: 41u64 })
+}
+    "#;
+    assert_consistent(src, "generic_bare_t_consumed_twice");
+}
+
 /// CONSUMING-SELF-NO-DROP: a `self: Self` method owns its receiver --
 /// the call site already treats it as moved -- so it drops it at its
 /// end unless it hands it on: whole (`renew`, `stash` on one path) or

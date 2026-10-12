@@ -66,3 +66,36 @@ fn a_method_on_a_returned_string_runs() {
     "#;
     assert_stdout_consistent(src, "compound_call_receiver_string");
 }
+
+/// COMPOUND-TEMP-RECEIVER: a method called on the result of a call that
+/// returns a compound owning nothing (`f().to_str()`, `mk().get()`) --
+/// and `println(f())` for a type with `Display`, which the checker turns
+/// into `println(f().to_str())`. The compiled lanes took a method only
+/// on a name or a field chain; the receiver is now bound to a `val` in
+/// a block of its own, as an owning one already was.
+#[test]
+fn a_method_on_a_non_owning_compound_temporary() {
+    let src = r#"
+        struct P { x: i64 }
+        impl P { fn get(&self) -> i64 { self.x } }
+        enum Color { Red, Green }
+        fn f(a: i64, b: i64) -> Ordering { a.cmp(b) }
+        fn mk(x: i64) -> P { P { x: x } }
+        fn col(b: bool) -> Color { if b { Color::Red } else { Color::Green } }
+        fn main() -> u64 {
+            println(f(1i64, 2i64))
+            println(col(false))
+            println(mk(4i64))
+            val s = f(2i64, 2i64).to_str()
+            println(s)
+            println(mk(5i64).get())
+            println(3u64.cmp(1u64))
+            0u64
+        }
+    "#;
+    assert_renders(
+        src,
+        "compound_temp_receiver",
+        "Less\nColor::Green\nP { x: 4 }\nEqual\n5\nGreater\n",
+    );
+}

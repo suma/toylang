@@ -3787,6 +3787,12 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.core
             .expr_pool
             .update(arg, Expr::MethodCall(receiver_ref, to_str, Vec::new()));
+        // The types follow the nodes: the receiver keeps the value's,
+        // the call answers `str`. Without them a later pass reading
+        // the tree (OWNING-TEMP-DROP binding `f().to_str()`'s receiver
+        // for the compiled lanes) saw neither.
+        self.type_inference.set_expr_type(receiver_ref, arg_ty);
+        self.type_inference.set_expr_type(*arg, TypeDecl::String);
         Ok(())
     }
 

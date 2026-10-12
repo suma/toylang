@@ -71,6 +71,12 @@ pub fn bind_owning_temporaries(
             *entry = (depth, access, holder);
         }
     }
+    let declared: rustc_hash::FxHashSet<DefaultSymbol> = (0..program.statement.len())
+        .filter_map(|i| match program.statement.get_ref(&StmtRef(i as u32)) {
+            Some(Stmt::StructDecl { name, .. } | Stmt::EnumDecl { name, .. }) => Some(*name),
+            _ => None,
+        })
+        .collect();
     let mut sites: Vec<(ExprRef, ExprRef, ExprRef, TypeDecl)> = Vec::new();
     for (root, (_, access, holder)) in outermost {
         if !produces_fresh_value(program, interner, &root) {
@@ -80,17 +86,27 @@ pub fn bind_owning_temporaries(
         else {
             continue;
         };
-        if !analysis.contains_drop(root_ty) {
-            continue;
-        }
-        // Only a scalar read. An owning result -- a field taken out
-        // (which moves the root anyway) or a method's fresh value --
-        // would make the block compound, and the compiled lanes defer
-        // a compound block's drops to the enclosing scope while the
-        // tree-walker drops at the block's end (COMPOUND-BLOCK-DROP-
-        // TIMING): the two would print in different orders.
-        if !is_scalar(result_ty) {
-            continue;
+        if analysis.contains_drop(root_ty) {
+            // Only a scalar read. An owning result -- a field taken out
+            // (which moves the root anyway) or a method's fresh value --
+            // would make the block compound, and the compiled lanes
+            // defer a compound block's drops to the enclosing scope
+            // while the tree-walker drops at the block's end (COMPOUND-
+            // BLOCK-DROP-TIMING): the two would print in different
+            // orders.
+            if !is_scalar(result_ty) {
+                continue;
+            }
+        } else {
+            // COMPOUND-TEMP-RECEIVER: a compound that owns nothing has
+            // no drop to place, but the compiled lanes take a method
+            // only on a name or a field chain, so `f().to_str()` (what
+            // `println(f())` becomes for an `Ordering`) or `mk().get()`
+            // was refused there. Binding it changes nothing else. A
+            // `str` read is fine too: nothing is freed under it.
+            if !is_compound(root_ty, &declared) || !(is_scalar(result_ty) || matches!(result_ty, TypeDecl::String)) {
+                continue;
+            }
         }
         sites.push((access, holder, root, root_ty.clone()));
     }
@@ -573,6 +589,16 @@ pub fn reads_a_kept_element(method: &str) -> bool {
 }
 
 /// A value that cannot point anywhere.
+/// A struct, enum or tuple -- a bare name counts when it is a declared
+/// type (`-> Ordering` is recorded as written).
+fn is_compound(ty: &TypeDecl, declared: &rustc_hash::FxHashSet<DefaultSymbol>) -> bool {
+    match ty {
+        TypeDecl::Struct(..) | TypeDecl::Enum(..) | TypeDecl::Tuple(_) => true,
+        TypeDecl::Identifier(name) => declared.contains(name),
+        _ => false,
+    }
+}
+
 fn is_scalar(ty: &TypeDecl) -> bool {
     matches!(
         ty,

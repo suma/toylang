@@ -12,6 +12,7 @@
 
 ### 2026-10-12
 
+- **COMPOUND-TEMP-RECEIVER — 所有しない compound を返す呼び出しへのメソッド (`f().to_str()`、`-> Ordering` と名前で書いた戻り値も) と `println(f())` が compiled レーンで通る (owning_temps が `val` に束縛する。`Display` の書き換えが型を記録していなかった)**
 - **TRAIT-DEFAULT-BODY-T — generic trait の default body が `T` を書ける (`val x: T` / `Vec<T>` / `__builtin_sizeof::<T>()`)。書いた本体は impl の型引数が違うときだけ impl ごとに複製して型を言い直す (`default_body.rs`)。`T::default()` も (`impl Zero<u64>` では `u64` の impl を呼ぶ)**
 - **ITER-BOUND-INFERENCE — `fn f<T, I: Iterator<T>>(it: I)` の `T` を `I` の実型の impl から推論する (型検査と lowering の両方)。bound の中の兄弟の型引数を `Generic` で持つ (cache v72)。`var b: Option<T>` を `-> Option<T>` で返すと「expected Option<T>, got Option<T>」になっていたのも直した**
 - **GENERIC-REF-PARAM-PRIM — generic な method の `&T` 引数は、`T` がスカラーに実体化されたら番地で渡す (値を渡して VM は誤答・AOT は落ちていた)。`Vec::binary_search` を `&T` 受けに (鍵が呼び出し側に残る)**
@@ -815,8 +816,9 @@
 > 遅い形。interpreter 側 JIT の silent fallback もここ。
 
 - **COMPOUND-CALL-EXPR-POS の残り** ★ — 関数の結果 / 引数 / 腕 / scrutinee / 読み出しの根
-  (`mk().n`、`v.get(i).len()`) は通る (2026-10-11)。残りは compound そのものを
-  被演算子・条件に置く形 (`mk() == p`)、`println(mk())`、呼び出しへのメソッドの
+  (`mk().n`、`v.get(i).len()`) は通る (2026-10-11)。`println(f())` と、戻り値の型を
+  名前で書いた (`-> Ordering`) 呼び出しへのメソッドも通る (2026-10-12)。残りは compound そのものを
+  被演算子・条件に置く形 (`mk() == p`)、呼び出しへのメソッドの
   結果へのメソッド (`mk().twin().get()`)、要素代入の右辺。演算子 overload の
   let-rhs 以外 (OP-OVERLOAD-CHAIN) も同根
 

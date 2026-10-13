@@ -83,6 +83,26 @@ fn main() -> u64 { noisy(1u64) }
     assert!(!set.contains(Effect::Alloc), "{set}");
 }
 
+/// A `test` block is listed under the name it was written with, as a
+/// backtrace and `__builtin_function_name()` name it -- not as the
+/// `__test_N` function the parser made of it.
+#[test]
+fn a_test_block_is_listed_by_its_name() {
+    let source = r#"
+fn f() -> u64 { 1u64 }
+test "adds" {
+    assert_eq(f(), 1u64)
+}
+test "prints" {
+    println("x")
+}
+fn main() -> u64 { f() }
+"#;
+    let names: Vec<String> = effects(source).into_iter().map(|(n, _)| n).collect();
+    assert_eq!(names, ["f", "test \"adds\"", "test \"prints\"", "main"]);
+    assert!(effects_of(source, "test \"prints\"").contains(Effect::Io));
+}
+
 #[test]
 fn panic_is_an_effect_of_its_own() {
     // `const fn` allows it on purpose, so it must be a bit the mask

@@ -11,6 +11,12 @@
 > [`FEATURE_NOTES.md`](FEATURE_NOTES.md) を参照。
 > ここを段落で埋めると、常時読まれるファイルが changelog になる。
 
+### 2026-10-13
+
+- **CONTRACTS-OFF-FRAMES — `INTERPRETER_CONTRACTS=off` でも backtrace が呼び出し行を持つ (IR VM の lowering が `--release` 扱いでフレームの行まで落としていた。`lower_program_with_frames` で契約とフレームを分けた)**
+- **EFFECTS-TEST-NAME — `--effects` / `toy effects` がテストブロックを `test "名前"` で並べる (`__test_N` だった)**
+- **STDIN-PIPE-FLAKE — stdin にプログラムを渡すテストヘルパが `BrokenPipe` を無視する (フラグを拒否して読まずに終わる実行で、全体実行時にまれに落ちていた)**
+
 ### 2026-10-12
 
 - **MODULE-FN-NAME — モジュールの関数とテストを全レーンでモジュールパス全体で名乗る (`__builtin_function_name()` は `g` / `test "t"`、tree-walker のフレームは呼び出しの綴り `y::g`、compiled は `x_y::g` だった)。引数なしの `a::f()` の tree-walker フレームに呼び出し行が付く**

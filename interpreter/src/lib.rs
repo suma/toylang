@@ -1315,7 +1315,13 @@ fn collect_entry_effects(
 
     let mut table = EffectTable::new(program, string_interner, expr_types);
     for index in 0..user_func_count.min(program.function.len()) {
-        let name = table.function_name(index);
+        // A `test` block is a function the parser named `__test_N`;
+        // list it as the frames and `__builtin_function_name()` do.
+        let symbol = program.function[index].name;
+        let name = match program.tests.iter().find(|t| t.function == symbol) {
+            Some(test) => format!("test \"{}\"", test.name),
+            None => table.function_name(index),
+        };
         let effects = table.of_function(index).set();
         out.push(FunctionEffects { name, effects });
     }

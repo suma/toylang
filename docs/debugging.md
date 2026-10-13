@@ -169,9 +169,7 @@ Error at trap.t:2:14:
 - **`--release` では契約と backtrace が消え、位置は残る**。デバッグは
   既定のビルドで行う。
 - `INTERPRETER_CONTRACTS=off|pre|post` で契約を外すと、契約の向こうに
-  ある本当の trap が見える。ただし `off` の間は interpreter が
-  `--release` 相当で lowering するので、backtrace から
-  `(called at line N)` が落ちる。
+  ある本当の trap が見える。`--release` と違い backtrace は残る。
 
 ## 4. 仮説を契約とテストに書く
 
@@ -578,9 +576,6 @@ result with `val`` で拒むことがある。まず `--backend vm` で意味が
 ## 既知の制限
 
 - `__builtin_dbg` の出力先は stdout で固定。
-- `INTERPRETER_CONTRACTS=off` の間は backtrace から呼び出し行が落ちる
-  (3 節)。
-- `toy effects` はテストブロックを内部名 (`__test_0`) で並べる。
 - AOT の `toy test` は最初の panic で同じドライバの残りを止める (`--backend vm` を使う)。
 - 自前のイテレータの `next` が新しく作った所有値 (`String` 等) を
   for-in の item で受けると、1 周に 1 個漏れる (6 節 技法 1)。stdlib の

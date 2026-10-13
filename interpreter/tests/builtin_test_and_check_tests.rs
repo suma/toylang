@@ -194,6 +194,34 @@ fn the_counterexample_is_shrunk_to_small_values() {
     }
 }
 
+/// A periodic failure leaves the binary search toward zero nowhere to
+/// go -- from `444`, none of `0, 222, 333, .. 443` is `3` mod 7 -- so
+/// the report stopped at whatever the draw happened to be. The sweep
+/// over small values finds the least, on every seed.
+#[test]
+fn a_periodic_counterexample_is_shrunk_to_the_least() {
+    let src = "fn bucket(n: u64) -> u64
+            ensures result != 3u64
+        {
+            n % 7u64
+        }
+        fn shift(n: i64) -> i64
+            ensures result != 5i64
+        {
+            n % 11i64
+        }
+        fn main() -> u64 { 0u64 }";
+    for seed in [1u64, 2, 3, 0x1234, 0x99] {
+        let report = check(src, seed);
+        for (name, least) in [("bucket", "3u64"), ("shift", "5i64")] {
+            let CheckOutcome::Failed { counterexample, .. } = outcome_for(&report, name) else {
+                panic!("expected a counterexample for `{name}`");
+            };
+            assert_eq!(counterexample[0].1, least, "`{name}` with seed {seed:#x}: {counterexample:?}");
+        }
+    }
+}
+
 #[test]
 fn a_true_ensures_passes() {
     let report = check(

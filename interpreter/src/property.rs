@@ -862,24 +862,80 @@ fn shrink_counterexample<F>(
 ) where
     F: Fn(&[Value]) -> Trial,
 {
-    let mut improved = true;
     // Bounded so a pathological shrink cannot outlast the check itself.
     let mut rounds = 0;
-    while improved && rounds < 32 {
-        improved = false;
-        rounds += 1;
+    loop {
+        let mut improved = true;
+        while improved && rounds < 32 {
+            improved = false;
+            rounds += 1;
+            for i in 0..args.len() {
+                for candidate in shrink(&args[i]) {
+                    if try_candidate(args, detail, i, candidate, &trial) {
+                        improved = true;
+                        break;
+                    }
+                }
+            }
+        }
+        // The binary search stalls where no candidate it offers fails
+        // again: under `n % 7 == 3`, none of `0, 222, 333, .. 443`
+        // does, so `444` was reported. Once it stalls, every small
+        // integer below the current one is tried, simplest first, and
+        // the first that fails is the least. A move may let another
+        // argument shrink further, hence the outer loop.
+        let mut swept = false;
         for i in 0..args.len() {
-            for candidate in shrink(&args[i]) {
-                let mut trial_args = args.clone();
-                trial_args[i] = candidate;
-                if let Trial::Failed(d) = trial(&trial_args) {
-                    *args = trial_args;
-                    *detail = d;
-                    improved = true;
+            for candidate in small_values_below(&args[i]) {
+                if try_candidate(args, detail, i, candidate, &trial) {
+                    swept = true;
                     break;
                 }
             }
         }
+        if !swept || rounds >= 32 {
+            break;
+        }
+    }
+}
+
+/// Replace `args[i]` with `candidate` when it still fails.
+fn try_candidate<F>(args: &mut Vec<Value>, detail: &mut String, i: usize, candidate: Value, trial: &F) -> bool
+where
+    F: Fn(&[Value]) -> Trial,
+{
+    let mut trial_args = args.clone();
+    trial_args[i] = candidate;
+    if let Trial::Failed(d) = trial(&trial_args) {
+        *args = trial_args;
+        *detail = d;
+        return true;
+    }
+    false
+}
+
+/// How many small integers the sweep in `shrink_counterexample` tries.
+const SMALL_SWEEP: u64 = 256;
+
+/// Integers simpler than `value`, simplest first: `0, 1, 2, ..` for a
+/// `u64`, `0, 1, -1, 2, -2, ..` for an `i64`, each smaller in magnitude
+/// than `value` and at most `SMALL_SWEEP` of them.
+fn small_values_below(value: &Value) -> Vec<Value> {
+    match value {
+        Value::UInt64(v) => (0..(*v).min(SMALL_SWEEP)).map(Value::UInt64).collect(),
+        Value::Int64(v) => {
+            let limit = v.unsigned_abs().min(SMALL_SWEEP);
+            let mut out = Vec::new();
+            for m in 0..limit {
+                let m = m as i64;
+                out.push(Value::Int64(m));
+                if m != 0 {
+                    out.push(Value::Int64(-m));
+                }
+            }
+            out
+        }
+        _ => Vec::new(),
     }
 }
 

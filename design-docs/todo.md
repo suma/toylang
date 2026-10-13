@@ -13,6 +13,7 @@
 
 ### 2026-10-12
 
+- **CHECK-SHRINK-PERIODIC — `--check` の最小反例が周期的な条件 (`n % 7 == 3`) でも最小 (`3`) まで縮む (二分探索が行き詰まると 256 個までの小さい整数を順に試す。`444` 等で止まっていた)**
 - **MAP-OWNED-ITEM-LEAK — stdlib の `map` (`MapIter` / `DictMapIter` / `StringMapIter`) が作った所有値を for-in / `while val` / `val m = it.next()` で受けると解放される (要素の別名として 1 周 1 個漏れていた)。closure の入力が何も所有しないときだけで、型検査器が `match it.next()` を束縛形に書き換える**
 - **RUN-ENTRY-DISPLAY — `toy build` / `run` が入口ファイルをパッケージ相対で名乗る (全レーンと build したバイナリ。打ったパスのままだった)。実パスは `RunOptions::entry_path` / `check_typing_diagnostics_at` で別に運ぶ**
 - **TEST-FAILURE-SHAPE — テストの backtrace の底は `test "名前"` (VM レーンは `__test_N`、AOT は driver の `main` だった)、AOT ドライバの位置もパッケージ相対。`--release` の `__builtin_backtrace()` が入口フレームを返す (空文字列だった)**

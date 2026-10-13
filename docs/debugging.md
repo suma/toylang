@@ -438,13 +438,14 @@ fn checksum(n: u64) -> u64
 ```text
 $ interpreter --check --seed=0x5 prog.t
 FAILED  checksum
-    minimal counterexample: n = 444u64
-    Contract violation: `ensures` clause #1 of function `checksum`: retained 3560 bytes, budget 0 bytes
+    minimal counterexample: n = 3u64
+    Contract violation: `ensures` clause #1 of function `checksum`: retained 32 bytes, budget 0 bytes
 ```
 
-「最小反例」は本当の最小 (`n = 3`) まで縮むとは限らない — 縮小は値を
-半分にしていくので、`n % 7` のような条件は途中で外れる。それでも
-漏れた量 (`3560 = 444 * 8 + 8`) から、どの確保が残ったかを逆算できる。
+最小反例は破れる入力のうち最小のもの (`n = 3`) まで縮む。縮小は値を
+0 へ向けて二分探索し、`n % 7` のような周期的な条件でそれが行き詰まると、
+小さい整数 (256 個まで) を順に試す。漏れた量 (`32 = 3 * 8 + 8`) から、
+どの確保が残ったかを逆算できる。
 
 ### 技法 3: 一時的な作業領域を `peak_live_bytes` で測る
 

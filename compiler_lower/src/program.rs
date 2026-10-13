@@ -1265,7 +1265,25 @@ pub fn lower_program_with(
     release: bool,
     heap_check: bool,
 ) -> Result<Module, String> {
-    lower_program_inner(program, interner, contract_msgs, release, heap_check, None)
+    lower_program_inner(program, interner, contract_msgs, release, heap_check, !release, None)
+}
+
+/// [`lower_program_with`] with the shadow stack chosen apart from the
+/// contracts.
+///
+/// `release` drops the contract checks and, in a build, the frames
+/// with them. The interpreter's `INTERPRETER_CONTRACTS=off` asks only
+/// for the first: a backtrace there still says which line each frame
+/// was called from, as the tree-walker's does.
+pub fn lower_program_with_frames(
+    program: &File,
+    interner: &DefaultStringInterner,
+    contract_msgs: &crate::ContractMessages,
+    release: bool,
+    heap_check: bool,
+    debug_frames: bool,
+) -> Result<Module, String> {
+    lower_program_inner(program, interner, contract_msgs, release, heap_check, debug_frames, None)
 }
 
 /// [`lower_program`] seeded with `entries` instead of `main` and the
@@ -1284,7 +1302,7 @@ pub fn lower_program_for_entries(
     release: bool,
     entries: &[DefaultSymbol],
 ) -> Result<Module, String> {
-    lower_program_inner(program, interner, contract_msgs, release, false, Some(entries))
+    lower_program_inner(program, interner, contract_msgs, release, false, !release, Some(entries))
 }
 
 fn lower_program_inner(
@@ -1293,6 +1311,7 @@ fn lower_program_inner(
     contract_msgs: &crate::ContractMessages,
     release: bool,
     heap_check: bool,
+    debug_frames: bool,
     entries: Option<&[DefaultSymbol]>,
 ) -> Result<Module, String> {
     use frontend::compile_profile as prof;
@@ -1302,7 +1321,7 @@ fn lower_program_inner(
     // DEBUG-OBS D4/D6: the shadow stack exists in a default build and
     // not under `--release`, and the backends need to know which even
     // when the program makes no calls.
-    module.debug_frames = !release;
+    module.debug_frames = debug_frames;
 
     // Phase 5 (汎用 RAII): collect every struct that has an
     // `impl Drop for <Struct>` block. The lowering pass uses
@@ -1960,6 +1979,7 @@ impl<'a> FunctionLower<'a> {
         let method_registry = *method_registry;
         let method_func_ids = *method_func_ids;
         let generic_methods = *generic_methods;
+        let debug_frames = module.debug_frames;
         Ok(Self {
             module,
             func_id,
@@ -1977,7 +1997,7 @@ impl<'a> FunctionLower<'a> {
             facts: Default::default(),
             contract_report: None,
             pending_frame_name: None,
-            debug_frames: !release,
+            debug_frames,
             print_stderr: false,
             current_expr: None,
             located_error: None,

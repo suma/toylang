@@ -137,12 +137,15 @@ pub fn run_main_via_ir_vm_outcome(
     let contract_msgs = compiler_lower::ContractMessages::intern(&mut interner_owned);
     // HEAP-CHECK H2: in poison mode every access is checked ahead of
     // time, so a stop names where the access was written.
-    let module = match compiler_lower::lower_program_with(
+    // Turning the contracts off is not a release build: the frames
+    // and the lines they were called from stay, as the tree-walker's do.
+    let module = match compiler_lower::lower_program_with_frames(
         program,
         &interner_owned,
         &contract_msgs,
         release,
         crate::heap::heap_poison_on(),
+        true,
     )
     {
         Ok(m) => m,

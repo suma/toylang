@@ -250,3 +250,44 @@ fn case_insensitive_value() {
     let r = run_with(Some("OFF"), &fx.pre_violation);
     assert!(!r.stderr.contains("Contract violation"));
 }
+
+/// Turning the contracts off is not a release build: a backtrace
+/// still says which line each frame was called from. The IR VM used to
+/// lower the program as `--release` did, dropping the shadow stack's
+/// call lines, so `off` printed bare names where `all` gave lines.
+#[test]
+fn a_backtrace_keeps_its_call_lines_with_contracts_off() {
+    let dir = tempfile::tempdir().expect("create fixture dir");
+    let path = dir.path().join("backtrace.t");
+    std::fs::write(
+        &path,
+        "\
+fn inner(n: u64) -> u64 {
+    if n == 3u64 {
+        panic(\"boom\")
+    }
+    n
+}
+
+fn outer(n: u64) -> u64 {
+    val r = inner(n)
+    r + 1u64
+}
+
+fn main() -> u64 {
+    outer(3u64)
+}
+",
+    )
+    .expect("write fixture");
+    let path = path.to_str().unwrap();
+    for mode in [None, Some("off"), Some("pre"), Some("post")] {
+        let r = run_with(mode, path);
+        assert_ne!(r.code, 0, "{mode:?}");
+        assert!(
+            r.stderr.contains("inner (called at line 9)") && r.stderr.contains("outer (called at line 14)"),
+            "{mode:?}: {}",
+            r.stderr
+        );
+    }
+}

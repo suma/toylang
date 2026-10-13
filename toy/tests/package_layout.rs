@@ -445,6 +445,54 @@ fn a_test_failure_reads_the_same_on_both_lanes() {
 }
 
 #[test]
+fn a_module_function_has_one_name_everywhere() {
+    // `__builtin_function_name()` answered `g` and `test "t"` inside a
+    // module, the tree-walker's frame said `y::g` (the call's
+    // spelling), the compiled one `x_y::g` (the export name), and the
+    // report `x::y::t`. All of them are now the whole module path.
+    // `y::g()` takes no argument, which also left the tree-walker's
+    // frame without its line: the first argument's stood in for the
+    // call's.
+    let pkg = scratch("module_function_name");
+    write(
+        &pkg,
+        "main.t",
+        "import x.y\nfn main() -> u64 { y::g() }\ntest \"calls\" {\n    y::g()\n}\n",
+    );
+    write(
+        &pkg,
+        "src/x/y.t",
+        "package x.y\npub fn g() -> u64 {\n    println(__builtin_function_name())\n    1u64 - 2u64\n}\n\
+         test \"own\" {\n    println(__builtin_function_name())\n    panic(\"own\")\n}\n",
+    );
+    let root = pkg.0.to_str().unwrap();
+    for backend in ["vm", "aot", "jit", "all"] {
+        let out = run(&pkg, &["run", root, "--backend", backend]);
+        let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert!(
+            // `all` reports a failing run without its stdout.
+            (backend == "all" || stdout.starts_with("x::y::g\n"))
+                && stderr.contains("x::y::g (called at line 2)")
+                && !stderr.contains("x_y"),
+            "run {backend}\nstdout: {stdout}\nstderr: {stderr}"
+        );
+    }
+    for backend in ["vm", "aot"] {
+        for (filter, printed, frame) in [
+            ("calls", "x::y::g", "x::y::g (called at line 4)"),
+            ("own", "test \"x::y::own\"", "           test \"x::y::own\"\n"),
+        ] {
+            let out = run(&pkg, &["test", root, filter, "--backend", backend]);
+            let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            assert!(
+                text.contains(&format!("    {printed}\n")) && text.contains(frame) && !text.contains("x_y"),
+                "test {filter} {backend}\n{text}"
+            );
+        }
+    }
+}
+
+#[test]
 fn run_names_the_entry_relative_to_the_package() {
     // Modules were already `src/m.t`; the entry was the path as typed
     // (absolute here), on every lane and in the binary `build` makes.

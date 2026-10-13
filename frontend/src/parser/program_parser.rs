@@ -234,8 +234,10 @@ impl<'a> Parser<'a> {
                 let outer_function = self
                     .current_function
                     .replace(format!("test \"{display_name}\""));
+                let outer_free = std::mem::replace(&mut self.current_function_is_free, true);
                 let block = super::expr::parse_block(self)?;
                 self.current_function = outer_function;
+                self.current_function_is_free = outer_free;
                 let test_end_pos = self.declaration_end();
                 out.saw_end(test_end_pos);
 
@@ -375,6 +377,7 @@ impl<'a> Parser<'a> {
             spawn_blocks: std::mem::take(&mut self.spawn_blocks),
             spawn_captures: rustc_hash::FxHashMap::default(),
             call_paths: std::mem::take(&mut self.call_paths),
+            function_name_sites: std::mem::take(&mut self.function_name_sites),
             declaration_spans: std::mem::take(&mut self.declaration_spans),
             pattern_sites: std::mem::take(&mut self.pattern_sites),
             statement: stmt,
@@ -600,8 +603,10 @@ impl<'a> Parser<'a> {
                 let outer_function = self
                     .current_function
                     .replace(self.string_interner.resolve(fn_name).unwrap_or("<fn>").to_string());
+                let outer_free = std::mem::replace(&mut self.current_function_is_free, true);
                 let block = super::expr::parse_block(self)?;
                 self.current_function = outer_function;
+                self.current_function_is_free = outer_free;
                 let fn_end_pos = self.declaration_end();
                 out.saw_end(fn_end_pos);
 

@@ -171,6 +171,12 @@ pub struct File {
     /// MODULE-SYSTEM P3: the full qualifier of every call written with
     /// more than one module segment. See `Parser::call_paths`.
     pub call_paths: rustc_hash::FxHashMap<ExprRef, Vec<DefaultSymbol>>,
+    /// The string literals `__builtin_function_name()` became inside a
+    /// free function or a `test` body. The parser knows the name but
+    /// not the module (most stdlib files have no `package` line), so
+    /// module integration prefixes the module path, naming the function
+    /// the way its backtrace frame does (`a::f`, `test "a::t"`).
+    pub function_name_sites: Vec<ExprRef>,
     /// Every top-level declaration the parser met, with the byte range
     /// it spans and the name it declares — the ones that failed to parse
     /// included, which the tree cannot hold. A diagnosis after a parse

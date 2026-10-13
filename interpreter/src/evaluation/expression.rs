@@ -112,7 +112,7 @@ impl EvaluationContext<'_> {
                 self.evaluate_tuple_access(&tuple, index)
             }
             Expr::AssociatedFunctionCall(struct_name, function_name, args) => {
-                self.evaluate_associated_function_call(&struct_name, &function_name, &args)
+                self.evaluate_associated_function_call(e, &struct_name, &function_name, &args)
             }
             Expr::Cast(expr, target_type) => {
                 self.evaluate_cast(&expr, &target_type)

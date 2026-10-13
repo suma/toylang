@@ -1387,8 +1387,10 @@ pub fn parse_impl_methods_with_generic_context(
                             None => method_str,
                         };
                         let outer_function = parser.current_function.replace(qualified);
+                        let outer_free = std::mem::replace(&mut parser.current_function_is_free, false);
                         let block = super::expr::parse_block(parser)?;
                         parser.current_function = outer_function;
+                        parser.current_function_is_free = outer_free;
                         let fn_end_pos = parser.peek_position_n(0).unwrap_or(&std::ops::Range {start: 0, end: 0}).end;
 
                         // Method-level bounds layer on top of the impl-level

@@ -407,6 +407,25 @@ impl<'a> EvaluationContext<'a> {
         self.push_frame(name, None);
     }
 
+    /// A function's backtrace frame: a module's under its whole path
+    /// (`x::y::g`), as the compiled lanes name it and as
+    /// `__builtin_function_name()` answers inside it.
+    pub(crate) fn function_frame_name(&self, func: &frontend::ast::Function) -> String {
+        let name = self.string_interner.resolve(func.name).unwrap_or("<unknown>");
+        match func.module_path.as_deref() {
+            Some(path) if !path.is_empty() => {
+                let mut out = String::new();
+                for seg in path {
+                    out.push_str(self.string_interner.resolve(*seg).unwrap_or("?"));
+                    out.push_str("::");
+                }
+                out.push_str(name);
+                out
+            }
+            _ => name.to_string(),
+        }
+    }
+
     /// Leave a call frame that returned normally.
     ///
     /// Deliberately *not* called on the error path: a panic unwinds to

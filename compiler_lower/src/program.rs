@@ -672,6 +672,21 @@ fn declare_plain_functions(
             ret,
             module_rank,
         );
+        // A backtrace names a module function by its whole path
+        // (`x::y::g`), the way a test report names a module's test and
+        // `__builtin_function_name()` names it -- the export name joins
+        // the segments with `_` and could only say `x_y::g`.
+        if raw_name != "main"
+            && let Some(path) = module_path
+            && !path.is_empty()
+        {
+            let module_str = path
+                .iter()
+                .filter_map(|seg| interner.resolve(*seg))
+                .collect::<Vec<_>>()
+                .join("::");
+            module.set_display_name(func_id, format!("{module_str}::{raw_name}"));
+        }
         // TEST-PERF: this is a body-bearing function (non-generic,
         // non-extern), so it can be scheduled for deferred lowering
         // when a reachable call site references it.

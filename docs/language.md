@@ -5460,8 +5460,11 @@ checker or the backends. The four `__builtin_source_*` /
 `__builtin_function_name` calls are substituted in-place with a
 literal of the matching type at parse time.
 
-`__builtin_function_name()` names a method the way a backtrace frame
-does (`S::boom`, not `boom`), and reads `<toplevel>` outside any
+`__builtin_function_name()` names a function the way its backtrace
+frame does: a method by its type (`S::boom`, not `boom`), a function
+or a `test` in a module by the whole module path (`x::y::g`,
+`test "x::y::t"`) -- module integration prefixes the path, since a
+file need not declare its `package`. It reads `<toplevel>` outside any
 function body.
 
 `__builtin_backtrace()` is the one that is *not* a macro: only the

@@ -44,7 +44,11 @@ pub(crate) fn try_intercept_parser_macro(
             .clone()
             .unwrap_or_else(|| "<toplevel>".to_string());
         let sym = parser.string_interner.get_or_intern(name);
-        return Ok(Some(parser.ast_builder.string_expr(sym, Some(location))));
+        let site = parser.ast_builder.string_expr(sym, Some(location));
+        if parser.current_function.is_some() && parser.current_function_is_free {
+            parser.function_name_sites.push(site);
+        }
+        return Ok(Some(site));
     }
     if name == symbols.dbg {
         return Ok(Some(parse_dbg_macro(parser, location)?));

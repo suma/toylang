@@ -1448,11 +1448,7 @@ impl EvaluationContext<'_> {
                     // Left in place on the error path on purpose — a
                     // panic unwinds to the top and the stack captured at
                     // the failure is exactly what the report needs.
-                    let fn_name = self
-                        .string_interner
-                        .resolve(*name)
-                        .unwrap_or("<unknown>")
-                        .to_string();
+                    let fn_name = self.function_frame_name(&func);
                     self.push_frame(fn_name, call_site);
 
                     // Call function with pre-evaluated arguments and collect
@@ -2256,12 +2252,13 @@ impl EvaluationContext<'_> {
     }
 
     /// Evaluates associated function calls (like Container::new)
-    pub(super) fn evaluate_associated_function_call(&mut self, struct_name: &DefaultSymbol, function_name: &DefaultSymbol, args: &[ExprRef]) -> Result<EvaluationResult, InterpreterError> {
-        // DEBUG-OBS D1: `S::make(x)` has no receiver expression, so the
-        // first argument's position is the closest thing to the call's
-        // own; an argument-less call keeps `None` (D2/D3 give this
-        // layer a real site).
-        let call_site = args.first().and_then(|a| self.expr_location(a));
+    pub(super) fn evaluate_associated_function_call(&mut self, call: &ExprRef, struct_name: &DefaultSymbol, function_name: &DefaultSymbol, args: &[ExprRef]) -> Result<EvaluationResult, InterpreterError> {
+        // DEBUG-OBS D1: the call's own position, as the compiled lanes
+        // record it. The first argument's stood in for it, so an
+        // argument-less `a::f()` had no line in the backtrace.
+        let call_site = self
+            .expr_location(call)
+            .or_else(|| args.first().and_then(|a| self.expr_location(a)));
         // Enum tuple-variant construction: `Enum::Variant(args)` shares parse
         // structure with associated function calls. Intercept it here before
         // falling through to struct method dispatch.
@@ -2834,7 +2831,10 @@ impl EvaluationContext<'_> {
             // Bridge `RcObject` args to `Value` at the boundary.
             let value_args: Vec<crate::value::Value> = args.iter().cloned().map(Into::into).collect();
             // DEBUG-OBS D1, same reasoning as `call_struct_method`.
-            self.push_frame(format!("{struct_name_str}::{function_name_str}"), call_site);
+            // A module function is named by its module, not by how the
+            // call spelled the qualifier (`y::g` for `x::y::g`).
+            let frame = self.function_frame_name(&func);
+            self.push_frame(frame, call_site);
             let result = self.evaluate_function_with_values(func, &value_args)?;
             self.pop_frame();
             return Ok(EvaluationResult::Value(result));

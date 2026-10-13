@@ -1320,6 +1320,30 @@ impl<'a> AstIntegrationContext<'a> {
                 .collect::<Result<Vec<_>, _>>()?;
             self.main_program.call_paths.insert(mapped, segments);
         }
+        // `__builtin_function_name()` in a module's free function or
+        // test names it with the module path, as its frame does (a
+        // module without one -- the prelude -- has unqualified frames).
+        if let Some(path) = &self.module_path {
+            let module = path
+                .iter()
+                .filter_map(|s| self.main_string_interner.resolve(*s))
+                .collect::<Vec<_>>()
+                .join("::");
+            for expr_ref in &self.module_program.function_name_sites {
+                let mapped = self.map_expr(expr_ref, "function name")?;
+                let Some(frontend::ast::Expr::String(sym)) = self.main_program.expression.get_ref(&mapped)
+                else {
+                    continue;
+                };
+                let name = self.main_string_interner.resolve(*sym).unwrap_or("").to_string();
+                let qualified = match name.strip_prefix("test \"") {
+                    Some(rest) => format!("test \"{module}::{rest}"),
+                    None => format!("{module}::{name}"),
+                };
+                let sym = self.main_string_interner.get_or_intern(qualified);
+                self.main_program.expression.update(&mapped, frontend::ast::Expr::String(sym));
+            }
+        }
         for (stmt_ref, at) in &self.module_program.parallel_loops {
             let mapped = self.map_stmt(stmt_ref, "parallel loop")?;
             let located = at.in_file(self.module_file);

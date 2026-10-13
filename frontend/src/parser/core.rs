@@ -330,6 +330,12 @@ pub struct Parser<'a> {
     /// top-level `const` initialiser, say — where the macro reports
     /// `<toplevel>` rather than inventing a caller.
     pub current_function: Option<String>,
+    /// Whether `current_function` is a free function or a `test`, whose
+    /// name module integration qualifies (`File::function_name_sites`).
+    /// A method is named by its type (`S::m`), as its frame is.
+    pub current_function_is_free: bool,
+    /// See `File::function_name_sites`.
+    pub function_name_sites: Vec<ExprRef>,
     /// The type an `impl` block is for, so a method body can name
     /// itself `S::boom` (DEBUG-OBS D5).
     pub current_impl_target: Option<String>,
@@ -397,6 +403,8 @@ impl<'a> Parser<'a> {
             declared_type_generics: HashMap::default(),
             source_file: None,
             current_function: None,
+            current_function_is_free: false,
+            function_name_sites: Vec::new(),
             current_impl_target: None,
             line_starts: build_line_starts(input),
         }

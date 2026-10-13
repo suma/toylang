@@ -53,6 +53,7 @@ pub fn bind_owning_temporaries(
         return;
     }
     record_independent_calls(program, interner, expr_types, &analysis);
+    bind_fresh_items(program, interner, expr_types, &analysis);
     // Decided over the original pool first: the rewrite adds nodes,
     // and none of them is a candidate.
     //
@@ -79,7 +80,7 @@ pub fn bind_owning_temporaries(
         .collect();
     let mut sites: Vec<(ExprRef, ExprRef, ExprRef, TypeDecl)> = Vec::new();
     for (root, (_, access, holder)) in outermost {
-        if !produces_fresh_value(program, interner, &root) {
+        if !produces_fresh_value(program, interner, expr_types, &analysis, &root) {
             continue;
         }
         let (Some(root_ty), Some(result_ty)) = (expr_types.get(&root), expr_types.get(&access))
@@ -148,6 +149,55 @@ pub fn bind_owning_temporaries(
         }
     }
     hoist_owning_receivers(program, interner, expr_types, &analysis);
+}
+
+/// MAP-OWNED-ITEM-LEAK: a `match` over a `next` that makes its item
+/// (`makes_fresh_item`) binds the call first, the way the parser binds
+/// every other call (MATCH-TEMP-EXIT-LEAK):
+///
+/// ```text
+/// match it.next() { arms }   =>   { val __item_N = it.next()  match __item_N { arms } }
+/// ```
+///
+/// The parser leaves `next` alone because it cannot see the receiver's
+/// type, and an element `next` lends must get no owner. A made item
+/// needs one, or nothing frees it: `for s in m` is this `match`, and its
+/// arm leaves by `continue`. Bound, the item is an ordinary binding the
+/// move check follows -- dropped when the arm is done with it, not
+/// dropped when the body hands it on (`keep.push(s)`).
+fn bind_fresh_items(
+    program: &mut File,
+    interner: &mut DefaultStringInterner,
+    expr_types: &mut HashMap<ExprRef, TypeDecl>,
+    analysis: &DropAnalysis,
+) {
+    let mut counter = 0usize;
+    for index in 0..program.expression.len() {
+        let matched = ExprRef(index as u32);
+        let Some(Expr::Match(scrutinee, arms)) = program.expression.get_ref(&matched) else { continue };
+        let (scrutinee, arms) = (*scrutinee, arms.clone());
+        let Some(Expr::MethodCall(receiver, method, _)) = program.expression.get_ref(&scrutinee) else {
+            continue;
+        };
+        if !makes_fresh_item(interner, *method, expr_types.get(receiver), analysis) {
+            continue;
+        }
+        let Some(item_ty) = expr_types.get(&scrutinee).cloned() else { continue };
+        let name = interner.get_or_intern(format!("__item_{counter}"));
+        counter += 1;
+        let at = program.location_pool.get_expr_location(&matched).copied();
+        let ident = add_expr(program, Expr::Identifier(name), at);
+        // The `match` moves to a new node and its own ref becomes the
+        // block, so whatever held it now holds the block.
+        let inner = add_expr(program, Expr::Match(ident, arms), at);
+        let bind = add_stmt(program, Stmt::Val(name, Some(item_ty.clone()), scrutinee), at);
+        let tail = add_stmt(program, Stmt::Expression(inner), at);
+        program.expression.update(&matched, Expr::Block(vec![bind, tail]));
+        expr_types.insert(ident, item_ty);
+        if let Some(ty) = expr_types.get(&matched).cloned() {
+            expr_types.insert(inner, ty);
+        }
+    }
 }
 
 /// A fresh owning call a statement reads through or passes on gets
@@ -283,7 +333,7 @@ impl Finder<'_> {
 
     fn fresh_owner(&self, e: &ExprRef) -> Option<TypeDecl> {
         let ty = self.ty(e)?;
-        (produces_fresh_value(self.program, self.interner, e) && self.analysis.contains_drop(ty))
+        (produces_fresh_value(self.program, self.interner, self.expr_types, self.analysis, e) && self.analysis.contains_drop(ty))
             .then(|| ty.clone())
     }
 
@@ -297,7 +347,7 @@ impl Finder<'_> {
         // own; the borrow's names it.
         if let Some(Expr::Unary(UnaryOp::Borrow | UnaryOp::BorrowMut, inner)) = self.program.expression.get_ref(e)
             && sealed
-            && produces_fresh_value(self.program, self.interner, inner)
+            && produces_fresh_value(self.program, self.interner, self.expr_types, self.analysis, inner)
             && let Some(TypeDecl::Ref { inner: ty, .. }) = self.ty(e)
             && self.analysis.contains_drop(ty)
         {
@@ -518,7 +568,7 @@ fn record_independent_calls(
             continue;
         }
         let Some(ty) = expr_types.get(&call) else { continue };
-        if is_scalar(ty) || (produces_fresh_value(program, interner, &call) && analysis.contains_drop(ty)) {
+        if is_scalar(ty) || (produces_fresh_value(program, interner, expr_types, analysis, &call) && analysis.contains_drop(ty)) {
             calls.insert(call);
         }
     }
@@ -565,7 +615,13 @@ fn chain_root(program: &File, access: ExprRef) -> Option<(ExprRef, ExprRef, usiz
 
 /// A call whose result nobody else holds: not an element read, not a
 /// borrow.
-fn produces_fresh_value(program: &File, interner: &DefaultStringInterner, expr: &ExprRef) -> bool {
+fn produces_fresh_value(
+    program: &File,
+    interner: &DefaultStringInterner,
+    expr_types: &HashMap<ExprRef, TypeDecl>,
+    analysis: &DropAnalysis,
+    expr: &ExprRef,
+) -> bool {
     match program.expression.get_ref(expr) {
         Some(Expr::Call(..)) | Some(Expr::AssociatedFunctionCall(..)) => true,
         // An operator on a compound is its overload's call (`(a + b).x`
@@ -574,11 +630,46 @@ fn produces_fresh_value(program: &File, interner: &DefaultStringInterner, expr: 
         // A borrow (`&mut a`) is no new value: it names `a`.
         Some(Expr::Binary(..)) => true,
         Some(Expr::Unary(op, _)) => !matches!(op, UnaryOp::Borrow | UnaryOp::BorrowMut),
-        Some(Expr::MethodCall(_, method, _)) => {
+        Some(Expr::MethodCall(receiver, method, _)) => {
             !interner.resolve(*method).is_some_and(reads_a_kept_element)
+                || makes_fresh_item(interner, *method, expr_types.get(receiver), analysis)
         }
         _ => false,
     }
+}
+
+/// MAP-OWNED-ITEM-LEAK: whether `method` on a receiver of type `ty`
+/// answers a value of its own making rather than an element it keeps.
+///
+/// Only `next` on the stdlib's `map` adapters (`MapIter<T, U>`,
+/// `DictMapIter<K, V, U>`, `StringMapIter<U>`), and only when what the
+/// closure is handed owns nothing: then `U` cannot be a piece of an
+/// element, so a `String` it returns is new and the item is its only
+/// owner. An owning input (`map(fn (s: String) -> String { s })`) may be
+/// handed straight back, and stays an alias -- the leaking side, like
+/// every other `next`.
+fn makes_fresh_item(
+    interner: &DefaultStringInterner,
+    method: DefaultSymbol,
+    ty: Option<&TypeDecl>,
+    analysis: &DropAnalysis,
+) -> bool {
+    if interner.resolve(method) != Some("next") {
+        return false;
+    }
+    let ty = match ty {
+        Some(TypeDecl::Ref { inner, .. }) => inner.as_ref(),
+        Some(ty) => ty,
+        None => return false,
+    };
+    let TypeDecl::Struct(name, args) = ty else { return false };
+    let inputs = match interner.resolve(*name) {
+        Some("MapIter") if args.len() == 2 => &args[..1],
+        Some("DictMapIter") if args.len() == 3 => &args[..2],
+        Some("StringMapIter") if args.len() == 1 => &args[..0],
+        _ => return false,
+    };
+    !inputs.iter().any(|t| analysis.contains_drop(t))
 }
 
 /// A method whose result is an element the receiver keeps owning:

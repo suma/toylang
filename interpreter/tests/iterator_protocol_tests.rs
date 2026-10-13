@@ -301,3 +301,98 @@ fn main() -> u64 {
     let err = crate::common::test_program(src).expect_err("`r.len` is not a field of a range");
     assert!(err.contains("len"), "{err}");
 }
+
+// MAP-OWNED-ITEM-LEAK: a `map` adapter whose closure is handed values
+// that own nothing makes each item itself, so the loop's item is its
+// only owner. It used to be taken for an element the container keeps
+// (NEXT-ITEM-ALIAS) and leaked one `String` per iteration.
+const MAP_LABEL: &str = "fn label(x: u64) -> String {
+    var s = String::from_str(\"n\")
+    s.push_char('0' + x as u32)
+    s
+}
+fn three() -> Vec<u64> {
+    var v: Vec<u64> = Vec::new()
+    v.push(1u64)
+    v.push(2u64)
+    v.push(3u64)
+    v
+}
+";
+
+#[test]
+fn a_made_item_is_freed_each_iteration() {
+    assert_program_result_u64(
+        &format!(
+            "{MAP_LABEL}
+            fn first_long(v: &Vec<u64>) -> u64 {{
+                val it = v.iter()
+                val m = it.map(label)
+                for s in m {{ if s.len() > 1u64 {{ return s.len() }} }}
+                0u64
+            }}
+            fn bound_one(v: &Vec<u64>) -> u64 {{
+                val it = v.iter()
+                var m = it.map(label)
+                val one = m.next()
+                match one {{ Option::Some(s) => s.len(), Option::None => 0u64 }}
+            }}
+            fn bytes_mapped() -> u64 {{
+                val text = String::from_str(\"ab\")
+                var sm = text.iter().map(fn(b: u8) -> String {{ label(b as u64 - 96u64) }})
+                var n = 0u64
+                while val Option::Some(s) = sm.next() {{ n = n + s.len() }}
+                n
+            }}
+            fn main() -> u64 {{
+                val v = three()
+                val before = __builtin_live_bytes()
+                var total = 0u64
+                for s in v.iter().map(label) {{ total = total + s.len() }}
+                val it = v.iter()
+                val m = it.map(label)
+                for s in m {{ if s.len() == 2u64 {{ break }} }}
+                total = total + bound_one(&v) + first_long(&v) + bytes_mapped()
+                (__builtin_live_bytes() - before) * 100u64 + total
+            }}"
+        ),
+        // 2 bytes each: 3 in the loop, the bound one, `first_long`, 2 bytes.
+        3 * 2 + 2 + 2 + 2 * 2,
+    );
+}
+
+/// Handed on, the item belongs to its new owner and stays readable.
+#[test]
+fn a_made_item_moves_into_a_container() {
+    assert_program_result_u64(
+        &format!(
+            "{MAP_LABEL}
+            fn main() -> u64 {{
+                val v = three()
+                var keep: Vec<String> = Vec::new()
+                for s in v.iter().map(label) {{ keep.push(s) }}
+                keep.get(0u64).get(1u64) as u64 + keep.get(2u64).get(1u64) as u64
+            }}"
+        ),
+        u64::from(b'1') + u64::from(b'3'),
+    );
+}
+
+/// An item the closure may have been handed is still an element: a
+/// `map` over owning values does not free what the `Vec` keeps.
+#[test]
+fn a_mapped_owning_element_is_still_the_containers() {
+    assert_program_result_u64(
+        "fn same(s: String) -> String { s }
+        fn main() -> u64 {
+            var w: Vec<String> = Vec::new()
+            w.push(String::from_str(\"hello\"))
+            w.push(String::from_str(\"hi\"))
+            val before = __builtin_live_bytes()
+            var n = 0u64
+            for s in w.iter().map(same) { n = n + s.len() }
+            (before - __builtin_live_bytes()) * 100u64 + n + w.get(0u64).get(0u64) as u64
+        }",
+        7 + u64::from(b'h'),
+    );
+}

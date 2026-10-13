@@ -13,6 +13,7 @@
 
 ### 2026-10-12
 
+- **MAP-OWNED-ITEM-LEAK — stdlib の `map` (`MapIter` / `DictMapIter` / `StringMapIter`) が作った所有値を for-in / `while val` / `val m = it.next()` で受けると解放される (要素の別名として 1 周 1 個漏れていた)。closure の入力が何も所有しないときだけで、型検査器が `match it.next()` を束縛形に書き換える**
 - **RUN-ENTRY-DISPLAY — `toy build` / `run` が入口ファイルをパッケージ相対で名乗る (全レーンと build したバイナリ。打ったパスのままだった)。実パスは `RunOptions::entry_path` / `check_typing_diagnostics_at` で別に運ぶ**
 - **TEST-FAILURE-SHAPE — テストの backtrace の底は `test "名前"` (VM レーンは `__test_N`、AOT は driver の `main` だった)、AOT ドライバの位置もパッケージ相対。`--release` の `__builtin_backtrace()` が入口フレームを返す (空文字列だった)**
 - **TEST-NAME-COLLISION — モジュールの `test` が自分の本体を走らせる (各ファイルが `__test_0` から数えるので、エントリの同番のテストの本体を走らせ、その合否を報告していた)**
@@ -258,10 +259,12 @@
 
 ### 型・所有権 (NEW-TYPE-SYSTEM)
 
-- **MAP-OWNED-ITEM-LEAK: `map` が作った所有値を for-in の item で受けると漏れる** —
-  NEXT-ITEM-ALIAS が item を要素の別名として drop しないため、新しい
-  `String` を作る `map` は 1 周に 1 個漏れる (`--profile=mem` は
-  `core/std/string.t` の行だけを指す)。束縛し直せば解放される。
+- **NEXT-ITEM-ALIAS の残り: 自前のイテレータの `next` が作った所有値は漏れる** —
+  `next` の結果を要素の別名とみなすのは名前の判定で、型を見て区別するのは
+  stdlib の `map` 3 種 (入力が何も所有しないとき) だけ。新しい値を作る
+  `next` を書いた struct の for-in は 1 周に 1 個漏れる (回避は別名の
+  method + `while val`、`docs/debugging.md` 6 節)。`map` の上の終端操作
+  (`count` 等の default body) も途中の item を漏らす。
 
 - **COMPOUND-BLOCK-DROP-TIMING の残り: 末尾が束縛に触れる形** — compound を
   作るブロックの束縛は、末尾の式がそれに触れない (数値フィールドの読みは
@@ -410,8 +413,10 @@
 - **MAP-OWNED-U-INFER: `String` を返す closure を `VecIter::map` に渡せない** —
   `v.iter().map(fn(x: u64) -> String { .. })` は compiled レーンで
   `could not infer method-only generic param U for VecIter::map` になる
-  (`val` に束縛しても同じ。`u64` を返す closure は束縛すれば通る)。
-  interpreter は動く。2026-10-13、`docs/debugging.md` 6 節の例を書いていて発見。
+  (interpreter は動く)。推論は `lower_scalar` を `lower_type_arg` に替えれば
+  通るが、その先で `closure return type String requires a primitive scalar
+  type` に当たる — compiled レーンの closure は引数・戻り値ともスカラーだけ
+  なので、本体は closure の compound ABI。2026-10-13 に確認。
 
 - **OWNING-TEMP-DROP の残り: 条件つきの位置 / 窓 / ポインタを含む compound** ★ —
   一時値は文の前に `val __temp_N` を出して (前に評価されるスカラーも順に束縛して)

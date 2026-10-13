@@ -332,18 +332,35 @@ fn label(x: u64) -> String {
     s
 }
 
-fn total_len(v: &Vec<u64>) -> u64 {
-    var n = 0u64
-    for s in v.iter().map(label) {
-        n = n + s.len()
+# Hands out item-1, item-2, ... item-<end>.
+struct Labels {
+    at: u64,
+    end: u64,
+}
+
+impl Labels {
+    fn next(&mut self) -> Option<String> {
+        if self.at == self.end {
+            return Option::None
+        }
+        self.at = self.at + 1u64
+        Option::Some(label(self.at))
     }
-    n
+}
+
+fn total_len(n: u64) -> u64 {
+    var total = 0u64
+    var it = Labels { at: 0u64, end: n }
+    for s in it {
+        total = total + s.len()
+    }
+    total
 }
 
 fn count_big(v: &Vec<u64>) -> u64 { ... }
 
 fn report(v: &Vec<u64>) -> u64 {
-    total_len(v) + count_big(v)
+    total_len(v.size()) + count_big(v)
 }
 ```
 
@@ -360,7 +377,7 @@ leaks (1 sites, 5 allocations, 50 bytes)
 ```text
 Contract violation: `ensures` clause #1 of function `report`: retained 50 bytes, budget 0 bytes
    = backtrace (innermost first):
-       report (called at line 32)
+       report (called at line 49)
        main
 ```
 
@@ -370,19 +387,24 @@ Contract violation: `ensures` clause #1 of function `report`: retained 50 bytes,
 ```text
 Contract violation: `ensures` clause #1 of function `total_len`: retained 50 bytes, budget 0 bytes
    = backtrace (innermost first):
-       total_len (called at line 30)
-       report (called at line 36)
+       total_len (called at line 47)
+       report (called at line 53)
        main
 ```
 
-原因は、`map` が新しく作った `String` を `for` の要素として受け取ると
-解放されないこと (`next()` の結果は要素の別名として扱われ、drop されない)。
-自分で束縛し直すと、ブロックの終わりで解放される:
+原因は、`next` という名前の method が返したものは**コンテナが持つ要素の
+別名**として扱われ、for-in の item が drop されないこと (NEXT-ITEM-ALIAS)。
+`Vec` の `iter()` ならそれで正しいが、`Labels` の `next` は値を新しく
+作っているので、誰も解放しない。stdlib の `map` はレシーバの型を見て
+区別しているが、自前のイテレータの `next` は名前でしか判断されない。
+新しい値を作るメソッドには別の名前を付け、`while val` で受ける。
+呼び出しの結果は束縛されるので、各周の終わりで解放される:
 
 ```rust
-    for i in 0u64..v.size() {
-        val s = label(v.get(i))
-        n = n + s.len()
+    fn take_next(&mut self) -> Option<String> { ... }   # 本体は同じ
+
+    while val Option::Some(s) = it.take_next() {
+        total = total + s.len()
     }
 ```
 
@@ -392,10 +414,6 @@ Contract violation: `ensures` clause #1 of function `total_len`: retained 50 byt
   要素数との関係 (5 要素 × 10 バイト) から「1 周に 1 個漏れている」と読める。
 - 値を返す関数は `retains(0u64)` では必ず破れる。返す分を予算に書く —
   `ensures retains(n * 8u64)`。
-- 上の `map` の例は interpreter で示した。compiled レーンは今のところ、
-  `String` を返す closure を渡した `map` をコンパイルできない
-  (`could not infer method-only generic param U`)。予算違反の文言自体は
-  AOT でも同じになる。
 
 ### 技法 2: `--check` でまれな経路のリークを探す
 
@@ -563,7 +581,8 @@ result with `val`` で拒むことがある。まず `--backend vm` で意味が
   (3 節)。
 - `toy effects` はテストブロックを内部名 (`__test_0`) で並べる。
 - AOT の `toy test` は最初の panic で同じドライバの残りを止める (`--backend vm` を使う)。
-- `map` が新しく作った所有値 (`String` 等) を for-in の item で受けると、
-  1 周に 1 個漏れる (6 節 技法 1)。compiled レーンはその形
-  (`String` を返す closure を渡した `map`) をそもそもコンパイルできない。
+- 自前のイテレータの `next` が新しく作った所有値 (`String` 等) を
+  for-in の item で受けると、1 周に 1 個漏れる (6 節 技法 1)。stdlib の
+  `map` は漏れないが、compiled レーンは `String` を返す closure を
+  そもそもコンパイルできない (closure の引数と戻り値はスカラーだけ)。
 - peak の契約は「実行全体の山を押し上げない」しか言えない (6 節 技法 3)。

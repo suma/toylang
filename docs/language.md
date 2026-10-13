@@ -2756,6 +2756,23 @@ Bind the struct first if you need one (`val it = MyIter { .. }`).
    (no nested `DictIter`) with `count` packed into `index`'s high 32
    bits, staying within the 8-return register budget.
 
+   **Who owns an item.** What `next` hands back is normally an
+   element the container keeps (NEXT-ITEM-ALIAS): a `for` item, a
+   `match it.next()` payload and `val m = it.next()` never free it.
+   A `map` adapter is the exception when the closure's input owns
+   nothing (`MapIter<u64, String>`, a `DictMapIter` over scalar keys
+   and values, any `StringMapIter`): its item cannot be a piece of an
+   element, so it is new, and the receiving binding owns it -- freed
+   at the end of the iteration, or moved when handed on
+   (`keep.push(s)`). The checker sees the receiver's type and binds the
+   call first, the way a `match` over any other call is bound. A
+   `map` over owning elements (`fn (s: String) -> String`) may return
+   its argument, so its item stays an alias. A user iterator is judged
+   by the name alone: a `next` that makes a new owning value leaks it
+   -- name such a method otherwise and loop with `while val`
+   (MAP-OWNED-ITEM-LEAK). On the compiled lanes a closure takes and
+   returns scalars only, so an owning `map` runs on the interpreter.
+
    **Terminal operations** (STDLIB-ITER-TERMINAL, `core/std/iter.t`)
    are default bodies of `trait Iterator<T>`, so every stdlib iterator
    — and a user iterator that writes `impl Iterator<T> for ...` — has

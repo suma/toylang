@@ -1402,6 +1402,8 @@ impl MoveCheck<'_> {
         self.interner
             .resolve(*method)
             .is_some_and(|m| m != "get" && super::reads_a_kept_element(m))
+            // MAP-OWNED-ITEM-LEAK: a `map` adapter's item is its own.
+            && !self.program.independent_calls.contains(&rhs)
     }
 
     /// The declared or inferred type of a `val` / `var` initializer.

@@ -310,12 +310,12 @@ fn cli(args: &[&str], stdin: Option<&str>) -> (i32, String, String) {
         .spawn()
         .expect("spawn interpreter");
     if let Some(source) = stdin {
-        child
-            .stdin
-            .as_mut()
-            .expect("stdin")
-            .write_all(source.as_bytes())
-            .expect("write source");
+        // A run that rejects its flags can exit before it reads the
+        // program, closing the pipe under the write.
+        match child.stdin.as_mut().expect("stdin").write_all(source.as_bytes()) {
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+            other => other.expect("write source"),
+        }
     }
     let out = child.wait_with_output().expect("wait");
     (

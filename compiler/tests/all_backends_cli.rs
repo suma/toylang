@@ -44,12 +44,13 @@ fn run_stdin(source: &str, extra: &[&str]) -> Run {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn compiler");
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin")
-        .write_all(source.as_bytes())
-        .expect("write source");
+    // A run that rejects its flags exits before it reads the program,
+    // so the write can meet a closed pipe; the exit status and stderr
+    // are what the test checks, not whether the source went through.
+    match child.stdin.as_mut().expect("stdin").write_all(source.as_bytes()) {
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+        other => other.expect("write source"),
+    }
     let out = child.wait_with_output().expect("wait");
     Run {
         status: out.status.code().unwrap_or(-1),
